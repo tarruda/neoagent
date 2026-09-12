@@ -109,6 +109,17 @@ describe("neoagent upper-layer request selection", function()
     local resolved, resolve_err = missing:resolve()
     assert.is_nil(resolved)
     assert.matches("No default_model", assert(resolve_err).message)
+    local levels
+    levels, resolve_err = missing:levels()
+    assert.is_nil(levels)
+    assert.matches("No default_model", assert(resolve_err).message)
+    local level
+    level, resolve_err = missing:set_thinking_level("high")
+    assert.is_nil(level)
+    assert.matches("No default_model", assert(resolve_err).message)
+    level, resolve_err = missing:cycle_thinking_level()
+    assert.is_nil(level)
+    assert.matches("No default_model", assert(resolve_err).message)
 
     local unsupported_config = configuration()
     unsupported_config.default_model = { provider = "fake", model = "plain" }
@@ -121,7 +132,7 @@ describe("neoagent upper-layer request selection", function()
     assert.is_nil(unsupported:snapshot().thinking_level)
     assert.are.equal(vim.NIL,
       unsupported:snapshot({ persisted = true }).thinking_level)
-    local level
+    level = nil
     level, resolve_err = unsupported:set_thinking_level("high")
     assert.is_nil(level)
     assert.matches("not supported", assert(resolve_err).message)
@@ -283,5 +294,36 @@ describe("neoagent upper-layer request selection", function()
     draft:destroy()
     applet:destroy()
     assert.are.equal("destroyed", draft:state())
+  end)
+
+  it("preserves ProfileDraft options when model selection cannot resolve", function()
+    local configured = configuration()
+    configured.default_model = nil
+    local profile = {
+      id = "neo", label = "Neo", config = configured,
+      create_applet = function() error("unused") end,
+      create_agent = function() error("unused") end,
+    }
+    local applet = require("neoagent.agent_applet").new({ config = configured.ui })
+    local draft = ProfileDraft.new({
+      key = "neo\0/workspace", profile = profile, workspace = "/workspace",
+      applet = applet, runtimes = runtimes(configured), options = { sandbox = { enabled = false } },
+    })
+    local before = draft:options()
+    local updated, update_err = draft:update({
+      default_model = { provider = "fake", model = "missing" },
+    })
+    assert.is_nil(updated)
+    assert.matches("Unknown model", assert(update_err).message)
+    assert.are.same(before, draft:options())
+
+    local selected, select_err = draft:set_model("fake", "missing")
+    assert.is_nil(selected)
+    assert.matches("Unknown model", assert(select_err).message)
+    local cycled, cycle_err = draft:cycle_thinking_level()
+    assert.is_nil(cycled)
+    assert.matches("No default_model", assert(cycle_err).message)
+    draft:destroy()
+    applet:destroy()
   end)
 end)

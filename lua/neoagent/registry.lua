@@ -18,12 +18,13 @@ local M = {}
 ---@field service? Neoagent.ProviderFactory
 ---@field service_opts? table<string, unknown>
 ---@field diagnostics? {path: string}|false
+---@field file_uploads? boolean
+---@field prompt_caching? boolean
 
 ---@class Neoagent.ProviderDefinition: Neoagent.ProviderOptions
 ---@field api string
 ---@field models table<string, Neoagent.ModelConfigInput|false>
 ---@field catalog Neoagent.CatalogDefinition
-
 
 ---@type {openai: Neoagent.ProviderDefinition, ["openai-codex"]: Neoagent.ProviderDefinition}
 local openai = require("neoagent.registry.openai")
@@ -65,10 +66,13 @@ local defaults = {
 ---@param user? table<string, Neoagent.ModelConfigInput|false>
 ---@return table<string, Neoagent.ModelConfigInput|false>
 local function compose_models(base, user)
-  if user == nil then return util.copy(base or {}) end
-  assert(type(user) == "table"
-      and (next(user) == nil or not util.is_list(user)),
-    "provider models must be a keyed table")
+  if user == nil then
+    return util.copy(base or {})
+  end
+  assert(
+    type(user) == "table" and (next(user) == nil or not util.is_list(user)),
+    "provider models must be a keyed table"
+  )
   local result = util.copy(base or {})
   for id, model in pairs(user) do
     assert(type(id) == "string", "models must use string ids")
@@ -87,21 +91,23 @@ end
 ---@param value? Neoagent.CatalogTransform
 ---@return Neoagent.CatalogTransform?
 local function assert_transform(value)
-  assert(value == nil or type(value) == "function",
-    "provider catalog transform_model must be a function")
+  assert(value == nil or type(value) == "function", "provider catalog transform_model must be a function")
   return value
 end
 
----@param transform? Neoagent.CatalogTransform
+---@param transform Neoagent.CatalogTransform
 ---@param model Neoagent.ModelConfigInput
 ---@param ctx Neoagent.CatalogTransformContext
 ---@return Neoagent.ModelConfigInput|false
 local function transformed(transform, model, ctx)
-  if not transform then return util.copy(model) end
   local result = transform(util.copy(model), util.copy(ctx))
-  if result == false then return false end
-  assert(type(result) == "table" and not util.is_list(result),
-    "provider catalog transform_model must return a model or false")
+  if result == false then
+    return false
+  end
+  assert(
+    type(result) == "table" and not util.is_list(result),
+    "provider catalog transform_model must return a model or false"
+  )
   return util.copy(result)
 end
 
@@ -111,11 +117,17 @@ end
 local function compose_transform(base, user)
   base = assert_transform(base)
   user = assert_transform(user)
-  if not base then return user end
-  if not user then return base end
+  if not base then
+    return user
+  end
+  if not user then
+    return base
+  end
   return function(model, ctx)
     local current = transformed(base, model, ctx)
-    if current == false then return false end
+    if current == false then
+      return false
+    end
     return transformed(user, current, ctx)
   end
 end
@@ -126,20 +138,19 @@ end
 local function compose_catalog(base, user)
   base = base or {}
   user = user or {}
-  assert(type(base) == "table"
-      and (next(base) == nil or not util.is_list(base)),
-    "provider catalog must be an object")
-  assert(type(user) == "table"
-      and (next(user) == nil or not util.is_list(user)),
-    "provider catalog must be an object")
+  assert(type(base) == "table" and (next(base) == nil or not util.is_list(base)), "provider catalog must be an object")
+  assert(type(user) == "table" and (next(user) == nil or not util.is_list(user)), "provider catalog must be an object")
   if user.discover ~= nil and user.discover ~= base.discover then
-    assert(type(user.source_id) == "string" and user.source_id ~= ""
-        and user.source_revision ~= nil,
-      "a configured catalog discover callback requires source_id and source_revision")
+    assert(
+      type(user.source_id) == "string" and user.source_id ~= "" and user.source_revision ~= nil,
+      "a configured catalog discover callback requires source_id and source_revision"
+    )
   end
   if user.source_id ~= nil or user.source_revision ~= nil then
-    assert(user.source_id ~= nil and user.source_revision ~= nil,
-      "catalog source_id and source_revision must be configured together")
+    assert(
+      user.source_id ~= nil and user.source_revision ~= nil,
+      "catalog source_id and source_revision must be configured together"
+    )
   end
   local base_values = util.copy(base)
   local user_values = util.copy(user)
@@ -147,8 +158,7 @@ local function compose_catalog(base, user)
   user_values.transform_model = nil
   local result = util.deep_merge(base_values, user_values)
   ---@cast result Neoagent.CatalogDefinition
-  result.transform_model = compose_transform(
-    base.transform_model, user.transform_model)
+  result.transform_model = compose_transform(base.transform_model, user.transform_model)
   return result
 end
 

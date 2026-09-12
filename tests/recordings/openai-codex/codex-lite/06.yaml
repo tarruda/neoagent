@@ -1,0 +1,163 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: 2f17ed3b1f9e4d46ff9b71c5b3e508ff0e443ae7c43fd8b4f7e1717e962083dd
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://chatgpt.com/backend-api/codex/responses
+  headers:
+    Accept: text/event-stream
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+    OpenAI-Beta: responses=experimental
+    User-Agent: neoagent
+    chatgpt-account-id: account-replay
+    originator: neoagent
+    x-openai-internal-codex-responses-lite: 'true'
+  body:
+    include:
+    - reasoning.encrypted_content
+    input:
+    - role: developer
+      tools: []
+      type: additional_tools
+    - content:
+      - text: Describe the provided image briefly.
+        type: input_text
+      role: developer
+      type: message
+    - content:
+      - text: Inspect a generated two-color tile.
+        type: input_text
+      role: user
+    - arguments: '{}'
+      call_id: call-generated-tile
+      name: sample_tile
+      type: function_call
+    - call_id: call-generated-tile
+      output:
+      - detail: auto
+        file_id: file-codex-lite-1
+        type: input_image
+      - detail: auto
+        file_id: file-codex-lite-1
+        type: input_image
+      type: function_call_output
+    - content:
+      - text: Name the tile's two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    - content: []
+      encrypted_content: synthetic-signature-6
+      id: synthetic-id-4
+      summary: []
+      type: reasoning
+    - content:
+      - annotations: []
+        text: Red blue
+        type: output_text
+      id: synthetic-id-7
+      phase: final_answer
+      role: assistant
+      status: completed
+      type: message
+    - content:
+      - text: Name the tile's two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    model: gpt-5.6-luna
+    parallel_tool_calls: false
+    reasoning:
+      context: all_turns
+    store: false
+    stream: true
+    text:
+      verbosity: low
+    tool_choice: auto
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 8050
+---
+type: response_body
+at_us: 2000
+bytes: 8050
+body: 'event: response.created
+
+  data: {"type":"response.created","response":{"id":"synthetic-id-8","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-9","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+
+  event: response.in_progress
+
+  data: {"type":"response.in_progress","response":{"id":"synthetic-id-8","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-9","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+
+  event: response.output_item.added
+
+  data: {"type":"response.output_item.added","item":{"id":"synthetic-id-10","type":"reasoning","content":[],"encrypted_content":"synthetic-signature-11","summary":[]},"output_index":0,"sequence_number":2}
+
+
+  event: response.output_item.done
+
+  data: {"type":"response.output_item.done","item":{"id":"synthetic-id-10","type":"reasoning","content":[],"encrypted_content":"synthetic-signature-12","summary":[]},"output_index":0,"sequence_number":3}
+
+
+  event: response.output_item.added
+
+  data: {"type":"response.output_item.added","item":{"id":"synthetic-id-13","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":4}
+
+
+  event: response.content_part.added
+
+  data: {"type":"response.content_part.added","content_index":0,"item_id":"synthetic-id-13","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":5}
+
+
+  event: response.output_text.delta
+
+  data: {"type":"response.output_text.delta","content_index":0,"delta":"Red","item_id":"synthetic-id-13","logprobs":[],"obfuscation":"synthetic-padding","output_index":1,"sequence_number":6}
+
+
+  event: response.output_text.delta
+
+  data: {"type":"response.output_text.delta","content_index":0,"delta":" blue","item_id":"synthetic-id-13","logprobs":[],"obfuscation":"synthetic-padding","output_index":1,"sequence_number":7}
+
+
+  event: response.output_text.done
+
+  data: {"type":"response.output_text.done","content_index":0,"item_id":"synthetic-id-13","logprobs":[],"output_index":1,"sequence_number":8,"text":"Red
+  blue"}
+
+
+  event: response.content_part.done
+
+  data: {"type":"response.content_part.done","content_index":0,"item_id":"synthetic-id-13","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"Red
+  blue"},"sequence_number":9}
+
+
+  event: response.output_item.done
+
+  data: {"type":"response.output_item.done","item":{"id":"synthetic-id-13","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"Red
+  blue"}],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":10}
+
+
+  event: response.completed
+
+  data: {"type":"response.completed","response":{"id":"synthetic-id-8","object":"response","created_at":1700000000,"status":"completed","background":false,"completed_at":1700000000,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-9","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"attribution":{"items":{"at_037de3163d0d16ac016aa118eb4e5887d2af23b853d21497da":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":4,"output_tokens":0},"msg_037de3163d0d16ac016aa118eb4f7c87d281eddbb85d43b487":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":10,"output_tokens":0}],"input_tokens":10,"output_tokens":0},"msg_037de3163d0d16ac016aa118eb4f8887d2a697503807c8f320":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":11,"output_tokens":0}],"input_tokens":11,"output_tokens":0},"fc_037de3163d0d16ac016aa118eb4e8487d28727ca19e4ce0bfc":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":16,"output_tokens":0},"fc_037de3163d0d16ac016aa118eb5b3887d2872dc10dce8acdde":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":10,"output_tokens":0},{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":3,"output_tokens":0}],"input_tokens":13,"output_tokens":0},"msg_037de3163d0d16ac016aa118eb4f9487d2bb266f341bb71c53":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":20,"output_tokens":0}],"input_tokens":20,"output_tokens":0},"rs_037de3163d0d16ac016aa118e975c487d286c3452ed06a4fd9":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":27,"output_tokens":0},"msg_037de3163d0d16ac016aa118e9f52887d2af520185561edce9":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":8,"output_tokens":0}],"input_tokens":8,"output_tokens":0},"msg_037de3163d0d16ac016aa118eb4fa087d2b36308c63c616743":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":20,"output_tokens":0}],"input_tokens":20,"output_tokens":0},"rs_037de3163d0d16ac016aa118ec7ac487d2a1502b01a1ad3d29":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":2,"output_tokens":64},"msg_037de3163d0d16ac016aa118edaa3487d2b38de7cba3701292":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":0,"output_tokens":8}],"input_tokens":0,"output_tokens":8}}},"input_tokens":131,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":72,"output_tokens_details":{"reasoning_tokens":64},"total_tokens":203},"user":null,"metadata":{}},"sequence_number":11}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers: {}
+---
+type: complete
+at_us: 2000
+ok: true

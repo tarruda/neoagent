@@ -1,0 +1,35 @@
+# Synthetic Codex blob exchange; payload and capability URL are invented.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: PUT
+  url: https://storage.example.test/file-tile-replacement?sig=synthetic-upload-signature
+  headers:
+    x-ms-blob-type: BlockBlob
+    Content-Length: "68"
+  body: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lWQAAAAASUVORK5CYII=
+  body_encoding: base64
+  body_bytes: 68
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 0
+---
+type: response_body
+at_us: 3000
+bytes: 0
+body: ""
+---
+type: response
+at_us: 3000
+status: 201
+headers:
+  content-length: "0"
+---
+type: complete
+at_us: 3000
+ok: true

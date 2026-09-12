@@ -5,6 +5,15 @@ local util = require("neoagent.util")
 
 local M = {}
 
+-- Files creation, finalization and inspection return signed storage URLs.
+-- Authentication classifies these capability-bearing responses just as it
+-- classifies token responses; the file backend receives decoded values.
+---@param transport? Neoagent.ByteBackend
+---@return Neoagent.HttpClient
+function M._files_http(transport)
+  return http_client.new(transport).with_context({ credential_response_body = true })
+end
+
 ---@class Neoagent.CodexCredential: Neoagent.OAuthCredential
 ---@field accountId string
 ---@field email? string
@@ -56,11 +65,11 @@ local plan_labels = {
 ---@param maximum integer
 ---@return string?
 local function safe_metadata_text(value, maximum)
-  if type(value) ~= "string" then return nil end
+  if type(value) ~= "string" then
+    return nil
+  end
   value = util.trim(value)
-  if value == "" or #value > maximum
-      or not util.is_valid_utf8(value)
-      or value:find("[%z\1-\31\127]") then
+  if value == "" or #value > maximum or not util.is_valid_utf8(value) or value:find("[%z\1-\31\127]") then
     return nil
   end
   return value
@@ -70,11 +79,12 @@ end
 ---@return string
 local function encode_fields(fields)
   local keys, result = {}, {}
-  for key in pairs(fields) do keys[#keys + 1] = key end
+  for key in pairs(fields) do
+    keys[#keys + 1] = key
+  end
   table.sort(keys)
   for _, key in ipairs(keys) do
-    result[#result + 1] = vim.uri_encode(key, "rfc2396") .. "="
-      .. vim.uri_encode(tostring(fields[key]), "rfc2396")
+    result[#result + 1] = vim.uri_encode(key, "rfc2396") .. "=" .. vim.uri_encode(tostring(fields[key]), "rfc2396")
   end
   return table.concat(result, "&")
 end
@@ -108,19 +118,29 @@ end
 ---@param value string
 ---@return string
 local function hex_bytes(value)
-  return (value:gsub("..", function(pair) return string.char((assert(tonumber(pair, 16)))) end))
+  return (value:gsub("..", function(pair)
+    return string.char((assert(tonumber(pair, 16))))
+  end))
 end
 
 ---@param token unknown
 ---@return Neoagent.JsonObject?
 local function decode_jwt(token)
-  if type(token) ~= "string" then return nil end
+  if type(token) ~= "string" then
+    return nil
+  end
   local payload = token:match("^[^.]+%.([^.]+)%.[^.]+$")
-  if not payload then return nil end
+  if not payload then
+    return nil
+  end
   payload = payload:gsub("-", "+"):gsub("_", "/")
   payload = payload .. string.rep("=", (4 - #payload % 4) % 4)
-  local ok, decoded = pcall(function() return vim.json.decode(vim.base64.decode(payload)) end)
-  if not ok or type(decoded) ~= "table" then return nil end
+  local ok, decoded = pcall(function()
+    return vim.json.decode(vim.base64.decode(payload))
+  end)
+  if not ok or type(decoded) ~= "table" then
+    return nil
+  end
   ---@cast decoded Neoagent.JsonObject
   return decoded
 end
@@ -129,14 +149,17 @@ end
 ---@return Neoagent.CodexTokenMetadata
 local function token_metadata(token)
   local payload = decode_jwt(token)
-  if not payload then return {} end
+  if not payload then
+    return {}
+  end
   local auth = type(payload[CLAIM]) == "table" and payload[CLAIM] or {}
   local profile = type(payload[PROFILE_CLAIM]) == "table" and payload[PROFILE_CLAIM] or {}
-  local email = safe_metadata_text(payload.email, 254)
-    or safe_metadata_text(profile.email, 254)
+  local email = safe_metadata_text(payload.email, 254) or safe_metadata_text(profile.email, 254)
   return {
     account_id = type(auth.chatgpt_account_id) == "string"
-      and auth.chatgpt_account_id ~= "" and auth.chatgpt_account_id or nil,
+        and auth.chatgpt_account_id ~= ""
+        and auth.chatgpt_account_id
+      or nil,
     email = email,
     plan = safe_metadata_text(auth.chatgpt_plan_type, 64),
   }
@@ -149,12 +172,18 @@ local function public_metadata(credential)
   local result = {}
   local email = safe_metadata_text(credential and credential.email, 254) or fallback.email
   local raw_plan = safe_metadata_text(credential and credential.plan, 64) or fallback.plan
-  if email then result.email = email end
+  if email then
+    result.email = email
+  end
   if raw_plan then
     local plan = plan_labels[raw_plan:lower():gsub("%-", "_"):gsub("%s+", "_")]
-    if plan then result.plan = plan end
+    if plan then
+      result.plan = plan
+    end
   end
-  if next(result) == nil then result.account = "ChatGPT" end
+  if next(result) == nil then
+    result.account = "ChatGPT"
+  end
   return result
 end
 
@@ -201,7 +230,9 @@ end
 ---@param prompt Neoagent.LoginPrompt
 ---@return string?
 local function await_prompt(interaction, prompt)
-  return async.await(function(done) return interaction.prompt(prompt, done) end)
+  return async.await(function(done)
+    return interaction.prompt(prompt, done)
+  end)
 end
 
 ---@async
@@ -212,12 +243,16 @@ local function delay(milliseconds)
     local timer = assert(vim.uv.new_timer())
     timer:start(math.max(1, math.floor(milliseconds)), 0, function()
       timer:stop()
-      if not timer:is_closing() then timer:close() end
+      if not timer:is_closing() then
+        timer:close()
+      end
       done.resolve(true)
     end)
     return function()
       timer:stop()
-      if not timer:is_closing() then timer:close() end
+      if not timer:is_closing() then
+        timer:close()
+      end
     end
   end)
 end
@@ -242,7 +277,9 @@ function M.new(opts)
   ---@return Neoagent.JsonObject|Neoagent.JsonArray
   local function post(url, headers, body)
     local result = http.fetch({ request = { url = url, headers = headers, body = body } }):await()
-    if not result.ok then error(result.error, 0) end
+    if not result.ok then
+      error(result.error, 0)
+    end
     local value = result.body
     if type(value) ~= "table" then
       error(util.error("auth", "OpenAI returned invalid JSON", result.body), 0)
@@ -258,9 +295,13 @@ function M.new(opts)
   ---@param previous? Neoagent.CodexCredential
   ---@return Neoagent.CodexCredential
   local function credential(value, previous)
-    if type(value.access_token) ~= "string" or value.access_token == ""
-        or type(value.refresh_token) ~= "string" or value.refresh_token == ""
-        or type(value.expires_in) ~= "number" then
+    if
+      type(value.access_token) ~= "string"
+      or value.access_token == ""
+      or type(value.refresh_token) ~= "string"
+      or value.refresh_token == ""
+      or type(value.expires_in) ~= "number"
+    then
       error(util.error("auth", "OpenAI token response is missing fields"), 0)
     end
     local access = token_metadata(value.access_token)
@@ -275,10 +316,8 @@ function M.new(opts)
       refresh = value.refresh_token,
       expires = now() + value.expires_in * 1000,
       accountId = account_id,
-      email = identity.email or access.email
-        or safe_metadata_text(previous and previous.email, 254),
-      plan = identity.plan or access.plan
-        or safe_metadata_text(previous and previous.plan, 64),
+      email = identity.email or access.email or safe_metadata_text(previous and previous.email, 254),
+      plan = identity.plan or access.plan or safe_metadata_text(previous and previous.plan, 64),
     }
   end
 
@@ -288,13 +327,17 @@ function M.new(opts)
   ---@param redirect_uri string
   ---@return Neoagent.CodexCredential
   local function exchange(code, verifier, redirect_uri)
-    return credential(post(token_url, { ["Content-Type"] = "application/x-www-form-urlencoded" }, encode_fields({
-      grant_type = "authorization_code",
-      client_id = CLIENT_ID,
-      code = code,
-      code_verifier = verifier,
-      redirect_uri = redirect_uri,
-    })))
+    return credential(post(
+      token_url,
+      { ["Content-Type"] = "application/x-www-form-urlencoded" },
+      encode_fields({
+        grant_type = "authorization_code",
+        client_id = CLIENT_ID,
+        code = code,
+        code_verifier = verifier,
+        redirect_uri = redirect_uri,
+      })
+    ))
   end
 
   ---@async
@@ -304,18 +347,20 @@ function M.new(opts)
     local verifier = random_urlsafe(32)
     local state = random_urlsafe(16)
     local challenge = base64url(hex_bytes(vim.fn.sha256(verifier)))
-    local url = auth_base .. "/oauth/authorize?" .. encode_fields({
-      response_type = "code",
-      client_id = CLIENT_ID,
-      redirect_uri = REDIRECT_URI,
-      scope = "openid profile email offline_access",
-      code_challenge = challenge,
-      code_challenge_method = "S256",
-      state = state,
-      id_token_add_organizations = "true",
-      codex_cli_simplified_flow = "true",
-      originator = "neoagent",
-    })
+    local url = auth_base
+      .. "/oauth/authorize?"
+      .. encode_fields({
+        response_type = "code",
+        client_id = CLIENT_ID,
+        redirect_uri = REDIRECT_URI,
+        scope = "openid profile email offline_access",
+        code_challenge = challenge,
+        code_challenge_method = "S256",
+        state = state,
+        id_token_add_organizations = "true",
+        codex_cli_simplified_flow = "true",
+        originator = "neoagent",
+      })
     local server = start_server(state, callback_host)
     interaction.notify({
       type = "auth_url",
@@ -326,7 +371,9 @@ function M.new(opts)
     if server then
       local ok, value = pcall(server.wait)
       server.close()
-      if not ok then error(value, 0) end
+      if not ok then
+        error(value, 0)
+      end
       code = value
     else
       local input = await_prompt(interaction, {
@@ -335,10 +382,14 @@ function M.new(opts)
         placeholder = REDIRECT_URI,
       })
       local parsed = parse_authorization(input)
-      if parsed.state and parsed.state ~= state then error(util.error("auth", "OAuth state mismatch"), 0) end
+      if parsed.state and parsed.state ~= state then
+        error(util.error("auth", "OAuth state mismatch"), 0)
+      end
       code = parsed.code
     end
-    if not code or code == "" then error(util.error("auth", "Missing authorization code"), 0) end
+    if not code or code == "" then
+      error(util.error("auth", "Missing authorization code"), 0)
+    end
     return exchange(code, verifier, REDIRECT_URI)
   end
 
@@ -346,11 +397,18 @@ function M.new(opts)
   ---@param interaction Neoagent.LoginInteraction
   ---@return Neoagent.CodexCredential
   local function device_login(interaction)
-    local device = post(auth_base .. "/api/accounts/deviceauth/usercode",
-      { ["Content-Type"] = "application/json" }, vim.json.encode({ client_id = CLIENT_ID }))
+    local device = post(
+      auth_base .. "/api/accounts/deviceauth/usercode",
+      { ["Content-Type"] = "application/json" },
+      vim.json.encode({ client_id = CLIENT_ID })
+    )
     local interval = tonumber(device.interval)
-    if type(device.device_auth_id) ~= "string" or type(device.user_code) ~= "string"
-        or not interval or interval < 0 then
+    if
+      type(device.device_auth_id) ~= "string"
+      or type(device.user_code) ~= "string"
+      or not interval
+      or interval < 0
+    then
       error(util.error("auth", "Invalid OpenAI device code response"), 0)
     end
     interaction.notify({
@@ -363,16 +421,25 @@ function M.new(opts)
     local deadline = now() + 900000
     while now() < deadline do
       sleep(interval * 1000)
-      local result = http.fetch({ request = {
-        url = auth_base .. "/api/accounts/deviceauth/token",
-        headers = { ["Content-Type"] = "application/json" },
-        body = vim.json.encode({ device_auth_id = device.device_auth_id, user_code = device.user_code }),
-      } }):await()
-      if not result.ok then error(result.error, 0) end
+      local result = http
+        .fetch({
+          request = {
+            url = auth_base .. "/api/accounts/deviceauth/token",
+            headers = { ["Content-Type"] = "application/json" },
+            body = vim.json.encode({ device_auth_id = device.device_auth_id, user_code = device.user_code }),
+          },
+        })
+        :await()
+      if not result.ok then
+        error(result.error, 0)
+      end
       if result.status == 200 then
         local code = result.body
-        if type(code) ~= "table" or type(code.authorization_code) ~= "string"
-            or type(code.code_verifier) ~= "string" then
+        if
+          type(code) ~= "table"
+          or type(code.authorization_code) ~= "string"
+          or type(code.code_verifier) ~= "string"
+        then
           error(util.error("auth", "Invalid OpenAI device authorization response"), 0)
         end
         return exchange(code.authorization_code, code.code_verifier, DEVICE_REDIRECT_URI)
@@ -385,9 +452,7 @@ function M.new(opts)
         elseif code == "slow_down" then
           interval = interval + 5
         else
-          error(util.error(
-            "auth", "OpenAI device authorization failed (HTTP " .. result.status .. ")", result.body
-          ), 0)
+          error(util.error("auth", "OpenAI device authorization failed (HTTP " .. result.status .. ")", result.body), 0)
         end
       end
     end
@@ -400,53 +465,67 @@ function M.new(opts)
     name = "OpenAI (ChatGPT Plus/Pro)",
     login = function(interaction)
       return async.run(
-      ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
-      function()
-        local choice = await_prompt(interaction, {
-          type = "select",
-          message = "Select OpenAI Codex login method:",
-          options = {
-            { id = "browser", label = "Browser login (default)" },
-            { id = "device_code", label = "Device code login (headless)" },
-          },
-        })
-        ---@type Neoagent.CodexCredential
-        local value
-        if choice == "browser" then value = browser_login(interaction)
-        elseif choice == "device_code" then value = device_login(interaction)
-        else error(util.error("auth", "Unknown OpenAI Codex login method: " .. tostring(choice)), 0) end
-        return { ok = true, credential = value }
-      end, { error_kind = "auth" })
+        ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
+        function()
+          local choice = await_prompt(interaction, {
+            type = "select",
+            message = "Select OpenAI Codex login method:",
+            options = {
+              { id = "browser", label = "Browser login (default)" },
+              { id = "device_code", label = "Device code login (headless)" },
+            },
+          })
+          ---@type Neoagent.CodexCredential
+          local value
+          if choice == "browser" then
+            value = browser_login(interaction)
+          elseif choice == "device_code" then
+            value = device_login(interaction)
+          else
+            error(util.error("auth", "Unknown OpenAI Codex login method: " .. tostring(choice)), 0)
+          end
+          return { ok = true, credential = value }
+        end,
+        { error_kind = "auth" }
+      )
     end,
     refresh = function(current)
       return async.run(
-      ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
-      function()
-        local value = post(token_url, { ["Content-Type"] = "application/x-www-form-urlencoded" }, encode_fields({
-          grant_type = "refresh_token",
-          refresh_token = current.refresh,
-          client_id = CLIENT_ID,
-        }))
-        return { ok = true, credential = credential(value, current) }
-      end, { error_kind = "auth" })
+        ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
+        function()
+          local value = post(
+            token_url,
+            { ["Content-Type"] = "application/x-www-form-urlencoded" },
+            encode_fields({
+              grant_type = "refresh_token",
+              refresh_token = current.refresh,
+              client_id = CLIENT_ID,
+            })
+          )
+          return { ok = true, credential = credential(value, current) }
+        end,
+        { error_kind = "auth" }
+      )
     end,
     cache_identity = function(current)
       local fallback = token_metadata(current and current.access)
-      return type(current.accountId) == "string" and current.accountId ~= ""
-          and current.accountId or fallback.account_id
+      return type(current.accountId) == "string" and current.accountId ~= "" and current.accountId
+        or fallback.account_id
     end,
     public_metadata = public_metadata,
     request_opts = function(current)
       if type(current.accountId) ~= "string" or current.accountId == "" then
         error(util.error("auth", "Stored OpenAI credential has no accountId"), 0)
       end
-      return { headers = {
-        Authorization = "Bearer " .. current.access,
-        ["chatgpt-account-id"] = current.accountId,
-        originator = "neoagent",
-        ["OpenAI-Beta"] = "responses=experimental",
-        ["User-Agent"] = "neoagent",
-      } }
+      return {
+        headers = {
+          Authorization = "Bearer " .. current.access,
+          ["chatgpt-account-id"] = current.accountId,
+          originator = "neoagent",
+          ["OpenAI-Beta"] = "responses=experimental",
+          ["User-Agent"] = "neoagent",
+        },
+      }
     end,
   }
   method._with_transport = function(transport)

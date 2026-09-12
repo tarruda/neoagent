@@ -98,8 +98,7 @@ end
 ---@return Applet.Binding[]
 local function cancel_bindings(editable)
   local result = {}
-  append_binding(result, "n", { "q", "<Esc>", "<C-c>" },
-    "cancel", nil, "Cancel prompt")
+  append_binding(result, "n", { "q", "<Esc>", "<C-c>" }, "cancel", nil, "Cancel prompt")
   if editable then
     append_binding(result, "i", "<C-c>", "cancel", nil, "Cancel prompt")
   end
@@ -109,16 +108,11 @@ end
 ---@return Applet.Binding[]
 local function picker_bindings()
   local result = cancel_bindings(true)
-  append_binding(result, { "n", "i" }, { "<Down>", "<C-j>", "<C-n>" },
-    "move", { direction = 1 }, "Select next item")
-  append_binding(result, { "n", "i" }, { "<Up>", "<C-k>", "<C-p>" },
-    "move", { direction = -1 }, "Select previous item")
-  append_binding(result, "n", "j", "move", { direction = 1 },
-    "Select next item")
-  append_binding(result, "n", "k", "move", { direction = -1 },
-    "Select previous item")
-  append_binding(result, { "n", "i" }, "<CR>", "choose", nil,
-    "Choose selected item")
+  append_binding(result, { "n", "i" }, { "<Down>", "<C-j>", "<C-n>" }, "move", { direction = 1 }, "Select next item")
+  append_binding(result, { "n", "i" }, { "<Up>", "<C-k>", "<C-p>" }, "move", { direction = -1 }, "Select previous item")
+  append_binding(result, "n", "j", "move", { direction = 1 }, "Select next item")
+  append_binding(result, "n", "k", "move", { direction = -1 }, "Select previous item")
+  append_binding(result, { "n", "i" }, "<CR>", "choose", nil, "Choose selected item")
   return result
 end
 
@@ -134,9 +128,10 @@ local function render_input(state)
   append_binding(bindings, "n", "<CR>", "submit", nil, "Submit prompt")
   ---@type Applet.Options
   local window_options = { cursorline = true }
-  if request.multiline ~= nil then window_options.wrap = request.multiline end
-  local help = request.multiline and "<C-s> submit · <C-c> cancel"
-    or "<CR> submit · <C-c> cancel"
+  if request.multiline ~= nil then
+    window_options.wrap = request.multiline
+  end
+  local help = request.multiline and "<C-s> submit · <C-c> cancel" or "<CR> submit · <C-c> cancel"
   return {
     root = nodes.scope({
       key = "presentation:" .. request.id .. ":modal",
@@ -280,7 +275,9 @@ end
 ---@return integer?
 local function fuzzy_score(text, query)
   query = vim.fn.tolower(query):gsub("^%s+", ""):gsub("%s+$", "")
-  if query == "" then return 0 end
+  if query == "" then
+    return 0
+  end
   local haystack = util.characters(vim.fn.tolower(text), "picker item")
   local needle = util.characters(query, "picker query")
   local previous, score = 0, 0
@@ -289,9 +286,14 @@ local function fuzzy_score(text, query)
     local found
     for index = previous + 1, #haystack do
       ---@cast index integer
-      if haystack[index] == character then found = index break end
+      if haystack[index] == character then
+        found = index
+        break
+      end
     end
-    if not found then return nil end
+    if not found then
+      return nil
+    end
     local gap = found - previous - 1
     score = score + gap * 4
     if found == 1 or assert(haystack[found - 1]):match("[%s%p]") then
@@ -313,29 +315,31 @@ end
 ---@param items Applet.PresentationItem[]
 ---@return Applet.PresentationItem[]
 local function copy_items(items)
-  applet_expect(type(items) == "table", "presentation items",
-    "must be a list", 4)
+  applet_expect(type(items) == "table", "presentation items", "must be a list", 4)
   local count = 0
   for key in pairs(items) do
-    applet_expect(type(key) == "number" and key >= 1 and key % 1 == 0,
-      "presentation items", "must be a list", 4)
+    applet_expect(type(key) == "number" and key >= 1 and key % 1 == 0, "presentation items", "must be a list", 4)
     count = count + 1
   end
   applet_expect(count == #items, "presentation items", "must be a list", 4)
   local selected, seen = {}, {}
   for index, item in ipairs(items) do
-    applet_expect(type(item) == "table", "presentation item " .. index,
-      "must be a table", 4)
-    applet_expect(util.nonempty_string(item.id), "presentation item " .. index,
-      "requires an id", 4)
-    applet_expect(type(item.label) == "string", "presentation item " .. index,
-      "requires a label", 4)
-    applet_expect(item.detail == nil or type(item.detail) == "string",
-      "presentation item " .. index .. ".detail", "must be a string", 4)
-    applet_expect(item.disabled == nil or type(item.disabled) == "boolean",
-      "presentation item " .. index .. ".disabled", "must be a boolean", 4)
-    applet_expect(not seen[item.id], "presentation item " .. index,
-      "id must be unique", 4)
+    applet_expect(type(item) == "table", "presentation item " .. index, "must be a table", 4)
+    applet_expect(util.nonempty_string(item.id), "presentation item " .. index, "requires an id", 4)
+    applet_expect(type(item.label) == "string", "presentation item " .. index, "requires a label", 4)
+    applet_expect(
+      item.detail == nil or type(item.detail) == "string",
+      "presentation item " .. index .. ".detail",
+      "must be a string",
+      4
+    )
+    applet_expect(
+      item.disabled == nil or type(item.disabled) == "boolean",
+      "presentation item " .. index .. ".disabled",
+      "must be a boolean",
+      4
+    )
+    applet_expect(not seen[item.id], "presentation item " .. index, "id must be unique", 4)
     seen[item.id] = true
     selected[#selected + 1] = util.copy(item)
   end
@@ -354,7 +358,9 @@ function Presentation:_publish_results(query)
   end
   if query:match("%S") then
     table.sort(matches, function(left, right)
-      if left.score == right.score then return left.index < right.index end
+      if left.score == right.score then
+        return left.index < right.index
+      end
       return left.score < right.score
     end)
   end
@@ -367,7 +373,10 @@ function Presentation:_publish_results(query)
   end
   if not selected then
     for _, item in ipairs(items) do
-      if not item.disabled then selected = item.id break end
+      if not item.disabled then
+        selected = item.id
+        break
+      end
     end
   end
   self.query, self.visible, self.selected = query, items, selected
@@ -391,15 +400,19 @@ end
 ---@return boolean
 function Presentation:_move(direction)
   local request = self.request --[[@as Applet.SelectPresentationRequest]]
-  if not self.selected then return false end
+  if not self.selected then
+    return false
+  end
   local enabled, current = {}, nil
   for _, item in ipairs(self.visible) do
     if not item.disabled then
       enabled[#enabled + 1] = item.id
-      if item.id == self.selected then current = #enabled end
+      if item.id == self.selected then
+        current = #enabled
+      end
     end
   end
-  if not current or #enabled == 0 then return false end
+  assert(current, "selected presentation item must be enabled and visible")
   local next_index = ((current - 1 + direction) % #enabled) + 1
   self.selected = enabled[next_index]
   self.revision = self.revision + 1
@@ -416,7 +429,9 @@ end
 ---@return boolean
 function Presentation:_choose(id)
   id = id or self.selected
-  if self.finished or not id then return false end
+  if self.finished or not id then
+    return false
+  end
   if self.request.kind == "input" then
     self.finished = true
     self.on_choose(id)
@@ -434,7 +449,9 @@ end
 
 ---@return boolean
 function Presentation:_cancel()
-  if self.finished then return false end
+  if self.finished then
+    return false
+  end
   self.finished = true
   self.on_cancel()
   return true
@@ -454,7 +471,9 @@ local function new_input(self, opts)
       ["presentation.submit"] = function()
         return self:_choose(self.pane:text())
       end,
-      ["presentation.cancel"] = function() return self:_cancel() end,
+      ["presentation.cancel"] = function()
+        return self:_cancel()
+      end,
     },
     on_error = opts.on_error,
   })
@@ -473,7 +492,9 @@ local function new_notice(self, opts)
     theme = opts.theme,
     render = render_notice,
     handlers = {
-      ["presentation.cancel"] = function() return self:_cancel() end,
+      ["presentation.cancel"] = function()
+        return self:_cancel()
+      end,
     },
     on_error = opts.on_error,
   })
@@ -486,8 +507,7 @@ end
 local function new_picker(self, opts)
   local request = self.request --[[@as Applet.SelectPresentationRequest]]
   self.filter = Pane.new({
-    key = opts.filter_key or (opts.key or "presentation-select")
-      .. "-filter",
+    key = opts.filter_key or (opts.key or "presentation-select") .. "-filter",
     extent = "document",
     buffer_mode = "editable",
     theme = opts.theme,
@@ -499,14 +519,17 @@ local function new_picker(self, opts)
       ["presentation.move"] = function(event)
         return self:_move((event.payload --[[@as {direction: integer}]]).direction)
       end,
-      ["presentation.choose"] = function() return self:_choose() end,
-      ["presentation.cancel"] = function() return self:_cancel() end,
+      ["presentation.choose"] = function()
+        return self:_choose()
+      end,
+      ["presentation.cancel"] = function()
+        return self:_cancel()
+      end,
     },
     on_error = opts.on_error,
   })
   self.results = Pane.new({
-    key = opts.results_key or (opts.key or "presentation-select")
-      .. "-results",
+    key = opts.results_key or (opts.key or "presentation-select") .. "-results",
     extent = "document",
     buffer_mode = "managed",
     theme = opts.theme,
@@ -515,11 +538,15 @@ local function new_picker(self, opts)
       ["presentation.move"] = function(event)
         return self:_move((event.payload --[[@as {direction: integer}]]).direction)
       end,
-      ["presentation.choose"] = function() return self:_choose() end,
+      ["presentation.choose"] = function()
+        return self:_choose()
+      end,
       ["presentation.choose_item"] = function(event)
         return self:_choose((event.payload --[[@as {id: string}]]).id)
       end,
-      ["presentation.cancel"] = function() return self:_cancel() end,
+      ["presentation.cancel"] = function()
+        return self:_cancel()
+      end,
     },
     on_error = opts.on_error,
   })
@@ -534,16 +561,21 @@ function Presentation.new(opts)
   opts = opts or {}
   applet_expect(type(opts) == "table", "presentation", "options must be a table", 3)
   applet_expect(type(opts.request) == "table", "presentation.request", "must be a table", 3)
-  applet_expect(type(opts.on_choose) == "function", "presentation.on_choose",
-    "must be a function", 3)
-  applet_expect(type(opts.on_cancel) == "function", "presentation.on_cancel",
-    "must be a function", 3)
-  applet_expect(opts.on_results == nil or type(opts.on_results) == "function",
-    "presentation.on_results", "must be a function", 3)
+  applet_expect(type(opts.on_choose) == "function", "presentation.on_choose", "must be a function", 3)
+  applet_expect(type(opts.on_cancel) == "function", "presentation.on_cancel", "must be a function", 3)
+  applet_expect(
+    opts.on_results == nil or type(opts.on_results) == "function",
+    "presentation.on_results",
+    "must be a function",
+    3
+  )
   local request = util.copy(opts.request)
-  applet_expect(request.kind == "input" or request.kind == "select"
-      or request.kind == "notice",
-    "presentation.request.kind", "must be select, input, or notice", 3)
+  applet_expect(
+    request.kind == "input" or request.kind == "select" or request.kind == "notice",
+    "presentation.request.kind",
+    "must be select, input, or notice",
+    3
+  )
   ---@type Applet.Presentation
   local self = setmetatable({
     request = request,
@@ -595,21 +627,24 @@ function Presentation:set_text(value)
   applet_expect(type(value) == "string", "presentation text", "must be a string", 3)
   local editable = self:editable_pane()
   local changed = editable:replace_text(value)
-  if changed and self:is_picker() then self:_publish_results(value) end
+  if changed and self:is_picker() then
+    self:_publish_results(value)
+  end
   return changed
 end
 
 ---@param theme? Applet.Theme|Applet.ThemeOptions
 function Presentation:set_theme(theme)
   self.pane:set_theme(theme)
-  if self.filter then self.filter:set_theme(theme) end
+  if self.filter then
+    self.filter:set_theme(theme)
+  end
 end
 
 ---@param items Applet.PresentationItem[]
 ---@return integer
 function Presentation:set_items(items)
-  applet_expect(self:is_picker(), "presentation items",
-    "require a selection presentation", 3)
+  applet_expect(self:is_picker(), "presentation items", "require a selection presentation", 3)
   local selected = copy_items(items)
   local request = self.request --[[@as Applet.SelectPresentationRequest]]
   request.items = selected
@@ -618,10 +653,14 @@ function Presentation:set_items(items)
 end
 
 function Presentation:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   self.pane:destroy()
-  if self.filter then self.filter:destroy() end
+  if self.filter then
+    self.filter:destroy()
+  end
 end
 
 M.new = Presentation.new

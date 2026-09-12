@@ -379,6 +379,8 @@ describe("neoagent Provider Shell", function()
 
   it("owns provider selection independently from Agents", function()
     local surface = view()
+    ---@type Neoagent.ProviderShellViewOptions?
+    local callbacks
     local value = shell({
       config = config({
         alpha = { api = "fake", models = {} },
@@ -386,11 +388,14 @@ describe("neoagent Provider Shell", function()
       }, "beta"),
       auth = authentication(),
       runtimes = {
-        alpha = service("alpha", "Alpha"),
-        beta = service("beta", "Beta"),
+        alpha = service("alpha", "Provider"),
+        beta = service("beta", "Provider"),
       },
       presenter = presenter(),
-      view = function() return surface end,
+      view = function(options)
+        callbacks = options
+        return surface
+      end,
     })
 
     assert.are.equal("beta", assert(value:info()).id)
@@ -399,11 +404,27 @@ describe("neoagent Provider Shell", function()
     assert(value:open(17))
     assert.are.equal(17, surface.origin)
     assert.is_true(value:is_open())
-    assert.are.equal("alpha", value:select("alpha"))
+    local on_select = assert(assert(callbacks).on_select)
+    assert.are.equal("alpha", on_select("alpha"))
     assert.are.equal("alpha", assert(value:info()).id)
+    assert.are.equal(surface, value:view())
+    local on_next = assert(assert(callbacks).on_next)
+    local on_previous = assert(assert(callbacks).on_previous)
+    local on_action = assert(assert(callbacks).on_action)
+    local event = {} --[[@as Neoagent.ProviderPaneEvent]]
+    assert.are.equal("beta", on_next(event))
+    assert.are.equal("alpha", on_previous(event))
+    assert.is_true(wait(assert(on_action("inspect"))).ok)
     assert.is_false((value:toggle()))
     assert.is_false(value:is_open())
     assert(value:toggle())
+    assert.is_false((value:toggle()))
+    surface.open = function()
+      return nil, util.error("ui", "provider surface cannot open")
+    end
+    local opened, open_err = value:open()
+    assert.is_nil(opened)
+    assert.matches("provider surface cannot open", assert(open_err).message)
   end)
 
   it("cycles providers by cancelling passive refreshes only", function()
@@ -1238,8 +1259,11 @@ describe("neoagent Provider Shell", function()
 
   it("projects progress and opens bounded operation artifacts", function()
     local opened
+    ---@type Neoagent.ProviderInteraction?
+    local interaction
     local managed = service("fake", "Fake", {
       report = operation("Report", function(ctx)
+        interaction = ctx.interact
         ctx.interact.progress({
           id = "report",
           label = "Report",
@@ -1284,6 +1308,47 @@ describe("neoagent Provider Shell", function()
       filetype = "markdown",
       content = "# Usage\n",
     }, opened)
+    assert(interaction).progress({
+      id = "report",
+      label = "Report",
+      state = "running",
+      message = "late progress",
+    })
+    assert.are.equal("succeeded", assert(assert(assert(value:info()).state).operation).state)
+  end)
+
+  it("cancels an active provider presentation through its owning Shell", function()
+    local surface = view()
+    surface.set_presentation = function(self, snapshot)
+      self.presentation = util.copy(snapshot)
+      return true
+    end
+    local managed = service("fake", "Fake", {
+      prompt = operation("Prompt", function(ctx)
+        return async.run(function()
+          async.await(function(done)
+            return ctx.interact.input({ prompt = "Value" }, done)
+          end)
+          return { ok = true }
+        end)
+      end),
+    })
+    local value = shell({
+      config = config({ fake = { api = "fake", models = {} } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = managed },
+      view = function() return surface end,
+    })
+
+    local action = assert(value:run("prompt"))
+    assert(type(action) == "table")
+    assert(vim.wait(1000, function()
+      return value.presentation ~= nil
+    end, 5))
+    value:destroy()
+    local result = wait(action)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
   end)
 
   it("routes provider interactions through the shell Presenter", function()
@@ -1665,6 +1730,7 @@ describe("neoagent Provider Shell", function()
     local opened, err = empty:open()
     assert.is_nil(opened)
     assert.matches("No Provider Shell", assert(err).message)
+    assert.are.same({}, empty:operations())
     assert.matches("No Provider Shell", assert(empty_presenter.notifications[1]).message)
     local cycled, cycle_err = empty:cycle(1)
     assert.is_nil(cycled)
@@ -1812,20 +1878,31 @@ describe("neoagent Provider Shell", function()
         end)
       end),
     })
+    local surface = view()
+    surface.set_presentation = function(self) return true end
     local value = shell({
       config = config({ fake = { api = "fake", models = {} } }, "fake"),
       auth = authentication(),
       runtimes = { fake = managed },
-      view = function()
-        local surface = view()
-        surface.set_presentation = function(self) return true end
-        return surface
-      end,
+      view = function() return surface end,
     })
 
     assert.is_true(value:presenter():notify({ message = string.rep("é", 300) }))
     assert.is_true(util.is_valid_utf8(assert(value.feedback).text))
     assert.matches("…$", assert(value.feedback).text)
+    assert(vim.wait(1000, function() return not value.refresh_scheduled end, 5))
+    assert.is_true(value:presenter():notify({
+      message = "neoagent: \n",
+      level = vim.log.levels.ERROR,
+    }))
+    assert.are.same({ text = "Provider notification", level = "error" }, value.feedback)
+    local snapshots = #surface.snapshots
+    assert.is_true(value:presenter():notify({
+      message = "neoagent: \n",
+      level = vim.log.levels.ERROR,
+    }))
+    assert(vim.wait(1000, function() return not value.refresh_scheduled end, 5))
+    assert.are.equal(snapshots + 1, #surface.snapshots)
     assert(value:open())
     assert.are.equal(1, refreshes)
     assert(value:open())
@@ -2032,10 +2109,67 @@ describe("neoagent Provider Shell", function()
       end,
     })
     assert.is_true(value:is_authenticating())
+    local logged_in, login_err = value:login("beta")
+    assert.is_nil(logged_in)
+    assert.matches("active provider action", assert(login_err).message)
     local logged_out, err = value:logout("beta")
     assert.is_nil(logged_out)
     assert.matches("active provider action", assert(err).message)
     assert(finish).resolve({ ok = true })
     assert.is_true(wait(assert(active)).ok)
+  end)
+
+  it("cancels catalog refresh owned by a completed login", function()
+    local auth = authentication()
+    local selected_catalog = catalog()
+    selected_catalog.refresh = function()
+      return async.run(function()
+        return { ok = false, error = async.cancelled_error }
+      end)
+    end
+    local managed = service("fake", "Fake")
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {}, auth = "key" },
+      }, "fake"),
+      auth = auth,
+      runtimes = { fake = {
+        id = "fake",
+        definition = { api = "fake", models = {}, auth = "key" },
+        catalog = selected_catalog,
+        service = managed,
+      } },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    local login = assert(value:login())
+    assert(type(login) == "table")
+    local result = wait(login)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
+  end)
+
+  it("defers a focused refresh until its required credential is usable", function()
+    local refreshes = 0
+    local managed = service("fake", "Fake", {
+      refresh = operation("Refresh", function()
+        refreshes = refreshes + 1
+        return async.run(function() return { ok = true } end)
+      end),
+    })
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {}, auth = "key" },
+      }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = managed },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert(value:open())
+    assert.are.equal(0, refreshes)
+    assert.are.equal("fake", value.pending_focus_provider_id)
   end)
 end)

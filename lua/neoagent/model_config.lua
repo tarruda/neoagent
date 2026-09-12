@@ -51,14 +51,18 @@ local M = {}
 ---@return Neoagent.Error
 local function failure(provider_id, model_id, message, detail)
   local prefix = "Invalid model catalog for " .. tostring(provider_id)
-  if model_id then prefix = prefix .. "/" .. tostring(model_id) end
+  if model_id then
+    prefix = prefix .. "/" .. tostring(model_id)
+  end
   return nil, util.error("model", prefix .. ": " .. message, detail)
 end
 
 ---@param value unknown
 ---@return TypeGuard<string>
 function M.safe_id(value)
-  return type(value) == "string" and value ~= "" and #value <= 512
+  return type(value) == "string"
+    and value ~= ""
+    and #value <= 512
     and util.is_valid_utf8(value)
     and value:find("[%z\1-\31\127]") == nil
 end
@@ -73,7 +77,9 @@ end
 ---@param maximum integer
 ---@return TypeGuard<string>
 local function safe_name(value, maximum)
-  return type(value) == "string" and value ~= "" and #value <= maximum
+  return type(value) == "string"
+    and value ~= ""
+    and #value <= maximum
     and util.is_valid_utf8(value)
     and value:find("[%z\1-\31\127]") == nil
 end
@@ -81,8 +87,7 @@ end
 ---@param value unknown
 ---@return TypeGuard<integer>
 local function positive_integer(value)
-  return type(value) == "number" and value > 0 and value % 1 == 0
-    and value ~= math.huge
+  return type(value) == "number" and value > 0 and value % 1 == 0 and value ~= math.huge
 end
 
 ---@param provider_id string
@@ -99,12 +104,10 @@ function M.validate(provider_id, model_id, value)
   end
   model.id = model_id
   if model.api ~= nil and not safe_name(model.api, 128) then
-    return failure(provider_id, model_id,
-      "api must be safe non-empty text of at most 128 bytes")
+    return failure(provider_id, model_id, "api must be safe non-empty text of at most 128 bytes")
   end
   if model.name ~= nil and not safe_name(model.name, 256) then
-    return failure(provider_id, model_id,
-      "name must be safe non-empty text of at most 256 bytes")
+    return failure(provider_id, model_id, "name must be safe non-empty text of at most 256 bytes")
   end
   if model.hidden ~= nil and type(model.hidden) ~= "boolean" then
     return failure(provider_id, model_id, "hidden must be boolean")
@@ -116,65 +119,60 @@ function M.validate(provider_id, model_id, value)
     local seen = {}
     for _, modality in ipairs(model.input) do
       if (modality ~= "text" and modality ~= "image") or seen[modality] then
-        return failure(provider_id, model_id,
-          "input must contain unique text or image entries")
+        return failure(provider_id, model_id, "input must contain unique text or image entries")
       end
       seen[modality] = true
     end
   end
   for _, field in ipairs({
-    "context_window", "max_output_tokens", "request_timeout_ms",
+    "context_window",
+    "max_output_tokens",
+    "request_timeout_ms",
   }) do
     if model[field] ~= nil and not positive_integer(model[field]) then
-      return failure(provider_id, model_id,
-        field .. " must be a positive integer")
+      return failure(provider_id, model_id, field .. " must be a positive integer")
     end
   end
   if model.thinking ~= nil and model.thinking ~= false then
-    if type(model.thinking) ~= "table"
-        or next(model.thinking) ~= nil and util.is_list(model.thinking) then
-      return failure(provider_id, model_id,
-        "thinking must be an object or false")
+    if type(model.thinking) ~= "table" or next(model.thinking) ~= nil and util.is_list(model.thinking) then
+      return failure(provider_id, model_id, "thinking must be an object or false")
     end
     for level, request_opts in pairs(model.thinking) do
       if not thinking.is_level(level) then
-        return failure(provider_id, model_id,
-          "unknown thinking level " .. tostring(level))
+        return failure(provider_id, model_id, "unknown thinking level " .. tostring(level))
       end
-      if request_opts ~= false and type(request_opts) ~= "table"
-          and type(request_opts) ~= "function" then
-        return failure(provider_id, model_id,
-          "thinking levels must contain request options or false")
+      if request_opts ~= false and type(request_opts) ~= "table" and type(request_opts) ~= "function" then
+        return failure(provider_id, model_id, "thinking levels must contain request options or false")
       end
     end
   end
-  if model.reasoning == true and model.thinking ~= nil
-      and model.thinking ~= false then
-    return failure(provider_id, model_id,
-      "thinking and static reasoning are mutually exclusive")
+  if model.reasoning == true and model.thinking ~= nil and model.thinking ~= false then
+    return failure(provider_id, model_id, "thinking and static reasoning are mutually exclusive")
   end
-  if model.request_opts ~= nil and type(model.request_opts) ~= "table"
-      and type(model.request_opts) ~= "function" then
-    return failure(provider_id, model_id,
-      "request_opts must be a table or function")
+  if model.request_opts ~= nil and type(model.request_opts) ~= "table" and type(model.request_opts) ~= "function" then
+    return failure(provider_id, model_id, "request_opts must be a table or function")
   end
   for _, field in ipairs({
-    "reasoning", "responses_lite",
+    "reasoning",
+    "responses_lite",
   }) do
     if model[field] ~= nil and type(model[field]) ~= "boolean" then
       return failure(provider_id, model_id, field .. " must be boolean")
     end
   end
   for _, field in ipairs({
-    "reasoning_effort", "reasoning_summary", "reasoning_context",
+    "reasoning_effort",
+    "reasoning_summary",
+    "reasoning_context",
     "text_verbosity",
   }) do
     if model[field] ~= nil and not safe_name(model[field], 128) then
-      return failure(provider_id, model_id,
-        field .. " must be safe non-empty text")
+      return failure(provider_id, model_id, field .. " must be safe non-empty text")
     end
   end
-  if model.thinking == false then model.thinking = nil end
+  if model.thinking == false then
+    model.thinking = nil
+  end
   -- All declared configuration fields have passed their runtime validators.
   ---@cast model Neoagent.ModelConfig
   return model
@@ -200,8 +198,7 @@ function M.normalize_discoveries(provider_id, values)
     end
     local id = entry.id
     if not M.safe_id(id) then
-      return failure(provider_id, nil,
-        "discovered ids must be safe non-empty text of at most 512 bytes")
+      return failure(provider_id, nil, "discovered ids must be safe non-empty text of at most 512 bytes")
     end
     if seen[id] then
       return failure(provider_id, id, "duplicate discovered id")
@@ -211,7 +208,9 @@ function M.normalize_discoveries(provider_id, values)
     ---@cast entry Neoagent.DiscoveredModel
     result[#result + 1] = util.copy(entry)
   end
-  table.sort(result, function(left, right) return left.id < right.id end)
+  table.sort(result, function(left, right)
+    return left.id < right.id
+  end)
   return result
 end
 

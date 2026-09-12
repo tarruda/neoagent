@@ -19,7 +19,6 @@ local util = require("neoagent.util")
 
 ---@class Neoagent.SessionLifecycleOptions
 ---@field state Neoagent.SessionLifecycleState
----@field workspace string
 ---@field restore_selection? boolean
 ---@field request_selection Neoagent.RequestSelection
 ---@field preferences fun(): Neoagent.WorkspacePreferences
@@ -27,7 +26,6 @@ local util = require("neoagent.util")
 ---@field bind_provider fun(provider: string): unknown
 ---@field publish_messages fun(messages: Neoagent.TranscriptMessage[])
 ---@field update_context fun()
----@field activate_workspace fun(workspace: string): unknown
 
 ---@class Neoagent.SessionLifecycle
 ---@field initialize fun(): true?, Neoagent.Error?
@@ -39,7 +37,9 @@ local M = {}
 ---@return Neoagent.TranscriptMessage[]
 function M.transcript_messages(session)
   local path, err = session:path()
-  if not path then error(err, 0) end
+  if not path then
+    error(err, 0)
+  end
   local messages = {}
   for _, entry in ipairs(session_tree.transcript_entries(path)) do
     for _, message in ipairs(session_tree.entry_messages(entry)) do
@@ -81,10 +81,17 @@ function M.new(opts)
     selection:clear(true)
     local workspace_default = opts.preferences().default_model
     local candidates = {}
-    if stored.model then candidates[#candidates + 1] = stored.model end
-    if workspace_default and (not stored.model
+    if stored.model then
+      candidates[#candidates + 1] = stored.model
+    end
+    if
+      workspace_default
+      and (
+        not stored.model
         or workspace_default.provider ~= stored.model.provider
-        or workspace_default.model ~= stored.model.model) then
+        or workspace_default.model ~= stored.model.model
+      )
+    then
       candidates[#candidates + 1] = workspace_default
     end
     for _, selected in ipairs(candidates) do
@@ -92,9 +99,15 @@ function M.new(opts)
       if model then
         break
       end
-      opts.notify("could not restore model " .. tostring(selected.provider)
-        .. "/" .. tostring(selected.model) .. ": " .. err.message,
-        vim.log.levels.WARN)
+      opts.notify(
+        "could not restore model "
+          .. tostring(selected.provider)
+          .. "/"
+          .. tostring(selected.model)
+          .. ": "
+          .. err.message,
+        vim.log.levels.WARN
+      )
     end
     local selected = selection:model_selection()
     if selected then
@@ -109,11 +122,11 @@ function M.new(opts)
 
   ---@return true?, Neoagent.Error?
   function lifecycle.initialize()
-    assert(state.session, "Agent Session is required")
-    opts.activate_workspace(opts.workspace)
     if opts.restore_selection then
       local stored, err = state.session:state()
-      if not stored then return nil, err end
+      if not stored then
+        return nil, err
+      end
       restore_preferences(stored)
     end
     return true
@@ -123,8 +136,7 @@ function M.new(opts)
   ---@return true?, Neoagent.Error?
   function lifecycle.branch(entry_id)
     if state.activity then
-      opts.notify("cannot change branches while the agent is running",
-        vim.log.levels.WARN)
+      opts.notify("cannot change branches while the agent is running", vim.log.levels.WARN)
       return nil
     end
     local ok, err = state.session:move_to(entry_id)
@@ -137,7 +149,9 @@ function M.new(opts)
     state.steering:clear()
     local stored
     stored, err = state.session:state()
-    if not stored then return nil, err end
+    if not stored then
+      return nil, err
+    end
     if not state.session_selection_pending then
       restore_preferences(stored)
     end

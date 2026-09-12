@@ -1,13 +1,14 @@
 local util = require("neoagent.util")
 local tree = require("neoagent.session_tree")
 local semantic_message = require("neoagent.semantic_message")
+local files = require("neoagent.files")
 
 local M = {}
 ---@class Neoagent.SessionMetadata
 ---@field path? string
 ---@field id string
 ---@field cwd? string
----@field timestamp? string
+---@field created_at? integer
 ---@field persisted? boolean
 ---@field parent_session? string
 ---@field data? Neoagent.JsonObject
@@ -15,13 +16,15 @@ local M = {}
 ---@class Neoagent.SessionSnapshot
 ---@field id string
 ---@field workspace? string
----@field timestamp? string
+---@field created_at? integer
 ---@field parent_session? string
 ---@field metadata? Neoagent.JsonObject
 ---@field entries Neoagent.JournalEntry[]
 ---@field leaf_id? string
 
 ---@class Neoagent.SessionStorage
+---@field files? fun(self: Neoagent.SessionStorage): Neoagent.Files
+---@field file_cache? fun(self: Neoagent.SessionStorage): Neoagent.FileCache?
 ---@field load fun(self: Neoagent.SessionStorage): unknown, unknown?
 ---@field append fun(self: Neoagent.SessionStorage, message: Neoagent.Message, state?: Neoagent.RequestStateInput): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
 ---@field context_messages? fun(self: Neoagent.SessionStorage): unknown, unknown?
@@ -36,27 +39,31 @@ local M = {}
 
 ---@class Neoagent.CompactionPayload
 ---@field summary string
----@field firstKeptEntryId string
----@field tokensBefore integer
+---@field first_kept_entry_id string
+---@field tokens_before integer
 
 ---@class Neoagent.SessionOptions
+---@field files? Neoagent.Files
+---@field file_cache? Neoagent.FileCache
 ---@field id? string
 ---@field messages? Neoagent.Message[]
 ---@field entries? Neoagent.JournalEntry[]
 ---@field leaf_id? string
 ---@field store? Neoagent.SessionStorage
 ---@field workspace? string
----@field timestamp? string
+---@field created_at? integer
 ---@field parent_session? string
 ---@field metadata? Neoagent.JsonObject
 
 ---@class Neoagent.SessionHeader
 ---@field cwd? string
----@field timestamp string
+---@field created_at integer
 ---@field parent_session? string
 ---@field data? Neoagent.JsonObject
 
 ---@class Neoagent.Session
+---@field _files Neoagent.Files
+---@field _file_cache? Neoagent.FileCache
 ---@field _id string
 ---@field _identity table
 ---@field _header? Neoagent.SessionHeader
@@ -71,15 +78,11 @@ Session.__index = Session
 ---@param bytes? integer
 ---@return string
 local function random_id(bytes)
-  return (assert(vim.uv.random(bytes or 8)):gsub(".", function(char)
-    return string.format("%02x", char:byte())
-  end))
-end
-
----@return string
-local function iso_time()
-  local ms = util.now_ms()
-  return os.date("!%Y-%m-%dT%H:%M:%S", math.floor(ms / 1000)) .. string.format(".%03dZ", ms % 1000)
+  return (
+    assert(vim.uv.random(bytes or 8)):gsub(".", function(char)
+      return string.format("%02x", char:byte())
+    end)
+  )
 end
 
 ---@param self Neoagent.Session
@@ -93,7 +96,7 @@ local function memory_append(self, entry_type, values)
     type = entry_type,
     id = random_id(),
     parent_id = self._leaf_id or vim.NIL,
-    timestamp = iso_time(),
+    created_at = util.now_ms(),
     payload = values or {},
     by_id = self._by_id,
   })
@@ -103,9 +106,8 @@ local function memory_append(self, entry_type, values)
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
   if entry.type == "leaf" then
-    self._leaf_id = entry.targetId ~= vim.NIL and entry.targetId or nil
-    local path = assert(tree.indexed_path(self._by_id,
-      self._leaf_id == nil and vim.NIL or self._leaf_id))
+    self._leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
+    local path = assert(tree.indexed_path(self._by_id, self._leaf_id == nil and vim.NIL or self._leaf_id))
     self._messages = tree.messages(path, false)
   else
     self._leaf_id = entry.id
@@ -118,8 +120,7 @@ end
 ---@param projection unknown
 ---@return true?, Neoagent.Error?
 local function apply_store_projection(self, projection)
-  if type(projection) ~= "table" or type(projection.messages) ~= "table"
-      or not util.is_list(projection.messages) then
+  if type(projection) ~= "table" or type(projection.messages) ~= "table" or not util.is_list(projection.messages) then
     return nil, util.error("storage", "Store returned an invalid projection")
   end
   if projection.type == "append" then
@@ -129,8 +130,8 @@ local function apply_store_projection(self, projection)
     for index, message in ipairs(projection.messages) do
       local value, err = tree.normalize_projection_message(message)
       if not value then
-        return nil, util.error("storage", "Store returned invalid messages",
-          "message " .. tostring(index) .. ": " .. err)
+        return nil,
+          util.error("storage", "Store returned invalid messages", "message " .. tostring(index) .. ": " .. err)
       end
       normalized[index] = value
       if value.role == "toolResult" then
@@ -138,7 +139,10 @@ local function apply_store_projection(self, projection)
       elseif value.role == "assistant" then
         ---@cast value Neoagent.AssistantMessage
         for _, block in ipairs(value.content) do
-          if block.type == "toolCall" then linked = true break end
+          if block.type == "toolCall" then
+            linked = true
+            break
+          end
         end
       end
     end
@@ -147,8 +151,7 @@ local function apply_store_projection(self, projection)
       vim.list_extend(candidate, normalized)
       local complete, err = tree.normalize_projection(candidate)
       if not complete then
-        return nil, util.error("storage", "Store returned invalid messages",
-          err)
+        return nil, util.error("storage", "Store returned invalid messages", err)
       end
       self._messages = complete
     else
@@ -170,11 +173,17 @@ end
 ---@param message Neoagent.Message
 ---@return boolean
 local function requires_linkage_check(message)
-  if message.role == "toolResult" then return true end
-  if message.role ~= "assistant" then return false end
+  if message.role == "toolResult" then
+    return true
+  end
+  if message.role ~= "assistant" then
+    return false
+  end
   ---@cast message Neoagent.AssistantMessage
   for _, block in ipairs(message.content) do
-    if block.type == "toolCall" then return true end
+    if block.type == "toolCall" then
+      return true
+    end
   end
   return false
 end
@@ -183,7 +192,9 @@ end
 ---@param message Neoagent.Message
 ---@return true?, Neoagent.Error?
 local function validate_append_linkage(self, message)
-  if not requires_linkage_check(message) then return true end
+  if not requires_linkage_check(message) then
+    return true
+  end
   local messages = util.copy(self._messages)
   messages[#messages + 1] = message
   local normalized, err = tree.normalize_projection(messages)
@@ -203,7 +214,9 @@ local function memory_append_message(self, message, state)
     return nil, util.error("session", "Invalid message state", request_err)
   end
   local values = { message = message }
-  if request then values.request = request end
+  if request then
+    values.request = request
+  end
   return memory_append(self, "message", values)
 end
 
@@ -214,15 +227,22 @@ end
 ---@return_overload nil, Neoagent.Error
 function Session:append(message, state)
   assert(type(message) == "table", "message must be a table")
-  assert(state == nil or type(state) == "table"
-      and (next(state) == nil or not util.is_list(state)),
-    "message state must be an object")
+  assert(
+    state == nil or type(state) == "table" and (next(state) == nil or not util.is_list(state)),
+    "message state must be an object"
+  )
   local copy, message_err = semantic_message.normalize(message)
   if not copy then
     return nil, util.error("session", "Invalid Session message", message_err)
   end
+  local published, file_err = files.check_messages(self._files, { copy })
+  if not published then
+    return nil, file_err
+  end
   local linked, linkage_err = validate_append_linkage(self, copy)
-  if not linked then return nil, linkage_err end
+  if not linked then
+    return nil, linkage_err
+  end
   state = util.copy(state or {})
   if self._store then
     local ok, err, entry, projection = self._store:append(copy, state)
@@ -230,7 +250,9 @@ function Session:append(message, state)
       return nil, util.normalize_error(err, "storage")
     end
     local projected, projection_err = apply_store_projection(self, projection)
-    if not projected then return nil, projection_err end
+    if not projected then
+      return nil, projection_err
+    end
     return true, nil, entry
   end
   return memory_append_message(self, copy, state)
@@ -245,17 +267,20 @@ end
 function Session:context_messages()
   if self._store and type(self._store.context_messages) == "function" then
     local messages, err = self._store:context_messages()
-    if not messages then return nil, util.normalize_error(err, "storage") end
+    if not messages then
+      return nil, util.normalize_error(err, "storage")
+    end
     local normalized, message_err = semantic_message.normalize_list(messages)
     if not normalized then
-      return nil, util.error("storage", "Store returned invalid context",
-        message_err)
+      return nil, util.error("storage", "Store returned invalid context", message_err)
     end
     return normalized
   end
   if #self._entries > 0 then
     local path, err = self:path()
-    if not path then return nil, err end
+    if not path then
+      return nil, err
+    end
     return tree.to_llm(tree.messages(path, true))
   end
   return tree.to_llm(self._messages)
@@ -263,44 +288,60 @@ end
 
 ---@return Neoagent.JournalEntry[]
 function Session:entries()
-  if self._store and type(self._store.entries) == "function" then return self._store:entries() end
+  if self._store and type(self._store.entries) == "function" then
+    return self._store:entries()
+  end
   return util.copy(self._entries)
 end
 
 ---@param id string
 ---@return Neoagent.JournalEntry?
 function Session:entry(id)
-  if self._store and type(self._store.entry) == "function" then return self._store:entry(id) end
+  if self._store and type(self._store.entry) == "function" then
+    return self._store:entry(id)
+  end
   return util.copy(self._by_id[id])
 end
 
 ---@return string?
 function Session:leaf_id()
-  if self._store and type(self._store.leaf_id) == "function" then return self._store:leaf_id() end
+  if self._store and type(self._store.leaf_id) == "function" then
+    return self._store:leaf_id()
+  end
   return self._leaf_id
 end
 
 ---@param ... string|nil
 ---@return Neoagent.JournalEntry[]?, Neoagent.Error?
 function Session:path(...)
-  if self._store and type(self._store.path) == "function" then return self._store:path(...) end
+  if self._store and type(self._store.path) == "function" then
+    return self._store:path(...)
+  end
   local requested
   if select("#", ...) > 0 then
     requested = select(1, ...)
   else
     requested = self._leaf_id
   end
-  if requested == nil then requested = vim.NIL end
+  if requested == nil then
+    requested = vim.NIL
+  end
   local path, err = tree.indexed_path(self._by_id, requested)
-  if not path then return nil, util.error("session", "Failed to build session path", err) end
+  if not path then
+    return nil, util.error("session", "Failed to build session path", err)
+  end
   return path
 end
 
 ---@return Neoagent.SelectionState?, Neoagent.Error?
 function Session:state()
-  if self._store and type(self._store.state) == "function" then return self._store:state() end
+  if self._store and type(self._store.state) == "function" then
+    return self._store:state()
+  end
   local path, err = self:path()
-  if not path then return nil, err end
+  if not path then
+    return nil, err
+  end
   return tree.state(path)
 end
 
@@ -312,9 +353,13 @@ function Session:append_compaction(values)
       return nil, util.error("session", "Store does not support compaction")
     end
     local ok, err, entry, projection = self._store:append_compaction(values)
-    if not ok then return nil, util.normalize_error(err, "storage") end
+    if not ok then
+      return nil, util.normalize_error(err, "storage")
+    end
     local projected, projection_err = apply_store_projection(self, projection)
-    if not projected then return nil, projection_err end
+    if not projected then
+      return nil, projection_err
+    end
     return true, nil, entry
   end
   return memory_append(self, "compaction", values)
@@ -331,12 +376,18 @@ function Session:move_to(entry_id)
       return nil, util.error("session", "Store does not support branching")
     end
     local ok, err, _, projection = self._store:set_leaf(entry_id)
-    if not ok then return nil, util.normalize_error(err, "storage") end
+    if not ok then
+      return nil, util.normalize_error(err, "storage")
+    end
     local projected, projection_err = apply_store_projection(self, projection)
-    if not projected then return nil, projection_err end
+    if not projected then
+      return nil, projection_err
+    end
   else
-    local ok, err = memory_append(self, "leaf", { targetId = entry_id or vim.NIL })
-    if not ok then return nil, err end
+    local ok, err = memory_append(self, "leaf", { target_id = entry_id or vim.NIL })
+    if not ok then
+      return nil, err
+    end
   end
   return true
 end
@@ -346,11 +397,13 @@ function Session:metadata()
   if self._store and type(self._store.metadata) == "function" then
     return util.copy(self._store:metadata())
   end
-  if not self._header then return nil end
+  if not self._header then
+    return nil
+  end
   return {
     id = self._id,
     cwd = self._header.cwd,
-    timestamp = self._header.timestamp,
+    created_at = self._header.created_at,
     persisted = false,
     parent_session = self._header.parent_session,
     data = util.copy(self._header.data),
@@ -372,6 +425,16 @@ function Session:store()
   return self._store
 end
 
+---@return Neoagent.Files
+function Session:files()
+  return self._files
+end
+
+---@return Neoagent.FileCache?
+function Session:file_cache()
+  return self._file_cache
+end
+
 ---@return Neoagent.SessionSnapshot?, Neoagent.Error?
 function Session:snapshot()
   local entries = self:entries()
@@ -381,14 +444,13 @@ function Session:snapshot()
   end
   local leaf_id = self:leaf_id()
   if validated.leaf_id ~= leaf_id then
-    return nil, util.error("session", "Invalid Session snapshot",
-      "active leaf does not match the entry journal")
+    return nil, util.error("session", "Invalid Session snapshot", "active leaf does not match the entry journal")
   end
   local metadata = self:metadata()
   return {
     id = self._id,
     workspace = metadata and metadata.cwd or nil,
-    timestamp = metadata and metadata.timestamp or nil,
+    created_at = metadata and metadata.created_at or nil,
     parent_session = metadata and metadata.parent_session or nil,
     metadata = metadata and util.copy(metadata.data) or nil,
     entries = entries,
@@ -402,13 +464,45 @@ end
 ---@return_overload nil, Neoagent.Error
 function M.new(opts)
   opts = opts or {}
+  if
+    opts.store ~= nil
+    and (
+      type(opts.store) ~= "table"
+      or type(opts.store.load) ~= "function"
+      or type(opts.store.append) ~= "function"
+      or opts.store.files ~= nil and type(opts.store.files) ~= "function"
+      or opts.store.file_cache ~= nil and type(opts.store.file_cache) ~= "function"
+    )
+  then
+    return nil, util.error("session", "store does not implement the storage contract")
+  end
+  local attachment_store = opts.store and opts.store.files and opts.store:files() or opts.files
+  if attachment_store ~= nil and not files.writable(attachment_store) then
+    return nil, util.error("session", "Session requires a complete attachment store")
+  end
+  if opts.store and opts.files and attachment_store and attachment_store.identity ~= opts.files.identity then
+    return nil, util.error("session", "Session and durable store must share attachment storage")
+  end
+  attachment_store = attachment_store or require("neoagent.files.memory").new()
+  local cache = opts.store and opts.store.file_cache and opts.store:file_cache() or opts.file_cache
+  if
+    cache
+    and (
+      type(cache.read) ~= "function"
+      or type(cache.publish) ~= "function"
+      or cache.scope ~= attachment_store.identity
+    )
+  then
+    return nil, util.error("session", "Upload cache must belong to the Session's file store")
+  end
   local sources = 0
   for _, name in ipairs({ "messages", "entries", "store" }) do
-    if opts[name] ~= nil then sources = sources + 1 end
+    if opts[name] ~= nil then
+      sources = sources + 1
+    end
   end
   if sources > 1 then
-    return nil, util.error("session",
-      "messages, entries, and store are mutually exclusive")
+    return nil, util.error("session", "messages, entries, and store are mutually exclusive")
   end
   ---@type Neoagent.ProjectionMessage[]?
   local messages = {}
@@ -421,11 +515,6 @@ function M.new(opts)
   ---@type Neoagent.SessionMetadata?
   local store_metadata
   if opts.store ~= nil then
-    if type(opts.store) ~= "table"
-        or type(opts.store.load) ~= "function"
-        or type(opts.store.append) ~= "function" then
-      return nil, util.error("session", "store does not implement the storage contract")
-    end
     local loaded, err = opts.store:load()
     if not loaded then
       return nil, util.normalize_error(err, "storage")
@@ -433,8 +522,7 @@ function M.new(opts)
     local message_err
     messages, message_err = tree.normalize_projection(loaded)
     if not messages then
-      return nil, util.error("storage", "Store returned invalid messages",
-        message_err)
+      return nil, util.error("storage", "Store returned invalid messages", message_err)
     end
     if type(opts.store.metadata) == "function" then
       store_metadata = opts.store:metadata()
@@ -448,15 +536,13 @@ function M.new(opts)
       return nil, util.error("session", "Invalid Session entries", err)
     end
     if opts.leaf_id ~= nil and opts.leaf_id ~= validated.leaf_id then
-      return nil, util.error("session", "Invalid Session entries",
-        "active leaf does not match the entry journal")
+      return nil, util.error("session", "Invalid Session entries", "active leaf does not match the entry journal")
     end
     entries = util.copy(opts.entries)
     validated = assert(tree.validate_entries(entries))
     by_id = validated.by_id
     leaf_id = validated.leaf_id
-    local path, path_err = tree.indexed_path(by_id,
-      leaf_id == nil and vim.NIL or leaf_id)
+    local path, path_err = tree.indexed_path(by_id, leaf_id == nil and vim.NIL or leaf_id)
     if not path then
       return nil, util.error("session", "Invalid Session entries", path_err)
     end
@@ -475,11 +561,18 @@ function M.new(opts)
     if not messages then
       return nil, util.error("session", "Invalid Session messages", message_err)
     end
+    local published, attachment_err = files.check_messages(attachment_store, messages)
+    if not published then
+      return nil, attachment_err
+    end
     for _, message in ipairs(messages) do
       ---@type Neoagent.MessageEntry
       local entry = {
-        type = "message", id = random_id(), parentId = leaf_id or vim.NIL,
-        timestamp = iso_time(), message = util.copy(message),
+        type = "message",
+        id = random_id(),
+        parent_id = leaf_id or vim.NIL,
+        created_at = util.now_ms(),
+        message = util.copy(message),
       }
       entries[#entries + 1] = entry
       by_id[entry.id] = entry
@@ -493,14 +586,17 @@ function M.new(opts)
   if type(id) ~= "string" or id == "" then
     return nil, util.error("session", "Session id must be a non-empty string")
   end
-  local explicit_header = opts.workspace ~= nil or opts.metadata ~= nil
-    or opts.timestamp ~= nil or opts.parent_session ~= nil or opts.id ~= nil
+  local explicit_header = opts.workspace ~= nil
+    or opts.metadata ~= nil
+    or opts.created_at ~= nil
+    or opts.parent_session ~= nil
+    or opts.id ~= nil
   ---@type Neoagent.SessionHeader?
   local header
   if explicit_header and not opts.store then
     header = {
       cwd = opts.workspace,
-      timestamp = opts.timestamp or iso_time(),
+      created_at = opts.created_at or util.now_ms(),
       parent_session = opts.parent_session,
       data = util.copy(opts.metadata),
     }
@@ -511,6 +607,8 @@ function M.new(opts)
     _header = header,
     _messages = messages,
     _store = opts.store,
+    _files = attachment_store,
+    _file_cache = cache,
     _entries = entries,
     _by_id = by_id,
     _leaf_id = leaf_id,

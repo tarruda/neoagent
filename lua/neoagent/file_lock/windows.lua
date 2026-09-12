@@ -90,9 +90,13 @@ end
 ---@param handle? ffi.cdata*
 ---@return boolean
 local function invalid_handle(ffi, handle)
-  if handle == nil then return true end
+  if handle == nil then
+    return true
+  end
   local ok, value = pcall(ffi.cast, "intptr_t", handle)
-  if ok then return tonumber(value) == -1 end
+  if ok then
+    return tonumber(value) == -1
+  end
   return tonumber(handle) == -1
 end
 
@@ -103,7 +107,9 @@ end
 local function file_information(kernel, ffi, native)
   local info = ffi.new("NEOAGENT_BY_HANDLE_FILE_INFORMATION")
   ---@cast info Neoagent.Win32LockFileInfo
-  if kernel.GetFileInformationByHandle(native, info) == 0 then return nil end
+  if kernel.GetFileInformationByHandle(native, info) == 0 then
+    return nil
+  end
   return {
     attributes = info.dwFileAttributes,
     identity = table.concat({
@@ -119,16 +125,16 @@ end
 ---@param path string
 ---@return Neoagent.Win32LockBuffer?, string?
 local function default_encode_path(kernel, ffi, path)
-  if path:find("\0", 1, true) then return nil, "path contains a NUL byte" end
-  local count = kernel.MultiByteToWideChar(
-    CP_UTF8, MB_ERR_INVALID_CHARS, path, #path, nil, 0)
+  if path:find("\0", 1, true) then
+    return nil, "path contains a NUL byte"
+  end
+  local count = kernel.MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, #path, nil, 0)
   if count == 0 then
     return nil, "Win32 error " .. tostring(tonumber(kernel.GetLastError()))
   end
   local encoded = ffi.new("uint16_t[?]", count + 1)
   ---@cast encoded Neoagent.Win32LockBuffer
-  if kernel.MultiByteToWideChar(
-      CP_UTF8, MB_ERR_INVALID_CHARS, path, #path, encoded, count) ~= count then
+  if kernel.MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, #path, encoded, count) ~= count then
     return nil, "Win32 error " .. tostring(tonumber(kernel.GetLastError()))
   end
   encoded[count] = 0
@@ -144,18 +150,17 @@ end
 function Handle:_verify_identity()
   local held = file_information(self.kernel, self.ffi, self:_descriptor())
   if not held then
-    return nil, backend_error("ownership",
-      "Failed to inspect held file lock", self:_last_error())
+    return nil, backend_error("ownership", "Failed to inspect held file lock", self:_last_error())
   end
-  if bit.band(held.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
-      or bit.band(held.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0 then
-    return nil, backend_error("ownership",
-      "Held file lock is not a regular file")
+  if
+    bit.band(held.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
+    or bit.band(held.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0
+  then
+    return nil, backend_error("ownership", "Held file lock is not a regular file")
   end
   local encoded, encode_err = self.encode_path(self.path)
   if not encoded then
-    return nil, backend_error("ownership",
-      "Failed to encode file lock path", encode_err)
+    return nil, backend_error("ownership", "Failed to encode file lock path", encode_err)
   end
   local current_handle = self.kernel.CreateFileW(
     encoded,
@@ -164,31 +169,33 @@ function Handle:_verify_identity()
     nil,
     OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT,
-    nil)
+    nil
+  )
   if invalid_handle(self.ffi, current_handle) then
     local code = tonumber(self.kernel.GetLastError())
-    return nil, backend_error("ownership",
-      (code == ERROR_FILE_NOT_FOUND or code == ERROR_PATH_NOT_FOUND)
-          and "File lock path disappeared while held"
-        or "Failed to open file lock path for identity verification",
-      "Win32 error " .. tostring(code))
+    return nil,
+      backend_error(
+        "ownership",
+        (code == ERROR_FILE_NOT_FOUND or code == ERROR_PATH_NOT_FOUND) and "File lock path disappeared while held"
+          or "Failed to open file lock path for identity verification",
+        "Win32 error " .. tostring(code)
+      )
   end
   local current = file_information(self.kernel, self.ffi, current_handle)
   local inspected_error = current and nil or self:_last_error()
   local closed = self.kernel.CloseHandle(current_handle) ~= 0
   if not current then
-    return nil, backend_error("ownership",
-      "Failed to inspect file lock path identity", inspected_error)
+    return nil, backend_error("ownership", "Failed to inspect file lock path identity", inspected_error)
   end
   if not closed then
-    return nil, backend_error("ownership",
-      "Failed to close file lock identity handle", self:_last_error())
+    return nil, backend_error("ownership", "Failed to close file lock identity handle", self:_last_error())
   end
-  if bit.band(current.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
-      or bit.band(current.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0
-      or current.identity ~= held.identity then
-    return nil, backend_error("ownership",
-      "File lock path identity changed while held")
+  if
+    bit.band(current.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
+    or bit.band(current.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0
+    or current.identity ~= held.identity
+  then
+    return nil, backend_error("ownership", "File lock path identity changed while held")
   end
   return held
 end
@@ -201,8 +208,7 @@ end
 ---@return boolean?, Neoagent.LockBackendError?
 function Handle:try_acquire()
   local flags = bit.bor(LOCKFILE_FAIL_IMMEDIATELY, LOCKFILE_EXCLUSIVE_LOCK)
-  if self.kernel.LockFileEx(
-      self:_descriptor(), flags, 0, 0xffffffff, 0xffffffff, self.overlapped) ~= 0 then
+  if self.kernel.LockFileEx(self:_descriptor(), flags, 0, 0xffffffff, 0xffffffff, self.overlapped) ~= 0 then
     self.locked = true
     return true
   end
@@ -210,21 +216,24 @@ function Handle:try_acquire()
   if code == ERROR_LOCK_VIOLATION or code == ERROR_SHARING_VIOLATION then
     return false
   end
-  return nil, backend_error("lock", "Failed to acquire file lock",
-    "Win32 error " .. tostring(code))
+  return nil, backend_error("lock", "Failed to acquire file lock", "Win32 error " .. tostring(code))
 end
 
 ---@param mode integer
 ---@return true?, Neoagent.LockBackendError?
 function Handle:prepare(mode)
   local identity, identity_err = self:_verify_identity()
-  if not identity then return nil, identity_err end
+  if not identity then
+    return nil, identity_err
+  end
   local secured, secure_err = self.uv.fs_chmod(self.path, mode)
   if not secured then
     return nil, backend_error("mode", "Failed to secure file lock", secure_err)
   end
   local verified, verify_err = self:_verify_identity()
-  if not verified then return nil, verify_err end
+  if not verified then
+    return nil, verify_err
+  end
   return true
 end
 
@@ -234,10 +243,8 @@ function Handle:_seek_start(code)
   local offset = self.ffi.new("NEOAGENT_LARGE_INTEGER")
   ---@cast offset Neoagent.Win32LockOffset
   offset.QuadPart = 0
-  if self.kernel.SetFilePointerEx(
-      self:_descriptor(), offset, nil, FILE_BEGIN) == 0 then
-    return nil, backend_error(code,
-      "Failed to seek held file lock", self:_last_error())
+  if self.kernel.SetFilePointerEx(self:_descriptor(), offset, nil, FILE_BEGIN) == 0 then
+    return nil, backend_error(code, "Failed to seek held file lock", self:_last_error())
   end
   return true
 end
@@ -246,25 +253,22 @@ end
 ---@return true?, Neoagent.LockBackendError?
 function Handle:write_token(token)
   local positioned, position_err = self:_seek_start("write")
-  if not positioned then return nil, position_err end
+  if not positioned then
+    return nil, position_err
+  end
   if self.kernel.SetEndOfFile(self:_descriptor()) == 0 then
-    return nil, backend_error("write",
-      "Failed to truncate held file lock", self:_last_error())
+    return nil, backend_error("write", "Failed to truncate held file lock", self:_last_error())
   end
   local written = self.ffi.new("unsigned long[1]")
   ---@cast written Neoagent.Win32LockBuffer
-  if self.kernel.WriteFile(
-      self:_descriptor(), token, #token, written, nil) == 0 then
-    return nil, backend_error("write", "Failed to write file lock token",
-      self:_last_error())
+  if self.kernel.WriteFile(self:_descriptor(), token, #token, written, nil) == 0 then
+    return nil, backend_error("write", "Failed to write file lock token", self:_last_error())
   end
   if tonumber(written[0]) ~= #token then
-    return nil, backend_error("write",
-      "Failed to write file lock token", "short write")
+    return nil, backend_error("write", "Failed to write file lock token", "short write")
   end
   if self.kernel.FlushFileBuffers(self:_descriptor()) == 0 then
-    return nil, backend_error("write",
-      "Failed to sync file lock token", self:_last_error())
+    return nil, backend_error("write", "Failed to sync file lock token", self:_last_error())
   end
   return true
 end
@@ -273,16 +277,18 @@ end
 ---@return true?, Neoagent.LockBackendError?
 function Handle:verify_token(token)
   local identity, identity_err = self:_verify_identity()
-  if not identity then return nil, identity_err end
+  if not identity then
+    return nil, identity_err
+  end
   local positioned, position_err = self:_seek_start("release")
-  if not positioned then return nil, position_err end
+  if not positioned then
+    return nil, position_err
+  end
   local buffer = self.ffi.new("uint8_t[?]", #token + 1)
   local read = self.ffi.new("unsigned long[1]")
   ---@cast read Neoagent.Win32LockBuffer
-  if self.kernel.ReadFile(
-      self:_descriptor(), buffer, #token + 1, read, nil) == 0 then
-    return nil, backend_error("release",
-      "Failed to read held file lock", self:_last_error())
+  if self.kernel.ReadFile(self:_descriptor(), buffer, #token + 1, read, nil) == 0 then
+    return nil, backend_error("release", "Failed to read held file lock", self:_last_error())
   end
   local contents = self.ffi.string(buffer, read[0])
   if contents ~= token then
@@ -293,11 +299,11 @@ end
 
 ---@return true?, Neoagent.LockBackendError?
 function Handle:release()
-  if not self.locked then return true end
-  if self.kernel.UnlockFileEx(
-      self:_descriptor(), 0, 0xffffffff, 0xffffffff, self.overlapped) == 0 then
-    return nil, backend_error("release", "Failed to unlock file lock",
-      self:_last_error())
+  if not self.locked then
+    return true
+  end
+  if self.kernel.UnlockFileEx(self:_descriptor(), 0, 0xffffffff, 0xffffffff, self.overlapped) == 0 then
+    return nil, backend_error("release", "Failed to unlock file lock", self:_last_error())
   end
   self.locked = false
   return true
@@ -305,10 +311,11 @@ end
 
 ---@return true?, Neoagent.LockBackendError?
 function Handle:close()
-  if not self.native then return true end
+  if not self.native then
+    return true
+  end
   if self.kernel.CloseHandle(self.native) == 0 then
-    return nil, backend_error("release",
-      "Failed to close file lock", self:_last_error())
+    return nil, backend_error("release", "Failed to close file lock", self:_last_error())
   end
   self.native = nil
   return true
@@ -320,8 +327,7 @@ end
 function Backend:open(path, mode)
   local encoded, encode_err = self.encode_path(path)
   if not encoded then
-    return nil, backend_error("open",
-      "Failed to encode file lock path", encode_err)
+    return nil, backend_error("open", "Failed to encode file lock path", encode_err)
   end
   local native = self.kernel.CreateFileW(
     encoded,
@@ -330,25 +336,28 @@ function Backend:open(path, mode)
     nil,
     OPEN_ALWAYS,
     bit.bor(FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT),
-    nil)
+    nil
+  )
   if invalid_handle(self.ffi, native) then
-    return nil, backend_error("open",
-      "Failed to open file lock",
-      "Win32 error " .. tostring(tonumber(self.kernel.GetLastError())))
+    return nil,
+      backend_error(
+        "open",
+        "Failed to open file lock",
+        "Win32 error " .. tostring(tonumber(self.kernel.GetLastError()))
+      )
   end
   local info = file_information(self.kernel, self.ffi, native)
   if not info then
-    local detail = "Win32 error " .. tostring(
-      tonumber(self.kernel.GetLastError()))
+    local detail = "Win32 error " .. tostring(tonumber(self.kernel.GetLastError()))
     self.kernel.CloseHandle(native)
-    return nil, backend_error("open",
-      "Failed to inspect file lock", detail)
+    return nil, backend_error("open", "Failed to inspect file lock", detail)
   end
-  if bit.band(info.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
-      or bit.band(info.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0 then
+  if
+    bit.band(info.attributes, FILE_ATTRIBUTE_REPARSE_POINT) ~= 0
+    or bit.band(info.attributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0
+  then
     self.kernel.CloseHandle(native)
-    return nil, backend_error("target",
-      "File lock path is not a regular file")
+    return nil, backend_error("target", "File lock path is not a regular file")
   end
   local handle = setmetatable({
     path = path,

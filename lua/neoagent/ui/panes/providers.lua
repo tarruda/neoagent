@@ -30,8 +30,12 @@ Providers.__index = Providers
 ---@param value Neoagent.UIMapping?
 ---@return string[]
 local function values(value)
-  if type(value) == "string" then return { value } end
-  if type(value) == "table" then return value end
+  if type(value) == "string" then
+    return { value }
+  end
+  if type(value) == "table" then
+    return value
+  end
   return {}
 end
 
@@ -42,11 +46,17 @@ local credential_source_icons = {
 ---@param authentication? {connected: boolean, source?: string, error: boolean}
 ---@return string?
 local function authentication_icons(authentication)
-  if type(authentication) ~= "table" then return nil end
+  if type(authentication) ~= "table" then
+    return nil
+  end
   local icons = { authentication.connected and "✅" or "⭕" }
   local source = credential_source_icons[authentication.source]
-  if source then icons[#icons + 1] = source end
-  if authentication.error then icons[#icons + 1] = "⚠️" end
+  if source then
+    icons[#icons + 1] = source
+  end
+  if authentication.error then
+    icons[#icons + 1] = "⚠️"
+  end
   return table.concat(icons)
 end
 
@@ -142,8 +152,7 @@ function Providers.new(opts)
     render = render,
     handlers = {
       ["providers.select"] = function(event)
-        return assert(self.callbacks.select)(
-          (event.payload --[[@as {provider: string}]]).provider)
+        return assert(self.callbacks.select)((event.payload --[[@as {provider: string}]]).provider)
       end,
       ["providers.close"] = self.callbacks.close or function() end,
     },

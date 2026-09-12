@@ -11,16 +11,12 @@ local util = require("neoagent.util")
 
 ---@type table<string, Neoagent.DeepSeekModelMetadata>
 local overrides = {
-  ["deepseek-v4-flash"] = {
+  ["deepseek-flash"] = {
+    input = { "text", "image" },
     context_window = 1000000,
     max_output_tokens = 384000,
   },
   ["deepseek-v4-pro"] = {
-    context_window = 1000000,
-    max_output_tokens = 384000,
-  },
-  ["deepseek-v4-flash-vision-exp"] = {
-    input = { "text", "image" },
     context_window = 1000000,
     max_output_tokens = 384000,
   },
@@ -33,16 +29,15 @@ function M.for_id(id)
   local result = {
     input = { "text" },
   }
-  if id:find("vision", 1, true) then result.input = { "text", "image" } end
-  if id:match("^deepseek%-v4%-flash") then
-    result.thinking = efforts.thinking_completions({
-      "off", "low", "high", "max",
-    })
-  elseif id:match("^deepseek%-v4%-pro") then
-    result.thinking = efforts.thinking_completions({
-      "off", "high", "max",
-    })
+  if id:find("flash", 1, true) then
+    result.input = { "text", "image" }
   end
+  result.thinking = efforts.thinking_completions({
+    "off",
+    "low",
+    "high",
+    "max",
+  })
   local override = overrides[id]
   if override then
     result.input = util.copy(override.input or result.input)

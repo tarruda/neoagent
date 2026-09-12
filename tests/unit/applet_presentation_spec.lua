@@ -45,6 +45,12 @@ describe("Applet dynamic presentations", function()
     }))
     assert.are.same({ query = "", count = 2, selected = "alpha" }, snapshots[2])
     assert.are.equal("alpha", value.selected)
+    local dispatch = require("applet.pane.input").dispatch_action
+    local action = require("applet").Pane.nodes.action
+    assert(dispatch(value.pane, action("presentation.move", { direction = 1 }), nil, 1, "n", 0, 0))
+    assert.are.equal("beta", value.selected)
+    assert(dispatch(value.pane, action("presentation.move", { direction = 1 }), nil, 1, "n", 0, 0))
+    assert.are.equal("alpha", value.selected)
 
     assert.are.equal(1, value:set_items({
       { id = "gamma", label = "Gamma" },
@@ -56,9 +62,28 @@ describe("Applet dynamic presentations", function()
       { id = "disabled", label = "Disabled", disabled = true },
     }))
     assert.are.same({ query = "", count = 1, selected = nil }, snapshots[4])
+    assert.is_false(dispatch(value.pane, action("presentation.move", { direction = 1 }), nil, 1, "n", 0, 0))
     assert.is_false(value:is_destroyed())
     value:destroy()
     assert.is_true(value:is_destroyed())
+  end)
+
+  it("settles a presentation once when cancellation is dispatched repeatedly", function()
+    local cancelled, selected = 0, 0
+    local value = presentation.new({
+      request = { id = "cancel-once", kind = "select", prompt = "Choose",
+        items = { { id = "alpha", label = "Alpha" } } },
+      on_choose = function() selected = selected + 1 end,
+      on_cancel = function() cancelled = cancelled + 1 end,
+    })
+    values = { value }
+    local dispatch = require("applet.pane.input").dispatch_action
+    local action = require("applet").Pane.nodes.action
+    assert.is_true(dispatch(value.pane, action("presentation.cancel"), nil, 1, "n", 0, 0))
+    assert.is_false(dispatch(value.pane, action("presentation.cancel"), nil, 1, "n", 0, 0))
+    assert.is_false(dispatch(value.pane, action("presentation.choose"), nil, 1, "n", 0, 0))
+    assert.are.equal(1, cancelled)
+    assert.are.equal(0, selected)
   end)
 
   it("validates replacement items at the presentation boundary", function()

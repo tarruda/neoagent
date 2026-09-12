@@ -97,14 +97,77 @@ describe("provider management HTTP integration", function()
   local services
   ---@type Neoagent.ModelCatalog[]?
   local catalogs
+  local directories = {}
 
   after_each(function()
     for _, service in ipairs(services or {}) do assert(service.destroy)(service) end
     for _, catalog in ipairs(catalogs or {}) do catalog:destroy() end
     services = nil
     catalogs = nil
-    if scenario then http_replay.finish(scenario) scenario = nil end
+    local completed = scenario
+    scenario = nil
+    if completed then completed.close() end
+    for _, directory in ipairs(directories) do vim.fn.delete(directory, "rf") end
+    directories = {}
+    require("neoagent.config")._reset()
+    if completed then completed.assert_consumed() end
   end)
+
+  for _, case in ipairs({
+    { id = "deepseek", module = deepseek, suffix = "/deepseek", captures = { 1, 2 } },
+    { id = "openai", module = openai, suffix = "/openai", captures = { 3, 4 } },
+    { id = "anthropic", module = anthropic, suffix = "/anthropic", captures = { 5, 6, 7 } },
+    { id = "zai", module = zai, suffix = "/api/paas/v4", captures = { 8, 9 } },
+    { id = "zai-coding-plan", auth = "zai", module = zai, suffix = "/api/coding/paas/v4", captures = { 10, 11 } },
+  }) do
+    it("recovers " .. case.id .. " discovery and reporting after local credential corruption is repaired", function()
+      local fs = require("neoagent.fs")
+      local directory = vim.fn.tempname()
+      directories[#directories + 1] = directory
+      assert(fs.mkdirp(directory))
+      local path = directory .. "/auth.json"
+      assert(fs.write_all(path, "[broken"))
+      local configured = require("neoagent.config").setup({ default_registry = false })
+      local store = require("neoagent.auth.store").new(path)
+      local auth = require("neoagent.auth").new({ methods = configured.auth.methods, store = store })
+      local entries = {}
+      for _, index in ipairs(case.captures) do
+        entries[#entries + 1] = { path = ("tests/recordings/providers/management-%02d.yaml"):format(index),
+          body_subset = true, headers_subset = true }
+      end
+      scenario = http_replay.open(entries)
+      local provider = { base_url = scenario.url .. case.suffix, auth = case.auth or case.id, models = {} }
+      local function resolve_auth() return auth:resolve(provider.auth) end
+      local catalog = model_catalog.new({ provider_id = case.id, provider = provider, transport = scenario,
+        definition = { discover = case.module.discover_models }, models = {},
+        authentication = { resolve = function() return resolve_auth() end } })
+      catalogs = { catalog }
+      local service = case.module.new({ base_url = provider.base_url, auth = provider.auth, models = {},
+        service_opts = case.module == zai and { management_url = scenario.url } or nil },
+        { provider_id = case.id, transport = scenario, now = function() return 1787270400 end })
+      services = { service }
+
+      local discovered = wait(catalog:refresh({ force = true }))
+      assert.is_false(discovered.ok)
+      assert.matches("Invalid credential file", assert(discovered.error).message)
+      assert.are.same({}, catalog:snapshot().models)
+      local refreshed = wait(operation(service, "refresh", resolve_auth))
+      assert.is_false(refreshed.ok)
+      assert.matches("Invalid credential file", assert(refreshed.error).message)
+      assert.matches("Invalid credential file", assert(status_text(service)))
+      assert.are.same({}, scenario.requests)
+      assert.is_true(provider_service.operation_enabled(service, { mutating = true }))
+      assert.are.equal("[broken", assert(fs.read(path)))
+
+      assert(fs.write_all(path, "{}"))
+      assert(store:write(provider.auth, { type = "api_key", key = "integration-key" }))
+      assert.is_true(wait(catalog:refresh({ force = true })).ok)
+      assert.is_not_nil((next(catalog:snapshot().models)))
+      assert.is_true(wait(operation(service, "refresh", resolve_auth)).ok)
+      assert.is_true(provider_service.operation_enabled(service, { mutating = true }))
+      assert.are.equal(#case.captures, #scenario.requests)
+    end)
+  end
 
   it("runs catalogs and reporting through recorded HTTP responses", function()
     scenario = http_replay.open({

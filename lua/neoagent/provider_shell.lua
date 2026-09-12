@@ -47,7 +47,6 @@ local M = {}
 ---@alias Neoagent.ShellRunResult Neoagent.ShellActionRun|boolean|nil
 
 ---@class Neoagent.AuthCoordination
----@field active boolean
 ---@field finish fun(self: Neoagent.AuthCoordination): boolean
 
 ---@class Neoagent.ProviderShellAction
@@ -117,28 +116,41 @@ local CANCEL_PRESENTATION = "neoagent.presentation.cancel"
 local function feedback_text(value)
   local text = util.text_from_bytes(value):gsub("%s+", " ")
   text = util.trim(text):gsub("^neoagent:%s*", "")
-  if text == "" then text = "Provider notification" end
-  if #text <= 512 then return text end
+  if text == "" then
+    text = "Provider notification"
+  end
+  if #text <= 512 then
+    return text
+  end
   text = text:sub(1, 509)
-  while not util.is_valid_utf8(text) do text = text:sub(1, -2) end
+  while not util.is_valid_utf8(text) do
+    text = text:sub(1, -2)
+  end
   return text .. "…"
 end
 
 ---@param level integer?
 ---@return 'error'|'warn'|'info'
 local function feedback_level(level)
-  if level == vim.log.levels.ERROR then return "error" end
-  if level == vim.log.levels.WARN then return "warn" end
+  if level == vim.log.levels.ERROR then
+    return "error"
+  end
+  if level == vim.log.levels.WARN then
+    return "warn"
+  end
   return "info"
 end
 
 ---@param artifact unknown
 ---@return TypeGuard<Neoagent.ProviderDocument>
 local function valid_artifact(artifact)
-  return type(artifact) == "table" and not util.is_list(artifact)
+  return type(artifact) == "table"
+    and not util.is_list(artifact)
     and artifact.kind == "document"
-    and type(artifact.name) == "string" and artifact.name ~= ""
-    and #artifact.name <= 128 and util.is_valid_utf8(artifact.name)
+    and type(artifact.name) == "string"
+    and artifact.name ~= ""
+    and #artifact.name <= 128
+    and util.is_valid_utf8(artifact.name)
     and not artifact.name:find("[/\\]")
     and not artifact.name:find("[%z\1-\31\127]")
     and type(artifact.filetype) == "string"
@@ -154,16 +166,21 @@ end
 function ProviderShell.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell config is required")
-  assert(type(opts.auth) == "table"
+  assert(
+    type(opts.auth) == "table"
       and type(opts.auth.has_credentials) == "function"
       and type(opts.auth.resolve) == "function",
-    "Provider Shell authentication manager is invalid")
-  assert(type(opts.runtimes) == "table"
-      and (next(opts.runtimes) == nil or not util.is_list(opts.runtimes)),
-    "Provider Shell runtimes must be a keyed table")
-  assert(opts.host_effects == nil or type(opts.host_effects) == "table"
-      and type(opts.host_effects.open_document) == "function",
-    "Provider Shell host effects are invalid")
+    "Provider Shell authentication manager is invalid"
+  )
+  assert(
+    type(opts.runtimes) == "table" and (next(opts.runtimes) == nil or not util.is_list(opts.runtimes)),
+    "Provider Shell runtimes must be a keyed table"
+  )
+  assert(
+    opts.host_effects == nil
+      or type(opts.host_effects) == "table" and type(opts.host_effects.open_document) == "function",
+    "Provider Shell host effects are invalid"
+  )
 
   ---@type Neoagent.ProviderShell
   local self = setmetatable({
@@ -187,28 +204,23 @@ function ProviderShell.new(opts)
     host_effects = opts.host_effects or Applet.host_effects,
     owns_presenter = opts.presenter == nil,
   }, ProviderShell)
-  for provider_id, runtime in pairs(self.runtimes) do
-    if runtime.credentials == nil then
-      local provider = self.config.providers[provider_id]
-        or runtime.definition or {}
-      runtime.credentials = provider_credentials.new({
-        provider_id = provider_id,
-        provider = provider,
-        authentication = self.auth,
-        method = self.config.auth.methods[provider.auth],
-      })
-    end
-  end
-
   local view_factory = opts.view or require("neoagent.ui.provider_shell").new
   self.view_value = view_factory({
     config = opts.config.ui,
     renderer = opts.config.ui.renderer,
     host = opts.host,
-    on_action = function(id) return (self:run(id)) end,
-    on_select = function(id) return (self:select(id)) end,
-    on_previous = function() return (self:cycle(-1)) end,
-    on_next = function() return (self:cycle(1)) end,
+    on_action = function(id)
+      return (self:run(id))
+    end,
+    on_select = function(id)
+      return (self:select(id))
+    end,
+    on_previous = function()
+      return (self:cycle(-1))
+    end,
+    on_next = function()
+      return (self:cycle(1))
+    end,
     on_presentation_resolve = function(id, value)
       return (self.presenter_value:resolve(id, value))
     end,
@@ -217,51 +229,56 @@ function ProviderShell.new(opts)
     end,
     on_close = function() end,
   })
-  assert(type(self.view_value) == "table"
+  assert(
+    type(self.view_value) == "table"
       and type(self.view_value.set) == "function"
       and type(self.view_value.open) == "function"
       and type(self.view_value.close) == "function"
       and type(self.view_value.is_open) == "function"
       and type(self.view_value.destroy) == "function",
-    "Provider Shell View is invalid")
+    "Provider Shell View is invalid"
+  )
 
   local fallback = Applet.Presenter
-  self.presenter_value = opts.presenter or require("neoagent.presenter").new({
-    host = {
-      select = fallback.select,
-      input = fallback.input,
-      notice = fallback.notice,
-      notify = function(message, level)
-        if type(self.view_value.notify) == "function" then
-          return self.view_value:notify(message, level)
-        end
-        return fallback.notify(message, level)
-      end,
-      open_uri = function(uri)
-        if type(self.view_value.open_uri) == "function" then
-          return (self.view_value:open_uri(uri))
-        end
-        return (fallback.open_uri(uri))
-      end,
-    },
-  })
+  self.presenter_value = opts.presenter
+    or require("neoagent.presenter").new({
+      host = {
+        select = fallback.select,
+        input = fallback.input,
+        notice = fallback.notice,
+        notify = function(message, level)
+          if type(self.view_value.notify) == "function" then
+            return self.view_value:notify(message, level)
+          end
+          return fallback.notify(message, level)
+        end,
+        open_uri = function(uri)
+          if type(self.view_value.open_uri) == "function" then
+            return (self.view_value:open_uri(uri))
+          end
+          return (fallback.open_uri(uri))
+        end,
+      },
+    })
   self.authentication = require("neoagent.authentication").new({
     config = { providers = opts.config.providers, auth = opts.config.auth },
     auth = opts.auth,
     runtimes = opts.runtimes,
     presenter = self.presenter_value,
     refresh_after_auth_change = false,
-    on_activity = function() self:_schedule_refresh() end,
+    on_activity = function()
+      self:_schedule_refresh()
+    end,
   })
 
   local providers = self:providers()
-  local preferred = opts.config.default_model
-    and opts.config.default_model.provider or nil
-  self.selected_id = self.runtimes[preferred] and preferred
-    or providers[1] and providers[1].id or nil
+  local preferred = opts.config.default_model and opts.config.default_model.provider or nil
+  self.selected_id = self.runtimes[preferred] and preferred or providers[1] and providers[1].id or nil
   if self.owns_presenter and type(self.view_value.set_presentation) == "function" then
     self.presenter_unsubscribe = self.presenter_value:attach({
-      present = function(snapshot) return self:_present(snapshot) end,
+      present = function(snapshot)
+        return self:_present(snapshot)
+      end,
       notify = function(message, level)
         return self:_feedback(message, level)
       end,
@@ -270,14 +287,13 @@ function ProviderShell.new(opts)
   for _, entry in ipairs(providers) do
     local runtime = self.runtimes[entry.id]
     local service = runtime.service
-    self.subscriptions[#self.subscriptions + 1] =
-      provider_service.subscribe(service, function()
-        self:_schedule_refresh()
-      end, {
-        report = function(message, level)
-          self:report(message, level)
-        end,
-      })
+    self.subscriptions[#self.subscriptions + 1] = provider_service.subscribe(service, function()
+      self:_schedule_refresh()
+    end, {
+      report = function(message, level)
+        self:report(message, level)
+      end,
+    })
     if type(service.subscribe) == "function" then
       local ok, unsubscribe = pcall(service.subscribe, service, function()
         self:_schedule_refresh()
@@ -285,12 +301,12 @@ function ProviderShell.new(opts)
       if ok and type(unsubscribe) == "function" then
         self.subscriptions[#self.subscriptions + 1] = unsubscribe
       elseif not ok then
-        self:_notify("provider subscription failed: " .. tostring(unsubscribe),
-          vim.log.levels.ERROR)
+        self:_notify("provider subscription failed: " .. tostring(unsubscribe), vim.log.levels.ERROR)
       end
     end
-    self.subscriptions[#self.subscriptions + 1] =
-      runtime.catalog:subscribe(function() self:_schedule_refresh() end)
+    self.subscriptions[#self.subscriptions + 1] = runtime.catalog:subscribe(function()
+      self:_schedule_refresh()
+    end)
   end
   self:_refresh()
   return self
@@ -300,7 +316,9 @@ end
 ---@param level integer?
 ---@return unknown
 function ProviderShell:report(message, level)
-  if self.destroyed then return false end
+  if self.destroyed then
+    return false
+  end
   return self.presenter_value:notify({
     message = message,
     level = level or vim.log.levels.INFO,
@@ -322,14 +340,18 @@ function ProviderShell:_feedback(message, level)
     text = feedback_text(message),
     level = feedback_level(level),
   }
-  if vim.deep_equal(self.feedback, next_feedback) then return true end
+  if vim.deep_equal(self.feedback, next_feedback) then
+    return true
+  end
   self.feedback = next_feedback
   self:_schedule_refresh()
   return true
 end
 
 function ProviderShell:_schedule_refresh()
-  if self.destroyed or self.refresh_scheduled then return end
+  if self.destroyed or self.refresh_scheduled then
+    return
+  end
   self.refresh_scheduled = true
   util.schedule(function()
     self.refresh_scheduled = false
@@ -343,7 +365,9 @@ end
 ---@param snapshot Neoagent.PresentationSnapshot?
 ---@return true
 function ProviderShell:_present(snapshot)
-  if self.destroyed then error("Provider Shell is destroyed", 0) end
+  if self.destroyed then
+    error("Provider Shell is destroyed", 0)
+  end
   local active = snapshot and snapshot.active or nil
   self.presentation = active and util.copy(snapshot) or nil
   local modal = active and active.kind ~= "select" and snapshot or nil
@@ -354,7 +378,9 @@ function ProviderShell:_present(snapshot)
   self:_refresh()
   if active and not self.view_value:is_open() then
     local opened, open_err = self.view_value:open()
-    if not opened then error(open_err, 0) end
+    if not opened then
+      error(open_err, 0)
+    end
   end
   return true
 end
@@ -370,7 +396,9 @@ function ProviderShell:providers()
     end
   end
   table.sort(result, function(left, right)
-    if left.name == right.name then return left.id < right.id end
+    if left.name == right.name then
+      return left.id < right.id
+    end
     return left.name < right.name
   end)
   return result
@@ -382,12 +410,10 @@ end
 function ProviderShell:_auth_state(provider_id, entry)
   local runtime = self.runtimes[provider_id]
   entry = entry or { scope = "inference", primary = true }
-  local provider = self.config.providers[provider_id]
-    or runtime and runtime.definition or {}
+  local provider = self.config.providers[provider_id] or runtime and runtime.definition or {}
   local method_id = entry.method
   if method_id == nil then
-    method_id = provider_auth.for_scope(provider,
-      entry.primary and nil or entry.scope)
+    method_id = provider_auth.for_scope(provider, entry.primary and nil or entry.scope)
   end
   local credentials = runtime and runtime.credentials or nil
   if runtime and not entry.primary then
@@ -400,8 +426,11 @@ function ProviderShell:_auth_state(provider_id, entry)
     })
   end
   local selected = credentials and credentials:state()
-    or { usable = false, source = "error", error = util.error(
-      "auth", "Provider credential state is unavailable") }
+    or {
+      usable = false,
+      source = "error",
+      error = util.error("auth", "Provider credential state is unavailable"),
+    }
   return {
     usable = selected.usable,
     kind = selected.source,
@@ -417,8 +446,7 @@ end
 ---@return Neoagent.ProviderShellAuthState[]
 function ProviderShell:_auth_states(provider_id)
   local runtime = self.runtimes[provider_id]
-  local provider = self.config.providers[provider_id]
-    or runtime and runtime.definition or {}
+  local provider = self.config.providers[provider_id] or runtime and runtime.definition or {}
   local result = {}
   for _, entry in ipairs(provider_auth.entries(provider)) do
     result[#result + 1] = self:_auth_state(provider_id, entry)
@@ -429,32 +457,36 @@ end
 ---@param auth Neoagent.ProviderShellAuthState
 ---@return Neoagent.ProviderFieldBlock?
 local function auth_block(auth)
-  if auth.kind == "none" then return nil end
+  if auth.kind == "none" then
+    return nil
+  end
   local label = auth.primary and "Authentication" or assert(auth.method_name)
   if auth.kind == "stored" then
-    return { type = "field", label = label,
+    return {
+      type = "field",
+      label = label,
       value = auth.primary and assert(auth.method_name) or "Logged in",
-      level = "success" }
+      level = "success",
+    }
   end
   if auth.kind == "environment" then
-    return { type = "field", label = label,
-      value = "Environment credential", level = "success" }
+    return { type = "field", label = label, value = "Environment credential", level = "success" }
   end
   if auth.kind == "configured" then
-    return { type = "field", label = label,
-      value = "Configured credential", level = "success" }
+    return { type = "field", label = label, value = "Configured credential", level = "success" }
   end
   if auth.kind == "optional" then
-    return { type = "field", label = label,
-      value = "Optional", level = "muted" }
+    return { type = "field", label = label, value = "Optional", level = "muted" }
   end
   if auth.kind == "error" then
-    return { type = "field", label = label,
+    return {
+      type = "field",
+      label = label,
       value = auth.error and auth.error.message or "Unavailable",
-      level = "error" }
+      level = "error",
+    }
   end
-  return { type = "field", label = label,
-    value = "Logged out", level = "warn" }
+  return { type = "field", label = label, value = "Logged out", level = "warn" }
 end
 
 ---@param runtime Neoagent.ProviderRuntime?
@@ -474,7 +506,9 @@ local credential_sources = {
 ---@param auth Neoagent.ProviderShellAuthState
 ---@return Neoagent.ProviderAuthenticationBadge?
 local function provider_authentication(auth)
-  if auth.kind == "none" then return nil end
+  if auth.kind == "none" then
+    return nil
+  end
   local source = credential_sources[auth.kind]
   return {
     connected = auth.usable == true and auth.kind ~= "error",
@@ -487,8 +521,7 @@ end
 ---@param method_id string?
 ---@return Neoagent.ProviderService[]
 function ProviderShell:_auth_services(runtime, method_id)
-  local candidates = type(runtime.auth_services) == "table"
-      and runtime.auth_services[method_id] or nil
+  local candidates = type(runtime.auth_services) == "table" and runtime.auth_services[method_id] or nil
   local services, seen = {}, {}
   for _, service in ipairs(candidates or {}) do
     if type(service) == "table" and not seen[service] then
@@ -500,8 +533,7 @@ function ProviderShell:_auth_services(runtime, method_id)
     for provider_id, candidate in pairs(self.runtimes) do
       local provider = self.config.providers[provider_id]
       local service = type(candidate) == "table" and candidate.service or nil
-      if provider and provider_auth.uses(provider, method_id) and service
-          and not seen[service] then
+      if provider and provider_auth.uses(provider, method_id) and service and not seen[service] then
         seen[service] = true
         services[#services + 1] = service
       end
@@ -517,7 +549,6 @@ end
 ---@param method_id string?
 ---@return boolean
 function ProviderShell:_authentication_enabled(runtime, method_id)
-  if self.action then return false end
   for _, service in ipairs(self:_auth_services(runtime, method_id)) do
     if not provider_service.operation_enabled(service, { mutating = true }) then
       return false
@@ -529,15 +560,15 @@ end
 ---@param auth Neoagent.ProviderShellAuthState
 ---@return boolean
 function ProviderShell:_login_available(auth)
-  if not auth.method_id then return false end
-  local method = self.config.auth.methods[auth.method_id]
-  if auth.kind == "stored" then return false end
-  if auth.kind == "logged_out" or auth.kind == "error"
-      or auth.kind == "optional" then
-    return true
-  end
-  if auth.kind ~= "environment" and auth.kind ~= "configured" then
+  if not auth.method_id then
     return false
+  end
+  local method = self.config.auth.methods[auth.method_id]
+  if auth.kind == "stored" then
+    return false
+  end
+  if auth.kind == "logged_out" or auth.kind == "error" or auth.kind == "optional" then
+    return true
   end
   return type(method) == "table" and method.login_with_ambient == true
 end
@@ -546,7 +577,9 @@ end
 ---@param auth Neoagent.ProviderShellAuthState
 ---@return string
 local function auth_operation_id(prefix, auth)
-  if auth.primary then return prefix end
+  if auth.primary then
+    return prefix
+  end
   return prefix .. ":" .. auth.scope
 end
 
@@ -582,7 +615,9 @@ end
 ---@return Neoagent.ProviderShellAuthState?
 local function auth_for_operation(auths, prefix, operation_id)
   for _, auth in ipairs(auths) do
-    if operation_id == auth_operation_id(prefix, auth) then return auth end
+    if operation_id == auth_operation_id(prefix, auth) then
+      return auth
+    end
   end
 end
 
@@ -591,11 +626,17 @@ end
 ---@param scope string?
 ---@return Neoagent.ProviderShellAuthState?
 local function auth_for_scope(provider, auths, scope)
-  if scope == nil or scope == "inference" then return auths[1] end
+  if scope == nil or scope == "inference" then
+    return auths[1]
+  end
   local method_id, mapped = provider_auth.for_scope(provider, scope)
-  if not mapped then return nil end
+  if not mapped then
+    return nil
+  end
   for _, auth in ipairs(auths) do
-    if auth.method_id == method_id then return auth end
+    if auth.method_id == method_id then
+      return auth
+    end
   end
 end
 
@@ -609,16 +650,18 @@ function ProviderShell:_begin_auth_coordination(runtime, method_id)
       mutating = true,
     })
     if not token then
-      for index = #tokens, 1, -1 do tokens[index]:finish() end
+      for index = #tokens, 1, -1 do
+        tokens[index]:finish()
+      end
       return nil, err
     end
     tokens[#tokens + 1] = token
   end
-  local group = { active = true }
+  local group = {}
   function group:finish()
-    if not self.active then return false end
-    self.active = false
-    for index = #tokens, 1, -1 do tokens[index]:finish() end
+    for index = #tokens, 1, -1 do
+      tokens[index]:finish()
+    end
     return true
   end
   return group
@@ -642,15 +685,23 @@ end
 ---@param result Neoagent.ShellActionResult
 ---@return boolean
 function ProviderShell:_finish_action(action, result)
-  if action.finalized then return false end
+  if action.finalized then
+    return false
+  end
   action.finalized = true
   if action.coordination then
     local coordination = action.coordination
-    pcall(function() coordination:finish() end)
+    pcall(function()
+      coordination:finish()
+    end)
     action.coordination = nil
   end
-  if self.action == action then self.action = nil end
-  if self.destroyed then return true end
+  if self.action == action then
+    self.action = nil
+  end
+  if self.destroyed then
+    return true
+  end
   local transition = self.pending_transition
   if transition and transition.revision == self.transition_revision then
     self.pending_transition = nil
@@ -660,8 +711,7 @@ function ProviderShell:_finish_action(action, result)
     self.pending_focus_provider_id = nil
     self:_refresh()
     if transition.action then
-      local started, start_err = self:_run(
-        transition.action.operation_id, transition.action.args, false)
+      local started, start_err = self:_run(transition.action.operation_id, transition.action.args, false)
       if not started and start_err then
         self:_notify(start_err.message, vim.log.levels.ERROR)
       end
@@ -676,13 +726,11 @@ function ProviderShell:_finish_action(action, result)
     if type(result) == "table" and result.ok == true then
       operation.state = "succeeded"
       self:_open_artifact(rawget(result, "artifact"))
-    elseif type(result) == "table" and result.error
-        and result.error.kind == "cancelled" then
+    elseif type(result) == "table" and result.error and result.error.kind == "cancelled" then
       operation.state = "cancelled"
     else
       operation.state = "failed"
-      operation.detail = type(result) == "table" and result.error
-          and result.error.message or "Provider action failed"
+      operation.detail = type(result) == "table" and result.error and result.error.message or "Provider action failed"
     end
     self.operation = operation
   end
@@ -695,7 +743,9 @@ end
 ---@return Neoagent.ShellActionRun?, Neoagent.Error?
 function ProviderShell:_start_action(opts)
   if self.action then
-    if opts.coordination then opts.coordination:finish() end
+    if opts.coordination then
+      opts.coordination:finish()
+    end
     return nil, util.error("provider", "A provider action is already active")
   end
   self.action_id = self.action_id + 1
@@ -730,31 +780,39 @@ function ProviderShell:_start_action(opts)
       error(util.normalize_error(child, opts.error_kind or "provider"), 0)
     end
     if not child then
-      error(util.normalize_error(err or "Provider action did not start",
-        opts.error_kind or "provider"), 0)
+      error(util.normalize_error(err or "Provider action did not start", opts.error_kind or "provider"), 0)
     end
-    if type(child) ~= "table" or type(child.await) ~= "function"
-        or type(child.cancel) ~= "function"
-        or type(child.is_done) ~= "function"
-        or type(child.result) ~= "function" then
-      error(util.error(opts.error_kind or "provider",
-        "Provider action must return a Run"), 0)
+    if
+      type(child) ~= "table"
+      or type(child.await) ~= "function"
+      or type(child.cancel) ~= "function"
+      or type(child.is_done) ~= "function"
+      or type(child.result) ~= "function"
+    then
+      error(util.error(opts.error_kind or "provider", "Provider action must return a Run"), 0)
     end
     local result = child:await() --[[@as Neoagent.ShellActionResult]]
     if type(result) ~= "table" or type(result.ok) ~= "boolean" then
-      error(util.error(opts.error_kind or "provider",
-        "Provider action returned an invalid result"), 0)
+      error(util.error(opts.error_kind or "provider", "Provider action returned an invalid result"), 0)
     end
-    if not result.ok then error(result.error, 0) end
-    if opts.after then opts.after(action, result) end
+    if not result.ok then
+      error(result.error, 0)
+    end
+    if opts.after then
+      opts.after(action, result)
+    end
     return result
   end
   local run = async.run(perform, {
     error_kind = opts.error_kind or "provider",
-    on_done = function(result) self:_finish_action(action, result) end,
+    on_done = function(result)
+      self:_finish_action(action, result)
+    end,
   })
   action.run = run
-  if run:is_done() then self:_finish_action(action, (assert(run:result()))) end
+  if run:is_done() then
+    self:_finish_action(action, (assert(run:result())))
+  end
   return run
 end
 
@@ -763,18 +821,18 @@ end
 function ProviderShell:_service_state(service)
   local ok, value = pcall(service.state, service)
   if not ok then
-    self:_notify("provider state failed: " .. tostring(value),
-      vim.log.levels.ERROR)
-    return { blocks = { { type = "status",
-      text = "Provider state is unavailable", level = "error" } } }
+    self:_notify("provider state failed: " .. tostring(value), vim.log.levels.ERROR)
+    return { blocks = { { type = "status", text = "Provider state is unavailable", level = "error" } } }
   end
-  if value == false then return false end
+  if value == false then
+    return false
+  end
   local normalized, err = provider_state.normalize(value)
-  if normalized then return normalized end
-  self:_notify("provider state is invalid: "
-      .. (err and err.message or "invalid value"), vim.log.levels.ERROR)
-  return { blocks = { { type = "status",
-    text = "Provider state is unavailable", level = "error" } } }
+  if normalized then
+    return normalized
+  end
+  self:_notify("provider state is invalid: " .. (err and err.message or "invalid value"), vim.log.levels.ERROR)
+  return { blocks = { { type = "status", text = "Provider state is unavailable", level = "error" } } }
 end
 
 ---@param runtime Neoagent.ProviderRuntime
@@ -804,15 +862,13 @@ function ProviderShell:_operations(runtime, auths)
   if activity == "login" or activity == "presentation" then
     return { { id = CANCEL_LOGIN, label = "Cancel login" } }
   end
-  local blocked = activity ~= nil
-    or self.action ~= nil and not self.action.passive
-  local provider = self.config.providers[self.selected_id]
-    or runtime.definition or {}
+  local blocked = activity ~= nil or self.action ~= nil and not self.action.passive
+  local provider = self.config.providers[self.selected_id] or runtime.definition or {}
   local operations = {}
   for _, auth in ipairs(auths) do
     if self:_login_available(auth) then
-      operations[#operations + 1] = self:_login_operation(auth,
-        not blocked and self:_authentication_enabled(runtime, auth.method_id))
+      operations[#operations + 1] =
+        self:_login_operation(auth, not blocked and self:_authentication_enabled(runtime, auth.method_id))
     end
   end
   local primary = auths[1]
@@ -821,23 +877,21 @@ function ProviderShell:_operations(runtime, auths)
       id = REFRESH_CATALOG,
       label = "Refresh model catalog",
       description = "Discover the provider's current models",
-      enabled = not blocked and provider_service.operation_enabled(
-        service, { mutating = false }),
+      enabled = not blocked and provider_service.operation_enabled(service, { mutating = false }),
     }
   end
   for _, operation in ipairs(provider_service.operations(service)) do
     local required = auth_for_scope(provider, auths, operation.auth_scope)
     if required and required.usable then
       local presented = util.copy(operation) --[[@as Neoagent.ProviderShellOperation]]
-      presented.enabled = not blocked and provider_service.operation_enabled(
-        service, service.operations[operation.id])
+      presented.enabled = not blocked and provider_service.operation_enabled(service, service.operations[operation.id])
       operations[#operations + 1] = presented
     end
   end
   for _, auth in ipairs(auths) do
     if auth.kind == "stored" then
-      operations[#operations + 1] = self:_logout_operation(auth,
-        not blocked and self:_authentication_enabled(runtime, auth.method_id))
+      operations[#operations + 1] =
+        self:_logout_operation(auth, not blocked and self:_authentication_enabled(runtime, auth.method_id))
     end
   end
   return operations
@@ -846,15 +900,20 @@ end
 ---@return Neoagent.ProviderPanelSnapshot?, Neoagent.ProviderShellAuthState?
 function ProviderShell:_snapshot()
   local runtime = self.selected_id and self.runtimes[self.selected_id] or nil
-  if not runtime then return nil end
+  if not runtime then
+    return nil
+  end
   local service = runtime.service
   local auths = self:_auth_states(assert(self.selected_id))
   local auth = assert(auths[1])
   local service_state = self:_service_state(service)
   ---@type Neoagent.ProviderState
   local state
-  if service_state == false then state = { blocks = {} }
-  else state = util.copy(service_state) end
+  if service_state == false then
+    state = { blocks = {} }
+  else
+    state = util.copy(service_state)
+  end
   local catalog = runtime.catalog:snapshot()
   state.blocks[#state.blocks + 1] = {
     type = "field",
@@ -865,17 +924,14 @@ function ProviderShell:_snapshot()
     type = "field",
     label = "Catalog",
     value = catalog.source .. (catalog.stale and " · stale" or " · fresh"),
-    level = catalog.refresh.state == "failed" and "error"
-      or catalog.stale and "warn" or "success",
+    level = catalog.refresh.state == "failed" and "error" or catalog.stale and "warn" or "success",
   }
   local persistence = catalog.persistence
-  if auth.usable and persistence and persistence.configured
-      and not persistence.enabled then
+  if auth.usable and persistence and persistence.configured and not persistence.enabled then
     state.blocks[#state.blocks + 1] = {
       type = "status",
       text = "Model catalog cache is unavailable: "
-        .. (persistence.error and persistence.error.message
-          or "source identity is unavailable"),
+        .. (persistence.error and persistence.error.message or "source identity is unavailable"),
       level = "warn",
     }
   end
@@ -888,7 +944,9 @@ function ProviderShell:_snapshot()
   end
   for index = #auths, 1, -1 do
     local block = auth_block(assert(auths[index]))
-    if block then table.insert(state.blocks, 1, block) end
+    if block then
+      table.insert(state.blocks, 1, block)
+    end
   end
   if self.feedback then
     table.insert(state.blocks, 1, {
@@ -905,10 +963,13 @@ function ProviderShell:_snapshot()
     name = service.name,
     state = state,
     operations = self:_operations(runtime, auths),
-    operation_prompt = self.presentation and self.presentation.active
+    operation_prompt = self.presentation
+        and self.presentation.active
         and self.presentation.active.kind == "select"
-        and self.presentation.active.prompt or nil,
-  }, auth
+        and self.presentation.active.prompt
+      or nil,
+  },
+    auth
 end
 
 ---@return Neoagent.ProviderListEntry[]
@@ -927,14 +988,14 @@ end
 
 ---@return boolean?
 function ProviderShell:_refresh()
-  if self.destroyed then return false end
   local built, snapshot = pcall(self._snapshot, self)
   if not built then
-    self:_notify(util.normalize_error(snapshot, "provider").message,
-      vim.log.levels.ERROR)
+    self:_notify(util.normalize_error(snapshot, "provider").message, vim.log.levels.ERROR)
     return nil
   end
-  if not snapshot then return false end
+  if not snapshot then
+    return false
+  end
   local called, ok, err = pcall(function()
     return self.view_value:set(snapshot, self:_provider_list())
   end)
@@ -943,8 +1004,7 @@ function ProviderShell:_refresh()
     return nil
   end
   if not ok and err then
-    self:_notify(util.normalize_error(err, "ui").message,
-      vim.log.levels.ERROR)
+    self:_notify(util.normalize_error(err, "ui").message, vim.log.levels.ERROR)
   end
   return ok
 end
@@ -954,14 +1014,21 @@ end
 ---@param done Neoagent.AwaitCallbacks<T>
 ---@return fun()
 local function bridge(run, done)
-  local tracked = async.run(function() return run:await() end, {
+  local tracked = async.run(function()
+    return run:await()
+  end, {
     error_kind = "presentation",
     on_done = function(result)
-      if result.ok then done.resolve(result.value)
-      else done.reject(result.error) end
+      if result.ok then
+        done.resolve(result.value)
+      else
+        done.reject(result.error)
+      end
     end,
   })
-  return function() tracked:cancel() end
+  return function()
+    tracked:cancel()
+  end
 end
 
 ---@param action Neoagent.ProviderShellAction?
@@ -974,51 +1041,61 @@ function ProviderShell:_interact(action)
         done.reject(util.error("provider", "Select requires items"))
         return
       end
-      return bridge(self.presenter_value:select({
-        prompt = type(options.prompt) == "string" and options.prompt or "Select",
-        items = items,
-      }), done)
+      return bridge(
+        self.presenter_value:select({
+          prompt = type(options.prompt) == "string" and options.prompt or "Select",
+          items = items,
+        }),
+        done
+      )
     end,
     input = function(options, done)
       options = type(options) == "table" and options or {}
-      return bridge(self.presenter_value:input({
-        prompt = type(options.prompt) == "string" and options.prompt or "Input",
-        default = type(options.default) == "string" and options.default or "",
-        secret = options.secret == true,
-        multiline = options.multiline == true,
-        allow_empty = options.allow_empty == true,
-      }), done)
+      return bridge(
+        self.presenter_value:input({
+          prompt = type(options.prompt) == "string" and options.prompt or "Input",
+          default = type(options.default) == "string" and options.default or "",
+          secret = options.secret == true,
+          multiline = options.multiline == true,
+          allow_empty = options.allow_empty == true,
+        }),
+        done
+      )
     end,
     confirm = function(options, done)
       options = type(options) == "table" and options or {}
-      return bridge(self.presenter_value:confirm({
-        prompt = type(options.prompt) == "string" and options.prompt or "Confirm",
-      }), done)
+      return bridge(
+        self.presenter_value:confirm({
+          prompt = type(options.prompt) == "string" and options.prompt or "Confirm",
+        }),
+        done
+      )
     end,
     progress = function(snapshot)
-      if action and (action.finalized or self.action ~= action) then return end
+      if action and (action.finalized or self.action ~= action) then
+        return
+      end
       local normalized, err = provider_state.normalize_operation(snapshot)
       if not normalized then
-        self:_notify("provider progress is invalid: "
-          .. (err and err.message or "invalid value"), vim.log.levels.ERROR)
+        self:_notify("provider progress is invalid: " .. (err and err.message or "invalid value"), vim.log.levels.ERROR)
         return
       end
       self.operation = normalized
       self:_schedule_refresh()
     end,
     notify = function(message, level)
-      self:_notify(type(message) == "string" and message or tostring(message),
-        level)
+      self:_notify(type(message) == "string" and message or tostring(message), level)
     end,
   }
 end
 
 ---@param artifact unknown
 function ProviderShell:_open_artifact(artifact)
-  if artifact == nil then return end
+  if artifact == nil then
+    return
+  end
   if not valid_artifact(artifact) then
-    self:_notify("provider operation returned an invalid document artifact",
-      vim.log.levels.ERROR)
+    self:_notify("provider operation returned an invalid document artifact", vim.log.levels.ERROR)
     return
   end
   local ok, opened, err = pcall(self.host_effects.open_document, {
@@ -1027,8 +1104,7 @@ function ProviderShell:_open_artifact(artifact)
     content = artifact.content,
   })
   if not ok or not opened then
-    self:_notify("failed to open provider document: "
-      .. tostring(ok and err or opened), vim.log.levels.ERROR)
+    self:_notify("failed to open provider document: " .. tostring(ok and err or opened), vim.log.levels.ERROR)
   end
 end
 
@@ -1039,16 +1115,13 @@ function ProviderShell:select(provider_id)
     return nil, util.error("provider", "Provider Shell is destroyed")
   end
   if not self.runtimes[provider_id] then
-    return nil, util.error("provider",
-      "Unknown provider: " .. tostring(provider_id))
+    return nil, util.error("provider", "Unknown provider: " .. tostring(provider_id))
   end
-  if provider_id == self.selected_id
-      and self.pending_transition == nil then
+  if provider_id == self.selected_id and self.pending_transition == nil then
     return provider_id
   end
   if self.authentication:is_active() and not self.action then
-    local err = util.error("provider",
-      "Finish the active provider action before changing providers")
+    local err = util.error("provider", "Finish the active provider action before changing providers")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
@@ -1062,8 +1135,7 @@ function ProviderShell:select(provider_id)
       assert(self.action.run):cancel()
       return provider_id
     end
-    local err = util.error("provider",
-      "Finish the active provider action before changing providers")
+    local err = util.error("provider", "Finish the active provider action before changing providers")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
@@ -1080,15 +1152,13 @@ end
 ---@return string?, Neoagent.Error?
 function ProviderShell:cycle(step)
   if step ~= -1 and step ~= 1 then
-    return nil, util.error("provider",
-      "Provider cycle step must be -1 or 1")
+    return nil, util.error("provider", "Provider cycle step must be -1 or 1")
   end
   local providers = self:providers()
   if #providers == 0 then
     return nil, util.error("provider", "No Provider Shell is available")
   end
-  local selected = self.pending_transition
-      and self.pending_transition.provider_id or self.selected_id
+  local selected = self.pending_transition and self.pending_transition.provider_id or self.selected_id
   local index = 1
   for candidate, provider in ipairs(providers) do
     if provider.id == selected then
@@ -1113,8 +1183,7 @@ function ProviderShell:_run(operation_id, args, passive)
     return nil, util.error("provider", "No provider is selected")
   end
   local service = runtime.service
-  local provider = self.config.providers[self.selected_id]
-    or runtime.definition or {}
+  local provider = self.config.providers[self.selected_id] or runtime.definition or {}
   local auths = self:_auth_states(assert(self.selected_id))
   local selection = self.presentation and self.presentation.active or nil
   if selection and selection.kind == "select" then
@@ -1132,12 +1201,12 @@ function ProviderShell:_run(operation_id, args, passive)
   local logout_auth = auth_for_operation(auths, LOGOUT, operation_id)
   if login_auth then
     if not self:_login_available(login_auth) then
-      return nil, util.error("auth",
-        "Login is unavailable for the selected provider")
+      return nil, util.error("auth", "Login is unavailable for the selected provider")
     end
-    local coordination, err = self:_begin_auth_coordination(
-      runtime, login_auth.method_id)
-    if not coordination then return nil, err end
+    local coordination, err = self:_begin_auth_coordination(runtime, login_auth.method_id)
+    if not coordination then
+      return nil, err
+    end
     self.feedback = nil
     return self:_start_action({
       kind = "login",
@@ -1153,12 +1222,12 @@ function ProviderShell:_run(operation_id, args, passive)
     })
   elseif logout_auth then
     if logout_auth.kind ~= "stored" then
-      return nil, util.error("auth",
-        "Logout is unavailable for the selected provider")
+      return nil, util.error("auth", "Logout is unavailable for the selected provider")
     end
-    local coordination, err = self:_begin_auth_coordination(
-      runtime, logout_auth.method_id)
-    if not coordination then return nil, err end
+    local coordination, err = self:_begin_auth_coordination(runtime, logout_auth.method_id)
+    if not coordination then
+      return nil, err
+    end
     self.feedback = nil
     return self:_start_action({
       kind = "logout",
@@ -1167,20 +1236,22 @@ function ProviderShell:_run(operation_id, args, passive)
       coordination = coordination,
       start = function()
         return async.run(function()
-          local confirmation = self.presenter_value:confirm({
-            prompt = "Log out of " .. logout_auth.method_name .. "?",
-            accept_label = "Log out",
-            reject_label = "Cancel",
-          }):await()
-          if not confirmation.ok then error(confirmation.error, 0) end
+          local confirmation = self.presenter_value
+            :confirm({
+              prompt = "Log out of " .. logout_auth.method_name .. "?",
+              accept_label = "Log out",
+              reject_label = "Cancel",
+            })
+            :await()
+          if not confirmation.ok then
+            error(confirmation.error, 0)
+          end
           if confirmation.value ~= true then
             error(async.cancelled_error, 0)
           end
-          local logout, logout_err =
-            self.authentication:logout(logout_auth.method_id)
+          local logout, logout_err = self.authentication:logout(logout_auth.method_id)
           if not logout then
-            error(logout_err or util.error(
-              "auth", "Authentication logout did not start"), 0)
+            error(logout_err or util.error("auth", "Authentication logout did not start"), 0)
           end
           ---@cast logout Neoagent.AuthenticationLogoutRun
           return logout:await()
@@ -1201,31 +1272,27 @@ function ProviderShell:_run(operation_id, args, passive)
     return nil, err
   end
   local descriptor = operation_id == REFRESH_CATALOG
-      and catalog_refreshable(runtime) and {
+      and catalog_refreshable(runtime)
+      and {
         label = "Refresh model catalog",
-      } or service.operations[operation_id]
+      }
+    or service.operations[operation_id]
   if not descriptor then
-    local err = util.error("provider",
-      "Unknown provider operation: " .. tostring(operation_id))
+    local err = util.error("provider", "Unknown provider operation: " .. tostring(operation_id))
     self:_notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   local required_auth = operation_id == REFRESH_CATALOG and auths[1]
     or auth_for_scope(provider, auths, descriptor.auth_scope)
   if not required_auth then
-    local err = util.error("auth",
-      "Provider authentication scope is unavailable: "
-        .. tostring(descriptor.auth_scope))
+    local err = util.error("auth", "Provider authentication scope is unavailable: " .. tostring(descriptor.auth_scope))
     self:_notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   if not required_auth.usable then
-    local method = required_auth
-        and self.config.auth.methods[required_auth.method_id] or nil
-    local login_label = type(method) == "table" and method.login_label
-      or "Log in"
-    local err = util.error("auth",
-      login_label .. " before running this provider action")
+    local method = required_auth and self.config.auth.methods[required_auth.method_id] or nil
+    local login_label = type(method) == "table" and method.login_label or "Log in"
+    local err = util.error("auth", login_label .. " before running this provider action")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
@@ -1234,13 +1301,13 @@ function ProviderShell:_run(operation_id, args, passive)
   local coordination
   local coordination_err
   if operation_id ~= REFRESH_CATALOG then
-    coordination, coordination_err = provider_service.begin_operation(
-      service, { mutating = descriptor.mutating == true })
-    if not coordination then return nil, coordination_err end
-  elseif not provider_service.operation_enabled(
-      service, { mutating = false }) then
-    return nil, util.error("provider",
-      "A mutating provider operation is already active")
+    coordination, coordination_err =
+      provider_service.begin_operation(service, { mutating = descriptor.mutating == true })
+    if not coordination then
+      return nil, coordination_err
+    end
+  elseif not provider_service.operation_enabled(service, { mutating = false }) then
+    return nil, util.error("provider", "A mutating provider operation is already active")
   end
   local function start(action)
     local interact = self:_interact(action)
@@ -1260,8 +1327,7 @@ function ProviderShell:_run(operation_id, args, passive)
         return provider_service.resolve_auth({
           manager = self.auth,
           method = method_id,
-          optional = mapped or provider.auth_optional == true
-            or provider.api_key ~= nil,
+          optional = mapped or provider.auth_optional == true or provider.api_key ~= nil,
           scope = scope,
         })
       end,
@@ -1291,8 +1357,9 @@ end
 ---@return Neoagent.ShellRunResult, Neoagent.Error?
 function ProviderShell:_maybe_focus_refresh()
   local provider_id = self.pending_focus_provider_id
-  if self.destroyed or not provider_id or not self.view_value:is_open()
-      or provider_id ~= self.selected_id then return false end
+  if self.destroyed or not provider_id or not self.view_value:is_open() or provider_id ~= self.selected_id then
+    return false
+  end
   local runtime = self.runtimes[provider_id]
   local service = runtime and runtime.service or nil
   local refresh = service and service.operations.refresh or nil
@@ -1308,19 +1375,21 @@ function ProviderShell:_maybe_focus_refresh()
     end
     return false
   end
-  local provider = self.config.providers[provider_id]
-    or runtime.definition or {}
+  local provider = self.config.providers[provider_id] or runtime.definition or {}
   local auths = self:_auth_states(provider_id)
   local required_auth = auth_for_scope(provider, auths, refresh.auth_scope)
-  if self.authentication:is_active() or not required_auth
-      or not required_auth.usable then return false end
+  if self.authentication:is_active() or not required_auth or not required_auth.usable then
+    return false
+  end
   self.pending_focus_provider_id = nil
   return self:_run(operation_id, nil, true)
 end
 
 ---@return Neoagent.ShellRunResult, Neoagent.Error?
 function ProviderShell:_request_focus_refresh()
-  if self.destroyed or not self.view_value:is_open() then return false end
+  if self.destroyed or not self.view_value:is_open() then
+    return false
+  end
   self.pending_focus_provider_id = self.selected_id
   return self:_maybe_focus_refresh()
 end
@@ -1328,20 +1397,19 @@ end
 ---@return Neoagent.ProviderShellOperation[]
 function ProviderShell:operations()
   local runtime = self.selected_id and self.runtimes[self.selected_id] or nil
-  if not runtime then return {} end
+  if not runtime then
+    return {}
+  end
   local service = runtime.service
-  local provider = self.config.providers[self.selected_id]
-    or runtime.definition or {}
+  local provider = self.config.providers[self.selected_id] or runtime.definition or {}
   local auths = self:_auth_states(assert(self.selected_id))
   local blocked = self.action ~= nil or self.authentication:is_active()
   local operations = {}
   for _, operation in ipairs(provider_service.operations(service)) do
-    local required_auth = auth_for_scope(
-      provider, auths, operation.auth_scope)
+    local required_auth = auth_for_scope(provider, auths, operation.auth_scope)
     if required_auth and required_auth.usable then
       local presented = util.copy(operation) --[[@as Neoagent.ProviderShellOperation]]
-      presented.enabled = not blocked and provider_service.operation_enabled(
-        service, service.operations[operation.id])
+      presented.enabled = not blocked and provider_service.operation_enabled(service, service.operations[operation.id])
       operations[#operations + 1] = presented
     end
   end
@@ -1350,8 +1418,7 @@ function ProviderShell:operations()
       id = REFRESH_CATALOG,
       label = "Refresh model catalog",
       description = "Discover the provider's current models",
-      enabled = not blocked and provider_service.operation_enabled(
-        service, { mutating = false }),
+      enabled = not blocked and provider_service.operation_enabled(service, { mutating = false }),
     })
   end
   return operations
@@ -1365,15 +1432,23 @@ function ProviderShell:completion(operation_id, arg_lead, args)
   local runtime = self.selected_id and self.runtimes[self.selected_id] or nil
   local service = runtime and runtime.service or nil
   local descriptor = service and service.operations[operation_id] or nil
-  if not descriptor or type(descriptor.complete) ~= "function" then return {} end
+  if not descriptor or type(descriptor.complete) ~= "function" then
+    return {}
+  end
   local ok, values = pcall(descriptor.complete, arg_lead or "", args or "")
-  if not ok or type(values) ~= "table" or not util.is_list(values) then return {} end
+  if not ok or type(values) ~= "table" or not util.is_list(values) then
+    return {}
+  end
   local result = {}
   for _, value in ipairs(values) do
-    if type(value) == "string" and value ~= "" and #value <= 512
-        and util.is_valid_utf8(value)
-        and not value:find("[%z\1-\31\127]")
-        and (arg_lead == "" or vim.startswith(value, arg_lead)) then
+    if
+      type(value) == "string"
+      and value ~= ""
+      and #value <= 512
+      and util.is_valid_utf8(value)
+      and not value:find("[%z\1-\31\127]")
+      and (arg_lead == "" or vim.startswith(value, arg_lead))
+    then
       result[#result + 1] = value
     end
   end
@@ -1400,7 +1475,9 @@ function ProviderShell:open(origin)
   end
   self:_refresh()
   local opened, err = self.view_value:open(origin)
-  if not opened then return nil, err end
+  if not opened then
+    return nil, err
+  end
   self:_request_focus_refresh()
   return true
 end
@@ -1413,7 +1490,10 @@ end
 ---@param origin integer?
 ---@return boolean?, Neoagent.Error|Applet.Error?
 function ProviderShell:toggle(origin)
-  if self.view_value:is_open() then self:close() return false end
+  if self.view_value:is_open() then
+    self:close()
+    return false
+  end
   return self:open(origin)
 end
 
@@ -1438,8 +1518,7 @@ function ProviderShell:login(provider_id)
     return nil, util.error("provider", "Provider Shell is destroyed")
   end
   if provider_id and not self.runtimes[provider_id] then
-    return nil, util.error("provider",
-      "Unknown provider: " .. tostring(provider_id))
+    return nil, util.error("provider", "Unknown provider: " .. tostring(provider_id))
   end
   if self.action and self.action.passive then
     local target = provider_id or assert(self.selected_id)
@@ -1454,7 +1533,9 @@ function ProviderShell:login(provider_id)
   end
   if provider_id then
     local selected, err = self:select(provider_id)
-    if not selected then return nil, err end
+    if not selected then
+      return nil, err
+    end
   end
   return self:run(LOGIN)
 end
@@ -1466,8 +1547,7 @@ function ProviderShell:logout(provider_id)
     return nil, util.error("provider", "Provider Shell is destroyed")
   end
   if provider_id and not self.runtimes[provider_id] then
-    return nil, util.error("provider",
-      "Unknown provider: " .. tostring(provider_id))
+    return nil, util.error("provider", "Unknown provider: " .. tostring(provider_id))
   end
   if self.action and self.action.passive then
     local target = provider_id or assert(self.selected_id)
@@ -1482,7 +1562,9 @@ function ProviderShell:logout(provider_id)
   end
   if provider_id then
     local selected, err = self:select(provider_id)
-    if not selected then return nil, err end
+    if not selected then
+      return nil, err
+    end
   end
   return self:run(LOGOUT)
 end
@@ -1494,8 +1576,7 @@ end
 
 ---@return boolean
 function ProviderShell:is_authenticating()
-  return (self.action ~= nil and (self.action.kind == "login"
-      or self.action.kind == "logout"))
+  return (self.action ~= nil and (self.action.kind == "login" or self.action.kind == "logout"))
     or self.authentication:is_active()
 end
 
@@ -1515,18 +1596,26 @@ function ProviderShell:is_active()
 end
 
 function ProviderShell:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   self.action_id = self.action_id + 1
-  if self.action and self.action.run then self.action.run:cancel() end
+  if self.action and self.action.run then
+    self.action.run:cancel()
+  end
   if self.presenter_unsubscribe then
     self.presenter_unsubscribe("Provider Shell was destroyed")
   end
   self.presenter_unsubscribe = nil
-  for _, unsubscribe in ipairs(self.subscriptions) do pcall(unsubscribe) end
+  for _, unsubscribe in ipairs(self.subscriptions) do
+    pcall(unsubscribe)
+  end
   self.subscriptions = {}
   self.authentication:destroy()
-  if self.owns_presenter then self.presenter_value:destroy() end
+  if self.owns_presenter then
+    self.presenter_value:destroy()
+  end
   self.view_value:destroy()
   self.pending_transition = nil
   self.pending_focus_provider_id = nil

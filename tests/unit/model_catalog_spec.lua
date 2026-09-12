@@ -123,6 +123,10 @@ describe("neoagent ModelCatalog", function()
       base_url = "https://example.test/v1",
       auth = "plan",
     } }))
+    assert.are.equal(
+      fingerprint({ provider = { base_url = "example.test/v1///" } }),
+      fingerprint({ provider = { base_url = "example.test/v1" } })
+    )
     for _, override in ipairs({
       { provider = { api = "openai-completions" } },
       { provider = { base_url = "https://other.test/v1" } },
@@ -224,6 +228,7 @@ describe("neoagent ModelCatalog", function()
       function() error("private-source-value") end,
       function() return { callback = function() end } end,
       function() return { number = math.huge } end,
+      function() return "unsafe\ntext" end,
       function() return setmetatable({}, {}) end,
       function() return { [true] = "value" } end,
       function()
@@ -242,6 +247,16 @@ describe("neoagent ModelCatalog", function()
       assert.is_nil(fingerprint)
       assert.are.equal("provider", assert(err).kind)
       assert.is_not_matches("private%-source%-value", assert(err).message)
+    end
+
+    for _, value in ipairs({ true, 42, { true, false, 3 } }) do
+      local fingerprint, err = model_catalog.source_fingerprint({
+        provider_id = "example",
+        provider = { service_opts = { tenant = "one" } },
+        definition = discovery({ source_options = function() return value end }),
+      })
+      assert.is_string(fingerprint)
+      assert.is_nil(err)
     end
   end)
 
@@ -1524,6 +1539,108 @@ describe("neoagent ModelCatalog", function()
     assert.are.equal("seed", third:snapshot().models.seed.id)
     assert.matches("unusable model catalog cache", reports[#reports])
     third:destroy()
+  end)
+
+  it("rejects malformed cache fields independently", function()
+    local malformed = {
+      "not an object",
+      cache({ validated_at = -1, models = { { id = "cached" } } }),
+      cache({ validated_at = 1000, models = "not models" }),
+      cache({ validated_at = 1000, models = { { id = "cached" } }, validator = "not a validator" }),
+      cache({ validated_at = 1000, models = { { id = "cached" } }, validator = { extra = "value" } }),
+    }
+    for _, value in ipairs(malformed) do
+      ---@type string[]
+      local reports = {}
+      local catalog = model_catalog.new({
+        provider_id = "example",
+        store = store(value),
+        report = function(message) reports[#reports + 1] = message end,
+        definition = discovery({ seed = { { id = "seed" } } }),
+      })
+      assert.are.equal("seed", catalog:snapshot().models.seed.id)
+      assert.matches("invalid model catalog cache", assert(reports[1]))
+      catalog:destroy()
+    end
+  end)
+
+  it("contains stale subscriptions and timer callbacks after destruction", function()
+    local auth_listener
+    local scheduled, new_timer = timers()
+    local catalog = model_catalog.new({
+      provider_id = "account",
+      provider = { auth = "plan" },
+      authentication = {
+        resolve = function()
+          return async.run(function() return { ok = true, configured = false } end)
+        end,
+        subscribe = function(_, _, listener)
+          auth_listener = listener
+          return function() return true end
+        end,
+      },
+      new_timer = new_timer,
+      now = function() return 1000 end,
+      definition = discovery({
+        seed = { { id = "seed" } },
+        ttl_ms = 1000,
+        discover = function()
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      }),
+    })
+    local unsubscribe = catalog:subscribe(function() end)
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+    assert.is_true(catalog:start())
+    assert.is_false(catalog:start())
+    assert(vim.wait(1000, function() return #scheduled == 1 end))
+    assert.is_function(auth_listener)
+    if auth_listener then
+      auth_listener({ kind = "refresh", method = "test", revision = 0 })
+    end
+    local callback = assert(scheduled[1]).callback
+    assert.is_true(catalog:destroy())
+    assert(callback)()
+    assert.is_function(auth_listener)
+    if auth_listener then
+      auth_listener({ kind = "refresh", method = "test", revision = 1 })
+    end
+    assert.is_false(catalog:subscribe(function() end)())
+  end)
+
+  it("supersedes active discovery with validated provider publication", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>>?
+    local pending
+    local scheduled, new_timer = timers()
+    local catalog = model_catalog.new({
+      provider_id = "example",
+      new_timer = new_timer,
+      definition = discovery({
+        seed = { { id = "seed" } },
+        discover = function()
+          return async.run(function()
+            return async.await(function(done) pending = done end)
+          end)
+        end,
+      }),
+    })
+    assert.is_true(catalog:start())
+    assert(vim.wait(1000, function() return pending ~= nil end))
+
+    local published, err = catalog:publish_discoveries("invalid")
+    assert.is_nil(published)
+    assert.are.equal("model", assert(err).kind)
+
+    pending = nil
+    catalog:refresh()
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    assert(catalog:publish_discoveries({ { id = "published" } }))
+    assert.are.equal("published", catalog:snapshot().models.published.id)
+    assert.are.equal(1, #scheduled)
+    catalog:destroy()
   end)
 
   it("returns terminal results after destruction and without discovery", function()

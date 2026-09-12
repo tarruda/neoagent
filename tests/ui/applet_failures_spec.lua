@@ -170,6 +170,50 @@ describe("Applet failure boundaries", function()
     vim.cmd("stopinsert")
   end)
 
+  for _, kind in ipairs({ "floating", "tab" }) do
+    it("rolls back a " .. kind .. " update rejected by native option validation", function()
+      local content = new_pane("content", { text = "retained" })
+      local value = applet({ name = "invalid-native-option-" .. kind,
+        host = kind == "tab" and Applet.host.tab() or Applet.host.floating({ width = 40, height = 10 }) })
+      value:update(frame(pane("content", content)))
+      succeeds(value:open())
+      local native = content:native()
+      local original_type = vim.api.nvim_get_option_value("buftype", { buf = native.buffer })
+      value:update(frame(layout.mount(content, { buffer = { options = { buftype = "invalid-buffer-type" } } })))
+      local committed, err = value:flush()
+      assert.is_nil(committed)
+      assert.are.equal("commit", assert(err).phase)
+      assert.matches("[Ii]nvalid", assert(err).message)
+      assert.is_true(value:is_open())
+      assert.are.same(native, content:native())
+      assert.are.equal("retained", content:text())
+      assert.are.equal(original_type, vim.api.nvim_get_option_value("buftype", { buf = native.buffer }))
+      value:update(frame(pane("content", content)))
+      succeeds(value:flush())
+      assert.are.same(native, content:native())
+    end)
+  end
+
+  it("updates a native floating border in place and restores the explicit origin", function()
+    local content = new_pane("content", { text = "retained" })
+    local origin = vim.api.nvim_get_current_win()
+    local value = applet({ name = "changed-border",
+      host = Applet.host.floating({ width = 40, height = 10 }) })
+    value:update(frame(pane("content", content, { border = "single" })))
+    succeeds(value:open(origin))
+    local native = content:native()
+    local before = vim.api.nvim_win_get_config((assert(native.window))).border
+    value:update(frame(pane("content", content, { border = "double" })))
+    succeeds(value:flush())
+    local after = vim.api.nvim_win_get_config((assert(native.window))).border
+    assert.is_false(vim.deep_equal(before, after))
+    assert.matches("═", vim.inspect(after))
+    assert.are.same(native, content:native())
+    assert.are.equal("retained", content:text())
+    succeeds(value:close())
+    assert.are.equal(origin, vim.api.nvim_get_current_win())
+  end)
+
   it("suppresses an optional failed Pane and rejects it when required", function()
     local errors = {}
     local broken = new_pane("content", {
@@ -353,6 +397,40 @@ describe("Applet failure boundaries", function()
     assert.is_false(value:is_open())
   end)
 
+  it("rolls back measured content when rendering its measured layout fails", function()
+    local main = new_pane("main", { text = "main" })
+    local detail = new_pane("detail", { text = "first\nsecond\nthird" })
+    local recover = false
+    local measured = 0
+    local value = applet({
+      name = "measured-render-failure",
+      host = Applet.host.floating({ width = 60, height = 20 }),
+      render = function(_, environment)
+        if environment.measurements.detail then
+          measured = measured + 1
+          if not recover then error("cannot render measured content") end
+        end
+        return measured_tree(main, detail, { content = true, min = 2, max = 10 })
+      end,
+    })
+    value:set_state({})
+    local windows = vim.api.nvim_list_wins()
+    local opened, err = value:open()
+    assert.is_nil(opened)
+    assert.are.equal("render", assert(err).phase)
+    assert.matches("cannot render measured content", assert(err).message)
+    assert.is_true(measured > 0)
+    assert.is_false(value:is_open())
+    assert.is_false(main:is_mounted())
+    assert.is_false(detail:is_mounted())
+    assert.are.same(windows, vim.api.nvim_list_wins())
+    recover = true
+    succeeds(value:open())
+    assert.is_true(main:is_mounted())
+    assert.is_true(detail:is_mounted())
+    assert.are.equal("first\nsecond\nthird", detail:text())
+  end)
+
   it("bounds repeated and divergent content measurement feedback", function()
     local main = new_pane("main", { text = "main" })
     local detail = new_pane("detail", { text = "detail" })
@@ -413,6 +491,30 @@ describe("Applet failure boundaries", function()
     end)
     succeeds(opened, err)
     assert.are.equal(3, calls)
+  end)
+
+  it("contains reentrant and failed native measurement", function()
+    local main = new_pane("main", { text = "main" })
+    local detail = new_pane("detail", { text = "detail" })
+    local value = applet({
+      name = "failed-native-measurement",
+      host = Applet.host.floating({ width = 60, height = 20 }),
+    })
+    value:update(measured_tree(main, detail,
+      { content = true, min = 2, max = 15 }))
+    local calls = 0
+    local opened, err = with_patch(Base, "measure", function()
+      calls = calls + 1
+      assert.is_true((value:_settle_measurements()))
+      error("native measurement failed")
+    end, function()
+      return value:open()
+    end)
+    assert.is_nil(opened)
+    assert.are.equal(1, calls)
+    assert.are.equal("measure", assert(err).phase)
+    assert.matches("native measurement failed", assert(err).message)
+    assert.is_false(value:is_open())
   end)
 
   it("rolls back an update whose content measurement cannot settle", function()
@@ -502,6 +604,75 @@ describe("Applet failure boundaries", function()
     assert.is_nil(opened)
     assert.matches("open rollback failed", assert(err).message)
     assert.matches("open release failed", assert(err).message)
+  end)
+
+  it("reports every failure while aborting a partially opened Host", function()
+    local content = new_pane("content", { text = "partial" })
+    local cleanup = {}
+    local value = applet({
+      name = "open-abort-cleanup",
+      host = Applet.host.floating({ width = 40, height = 10 }),
+    })
+    value:update(frame(pane("content", content)))
+
+    local disconnect = content._disconnect
+    local discard = value._discard_candidate_records
+    local sync = value._sync_closed_observed
+    local observer = value._set_observer_scope
+    ---@cast observer fun(self: Applet.Applet<unknown>, scope?: "live"|"retained"): boolean
+    content._disconnect = function()
+      cleanup.disconnect = true
+      error("disconnect cleanup failed")
+    end
+    value._discard_candidate_records = function()
+      cleanup.records = true
+      error("record cleanup failed")
+    end
+    value._sync_closed_observed = function()
+      cleanup.snapshot = true
+      error("snapshot cleanup failed")
+    end
+    rawset(value, "_set_observer_scope", function(self, scope)
+      if scope ~= "live" then
+        cleanup.observer = true
+        error("observer cleanup failed")
+      end
+      return observer(self, scope)
+    end)
+
+    local create_driver = FloatingDriver.new
+    local opened, err = with_patch(Base, "restore_origin", function()
+      cleanup.focus = true
+      error("focus cleanup failed")
+    end, function()
+      return with_patch(FloatingDriver, "new", function(...)
+        local driver = create_driver(...)
+        driver.publish = function()
+          cleanup.publish = true
+          error("publication failed")
+        end
+        return driver
+      end, function()
+        return value:open()
+      end)
+    end)
+    content._disconnect = disconnect
+    value._discard_candidate_records = discard
+    value._sync_closed_observed = sync
+    rawset(value, "_set_observer_scope", observer)
+
+    assert.is_nil(opened)
+    assert.are.equal("commit", assert(err).phase)
+    assert.are.same({
+      disconnect = true,
+      focus = true,
+      observer = true,
+      publish = true,
+      records = true,
+      snapshot = true,
+    }, cleanup)
+    assert.matches("publication failed", assert(err).message)
+    assert.matches("disconnect cleanup failed", assert(err).message)
   end)
 
   it("reports preparation failure and focuses an already open Applet", function()

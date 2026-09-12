@@ -18,13 +18,17 @@ local function at_least(version, minimum)
   for index = 1, math.max(#version, #minimum) do
     local actual = version[index] or 0
     local required = minimum[index] or 0
-    if actual ~= required then return actual > required end
+    if actual ~= required then
+      return actual > required
+    end
   end
   return true
 end
 
 local function curl()
-  if not executable("curl") then return end
+  if not executable("curl") then
+    return
+  end
   local output = vim.fn.system({ "curl", "--version" })
   local major, minor, patch = output:match("^curl%s+(%d+)%.(%d+)%.(%d+)")
   if vim.v.shell_error ~= 0 or not major then
@@ -43,54 +47,69 @@ local function check_configuration()
     or require("neoagent.tools").coding({
       shell_timeout = configured.shell_timeout,
     }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
-  require("neoagent.agent_loop").validate_toolset(
-    tools, configured.execute_tool)
+  require("neoagent.agent_loop").validate_toolset(tools, configured.execute_tool)
   local applet, resources
   local ok, err = pcall(function()
     local profiles, default_profile
     local profile_recipes = require("neoagent.profiles")
-    profiles, default_profile, resources = profile_recipes.bundled(configured,
-      { startup = false })
+    profiles, default_profile, resources = profile_recipes.bundled(configured, { startup = false })
     applet = require("neoagent.applet").new({
       profiles = profiles,
       default_profile = default_profile,
       resources = resources,
     })
-    assert(#applet:agents() == 0,
-      "Profile composition must not construct Agents")
+    assert(#applet:agents() == 0, "Profile composition must not construct Agents")
     local ids = vim.tbl_keys(resources.runtimes)
     table.sort(ids)
     for _, provider_id in ipairs(ids) do
       local runtime = resources.runtimes[provider_id]
       local credential = runtime.credentials:state()
       local persistence = runtime.catalog:snapshot().persistence
-      if credential.usable and persistence and persistence.configured
-          and not persistence.enabled then
-        vim.health.warn(provider_id .. " model catalog cache is unavailable: "
-          .. (persistence.error and persistence.error.message
-            or "source identity is unavailable"))
+      if credential.usable and persistence and persistence.configured and not persistence.enabled then
+        vim.health.warn(
+          provider_id
+            .. " model catalog cache is unavailable: "
+            .. (persistence.error and persistence.error.message or "source identity is unavailable")
+        )
       end
     end
     local selected = configured.default_model
-    if not selected then return end
+    if not selected then
+      return
+    end
     local runtime = resources.runtimes[selected.provider]
     if not runtime then
       error("Unknown provider: " .. tostring(selected.provider), 0)
     end
     local snapshot = runtime.catalog:snapshot()
-    if snapshot.models[selected.model] == nil
-        and type(runtime.definition.catalog.discover) == "function" then
-      vim.health.warn("default model " .. selected.provider .. "/"
-        .. selected.model .. " awaits the " .. selected.provider
-        .. " provider catalog")
+    if snapshot.models[selected.model] == nil and type(runtime.definition.catalog.discover) == "function" then
+      vim.health.warn(
+        "default model "
+          .. selected.provider
+          .. "/"
+          .. selected.model
+          .. " awaits the "
+          .. selected.provider
+          .. " provider catalog"
+      )
       return
     end
-    require("neoagent.models").resolve(selected.provider, selected.model,
-      configured, resources.auth, resources.runtimes)
+    require("neoagent.models").resolve(
+      selected.provider,
+      selected.model,
+      configured,
+      resources.auth,
+      resources.runtimes
+    )
   end)
-  if applet then applet:destroy()
-  elseif resources then resources:destroy() end
-  if not ok then error(err, 0) end
+  if applet then
+    applet:destroy()
+  elseif resources then
+    resources:destroy()
+  end
+  if not ok then
+    error(err, 0)
+  end
 end
 
 local function check_images()
@@ -104,16 +123,18 @@ local function check_images()
   })
   for _, diagnostic in ipairs(diagnostics) do
     local report = vim.health[diagnostic.level]
-    assert(type(report) == "function",
-      "unknown Applet image diagnostic level: " .. tostring(diagnostic.level))
+    assert(type(report) == "function", "unknown Applet image diagnostic level: " .. tostring(diagnostic.level))
     report(diagnostic.message)
   end
 end
 
 function M.check()
   vim.health.start("neoagent")
-  if vim.fn.has("nvim-0.10") == 1 then vim.health.ok("Neovim 0.10+ detected")
-  else vim.health.error("Neovim 0.10 or newer is required") end
+  if vim.fn.has("nvim-0.10") == 1 then
+    vim.health.ok("Neovim 0.10+ detected")
+  else
+    vim.health.error("Neovim 0.10 or newer is required")
+  end
   curl()
   executable("rg")
   executable("fd")
@@ -122,8 +143,7 @@ function M.check()
   if ok then
     vim.health.ok("configuration is valid")
   else
-    local failure = require("neoagent.util").normalize_error(
-      err, "configuration")
+    local failure = require("neoagent.util").normalize_error(err, "configuration")
     vim.health.error("configuration error: " .. failure.message)
   end
 end

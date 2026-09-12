@@ -39,15 +39,21 @@ local util = require("neoagent.util")
 ---@field append fun(data: string)
 ---@field finish fun(trailing_empty?: boolean): Neoagent.LineCaptureResult
 
----@class Neoagent.CapturedProcessOptions: Neoagent.ProcessOptions
----@field on_output? fun(data: string, is_stderr: boolean)
-
 ---@class Neoagent.ProcessCaptureOptions
 ---@field stdout Neoagent.LineCaptureOptions
 ---@field stderr? Neoagent.LineCaptureOptions
----@field process? Neoagent.CapturedProcessOptions
+---@field process? Neoagent.ProcessOptions
 
 local M = {}
+
+---@param ctx Neoagent.ToolCapabilities
+---@return Neoagent.Files
+function M.files(ctx)
+  local context = ctx and ctx.context
+  local files = type(context) == "table" and rawget(context, "files") or nil
+  assert(require("neoagent.files").writable(files), "Tool requires an attachment store in ctx.context.files")
+  return files
+end
 
 ---@param ctx? Neoagent.ToolCapabilities
 ---@return Neoagent.ToolWorkspace
@@ -98,7 +104,9 @@ function M.line_capture(options)
   local max_lines = options.max_lines or math.huge
   local max_bytes = options.max_bytes or math.huge
   local max_line_bytes = options.max_line_bytes or max_bytes + 1
-  local transform = options.transform or function(line) return line, false end
+  local transform = options.transform or function(line)
+    return line, false
+  end
   local kept = {}
   local output_bytes = 0
   local total_bytes = 0
@@ -121,17 +129,22 @@ function M.line_capture(options)
   ---@return boolean
   local function current_is_candidate()
     local relative = total_lines + 2 - offset
-    return relative >= 1 and relative <= select_lines and relative <= max_lines
-      and not truncated
+    return relative >= 1 and relative <= select_lines and relative <= max_lines and not truncated
   end
 
   ---@param fragment string
   local function append_fragment(fragment)
     current_bytes = current_bytes + #fragment
-    if not current_is_candidate() then return end
+    if not current_is_candidate() then
+      return
+    end
     local remaining = max_line_bytes - #current
-    if remaining > 0 then current = current .. fragment:sub(1, math.floor(remaining)) end
-    if #fragment > remaining then current_overflow = true end
+    if remaining > 0 then
+      current = current .. fragment:sub(1, math.floor(remaining))
+    end
+    if #fragment > remaining then
+      current_overflow = true
+    end
   end
 
   local function finish_line()
@@ -144,9 +157,10 @@ function M.line_capture(options)
         truncated = true
         truncated_by = truncated_by or "lines"
       elseif not truncated then
-        local line, line_was_truncated = transform(
-          current, current_overflow, current_bytes)
-        if line_was_truncated then lines_truncated = lines_truncated + 1 end
+        local line, line_was_truncated = transform(current, current_overflow, current_bytes)
+        if line_was_truncated then
+          lines_truncated = lines_truncated + 1
+        end
         local extra = #line + (#kept > 0 and 1 or 0)
         if output_bytes + extra > max_bytes then
           truncated = true
@@ -171,7 +185,9 @@ function M.line_capture(options)
   ---@param data string
   function capture.append(data)
     assert(not finished, "line capture is finished")
-    if data == "" then return end
+    if data == "" then
+      return
+    end
     had_data = true
     total_bytes = total_bytes + #data
     local start = 1
@@ -232,11 +248,13 @@ function M.capture_process(ctx, command, options)
     max_line_bytes = 50 * 1024 + 1,
   })
   local process_options = util.copy(options.process or {})
-  local on_output = process_options.on_output
   process_options.capture = false
   process_options.on_output = function(data, is_stderr)
-    if is_stderr then stderr.append(data) else stdout.append(data) end
-    if on_output then on_output(data, is_stderr) end
+    if is_stderr then
+      stderr.append(data)
+    else
+      stdout.append(data)
+    end
   end
   local result = M.process(ctx, command, process_options)
   return result, stdout.finish(false), stderr.finish(false)

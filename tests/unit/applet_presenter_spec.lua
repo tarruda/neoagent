@@ -91,6 +91,20 @@ describe("Applet host Presenter", function()
     assert.is_nil(cancelled.rejected)
   end)
 
+  it("discards a secret returned after the pending prompt was cancelled", function()
+    local cancelled, done = result()
+    local cancel = presenter.input({ prompt = "Secret", secret = true }, done)
+    local entered = false
+    vim.fn.inputsecret = function()
+      entered = true
+      cancel()
+      return "discarded secret"
+    end
+    assert(vim.wait(1000, function() return entered end))
+    assert.is_nil(cancelled.resolved)
+    assert.is_nil(cancelled.rejected)
+  end)
+
   it("accepts ordinary input and rejects absent or disallowed empty values", function()
     ---@type (fun(value?: string))?, {prompt?: string, default?: string}?
     local callback, options

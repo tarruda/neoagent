@@ -47,27 +47,31 @@ end
 ---@param value unknown
 ---@return TypeGuard<table>
 local function is_schema_object(value)
-  return type(value) == "table"
-    and (next(value) == nil or not util.is_list(value))
+  return type(value) == "table" and (next(value) == nil or not util.is_list(value))
 end
 
 ---@param value unknown
 ---@return TypeGuard<number>
 local function finite_number(value)
-  return type(value) == "number" and value == value
-    and value ~= math.huge and value ~= -math.huge
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
 local type_checks = {
   array = is_array,
-  boolean = function(value) return type(value) == "boolean" end,
+  boolean = function(value)
+    return type(value) == "boolean"
+  end,
   integer = function(value)
     return finite_number(value) and value % 1 == 0
   end,
-  ["null"] = function(value) return value == vim.NIL end,
+  ["null"] = function(value)
+    return value == vim.NIL
+  end,
   number = finite_number,
   object = is_object,
-  string = function(value) return type(value) == "string" end,
+  string = function(value)
+    return type(value) == "string"
+  end,
 }
 
 local type_labels = {
@@ -91,7 +95,9 @@ local function validate_schema(schema, path, active)
     return nil, path .. " must be an object"
   end
   active = active or {}
-  if active[schema] then return nil, path .. " must not contain cycles" end
+  if active[schema] then
+    return nil, path .. " must not contain cycles"
+  end
   active[schema] = true
   for key in pairs(schema) do
     if not schema_fields[key] then
@@ -102,8 +108,7 @@ local function validate_schema(schema, path, active)
   local declared = schema.type
   if declared ~= nil then
     declared = type(declared) == "string" and { declared } or declared
-    if type(declared) ~= "table" or not util.is_list(declared)
-        or #declared == 0 then
+    if type(declared) ~= "table" or not util.is_list(declared) or #declared == 0 then
       active[schema] = nil
       return nil, path .. ".type must be a type name or non-empty list"
     end
@@ -116,9 +121,10 @@ local function validate_schema(schema, path, active)
       seen[name] = true
     end
   end
-  if schema.description ~= nil
-      and (type(schema.description) ~= "string"
-        or not util.is_valid_utf8(schema.description)) then
+  if
+    schema.description ~= nil
+    and (type(schema.description) ~= "string" or not util.is_valid_utf8(schema.description))
+  then
     active[schema] = nil
     return nil, path .. ".description must be a UTF-8 string"
   end
@@ -132,9 +138,11 @@ local function validate_schema(schema, path, active)
         active[schema] = nil
         return nil, path .. ".properties keys must be non-empty strings"
       end
-      local ok, err = validate_schema(
-        child, path .. ".properties." .. key, active)
-      if not ok then active[schema] = nil return nil, err end
+      local ok, err = validate_schema(child, path .. ".properties." .. key, active)
+      if not ok then
+        active[schema] = nil
+        return nil, err
+      end
     end
   end
   if schema.required ~= nil then
@@ -153,17 +161,21 @@ local function validate_schema(schema, path, active)
   end
   local additional = schema.additionalProperties
   if additional ~= nil and type(additional) ~= "boolean" then
-    local ok, err = validate_schema(
-      additional, path .. ".additionalProperties", active)
-    if not ok then active[schema] = nil return nil, err end
+    local ok, err = validate_schema(additional, path .. ".additionalProperties", active)
+    if not ok then
+      active[schema] = nil
+      return nil, err
+    end
   end
   if schema.items ~= nil then
     local ok, err = validate_schema(schema.items, path .. ".items", active)
-    if not ok then active[schema] = nil return nil, err end
+    if not ok then
+      active[schema] = nil
+      return nil, err
+    end
   end
   if schema.enum ~= nil then
-    if type(schema.enum) ~= "table" or not util.is_list(schema.enum)
-        or #schema.enum == 0 then
+    if type(schema.enum) ~= "table" or not util.is_list(schema.enum) or #schema.enum == 0 then
       active[schema] = nil
       return nil, path .. ".enum must be a non-empty list"
     end
@@ -175,14 +187,12 @@ local function validate_schema(schema, path, active)
   end
   for _, key in ipairs({ "minItems", "maxItems" }) do
     local value = schema[key]
-    if value ~= nil and (type(value) ~= "number" or value < 0
-        or value % 1 ~= 0 or value == math.huge) then
+    if value ~= nil and (type(value) ~= "number" or value < 0 or value % 1 ~= 0 or value == math.huge) then
       active[schema] = nil
       return nil, path .. "." .. key .. " must be a non-negative integer"
     end
   end
-  if schema.minItems ~= nil and schema.maxItems ~= nil
-      and schema.minItems > schema.maxItems then
+  if schema.minItems ~= nil and schema.maxItems ~= nil and schema.minItems > schema.maxItems then
     active[schema] = nil
     return nil, path .. ".minItems must not exceed maxItems"
   end
@@ -193,7 +203,9 @@ end
 ---@param schema Neoagent.ToolSchema
 ---@return Neoagent.SchemaType[]
 local function declared_types(schema)
-  if type(schema.type) == "string" then return { schema.type } end
+  if type(schema.type) == "string" then
+    return { schema.type }
+  end
   if type(schema.type) == "table" and util.is_list(schema.type) then
     return schema.type
   end
@@ -203,10 +215,13 @@ end
 ---@param values string[]
 ---@return string
 local function join_choices(values)
-  if #values == 1 then return values[1] end
-  if #values == 2 then return values[1] .. " or " .. values[2] end
-  return table.concat(values, ", ", 1, #values - 1)
-    .. ", or " .. values[#values]
+  if #values == 1 then
+    return values[1]
+  end
+  if #values == 2 then
+    return values[1] .. " or " .. values[2]
+  end
+  return table.concat(values, ", ", 1, #values - 1) .. ", or " .. values[#values]
 end
 
 ---@param value unknown
@@ -215,7 +230,9 @@ end
 local function matches_type(value, types)
   for _, name in ipairs(types) do
     local check = type_checks[name]
-    if not check or check(value) then return true end
+    if not check or check(value) then
+      return true
+    end
   end
   return #types == 0
 end
@@ -225,7 +242,9 @@ end
 ---@return boolean
 local function declares(types, name)
   for _, declared in ipairs(types) do
-    if declared == name then return true end
+    if declared == name then
+      return true
+    end
   end
   return false
 end
@@ -235,7 +254,9 @@ end
 ---@return K[]
 local function sorted_keys(value)
   local keys = {}
-  for key in pairs(value or {}) do keys[#keys + 1] = key end
+  for key in pairs(value or {}) do
+    keys[#keys + 1] = key
+  end
   table.sort(keys, function(left, right)
     return tostring(left) < tostring(right)
   end)
@@ -284,7 +305,9 @@ end
 ---@param path string
 ---@param state Neoagent.SchemaValidation
 local function validate_value(schema, value, path, state)
-  if state.truncated or type(schema) ~= "table" then return end
+  if state.truncated or type(schema) ~= "table" then
+    return
+  end
 
   local types = declared_types(schema)
   if not matches_type(value, types) then
@@ -299,26 +322,26 @@ local function validate_value(schema, value, path, state)
   if type(schema.enum) == "table" and util.is_list(schema.enum) then
     local matched = false
     for _, candidate in ipairs(schema.enum) do
-      if vim.deep_equal(value, candidate) then matched = true break end
+      if vim.deep_equal(value, candidate) then
+        matched = true
+        break
+      end
     end
     if not matched then
       local choices = {}
       for _, candidate in ipairs(schema.enum) do
         choices[#choices + 1] = enum_value(candidate)
       end
-      local allowed = #choices > 0 and join_choices(choices)
-        or "an allowed value"
+      local allowed = #choices > 0 and join_choices(choices) or "an allowed value"
       add_issue(state, shown_path(path) .. " must be one of " .. allowed)
     end
   end
 
   local array_value = is_array(value)
   local object_value = is_object(value)
-  local prefer_array = array_value and declares(types, "array")
-    and not declares(types, "object")
+  local prefer_array = array_value and declares(types, "array") and not declares(types, "object")
   if object_value and not prefer_array then
-    local properties = type(schema.properties) == "table"
-        and schema.properties or {}
+    local properties = type(schema.properties) == "table" and schema.properties or {}
     for _, key in ipairs(schema.required or {}) do
       if value[key] == nil then
         add_issue(state, child_path(path, key) .. " is required")
@@ -337,24 +360,32 @@ local function validate_value(schema, value, path, state)
         if schema.additionalProperties == false then
           add_issue(state, child_path(path, key) .. " is not allowed")
         elseif type(schema.additionalProperties) == "table" then
-          validate_value(schema.additionalProperties, value[key],
-            child_path(path, key), state)
+          validate_value(schema.additionalProperties, value[key], child_path(path, key), state)
         end
       end
     end
   elseif array_value then
     if type(schema.minItems) == "number" and #value < schema.minItems then
-      add_issue(state, shown_path(path) .. " must contain at least "
-        .. schema.minItems .. (schema.minItems == 1 and " item" or " items"))
+      add_issue(
+        state,
+        shown_path(path)
+          .. " must contain at least "
+          .. schema.minItems
+          .. (schema.minItems == 1 and " item" or " items")
+      )
     end
     if type(schema.maxItems) == "number" and #value > schema.maxItems then
-      add_issue(state, shown_path(path) .. " must contain at most "
-        .. schema.maxItems .. (schema.maxItems == 1 and " item" or " items"))
+      add_issue(
+        state,
+        shown_path(path)
+          .. " must contain at most "
+          .. schema.maxItems
+          .. (schema.maxItems == 1 and " item" or " items")
+      )
     end
     if type(schema.items) == "table" then
       for index, item in ipairs(value) do
-        validate_value(schema.items, item,
-          path .. "[" .. index .. "]", state)
+        validate_value(schema.items, item, path .. "[" .. index .. "]", state)
       end
     end
   end
@@ -366,9 +397,10 @@ function M.normalize(schema)
   local valid, err = validate_schema(schema)
   assert(valid, err)
   local normalized = util.copy(schema)
-  if next(normalized) == nil then return vim.empty_dict() end
-  if normalized.type == "object" and type(normalized.properties) == "table"
-      and next(normalized.properties) == nil then
+  if next(normalized) == nil then
+    return vim.empty_dict()
+  end
+  if normalized.type == "object" and type(normalized.properties) == "table" and next(normalized.properties) == nil then
     normalized.properties = vim.empty_dict()
   end
   return normalized
@@ -379,7 +411,9 @@ end
 ---@return string? error
 function M.validate_definition(schema)
   local valid, err = validate_schema(schema)
-  if not valid then return nil, err end
+  if not valid then
+    return nil, err
+  end
   return M.normalize(schema)
 end
 
@@ -391,7 +425,9 @@ function M.validate(schema, value)
   assert(type(schema) == "table", "tool input_schema must be a table")
   local state = { issues = {}, truncated = false }
   validate_value(schema, value, "", state)
-  if #state.issues == 0 then return true end
+  if #state.issues == 0 then
+    return true
+  end
 
   local lines = { "Tool call arguments do not match the declared schema:" }
   for _, issue in ipairs(state.issues) do

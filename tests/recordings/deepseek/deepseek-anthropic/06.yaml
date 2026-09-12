@@ -1,0 +1,46 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: 1c247048b53f4a0e31a4c04357dd0a1c5d5403774532316c9c0cec3b140e77f9
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.deepseek.com/files
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Length: '543'
+    Content-Type: multipart/form-data; boundary=synthetic-upload-boundary
+  body: LS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9InB1cnBvc2UiDQoNCnVzZXJfZGF0YQ0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbYW5jaG9yXSINCg0KY3JlYXRlZF9hdA0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbc2Vjb25kc10iDQoNCjg2NDAwDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnkNCkNvbnRlbnQtRGlzcG9zaXRpb246IGZvcm0tZGF0YTsgbmFtZT0iZmlsZSI7IGZpbGVuYW1lPSJpbWFnZS5wbmciDQpDb250ZW50LVR5cGU6IGltYWdlL3BuZw0KDQqJUE5HDQoaCgAAAA1JSERSAAAAIAAAABAIAgAAAPhi6g4AAAAiSURBVHicY/jPwEASIlH5f1KVj1owasGoBaMWjFowIBYAAFCm/hBf6HhFAAAAAElFTkSuQmCCDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnktLQ0K
+  body_encoding: base64
+  body_bytes: 543
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 154
+---
+type: response_body
+at_us: 2000
+bytes: 154
+body:
+  bytes: 91
+  created_at: 1700000000
+  expires_at: 1700086400
+  filename: image.png
+  id: file-deepseek-anthropic-2
+  object: file
+  purpose: user_data
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

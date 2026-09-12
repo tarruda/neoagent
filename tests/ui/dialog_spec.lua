@@ -801,9 +801,16 @@ describe("neoagent generic dialog UI", function()
       close = function() end,
       is_open = function() return true end,
       destroy = function(self) self.destroyed = true end,
+      pane = function() return nil end,
+      notify = function() return true end,
+      open_uri = function() return true end,
       get_input = function() return "" end,
       set_input = function() end,
+      focus_input = function() return false end,
+      focus_transcript = function() return false end,
+      submission_accepted = function() return true end,
       set_messages = function() end,
+      set_files = function() end,
       set_context = function() end,
       apply = function() end,
       finish = function() end,
@@ -814,6 +821,9 @@ describe("neoagent generic dialog UI", function()
         end
         return true
       end,
+      set_presentation = function() return true end,
+      set_position = function() return true end,
+      set_renderer = function(_, renderer) return renderer end,
     }
     local window = require("neoagent.applet")._from_agents({
       agents = agents,

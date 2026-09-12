@@ -15,8 +15,12 @@ local FILE_MODE = 384
 ---@param id unknown
 ---@return TypeGuard<string>
 local function valid_id(id)
-  if type(id) ~= "string" or id == "" then return false end
-  if id:find("[/\\]") then return false end
+  if type(id) ~= "string" or id == "" then
+    return false
+  end
+  if id:find("[/\\]") then
+    return false
+  end
   return true
 end
 
@@ -76,20 +80,28 @@ end
 ---@param entry unknown
 ---@return true?, Neoagent.Error?
 function Store:write(id, entry)
-  if self.directory_error then return nil, util.copy(self.directory_error) end
+  if self.directory_error then
+    return nil, util.copy(self.directory_error)
+  end
   local path = self:path(id)
   local encoded, err = encode(entry)
-  if not encoded then return nil, err end
+  if not encoded then
+    return nil, err
+  end
   local lease, lock_err = lock(path):acquire()
-  if not lease then return nil, lock_err end
+  if not lease then
+    return nil, lock_err
+  end
   local written, write_err = lease:run(
-  ---@return true?, string?
-  function()
-    local replaced, replace_err = fs.atomic_replace(
-      path, encoded .. "\n", { mode = FILE_MODE })
-    if not replaced then return nil, replace_err end
-    return true
-  end)
+    ---@return true?, string?
+    function()
+      local replaced, replace_err = fs.atomic_replace(path, encoded .. "\n", { mode = FILE_MODE })
+      if not replaced then
+        return nil, replace_err
+      end
+      return true
+    end
+  )
   if not written then
     return nil, util.normalize_error(write_err, "state_store")
   end
@@ -99,19 +111,24 @@ end
 ---@param id string
 ---@return true?, Neoagent.Error?
 function Store:delete(id)
-  if self.directory_error then return nil, util.copy(self.directory_error) end
+  if self.directory_error then
+    return nil, util.copy(self.directory_error)
+  end
   local path = self:path(id)
   local lease, lock_err = lock(path):acquire()
-  if not lease then return nil, lock_err end
+  if not lease then
+    return nil, lock_err
+  end
   local deleted, delete_err = lease:run(
-  ---@return true?, string?
-  function()
-    local removed, remove_err, remove_code = vim.uv.fs_unlink(path)
-    if not removed and remove_code ~= "ENOENT" then
-      return nil, remove_err
+    ---@return true?, string?
+    function()
+      local removed, remove_err, remove_code = vim.uv.fs_unlink(path)
+      if not removed and remove_code ~= "ENOENT" then
+        return nil, remove_err
+      end
+      return true
     end
-    return true
-  end)
+  )
   if not deleted then
     return nil, util.normalize_error(delete_err, "state_store")
   end
@@ -122,15 +139,13 @@ end
 ---@return Neoagent.StateStore
 function M.new(opts)
   opts = opts or {}
-  assert(type(opts.directory) == "string" and opts.directory ~= "",
-    "state store directory is required")
+  assert(type(opts.directory) == "string" and opts.directory ~= "", "state store directory is required")
   local directory = fs.normalize(opts.directory)
-  local prepared, prepare_err = fs.ensure_private_directory(
-    directory, DIRECTORY_MODE)
+  local prepared, prepare_err = fs.ensure_private_directory(directory, DIRECTORY_MODE)
   return setmetatable({
     directory = directory,
-    directory_error = not prepared and util.error(
-      "state_store", "failed to prepare private state directory", prepare_err)
+    directory_error = not prepared
+        and util.error("state_store", "failed to prepare private state directory", prepare_err)
       or nil,
   }, Store)
 end

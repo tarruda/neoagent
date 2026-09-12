@@ -1,0 +1,43 @@
+# Adapted from authorized generated-image validation on 2026-09-09.
+# Replace credentials and metadata identities; reserialize the response.
+# Source SHA-256: 1449d81546cc72a4663190331feee51586e26a5fa23f4a4f545eca782eeaef73
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.anthropic.com/v1/files/file_anthropic_inspected
+  headers:
+    anthropic-version: '2023-06-01'
+    x-api-key: upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 185
+---
+type: response_body
+at_us: 2000
+bytes: 185
+body:
+  created_at: '2023-11-14T22:13:20Z'
+  downloadable: false
+  expires_at: null
+  filename: image.png
+  id: file_anthropic_inspected
+  mime_type: image/png
+  size_bytes: 91
+  type: file
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

@@ -67,6 +67,94 @@ local function replace(value, owner, placements)
 end
 
 describe("Applet images", function()
+  it("loads bounded PNG resources lazily and accepts only the first completion", function()
+    local data = png(7, 9)
+    local calls, releases, delivered = 0, 0, 0
+    ---@type fun(data?: string, error?: string)
+    local complete
+    ---@type Applet.PngResource
+    local loader = { kind = "png_resource", id = "content-id", revision = 1 }
+    local reader = function(_, maximum, done)
+        assert.are.equal(#data, maximum)
+        calls = calls + 1
+        complete = done
+        return function() releases = releases + 1 end
+      end
+    assert.matches("^resource:", source.identity(loader))
+    assert.are.equal(0, calls)
+    local resource, err = source.load(loader)
+    assert.is_nil(resource)
+    assert.matches("asynchronous", assert(err))
+    local cancel = source.load_async(loader, { max_bytes = #data, read_resource = reader }, function(value, failure)
+      assert.is_nil(failure)
+      resource = value
+      delivered = delivered + 1
+    end)
+    assert.are.equal(1, calls)
+    assert.is_nil(resource)
+    complete(data)
+    complete(nil, "late failure")
+    assert(vim.wait(1000, function() return delivered == 1 end))
+    assert.are.equal(data, assert(resource).data)
+    assert.are.equal(7, assert(resource).width)
+    complete(data)
+    cancel()
+    assert.are.equal(0, releases)
+    assert.are.equal(1, delivered)
+
+    cancel = source.load_async(loader, { max_bytes = #data, read_resource = reader }, function() delivered = delivered + 1 end)
+    cancel()
+    cancel()
+    complete(data)
+    local drained = false
+    vim.schedule(function() drained = true end)
+    assert(vim.wait(1000, function() return drained end))
+    assert.are.equal(1, delivered)
+    assert.are.equal(1, releases)
+  end)
+
+  it("validates loader completion and cancellation contracts before publishing a PNG", function()
+    local data = png(2, 3)
+    ---@param load fun(maximum: integer, done: fun(data?: string, error?: string)): fun()
+    ---@param pattern? string
+    ---@param limits? Applet.ImageLoadOptions
+    local function check(load, pattern, limits)
+      local completed = false
+      ---@type Applet.ImageResource?, string?
+      local resource, failure
+      local options = vim.tbl_extend("force", limits or {}, {
+        read_resource = function(_, maximum, done) return load(maximum, done) end,
+      })
+      local cancel = source.load_async({ kind = "png_resource", id = "x", revision = 1 },
+        options, function(value, err) completed, resource, failure = true, value, err end)
+      assert(vim.wait(1000, function() return completed end))
+      cancel()
+      if pattern then
+        assert.is_nil(resource)
+        assert.matches(pattern, assert(failure))
+      else
+        assert.is_nil(failure)
+        assert.are.equal(data, assert(resource).data)
+      end
+    end
+    check(function(_, done) done(data); done("ignored"); return function() end end)
+    check(function(_, done) done(nil, "storage unavailable"); return function() end end, "storage unavailable")
+    check(function(_, done) done(); return function() end end, "could not read image")
+    check(function(_, done) done("invalid"); return function() end end, "signature")
+    check(function(_, done) done(data); return function() end end, "byte limit", { max_bytes = #data - 1 })
+    check(function(_, done) done(data); return function() end end, "pixel limit", { max_pixels = 1 })
+    check(function() error("loader failed") end, "loader failed")
+    check(function(_, done) done(data); error("failed after completion") end, "failed after completion")
+    check(function(_, done) done(data); return false --[[@as fun()]] end, "cancellation function")
+    fails("id", function()
+      source.identity({ kind = "png_resource", id = "", revision = 1 })
+    end)
+    local failure
+    source.load_async({ kind = "png_resource", id = "x", revision = 1 }, {}, function(_, err) failure = err end)
+    assert(vim.wait(1000, function() return failure ~= nil end))
+    assert.matches("reader is required", tostring(failure))
+  end)
+
   it("identifies, validates, and loads bounded PNG sources", function()
     local bytes = png(3, 4)
     local inline = {
@@ -162,6 +250,11 @@ describe("Applet images", function()
       source.png_info("\137PNG\r\n\26\nmissing")
     end)
     fails("invalid dimensions", function() source.png_info(png(0, 1)) end)
+    local truncated, truncated_error = source.load({
+      kind = "png_bytes", id = "truncated-header", data = bytes:sub(1, 20), revision = 1,
+    })
+    assert.is_nil(truncated)
+    assert.matches("invalid dimensions", assert(truncated_error))
     fails("pixel limit", function()
       source.png_info(bytes, { max_pixels = 10 })
     end)
@@ -284,6 +377,71 @@ describe("Applet images", function()
     callbacks_before.open("late", nil)
   end)
 
+  it("publishes once when a filesystem adapter repeats completion callbacks", function()
+    local callbacks = {}
+    local close_callbacks = {}
+    local completions = {}
+    source.load_async({
+      kind = "png_file", path = "/duplicate-callback.png", revision = 1,
+    }, { uv = {
+      fs_open = function(_, _, _, done) done(nil, 17) end,
+      fs_fstat = function(_, done) callbacks.stat = done end,
+      fs_read = function() error("failed inspection must not read") end,
+      fs_close = function(_, done)
+        close_callbacks[#close_callbacks + 1] = done
+      end,
+    } }, function(_, err)
+      completions[#completions + 1] = err
+    end)
+
+    assert(callbacks.stat)("inspection failed")
+    assert(callbacks.stat)("duplicate inspection failure")
+    assert.are.same({ "duplicate inspection failure" }, completions)
+    assert.are.equal(1, #close_callbacks)
+    close_callbacks[1]()
+    assert.are.same({ "duplicate inspection failure" }, completions)
+  end)
+
+  it("closes a native file read once when cancelled before its bytes are delivered", function()
+    local path = vim.fn.tempname()
+    local bytes = png(2, 3)
+    local descriptor = assert(vim.uv.fs_open(path, "w", 384))
+    assert(vim.uv.fs_write(descriptor, bytes, 0))
+    assert(vim.uv.fs_close(descriptor))
+    ---@type (fun())?
+    local deliver
+    local closes, published = 0, 0
+    local cancelled = false
+    local cancel = source.load_async({ kind = "png_file", path = path, revision = 1 }, { uv = {
+      fs_open = vim.uv.fs_open,
+      fs_fstat = vim.uv.fs_fstat,
+      fs_read = function(fd, maximum, offset, done)
+        vim.uv.fs_read(fd, maximum, offset, function(err, data)
+          deliver = function() done(err, data) end
+        end)
+      end,
+      fs_close = function(fd, done)
+        closes = closes + 1
+        vim.uv.fs_close(fd, function(err)
+          done(err)
+          cancelled = true
+        end)
+      end,
+    } }, function() published = published + 1 end)
+    local ok, err = pcall(function()
+      assert(vim.wait(1000, function() return deliver ~= nil end))
+      cancel()
+      assert(deliver)()
+      assert(vim.wait(1000, function() return cancelled end))
+      cancel()
+      assert.are.equal(1, closes)
+      assert.are.equal(0, published)
+    end)
+    cancel()
+    vim.fn.delete(path)
+    assert(ok, err)
+  end)
+
   it("serializes Kitty protocol commands and detects tmux explicitly", function()
     assert.are.equal("YWJj", transport.base64("abc"))
     assert.are.same({ "" }, transport.chunks(""))
@@ -354,6 +512,16 @@ describe("Applet images", function()
     assert(ok, err)
   end)
 
+  it("cancels queued terminal output before its first native redraw", function()
+    local delivered, drained = false, false
+    local cancel = transport.schedule(function() delivered = true end)
+    cancel()
+    cancel()
+    vim.schedule(function() drained = true end)
+    assert(vim.wait(1000, function() return drained end))
+    assert.is_false(delivered)
+  end)
+
   it("uses the built-in TUI acknowledgement as an output barrier", function()
     local redraw, schedule, rpcrequest = vim.cmd, vim.schedule, vim.rpcrequest
     local ui_send = vim.api.nvim_ui_send
@@ -410,7 +578,7 @@ describe("Applet images", function()
     local nonblocking = ({ Linux = 0x800, OSX = 0x4, BSD = 0x4 })[jit.os]
     local flags, attempts = nonblocking, 0
     local interrupt, fail_write = true, false
-    local fail_blocking, fail_restore = false, false
+    local fail_get, fail_blocking, fail_restore = false, false, false
     local writes = {}
     local pointer = {}
     pointer.__index = pointer
@@ -429,7 +597,7 @@ describe("Applet images", function()
     fake_ffi.C.close = function(_) error("descriptor must remain open") end
     fake_ffi.C.fcntl = function(_, command, value)
       if command == 2 then return 0 end
-      if command == 3 then return flags end
+      if command == 3 then return fail_get and -1 or flags end
       if fail_blocking and value == 0 then return -1 end
       if fail_restore and value == nonblocking then return -1 end
       flags = value
@@ -460,6 +628,12 @@ describe("Applet images", function()
       assert.is_true(direct.write("payload"))
       assert.are.same({ { data = "payload", offset = 0, count = 7 } }, writes)
       assert.are.equal(nonblocking, flags)
+
+      fail_get = true
+      local inspected, inspection_error = pcall(direct.write, "uninspectable")
+      assert.is_false(inspected)
+      assert.matches("serialized terminal output is unavailable", tostring(inspection_error))
+      fail_get = false
 
       fail_blocking, interrupt, attempts = true, false, 0
       local blocked, blocked_error = pcall(direct.write, "blocked")
@@ -552,6 +726,9 @@ describe("Applet images", function()
     local ok, err = pcall(function()
       local inherited = require("applet.image.transport")
       assert.is_false(inherited.available())
+      vim.api.nvim_list_uis = function() error("UI enumeration failed") end
+      assert.is_false(inherited.available())
+      vim.api.nvim_list_uis = function() return {} end
       ---@type string?
       local unavailable
       inherited.after_redraw(function(value) unavailable = value end)
@@ -622,6 +799,7 @@ describe("Applet images", function()
   it("measures terminal cell pixels and calculates fitted viewports", function()
     local loaded_cell_size = package.loaded["applet.image.cell_size"]
     local loaded_ffi = package.loaded.ffi
+    local preload_ffi = package.preload.ffi
     local dimensions = {
       ws_row = 48, ws_col = 120, ws_xpixel = 1920, ws_ypixel = 960,
     }
@@ -640,7 +818,13 @@ describe("Applet images", function()
       }, cell_size.get())
       dimensions.ws_xpixel = 0
       assert.is_nil(cell_size.get())
+
+      package.loaded.ffi = nil
+      package.preload.ffi = function() error("ffi unavailable") end
+      package.loaded["applet.image.cell_size"] = nil
+      assert.is_nil(require("applet.image.cell_size").get())
     end)
+    package.preload.ffi = preload_ffi
     package.loaded.ffi = loaded_ffi
     package.loaded["applet.image.cell_size"] = loaded_cell_size
     assert(ok, err)
@@ -882,6 +1066,8 @@ describe("Applet images", function()
         fit = "fill", screen_row = 3, screen_col = 12 },
       { key = "preview", resource = resource, width = 4, height = 2,
         fit = "fill", screen_row = 3, screen_col = 4 },
+      { key = "overlay", resource = resource, width = 4, height = 2,
+        fit = "fill", screen_row = 3, screen_col = 4 },
     })
     assert(scheduled)()
     assert.are.equal(1, #writes)
@@ -893,7 +1079,61 @@ describe("Applet images", function()
     local right = assert(writes[2]:find("\27[3;12H", 1, true))
     local bottom = assert(writes[2]:find("\27[5;9H", 1, true))
     assert.is_true(left < right and right < bottom)
+    local first_overlap = assert(writes[2]:find(",p=9,", 1, true))
+    local second_overlap = assert(writes[2]:find(",p=10,", 1, true))
+    assert.is_true(first_overlap < second_overlap and second_overlap < right)
     kitty:destroy()
+  end)
+
+  it("cancels scheduled terminal output when the Kitty backend is destroyed", function()
+    local writes = {}
+    ---@type Applet.OutputCallback?
+    local scheduled
+    local kitty = Kitty.new({
+      available = true,
+      write = function(value) writes[#writes + 1] = value end,
+      schedule_output = function(callback)
+        scheduled = callback
+        return function() end
+      end,
+    })
+    local owner = {}
+    local resource = { data = "png", width = 1, height = 1 }
+    kitty:replace(owner, { { key = "preview", resource = resource, width = 1, height = 1 } })
+    kitty:destroy()
+    assert(scheduled)("late output failure")
+    assert.is_false(kitty:clear(owner))
+    kitty:release(resource)
+    assert.is_false(kitty:redraw(owner))
+    assert.are.same({}, writes)
+    assert.are.same({}, kitty.resources)
+    assert.are.same({}, kitty.owners)
+  end)
+
+  it("cancels the default scheduled output before its callback runs", function()
+    ---@type Applet.OutputCallback?
+    local scheduled
+    local schedule = vim.schedule
+    vim.schedule = function(callback)
+      scheduled = callback
+    end
+    local ok, err = pcall(function()
+      local kitty = Kitty.new({
+        available = true,
+        write = function() error("cancelled output was written") end,
+      })
+      kitty:replace({}, { {
+        key = "preview",
+        resource = { data = "png", width = 1, height = 1 },
+        width = 1,
+        height = 1,
+      } })
+      kitty:destroy()
+      assert(scheduled)()
+      assert.is_true(kitty.destroyed)
+    end)
+    vim.schedule = schedule
+    assert(ok, err)
   end)
 
   it("orders queued owner redraws and content deletion deterministically", function()
@@ -980,6 +1220,21 @@ describe("Applet images", function()
     assert.matches("queue failed", (assert(queued.last_error)))
     queued:destroy()
 
+    local contradictory = Kitty.new({
+      available = true,
+      write = function() error("must not write") end,
+      schedule_output = function(callback)
+        callback("scheduler rejected output")
+        error("scheduler failed after rejection")
+      end,
+    })
+    contradictory:replace({}, { { key = "preview",
+      resource = { data = "png", width = 1, height = 1 },
+      width = 1, height = 1,
+    } })
+    assert.matches("scheduler rejected output", (assert(contradictory.last_error)))
+    contradictory:destroy()
+
     local scheduling = Kitty.new({
       available = true,
       write = function() end,
@@ -1030,6 +1285,57 @@ describe("Applet images", function()
     assert.are.equal(selected, system.backend)
     assert.are.equal("test", system.backend_name)
     system:destroy()
+  end)
+
+  it("discards completed image preparation without a retaining owner", function()
+    local system = ImageSystem.new({ backend = backend() })
+    local value = { kind = "png_bytes", id = "unretained", revision = 1, data = png(1, 1) }
+    local ok, err = pcall(function()
+      assert.is_nil((system:request(value)))
+      assert(vim.wait(1000, function() return system:_stats().pending_preparations == 0 end))
+      assert.are.equal(0, system:_stats().prepared_resources)
+      assert.are.equal(0, system:_stats().cached_bytes)
+      local owner = {}
+      system:set_references(owner, { [source.identity(value)] = true })
+      system:request(value)
+      assert(vim.wait(1000, function() return system:_stats().prepared_resources == 1 end))
+      assert.are.equal(value.data, assert(system:request(value)).data)
+      system:set_references(owner, {})
+      assert.are.equal(0, system:_stats().cached_bytes)
+    end)
+    system:destroy()
+    system:destroy()
+    assert(ok, err)
+  end)
+
+  it("clears an image presentation when slots and placements are omitted", function()
+    local replaced = 0
+    local system = ImageSystem.new({ backend = backend({
+      replace = function(_, _, requests)
+        replaced = replaced + 1
+        assert.are.equal(replaced == 1 and 1 or 0, #requests)
+      end,
+    }) })
+    local ok, err = pcall(function()
+      local owner = {}
+      local value = { kind = "png_bytes", id = "cleared", revision = 1, data = png(1, 1) }
+      local id = source.identity(value)
+      system:set_references(owner, { [id] = true })
+      system:request(value)
+      assert(vim.wait(1000, function() return system:_stats().prepared_resources == 1 end))
+      assert(system:present(owner, { slots = { preview = id }, placements = {{
+        key = "preview", width = 1, height = 1, fit = "fill", screen_row = 2, screen_col = 3,
+      }} }))
+      system:set_references(owner, {})
+      assert(system:present(owner, {}))
+      assert.same({}, system:snapshot(owner).presented)
+      assert.are.equal(0, system:_stats().prepared_resources)
+      assert.are.equal(2, replaced)
+      assert.is_false(system:present(owner, {}))
+      assert.are.equal(2, replaced)
+    end)
+    system:destroy()
+    assert(ok, err)
   end)
 
   it("owns referenced resources and replaces prepared animation revisions", function()

@@ -86,6 +86,7 @@ describe("neoagent dialog source", function()
       assert.is_nil(source:snapshot().active)
       assert.is_true(#snapshots >= 5)
       detach()
+      detach()
     end)
 
   it("returns editable input and cancels a dismissed active dialog", function()
@@ -341,5 +342,11 @@ describe("neoagent dialog source", function()
     end
     assert.are.equal("headless", direct(tool(), {}, context()))
     assert.is_nil(observed)
+
+    local wrapped = require("neoagent.dialog").wrap(source,
+      function() error("decorated executor failed") end)
+    local ok, err = pcall(wrapped, tool(), {}, context())
+    assert.is_false(ok)
+    assert.matches("decorated executor failed", tostring(err))
   end)
 end)

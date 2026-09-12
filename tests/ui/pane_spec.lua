@@ -159,6 +159,160 @@ describe("Pane buffer surfaces", function()
     return value
   end
 
+  it("preserves published content when image discovery receives a malformed Tree", function()
+    local images = Applet.ImageSystem.new({ kitty = { available = false } })
+    image_systems[#image_systems + 1] = images
+    local value = pane({ key = "invalid-image-tree", image_system = images })
+    local host = surface("applet-invalid-image-tree", true)
+    value:_connect(host)
+    value:update(ui.text({ key = "body", text = "retained" }))
+    assert(value:flush())
+    local cyclic = ui.column({ key = "cycle", children = {} })
+    cyclic.children[1] = cyclic
+    for _, invalid in ipairs({ { root = false }, { root = cyclic } }) do
+      value:update(invalid --[[@as Applet.Tree]])
+      local committed, err = value:flush()
+      assert.is_nil(committed)
+      assert.are.equal("compile", assert(err).phase)
+      assert.are.same({ "retained" }, lines(host.buffer))
+      assert.are.equal(0, images:_stats().pending_preparations)
+    end
+    value:update(ui.text({ key = "body", text = "recovered" }))
+    assert(value:flush())
+    assert.are.same({ "recovered" }, lines(host.buffer))
+  end)
+
+  it("ignores retained native observation callbacks after disconnecting its surface", function()
+    local value = pane({ key = "retired-observers", buffer_mode = "editable" })
+    local host = surface("applet-retired-observers", true)
+    value:_connect(host)
+    value:update(ui.text({ key = "body", text = "editable" }))
+    assert(value:flush())
+    local retained = {}
+    local group = value.augroup
+    for _, event in ipairs({ "VimResized", "WinScrolled", "ColorScheme", "CursorMoved" }) do
+      local installed = vim.api.nvim_get_autocmds({ group = value.augroup, event = event })
+      assert.are.equal(1, #installed)
+      local callback = assert(installed[1]).callback
+      assert.are.equal("function", type(callback))
+      retained[#retained + 1] = callback
+    end
+    vim.api.nvim_buf_set_lines(host.buffer, 0, -1, false, { "native edit" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = host.buffer })
+    assert.are.equal("native edit", value:text())
+    value:_disconnect()
+    local before = value:_stats()
+    for _, callback in ipairs(retained) do callback() end
+    assert.are.same(before, value:_stats())
+    assert.is_false(value:is_connected())
+    assert.is_nil(value.resize_timer)
+    for _, installed in ipairs(vim.api.nvim_get_autocmds({})) do
+      assert.are_not.equal(group, installed.group)
+    end
+  end)
+
+  it("retires image redraw callbacks with their Pane Surface", function()
+    ---@type table<integer, vim.api.keyset.set_decoration_provider>
+    local providers = {}
+    local set_provider = vim.api.nvim_set_decoration_provider
+    vim.api.nvim_set_decoration_provider = function(namespace, callbacks)
+      providers[namespace] = callbacks
+      return set_provider(namespace, callbacks)
+    end
+    local redraws = 0
+    local image_system = new_image_system({
+      redraw = function()
+        redraws = redraws + 1
+        return true
+      end,
+    })
+    local value = pane({ key = "retired-image-redraw", image_system = image_system })
+    local host = surface("applet-retired-image-redraw", true)
+    local connected, connect_error = pcall(value._connect, value, host)
+    vim.api.nvim_set_decoration_provider = set_provider
+    assert(connected, connect_error)
+
+    local reconcile = require("applet.pane.reconcile")
+    local provider = assert(value.reconcile_state.image_redraw_provider)
+    local pane_callback = assert(provider.callback)
+    reconcile.set_image_redraw_handler({
+      surface = assert(value.surface),
+      state = value.reconcile_state,
+      image_namespace = value.image_namespace,
+      callback = pane_callback,
+    })
+    local callbacks = assert(providers[value.image_namespace])
+    provider.ranges = { { first = 2, last = 4 } }
+    assert(callbacks.on_line)(nil, nil, host.buffer + 1, 2)
+    local callback = provider.callback
+    provider.callback = nil
+    assert(callbacks.on_line)(nil, nil, host.buffer, 2)
+    provider.callback = callback
+    assert(callbacks.on_line)(nil, nil, host.buffer, 1)
+    assert(callbacks.on_line)(nil, nil, host.buffer, 2)
+    assert(callbacks.on_end)()
+    assert(vim.wait(1000, function() return redraws == 1 end))
+
+    local late = pane_callback
+    value:_disconnect()
+    assert.is_false(late())
+    value:destroy()
+    value:_request_resize()
+  end)
+
+  it("moves a Pane to a replacement buffer and releases its previous mappings", function()
+    local value = pane({ key = "replacement-buffer", handlers = { open = function() end } })
+    local original = surface("applet-previous-buffer", true)
+    local replacement = surface("applet-replacement-buffer", true)
+    value:_connect(original)
+    local content = tree("retained")
+    content.root = ui.scope({ key = "scope", bindings = { { lhs = "x", action = ui.action("open") } },
+      child = content.root })
+    value:update(content)
+    assert(value:flush())
+    assert.is_not_nil(mapping(original.buffer, "n", "x"))
+    value:_connect(replacement)
+    assert(value:flush())
+    assert.is_nil(mapping(original.buffer, "n", "x"))
+    assert.is_not_nil(mapping(replacement.buffer, "n", "x"))
+    assert.are.same(lines(original.buffer), lines(replacement.buffer))
+    value:update(tree("replacement content"))
+    assert(value:flush())
+    assert.are.equal("retained", lines(original.buffer)[1])
+    assert.are.equal("replacement content", lines(replacement.buffer)[1])
+  end)
+
+  it("retains a single revised region after a nil render and accepts its replacement", function()
+    local images = Applet.ImageSystem.new({ kitty = { available = false } })
+    image_systems[#image_systems + 1] = images
+    local value = pane({
+      key = "single-region",
+      image_system = images,
+      ---@param state {revision: integer, text: string, omit?: boolean}
+      render = function(state)
+        if state.omit then return nil --[[@as Applet.Tree]] end
+        return { root = ui.region({ key = "body", revision = state.revision,
+          child = ui.text({ key = "text", text = state.text }) }) }
+      end,
+    })
+    local host = surface("applet-single-region")
+    value:_connect(host)
+    value:set_state({ revision = 1, text = "retained" })
+    assert.is_true((value:flush()))
+    assert.are.same({ "retained" }, lines(host.buffer))
+    local generation = value.committed_generation
+    value:set_state({ revision = 2, text = "unpublished", omit = true })
+    local committed, err = value:flush()
+    assert.is_nil(committed)
+    assert.are.equal("render", assert(err).phase)
+    assert.are.equal("render returned nil", assert(err).message)
+    assert.are.equal(generation, value.committed_generation)
+    assert.are.same({ "retained" }, lines(host.buffer))
+    value:set_state({ revision = 3, text = "replacement" })
+    assert.is_true((value:flush()))
+    assert.are.same({ "replacement" }, lines(host.buffer))
+  end)
+
   it("connects a managed document and preserves native buffer behavior", function()
     ---@type Applet.ActionEvent<Applet.Pane>?
     local chosen
@@ -425,6 +579,14 @@ describe("Pane buffer surfaces", function()
     assert.is_false(value:is_connected())
     value:destroy()
     assert.is_true(value:is_destroyed())
+    assert.is_false(value:focus())
+    assert.is_false(value:is_visible())
+    assert.is_false(assert(value.surface_changed)(value))
+    assert.are.equal("", value:text())
+    assert.is_nil(value:focused_target())
+    assert.is_false(value:move_target({ direction = "next" }))
+    assert.is_false(value:reveal_target("missing"))
+    assert.are.same({}, value:targets())
     assert.has_error(function() value:cursor() end, "Pane is unavailable")
   end)
 
@@ -538,6 +700,66 @@ describe("Pane buffer surfaces", function()
     local after = value:_stats()
     assert.are.equal(before.region_compilations, after.region_compilations)
     assert.are.equal(before.region_reuses, after.region_reuses)
+  end)
+
+  it("redraws focus when a stable target region shifts during recovery", function()
+    local value = pane({
+      key = "shifted-focus",
+      handlers = { open = function() end },
+    })
+    local host = surface("applet-shifted-focus")
+    value:_connect(host)
+    local function document(prefix)
+      return {
+        root = ui.column({
+          key = "shifted-focus:root",
+          children = {
+            ui.region({
+              key = "prefix",
+              revision = prefix,
+              child = ui.text({ key = "prefix:text", text = prefix }),
+            }),
+            ui.region({
+              key = "target",
+              revision = 1,
+              child = ui.target({
+                key = "choice",
+                action = ui.action("open"),
+                focus_style = "Visual",
+                child = ui.text({ key = "choice:text", text = "choose" }),
+              }),
+            }),
+          },
+        }),
+        view = { initial_target = "choice" },
+      }
+    end
+    value:update(document("before"))
+    assert(value:flush())
+
+    vim.bo[host.buffer].modifiable = true
+    vim.bo[host.buffer].readonly = false
+    vim.api.nvim_buf_set_lines(host.buffer, 0, -1, false, {
+      "externally edited",
+      "choose",
+    })
+    vim.bo[host.buffer].modifiable = false
+    vim.bo[host.buffer].readonly = true
+    assert.is_true(value.reconcile_state.unknown)
+
+    value:update(document("before\nand after"))
+    assert(value:flush())
+
+    local marks = get_extmarks(
+      host.buffer,
+      value.focus_namespace,
+      0,
+      -1,
+      { details = true }
+    )
+    assert.are.equal(1, #marks)
+    assert.are.equal(2, assert(marks[1])[2])
+    assert.are.equal(2, assert(marks[1])[4].end_row)
   end)
 
   it("reconnects an idempotent buffer when its host window changes", function()
@@ -724,10 +946,12 @@ describe("Pane buffer surfaces", function()
         root = ui.column({ key = "target-regions", children = {
           ui.region({
             key = "prefix",
+            revision = prefix,
             child = ui.text({ key = "prefix:text", text = prefix }),
           }),
           ui.region({
             key = "choice",
+            revision = 1,
             child = ui.target({
               key = "stable-choice",
               action = ui.action("open"),
@@ -1073,6 +1297,26 @@ describe("Pane buffer surfaces", function()
     assert.are.equal(2, second[3].end_row)
     assert.are.equal(6, second[3].end_col)
     assert.are.equal(2, value:_stats().extmark_writes - writes)
+  end)
+
+  it("anchors native-wrap continuation chrome without line breaking", function()
+    local value = pane({ key = "native-continuation" })
+    local host, window = surface("applet-native-continuation", true)
+    host.window_options = {
+      wrap = true,
+      linebreak = false,
+      showbreak = ">>",
+    }
+    value:_connect(host)
+    vim.api.nvim_win_set_width(window(), 5)
+    value:update(ui.text({
+      key = "continuation",
+      text = "one two three",
+      wrap = "native",
+      background = "NormalFloat",
+    }))
+    assert(value:flush())
+    assert.are.equal(5, assert(assert(value.layout).decorations[1]).col)
   end)
 
   it("keeps stable decoration ranges valid when their region content changes", function()
@@ -1568,6 +1812,89 @@ describe("Pane buffer surfaces", function()
     assert.are.equal("upper", chosen)
   end)
 
+  for _, reposition in ipairs({ false, true }) do
+    it("recovers retained " .. (reposition and "placement" or "content") .. " after native chrome rejection", function()
+      local value = pane({ key = "retained-chrome-recovery" })
+      local host, window = surface("applet-retained-chrome-recovery", true)
+      host.chrome = require("applet.chrome").new({ window = window(), descriptor = {
+        chrome = { top = 1, right = 1, bottom = 1, left = 1 },
+      } }, "floating")
+      local apply_chrome = host.chrome.apply
+      local reject_chrome = false
+      host.chrome.apply = function(chrome, options)
+        if reject_chrome then
+          error("synthetic border rejection")
+        end
+        apply_chrome(chrome, options)
+      end
+      local root = ui.container({ key = "stage", width = 12, height = 3,
+        child = ui.text({ key = "base", text = "base" }),
+        layers = { ui.container({ key = "moving", width = 4, height = 1,
+          position = { mode = "absolute", row = 1, col = 1 },
+          child = ui.text({ key = "overlay", text = "move" }),
+        }) },
+      })
+      value:_connect(host)
+      value:update({ root = root, chrome = { title = { { text = "Managed" } } } })
+      assert(value:flush())
+      local committed = value.layout
+      local before = value:_stats()
+      local native = vim.api.nvim_win_get_config(window())
+      native.title, native.border = "", "none"
+      vim.api.nvim_win_set_config(window(), native)
+      assert(value.surface_changed)(value, { chrome = true })
+      reject_chrome = true
+      if reposition then
+        assert.is_true(value:set_position("moving", { col = 4 }))
+      end
+      local accepted, err = value:flush()
+      assert.is_nil(accepted)
+      assert.are.equal("commit", assert(err).phase)
+      assert.matches("border rejection", assert(err).message)
+      assert.are.equal(committed, value.layout)
+      assert.are.equal(before.commits, value:_stats().commits)
+
+      native.border = "single"
+      vim.api.nvim_win_set_config(window(), native)
+      assert(value.surface_changed)(value, { chrome = true })
+      reject_chrome = false
+      assert(value:flush())
+      assert.are.equal("Managed", vim.api.nvim_win_get_config(window()).title[1][1])
+      if reposition then
+        local scene = assert(value.current_scene)
+        assert.are.equal(4, assert(scene.layers[assert(scene.positions).moving]).col)
+      end
+    end)
+  end
+
+  it("rejects missing view targets before replacing its committed layout", function()
+    local value = pane({ key = "invalid-view-target", handlers = { open = function() end } })
+    local host = surface("applet-invalid-view-target", true)
+    value:_connect(host)
+    value:update(tree("retained"))
+    assert(value:flush())
+    local committed = value.layout
+    for _, view in ipairs({
+      { initial_target = "missing" },
+      { target_intent = { key = "select", select = "missing" } },
+      { target_intent = { key = "reveal", select = "message:target", reveal = "missing" } },
+    }) do
+      local replacement = tree("unpublished")
+      replacement.view = view
+      value:update(replacement)
+      local accepted, err = value:flush()
+      assert.is_nil(accepted)
+      assert.are.equal("compile", assert(err).phase)
+      assert.matches("must name a target", assert(err).message)
+      assert.are.equal(committed, value.layout)
+      assert.are.equal("retained", lines(host.buffer)[1])
+    end
+    value:update(tree("recovered"))
+    assert(value:flush())
+    assert.is_true(value:reveal_target("message:target"))
+    assert.are.equal("recovered", lines(host.buffer)[1])
+  end)
+
   it("repaints retained images after placement changes", function()
     local placed = {}
     local selected = image_backend({
@@ -1794,7 +2121,15 @@ describe("Pane buffer surfaces", function()
       end
       return set_extmark(buffer, namespace, row, col, opts)
     end
+    local scene_provider = assert(value.reconcile_state.scene_provider)
+    local scene_binding = assert(scene_provider.binding)
+    local clipped_layer = assert(scene_binding.layers[1])
+    local original_clip = clipped_layer.clip
     local drawn, draw_error = pcall(function()
+      clipped_layer.clip = { row = 1, col = 0, width = 10, height = 1 }
+      assert(callbacks.on_line)(nil, nil, host.buffer, 0)
+      clipped_layer.clip = original_clip
+      marks = {}
       assert(callbacks.on_line)(nil, nil, host.buffer + 1000, 0)
       assert(callbacks.on_line)(nil, nil, host.buffer, -1)
       assert(callbacks.on_line)(nil, nil, host.buffer, 3)
@@ -1803,6 +2138,7 @@ describe("Pane buffer surfaces", function()
       assert(callbacks.on_line)(nil, nil, host.buffer, 1)
       assert(callbacks.on_line)(nil, nil, host.buffer, 2)
     end)
+    clipped_layer.clip = original_clip
     vim.api.nvim_buf_set_extmark = set_extmark
     assert(drawn, draw_error)
 
@@ -1869,7 +2205,7 @@ describe("Pane buffer surfaces", function()
     value:update(content("first", "one"))
     assert.is_true((value:flush()))
     local changedtick = vim.api.nvim_buf_get_changedtick(host.buffer)
-    local first_provider = value.reconcile_state.scene_provider
+    local first_provider = assert(value.reconcile_state.scene_provider)
 
     value:update(content("second", "two"))
     assert.is_true((value:flush()))
@@ -1976,6 +2312,48 @@ describe("Pane buffer surfaces", function()
     assert.are.equal("Ask", assert(assert(virtuals[1])[4].virt_lines)[1][1][1])
   end)
 
+  it("keeps directly supplied content when state has no renderer", function()
+    local value = pane({ key = "direct-content" })
+    local host = surface("applet-direct-content")
+    value:_connect(host)
+    value:update(ui.text({ key = "content", text = "committed" }))
+    assert.is_true((value:flush()))
+    local committed = value.layout
+    value:set_state({ text = "unrendered" })
+    local updated, err = value:flush()
+    assert.is_nil(updated)
+    assert.are.equal("render", assert(err).phase)
+    assert.matches("Pane has no render function", assert(err).message)
+    assert.are.equal(committed, value.layout)
+    assert.are.same({ "committed" }, lines(host.buffer))
+    value:update(ui.text({ key = "content", text = "recovered" }))
+    assert.is_true((value:flush()))
+    assert.are.same({ "recovered" }, lines(host.buffer))
+  end)
+
+  it("reports commit observer errors without discarding native content", function()
+    ---@type Applet.PaneError[]
+    local errors = {}
+    local commits = 0
+    local value = pane({ key = "commit-observer", on_error = function(err) errors[#errors + 1] = err end })
+    local host = surface("applet-commit-observer")
+    host.on_commit = function()
+      commits = commits + 1
+      if commits == 1 then error("observer failed") end
+    end
+    value:_connect(host)
+    value:update(ui.text({ key = "content", text = "committed" }))
+    assert.is_true((value:flush()))
+    assert.are.same({ "committed" }, lines(host.buffer))
+    assert.are.equal("surface", assert(errors[1]).phase)
+    assert.matches("observer failed", assert(errors[1]).message)
+    value:update(ui.text({ key = "content", text = "next" }))
+    assert.is_true((value:flush()))
+    assert.are.equal(2, commits)
+    assert.are.equal(1, #errors)
+    assert.are.same({ "next" }, lines(host.buffer))
+  end)
+
   it("retains the committed Layout on errors and restores connection state", function()
     local silent = pane({ key = "silent-errors" })
     local _, silent_error = silent:_report("direct", "silent failure", silent.generation)
@@ -2057,7 +2435,6 @@ describe("Pane buffer surfaces", function()
 
     local critical = true
     local domain = Domain.new({ critical = function() return critical end })
-    domain.is_safe = function() return not critical end
     domain:_track_key('"', "i")
     assert.is_false(domain.register_pending)
     domain:_track_key('"', "n")
@@ -2069,7 +2446,6 @@ describe("Pane buffer surfaces", function()
     local second_buffer = vim.api.nvim_create_buf(false, true)
     local second = {
       buffer = second_buffer,
-      window = function() return nil end,
       owns_buffer = true,
       domain = domain,
     }
@@ -2098,6 +2474,10 @@ describe("Pane buffer surfaces", function()
     domain:add(one)
     domain:destroy()
     domain:destroy()
+    domain:request(one)
+    assert.is_false(domain:surfaces_changed())
+    assert.is_false(domain:is_safe())
+    assert.are.equal(0, domain:_stats().participants)
     assert.is_false(domain:flush())
     local add_ok = pcall(domain.add, domain, one)
     assert.is_false(add_ok)
@@ -2165,6 +2545,23 @@ describe("Pane buffer surfaces", function()
     assert.is_true(vim.tbl_contains(assert(inside), "luaStatement"))
     assert.is_false(vim.tbl_contains(assert(outside), "luaStatement"))
     vim.api.nvim_buf_delete(buffer, { force = true })
+    adapter.clear(buffer)
+  end)
+
+  it("contains direct access after a Surface buffer disappears", function()
+    local value = pane({ key = "disappeared-surface", buffer_mode = "editable" })
+    local host = surface("applet-disappeared-surface", true)
+    value:_connect(host)
+    value:update({
+      root = ui.text({ key = "body", text = "secret" }),
+      edit = { mask = "*" },
+    })
+    assert(value:flush())
+    vim.cmd("noautocmd bwipeout! " .. host.buffer)
+    assert.is_false(vim.api.nvim_buf_is_valid(host.buffer))
+    assert.are.equal("", value:text())
+    assert.are.equal(0, value:_refresh_mask())
+    value:_disconnect()
   end)
 
   it("prepares and presents optional images through an ImageSystem", function()
@@ -2289,6 +2686,25 @@ describe("Pane buffer surfaces", function()
     vim.fn.pumvisible, vim.fn.pum_getpos =
       original_pumvisible, original_pum_getpos
 
+    local image_window = assert(assert(host.window)())
+    vim.api.nvim_win_set_config(image_window, { hide = true })
+    value.force_images = true
+    assert.is_true((value:flush()))
+    assert.are.equal(0, #batches[#batches].placements)
+    vim.api.nvim_win_set_config(image_window, { hide = false })
+
+    vim.wo[image_window].foldmethod = "manual"
+    vim.wo[image_window].foldenable = true
+    vim.api.nvim_win_call(image_window, function()
+      vim.cmd("silent! 1,2fold")
+    end)
+    value.force_images = true
+    assert.is_true((value:flush()))
+    assert.are.equal(0, #batches[#batches].placements)
+    vim.api.nvim_win_call(image_window, function()
+      vim.cmd("silent! normal! zE")
+    end)
+
     value:_disconnect()
     assert.are.equal(0, #batches[#batches].placements)
     images:destroy()
@@ -2409,6 +2825,13 @@ describe("Pane buffer surfaces", function()
           height = 2,
           background = "NormalFloat",
         }),
+        ui.container({
+          key = "nested-occluder",
+          position = { mode = "absolute", row = 1, col = 3, zindex = 2 },
+          width = 2,
+          height = 2,
+          background = "NormalFloat",
+        }),
       },
     }))
     assert.is_true((value:flush()))
@@ -2486,9 +2909,11 @@ describe("Pane buffer surfaces", function()
     local position = vim.fn.screenpos(window(), image.row + 1,
       require("applet.util").byte_col((assert(line)), image.col) + 1)
 
-    local function blocker(_, row, col, width, height, zindex)
+    ---@param borderless? boolean
+    local function blocker(_, row, col, width, height, zindex, borderless)
       local buffer = vim.api.nvim_create_buf(false, true)
-      local window_id = vim.api.nvim_open_win(buffer, false, {
+      ---@type vim.api.keyset.win_config
+      local config = {
         relative = "editor",
         row = row,
         col = col,
@@ -2496,7 +2921,16 @@ describe("Pane buffer surfaces", function()
         height = height,
         style = "minimal",
         zindex = zindex,
-      })
+      }
+      if not borderless then
+        config.border = {
+          { "", "Normal" }, { "", "Normal" },
+          { "", "Normal" }, { "", "Normal" },
+          { "", "Normal" }, { "", "Normal" },
+          { "", "Normal" }, { "", "Normal" },
+        }
+      end
+      local window_id = vim.api.nvim_open_win(buffer, false, config)
       local result = { buffer = buffer, window = window_id }
       function result:destroy()
         if vim.api.nvim_win_is_valid(self.window) then
@@ -2519,6 +2953,8 @@ describe("Pane buffer surfaces", function()
     local first = blocker("applet-canonical-first",
       first_config.row, first_config.col,
       first_config.width, first_config.height, first_config.zindex)
+    blocker("applet-canonical-same-left",
+      first_config.row, first_config.col, 6, first_config.height, 80, true)
     blocker("applet-canonical-second",
       position.row + 3, position.col + 9, 12, 4, 90)
 
@@ -3255,6 +3691,38 @@ describe("Pane buffer surfaces", function()
     vim.api.nvim_buf_delete(replacement, { force = true })
   end)
 
+  it("recovers a native mapping after its Surface window callback throws", function()
+    local calls = 0
+    local value = pane({ key = "mapping-window-failure", handlers = {
+      invoke = function() calls = calls + 1 end,
+    } })
+    local host, window = surface("applet-mapping-window-failure")
+    local unavailable = false
+    host.window = function()
+      if unavailable then error("Surface window is unavailable") end
+      return window()
+    end
+    value:_connect(host)
+    value:update(ui.scope({ key = "scope", bindings = {{ lhs = "x", action = ui.action("invoke") }},
+      child = ui.text({ key = "text", text = "content" }),
+    }))
+    assert(value:flush())
+    local callback = assert(assert(mapping(host.buffer, "n", "x")).callback)
+    unavailable = true
+    local ok, err = pcall(callback)
+    unavailable = false
+    assert.is_false(ok)
+    assert.matches("Surface window is unavailable", tostring(err))
+    assert.are.equal(0, calls)
+    callback()
+    assert.are.equal(1, calls)
+    value:update(ui.text({ key = "text", text = "no binding" }))
+    assert(value:flush())
+    assert.is_false(callback())
+    assert.are.equal(1, calls)
+    assert.is_nil(mapping(host.buffer, "n", "x"))
+  end)
+
   it("rejects unknown actions and contains handler failures", function()
     local errors = {}
     local value = pane({
@@ -3277,6 +3745,20 @@ describe("Pane buffer surfaces", function()
     assert.is_false(require("applet.pane.input").dispatch(value, "n", "x"))
     assert.are.equal("handler", errors[#errors].phase)
     assert.matches("handler exploded", errors[#errors].message)
+    local input = require("applet.pane.input")
+    local activate = ui.action("applet.target.activate")
+    assert.is_false(input.dispatch_action(value, activate, nil, 1, "n", 0, 0))
+    assert.is_false(input.dispatch_action(value, activate, {
+      key = "disabled",
+      rectangles = {},
+      disabled = true,
+      action = ui.action("explode"),
+    } --[[@as Applet.InputTarget]], 1, "n", 0, 0))
+    assert.is_false(input.dispatch_action(value, activate, {
+      key = "inert",
+      rectangles = {},
+      disabled = false,
+    } --[[@as Applet.InputTarget]], 1, "n", 0, 0))
     local committed = value.layout
     value:update(ui.scope({
       key = "unknown",
@@ -3414,6 +3896,12 @@ describe("Pane buffer surfaces", function()
     assert.are.equal("right", vim.api.nvim_win_get_config(window()).footer_pos)
     assert.are.equal(not original_cursorline, vim.wo[window()].cursorline)
     assert.is_false(vim.wo[window()].wrap)
+    value:update({ root = ui.text({ key = "text", text = "text" }),
+      chrome = { title = {}, footer = {} } })
+    assert(value:flush())
+    local empty = vim.api.nvim_win_get_config(window())
+    assert.is_nil(empty.title)
+    assert.is_nil(empty.footer)
     value:update(ui.text({ key = "text", text = "text" }))
     value:flush()
     local config = vim.api.nvim_win_get_config(window())
@@ -3443,6 +3931,38 @@ describe("Pane buffer surfaces", function()
     value:_disconnect()
     assert.are.equal(original_wrap, vim.wo[window()].wrap)
     assert.are.equal(original_cursorline, vim.wo[window()].cursorline)
+  end)
+
+  it("restores floating chrome after partial native failures", function()
+    local host, window = surface("applet-partial-chrome", true)
+    local chrome = require("applet.chrome")
+    local record = {
+      window = window(),
+      descriptor = { chrome = { top = 1, right = 1, bottom = 1, left = 1 } },
+    }
+    local partial = chrome.new(record, "floating")
+    local get_config = vim.api.nvim_win_get_config
+    local calls = 0
+    vim.api.nvim_win_get_config = function(target)
+      calls = calls + 1
+      if calls == 2 then error("configuration disappeared") end
+      return get_config(target)
+    end
+    local applied = pcall(partial.apply, {
+      title = { { text = " Partial " } },
+    })
+    vim.api.nvim_win_get_config = get_config
+    assert.is_false(applied)
+    partial.restore()
+
+    local unavailable = chrome.new(record, "floating")
+    unavailable.apply({ title = { { text = " Managed " } } })
+    vim.api.nvim_win_get_config = function() error("window disappeared") end
+    local restored, restore_error = pcall(unavailable.restore)
+    vim.api.nvim_win_get_config = get_config
+    assert(restored, restore_error)
+    assert.is_true(vim.api.nvim_win_is_valid(window()))
+    assert.are.equal(host.buffer, vim.api.nvim_win_get_buf(window()))
   end)
 
   it("restores original float footers and replaces Surface chrome adapters", function()
@@ -3488,6 +4008,36 @@ describe("Pane buffer surfaces", function()
     value:_disconnect()
     assert.are.equal(1, restored.second)
   end)
+
+  for _, adapter in ipairs({ false, true }) do
+    it("removes empty floating chrome and restores native originals " .. (adapter and "with an adapter" or "directly"), function()
+      local value = pane({ key = "empty-chrome" })
+      local host, window = surface("applet-empty-chrome", true)
+      local original = vim.api.nvim_win_get_config(window())
+      original.title, original.footer = "Original title", "Original footer"
+      vim.api.nvim_win_set_config(window(), original)
+      if adapter then
+        host.chrome = require("applet.chrome").new({ window = window(), descriptor = {
+          chrome = { top = 1, bottom = 1, left = 1, right = 1 },
+        } }, "floating")
+      end
+      value:_connect(host)
+      value:update({ root = ui.text({ key = "text", text = "retained" }), chrome = {
+        title = {{ text = "Managed title" }}, footer = {{ text = "Managed footer" }},
+      } })
+      assert(value:flush())
+      assert.are.equal("Managed title", vim.api.nvim_win_get_config(window()).title[1][1])
+      value:update({ root = ui.text({ key = "text", text = "retained" }), chrome = { title = {}, footer = {} } })
+      assert(value:flush())
+      local cleared = vim.api.nvim_win_get_config(window())
+      assert.are.equal("Original title", cleared.title[1][1])
+      assert.are.equal("Original footer", cleared.footer[1][1])
+      value:_disconnect()
+      local restored = vim.api.nvim_win_get_config(window())
+      assert.are.equal("Original title", restored.title[1][1])
+      assert.are.equal("Original footer", restored.footer[1][1])
+    end)
+  end
 
   it("restores mappings that existed before connection", function()
     local host = surface("applet-mapping-restore")

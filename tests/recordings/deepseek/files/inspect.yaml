@@ -1,0 +1,39 @@
+# Synthetic upload conversation; no live provider capture.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.deepseek.com/files/file-tile
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 134
+---
+type: response_body
+at_us: 4000
+bytes: 134
+body:
+  bytes: 68
+  created_at: 1700000000
+  expires_at: 1700086400
+  filename: image
+  id: file-tile
+  object: file
+  purpose: user_data
+body_format: json
+---
+type: response
+at_us: 4000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 4000
+ok: true

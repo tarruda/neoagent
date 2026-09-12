@@ -75,9 +75,13 @@ end
 local function session_header(context)
   local identity = context.request_context
   local session_id = type(identity) == "table" and rawget(identity, "session_id") or nil
-  if type(session_id) ~= "string" or session_id == "" or #session_id > 512
-      or not util.is_valid_utf8(session_id)
-      or session_id:find("[%z\1-\31\127]") then
+  if
+    type(session_id) ~= "string"
+    or session_id == ""
+    or #session_id > 512
+    or not util.is_valid_utf8(session_id)
+    or session_id:find("[%z\1-\31\127]")
+  then
     return {}
   end
   return { headers = { ["x-opencode-session"] = session_id } }
@@ -102,9 +106,15 @@ local function model(context_window, max_output_tokens, options)
     input = { "text" },
   }
   options = options or {}
-  if options.api then result.api = options.api end
-  if options.image then result.input = { "text", "image" } end
-  if options.thinking then result.thinking = util.copy(options.thinking) end
+  if options.api then
+    result.api = options.api
+  end
+  if options.image then
+    result.input = { "text", "image" }
+  end
+  if options.thinking then
+    result.thinking = util.copy(options.thinking)
+  end
   return result
 end
 
@@ -116,22 +126,31 @@ local known_models = {
     api = responses,
     image = true,
     thinking = response_efforts({
-      low = "low", medium = "medium", high = "high",
+      low = "low",
+      medium = "medium",
+      high = "high",
     }),
   }),
   ["grok-4.6"] = model(500000, 500000, {
     api = responses,
     image = true,
     thinking = response_efforts({
-      low = "low", medium = "medium", high = "high", xhigh = "xhigh",
+      low = "low",
+      medium = "medium",
+      high = "high",
+      xhigh = "xhigh",
     }),
   }),
   ["gpt-5.6-luna"] = model(1050000, 128000, {
     api = responses,
     image = true,
     thinking = response_efforts({
-      off = "none", low = "low", medium = "medium", high = "high",
-      xhigh = "xhigh", max = "max",
+      off = "none",
+      low = "low",
+      medium = "medium",
+      high = "high",
+      xhigh = "xhigh",
+      max = "max",
     }),
   }),
   ["glm-5"] = model(202752, 32768, {
@@ -191,27 +210,35 @@ local known_models = {
     api = responses,
     image = true,
     thinking = response_efforts({
-      minimal = "minimal", low = "low", medium = "medium",
-      high = "high", xhigh = "xhigh",
+      minimal = "minimal",
+      low = "low",
+      medium = "medium",
+      high = "high",
+      xhigh = "xhigh",
     }),
   }),
   ["qwen3.8-max"] = model(1000000, 131072, {
-    api = messages, image = true,
+    api = messages,
+    image = true,
   }),
   ["qwen3.8-flash"] = model(1000000, 131072, {
-    api = messages, image = true,
+    api = messages,
+    image = true,
   }),
   ["qwen3.7-max"] = model(1000000, 65536, {
     api = messages,
   }),
   ["qwen3.7-plus"] = model(1000000, 65536, {
-    api = messages, image = true,
+    api = messages,
+    image = true,
   }),
   ["qwen3.6-plus"] = model(1000000, 65536, {
-    api = messages, image = true,
+    api = messages,
+    image = true,
   }),
   ["qwen3.5-plus"] = model(262144, 65536, {
-    api = messages, image = true,
+    api = messages,
+    image = true,
   }),
   hy3 = model(256000, 64000, {
     thinking = completion_efforts({ off = "none", low = "low", high = "high" }),
@@ -222,14 +249,6 @@ local known_models = {
   ["hy4-preview"] = model(1024000, 64000, {
     thinking = completion_efforts({ off = "none", high = "high" }),
   }),
-}
-
----@type table<string, boolean>
-local response_models = {
-  ["gpt-5.6-luna"] = true,
-  ["grok-4.5"] = true,
-  ["grok-4.6"] = true,
-  ["muse-spark-1.2-contributor"] = true,
 }
 
 ---@type table<string, boolean>
@@ -245,7 +264,9 @@ local function qwen_thinking(id)
   if id:match("^qwen3%.8%-") then
     return message_efforts({ "low", "medium", "xhigh" })
   end
-  if id:match("^qwen3%.[5-7]%-") then return toggle_thinking() end
+  if id:match("^qwen3%.[5-7]%-") then
+    return toggle_thinking()
+  end
 end
 
 ---@param source Neoagent.DiscoveredModel
@@ -261,10 +282,7 @@ local function transform(source)
   local result = util.deep_merge(defaults, source)
   ---@cast result Neoagent.DiscoveredModel
   if result.api == nil then
-    if response_models[source.id] then
-      result.api = responses
-    elseif message_models[source.id]
-        or source.id:match("^qwen3%.[5-8]%-") then
+    if message_models[source.id] or source.id:match("^qwen3%.[5-8]%-") then
       result.api = messages
     end
   end
@@ -272,26 +290,54 @@ local function transform(source)
 end
 
 local ids = {
-  "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
-  "deepseek-v4-pro", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3",
-  "glm-5.3-flash", "gpt-5.6-luna", "grok-4.5", "grok-4.6",
-  "hy3", "hy3-preview", "hy4-preview", "kimi-k2.5", "kimi-k2.6",
-  "kimi-k2.7-code", "kimi-k3", "longcat-2.0", "mimo-v2-omni",
-  "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m2.5",
-  "minimax-m2.7", "minimax-m3", "muse-spark-1.2-contributor",
-  "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
-  "qwen3.8-flash", "qwen3.8-max",
+  "deepseek-v4-flash",
+  "deepseek-v4-flash-vision-exp",
+  "deepseek-v4-pro",
+  "glm-5",
+  "glm-5.1",
+  "glm-5.2",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "gpt-5.6-luna",
+  "grok-4.5",
+  "grok-4.6",
+  "hy3",
+  "hy3-preview",
+  "hy4-preview",
+  "kimi-k2.5",
+  "kimi-k2.6",
+  "kimi-k2.7-code",
+  "kimi-k3",
+  "longcat-2.0",
+  "mimo-v2-omni",
+  "mimo-v2-pro",
+  "mimo-v2.5",
+  "mimo-v2.5-pro",
+  "minimax-m2.5",
+  "minimax-m2.7",
+  "minimax-m3",
+  "muse-spark-1.2-contributor",
+  "qwen3.5-plus",
+  "qwen3.6-plus",
+  "qwen3.7-max",
+  "qwen3.7-plus",
+  "qwen3.8-flash",
+  "qwen3.8-max",
 }
 
 ---@type Neoagent.DiscoveredModel[]
 local seed = {}
-for _, id in ipairs(ids) do seed[#seed + 1] = { id = id } end
+for _, id in ipairs(ids) do
+  seed[#seed + 1] = { id = id }
+end
 
 ---@type Neoagent.ProviderDefinition
 local provider = {
   api = "openai-completions",
   base_url = "https://opencode.ai/zen/go/v1",
-  api_key = function() return vim.env.OPENCODE_API_KEY end,
+  api_key = function()
+    return vim.env.OPENCODE_API_KEY
+  end,
   auth = "opencode-go",
   request_opts = session_header,
   catalog = {

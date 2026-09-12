@@ -35,6 +35,12 @@ local compact_activities = {
   search = true,
 }
 
+---@param value string
+---@return boolean
+local function one_line(value)
+  return not value:find("[\r\n]")
+end
+
 ---@param state? string
 ---@return boolean
 local function active(state)
@@ -68,7 +74,9 @@ end
 ---@return string[]
 local function compact_characters(text, width)
   text = (text or ""):gsub("\t", "    ")
-  if text == "" then return { "" } end
+  if text == "" then
+    return { "" }
+  end
   local result, current, current_width = {}, "", 0
   width = math.max(1, width)
   for character in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
@@ -88,10 +96,16 @@ end
 ---@param opts Neoagent.ToolViewOptions
 ---@return Neoagent.ToolViewPresentation?
 local function activity(value, opts)
-  if type(value.operation) ~= "string"
-      or type(value.ongoing) ~= "string" or type(value.complete) ~= "string"
-      or type(value.subject) ~= "string"
-      or value.command ~= nil and type(value.command) ~= "string" then
+  if
+    type(value.operation) ~= "string"
+    or type(value.ongoing) ~= "string"
+    or not one_line(value.ongoing)
+    or type(value.complete) ~= "string"
+    or not one_line(value.complete)
+    or type(value.subject) ~= "string"
+    or not one_line(value.subject)
+    or value.command ~= nil and type(value.command) ~= "string"
+  then
     return nil
   end
   local verb = active(opts.state) and value.ongoing or value.complete
@@ -118,23 +132,26 @@ end
 ---@param codex boolean
 ---@return Neoagent.ToolStyledText[]?
 local function plan_body(value, opts, codex)
-  if not util.is_list(value.plan) then return nil end
+  if not util.is_list(value.plan) then
+    return nil
+  end
   if value.explanation ~= nil and type(value.explanation) ~= "string" then
     return nil
   end
   ---@type Neoagent.ToolStyledText[]
   local body = {}
-  local body_width = opts.presentation_surface == "transcript"
-      and math.max(1, (opts.width or 80) - (codex and 4 or 2)) or nil
+  local body_width = opts.presentation_surface == "transcript" and math.max(1, (opts.width or 80) - (codex and 4 or 2))
+    or nil
   ---@param text? string
   ---@param width? integer
   ---@return string[]
   local function lines(text, width)
-    if width then return compact_words(text, width) end
+    if width then
+      return compact_words(text, width)
+    end
     return display.lines(text or "")
   end
-  local explanation = type(value.explanation) == "string"
-      and util.trim(value.explanation) or ""
+  local explanation = type(value.explanation) == "string" and util.trim(value.explanation) or ""
   if explanation ~= "" then
     for _, line in ipairs(lines(explanation, body_width)) do
       body[#body + 1] = { text = line, style = { "muted", "italic" } }
@@ -148,23 +165,23 @@ local function plan_body(value, opts, codex)
     }
   else
     for _, item in ipairs(steps) do
-      if type(item) ~= "table" or type(item.step) ~= "string"
-          or item.status ~= "pending" and item.status ~= "in_progress"
-            and item.status ~= "completed" then
+      if
+        type(item) ~= "table"
+        or type(item.step) ~= "string"
+        or item.status ~= "pending" and item.status ~= "in_progress" and item.status ~= "completed"
+      then
         return nil
       end
       local marker = codex and (item.status == "completed" and "✔ " or "□ ")
         or (item.status == "completed" and "[x] " or "[ ] ")
       local style = item.status == "completed" and { "muted", "strike" }
-        or item.status == "in_progress"
-          and (codex and { "cyan", "bold" } or "bold")
+        or item.status == "in_progress" and (codex and { "cyan", "bold" } or "bold")
         or "muted"
       local marker_width = codex and 2 or 4
       local available = body_width and body_width - marker_width or nil
       for index, line in ipairs(lines(item.step, available)) do
         body[#body + 1] = {
-          text = (index == 1 and marker
-            or string.rep(" ", marker_width)) .. line,
+          text = (index == 1 and marker or string.rep(" ", marker_width)) .. line,
           style = style,
         }
       end
@@ -179,7 +196,9 @@ end
 ---@return Neoagent.ToolViewPresentation?
 local function plan(value, opts, codex)
   if value.plan == nil and active(opts.state) then
-    if not codex then return nil end
+    if not codex then
+      return nil
+    end
     return {
       animated = true,
       title = {
@@ -189,7 +208,9 @@ local function plan(value, opts, codex)
     }
   end
   local body = plan_body(value, opts, codex)
-  if not body then return nil end
+  if not body then
+    return nil
+  end
   ---@type Neoagent.ToolStyledText[][]
   local lines = {}
   if codex then
@@ -215,8 +236,12 @@ end
 local function row_counts(rows)
   local added, removed = 0, 0
   for _, row in ipairs(rows) do
-    if row.kind == "add" then added = added + 1 end
-    if row.kind == "delete" then removed = removed + 1 end
+    if row.kind == "add" then
+      added = added + 1
+    end
+    if row.kind == "delete" then
+      removed = removed + 1
+    end
   end
   return added, removed
 end
@@ -262,19 +287,18 @@ local function edit_rows(rows, width, maximum_lines)
           { text = "⋮", style = "muted" },
         }
       end
-    elseif type(row.number) ~= "number" or type(row.text) ~= "string"
-        or row.kind ~= "add" and row.kind ~= "delete"
-          and row.kind ~= "context" then
+    elseif
+      type(row.number) ~= "number"
+      or type(row.text) ~= "string"
+      or row.kind ~= "add" and row.kind ~= "delete" and row.kind ~= "context"
+    then
       return nil
     elseif maximum_lines and #result >= maximum_lines then
       omitted = omitted + 1
     else
-      local style = row.kind == "add" and "green"
-        or row.kind == "delete" and "red" or nil
-      local sign = row.kind == "add" and "+"
-        or row.kind == "delete" and "-" or " "
-      local chunks = available and compact_characters(row.text, available)
-        or { row.text }
+      local style = row.kind == "add" and "green" or row.kind == "delete" and "red" or nil
+      local sign = row.kind == "add" and "+" or row.kind == "delete" and "-" or " "
+      local chunks = available and compact_characters(row.text, available) or { row.text }
       for index, chunk in ipairs(chunks) do
         if maximum_lines and #result >= maximum_lines then
           omitted = omitted + 1
@@ -307,18 +331,22 @@ end
 ---@param opts Neoagent.ToolViewOptions
 ---@return Neoagent.ToolViewPresentation?
 local function edit(value, opts)
-  if type(value.path) ~= "string" or not util.is_list(value.rows) then return nil end
+  if type(value.path) ~= "string" or not one_line(value.path) or not util.is_list(value.rows) then
+    return nil
+  end
   local compact = opts.presentation_surface == "transcript"
   local maximum = compact and EDIT_PREVIEW_LINES or nil
-  local lines, omitted = edit_rows(
-    value.rows, compact and (opts.width or 80) or nil, maximum)
-  if not lines then return nil end
+  local lines, omitted = edit_rows(value.rows, compact and (opts.width or 80) or nil, maximum)
+  if not lines then
+    return nil
+  end
   if omitted > 0 then
-    lines[#lines + 1] = { {
-      text = string.format("   [... %d more line%s]",
-        omitted, omitted == 1 and "" or "s"),
-      style = "muted",
-    } }
+    lines[#lines + 1] = {
+      {
+        text = string.format("   [... %d more line%s]", omitted, omitted == 1 and "" or "s"),
+        style = "muted",
+      },
+    }
   end
   local added, removed = row_counts(value.rows)
   return {
@@ -331,21 +359,30 @@ end
 ---@param value Neoagent.ToolTextPresentation
 ---@return Neoagent.ToolViewPresentation?
 local function text(value)
-  if value.title ~= nil and type(value.title) ~= "string"
-      or value.lines ~= nil and not util.is_list(value.lines)
-      or value.include_output ~= nil and type(value.include_output) ~= "boolean" then
+  if
+    value.title ~= nil and type(value.title) ~= "string"
+    or type(value.title) == "string" and not one_line(value.title)
+    or value.lines ~= nil and not util.is_list(value.lines)
+    or value.include_output ~= nil and type(value.include_output) ~= "boolean"
+  then
     return nil
   end
-  if value.include_output and value.lines ~= nil then return nil end
+  if value.include_output and value.lines ~= nil then
+    return nil
+  end
   local lines
   if value.lines then
     lines = {}
     for _, line in ipairs(value.lines) do
-      if type(line) ~= "string" or line:find("[\r\n]") then return nil end
+      if type(line) ~= "string" or line:find("[\r\n]") then
+        return nil
+      end
       lines[#lines + 1] = { { text = line } }
     end
   end
-  if value.title == nil and lines == nil then return nil end
+  if value.title == nil and lines == nil then
+    return nil
+  end
   return {
     default = value.include_output == true or nil,
     title = value.title and { { text = value.title, style = "bold" } } or nil,
@@ -359,7 +396,9 @@ end
 ---@param codex boolean
 ---@return Neoagent.ToolViewPresentation?
 local function present(value, opts, codex)
-  if type(value) ~= "table" or type(value.kind) ~= "string" then return nil end
+  if type(value) ~= "table" or type(value.kind) ~= "string" then
+    return nil
+  end
   if value.kind == "activity" then
     ---@cast value Neoagent.ToolActivityPresentation
     return codex and activity(value, opts) or nil

@@ -280,11 +280,14 @@ describe("Applet Hosts", function()
       assert(value_tree.bindings)[#value_tree.bindings + 1] = binding
     end
     value:update(value_tree)
-    assert(value:open())
+    local opened, open_error = value:open()
+    assert(opened, open_error and open_error.message)
     assert(value:focus("transcript"))
     local input_dispatch = require("applet.pane.input").dispatch
     assert.is_true(input_dispatch(transcript, "n", "x"))
     assert.are.equal(1, invoked)
+    assert.is_false(value:focus())
+    assert.are.equal("transcript", value:focused_pane())
     assert.is_false(input_dispatch(transcript, "n", "r"))
     assert.is_false(input_dispatch(transcript, "n", "e"))
     assert.matches("action failed", assert(reported).message)
@@ -635,6 +638,11 @@ describe("Applet Hosts", function()
     assert.is_true(assert(second_pane):at_end())
 
     local previous_open = vim.ui.open
+    local requested_uri
+    vim.ui.open = function(uri) requested_uri = uri end
+    value:open_uri("https://example.test")
+    vim.ui.open = previous_open
+    assert.are.equal("https://example.test", requested_uri)
     vim.ui.open = nil
     assert.has_error(function() value:open_uri("https://example.test") end,
       "URI opening is unavailable")

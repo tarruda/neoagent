@@ -141,13 +141,51 @@ describe("Anthropic management client", function()
         } } },
         has_more = false,
       }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-name", display_name = "bad\nname" } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-count", max_input_tokens = -1 } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-capabilities", capabilities = "yes" } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-thinking-capability", capabilities = {
+          thinking = { supported = "yes" },
+        } } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-thinking-type", capabilities = {
+          thinking = { supported = true, types = {
+            adaptive = { supported = "yes" },
+          } },
+        } } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-effort-capability", capabilities = {
+          effort = { supported = "yes" },
+        } } },
+        has_more = false,
+      }) },
+      { body = vim.json.encode({
+        data = { { id = "bad-effort-level", capabilities = {
+          effort = { supported = true, low = { supported = "yes" } },
+        } } },
+        has_more = false,
+      }) },
     }
     local value = client.new({
       base_url = "https://example.test/v1",
       transport = transport,
     })
     local request = { resolve_auth = auth({ ["x-api-key"] = "key" }) }
-    for _ = 1, 3 do
+    for _ = 1, #transport.fetches do
       local result = wait(value:models(request))
       assert.is_false(result.ok)
       assert.matches("invalid model catalog", assert(result.error).message)
@@ -301,6 +339,44 @@ describe("Anthropic management client", function()
       assert.is_false(result.ok)
       assert.matches("invalid cost data", assert(result.error).message)
     end
+  end)
+
+  it("reports incomplete and failed cost requests after valid usage", function()
+    local valid_usage = {
+      has_more = false,
+      data = { { results = { {
+        uncached_input_tokens = 1,
+        cache_read_input_tokens = 1,
+        cache_creation = {
+          ephemeral_5m_input_tokens = 1,
+          ephemeral_1h_input_tokens = 1,
+        },
+        output_tokens = 1,
+      } } } },
+    }
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = vim.json.encode(valid_usage) },
+      { body = vim.json.encode({ has_more = true, data = {} }) },
+      { body = vim.json.encode(valid_usage) },
+      { status = 503, body = "private cost response" },
+    }
+    local value = client.new({
+      base_url = "https://example.test/v1",
+      transport = transport,
+    })
+    local request = {
+      resolve_auth = auth({ ["x-api-key"] = "admin-key" }),
+    }
+
+    local incomplete = wait(value:organization(request))
+    assert.is_false(incomplete.ok)
+    assert.matches("incomplete cost data", assert(incomplete.error).message)
+
+    local unavailable = wait(value:organization(request))
+    assert.is_false(unavailable.ok)
+    assert.are.equal(503, rawget(assert(unavailable.error), "status"))
+    assert.is_nil((vim.inspect(unavailable.error):find("private cost response", 1, true)))
   end)
 
   it("reports invalid keys and reads ANTHROPIC_API_KEY by default", function()

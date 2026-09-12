@@ -1,3 +1,6 @@
+local it = require("tests.helpers.async_test")
+local images = require("neoagent.api.images")
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local anthropic = require("neoagent.api.anthropic_messages")
 local fake_transport = require("tests.helpers.fake_transport")
@@ -122,6 +125,23 @@ describe("neoagent.api.anthropic_messages", function()
     assert.are.equal(6, #events)
   end)
 
+  it("treats missing provider usage as an empty cumulative sample", function()
+    local fake = fake_transport.new({ { chunks = {
+      message_start(vim.NIL --[[@as Neoagent.JsonObject]]),
+      event({
+        type = "message_delta",
+        delta = { stop_reason = "end_turn" },
+        usage = vim.NIL,
+      }),
+      event({ type = "message_stop" }),
+    } } })
+    local result = wait(anthropic.new({
+      provider = "p", model = "m", base_url = "http://x", transport = fake,
+    }):stream({ messages = {} }))
+    assert.is_true(result.ok)
+    assert.are.equal(0, assert(assert(result.message).usage).totalTokens)
+  end)
+
   it("encodes Anthropic history, images, tools, and layered request options", function()
     local key_calls = 0
     local provider_opts = {
@@ -139,12 +159,12 @@ describe("neoagent.api.anthropic_messages", function()
       max_output_tokens = 256,
       request_opts = provider_opts,
     })
-    local request = model:_request({
+    local plan = model:_request({
       system_prompt = "Be precise",
       messages = {
         { role = "user", content = {
           { type = "text", text = "inspect this" },
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "thinking", thinking = "signed", thinkingSignature = "sig" },
@@ -154,11 +174,11 @@ describe("neoagent.api.anthropic_messages", function()
         } },
         { role = "toolResult", toolCallId = "call:1", isError = true, content = {
           { type = "text", text = "failed" },
-          { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/jpeg"),
         } },
         { role = "toolResult", toolCallId = "call:2", content = {} },
         { role = "toolResult", toolCallId = "call:3", content = {
-          { type = "image", mimeType = "image/png", data = "CCCC" },
+          attachments.image(vim.base64.decode("CCCC"), "image/png"),
         } },
         { role = "user", content = "Continue" },
         { role = "assistant", content = {
@@ -178,6 +198,8 @@ describe("neoagent.api.anthropic_messages", function()
         }
       end,
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     assert.are.equal(1, key_calls)
     assert.are.equal("http://localhost/v1/messages", request.url)
@@ -207,6 +229,23 @@ describe("neoagent.api.anthropic_messages", function()
 
   end)
 
+  it("does not attach a prompt cache marker to assistant-ending history", function()
+    local model = anthropic.new({
+      provider = "local", model = "test", base_url = "http://localhost/v1",
+      prompt_caching = true,
+    })
+    local plan = model:_request({ messages = {
+      { role = "user", content = "Question" },
+      { role = "assistant", content = { { type = "text", text = "Answer" } },
+        stopReason = "stop" },
+    } })
+    local body = plan.encode(images.inline(plan.api, attachments.files))
+    local message = assert(body.messages[2])
+    local content = assert(message.content)
+    local block = assert(content[1])
+    assert.is_nil(block.cache_control)
+  end)
+
   it("downgrades images before encoding requests for text-only models", function()
     local model = anthropic.new({
       provider = "local",
@@ -214,20 +253,22 @@ describe("neoagent.api.anthropic_messages", function()
       base_url = "http://localhost/v1",
       input = { "text" },
     })
-    local request = model:_request({
+    local plan = model:_request({
       messages = {
         { role = "user", content = {
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "toolCall", id = "call-1", name = "read_file", arguments = {} },
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
-          { type = "image", mimeType = "image/png", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/png"),
         } },
       },
       tools = {},
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     local body = assert(request.body)
     assert.are.equal("(image omitted: model does not support images)",

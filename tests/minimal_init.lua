@@ -1,6 +1,6 @@
 local root = vim.fn.fnamemodify(assert(debug.getinfo(1, "S")).source:sub(2), ":p:h:h")
 vim.opt.runtimepath:prepend(root)
-package.path = root .. "/.deps/luacov/src/?.lua;" .. root .. "/.deps/luacov/src/?/init.lua;" .. package.path
+package.path = root .. "/?.lua;" .. root .. "/.deps/luacov/src/?.lua;" .. root .. "/.deps/luacov/src/?/init.lua;" .. package.path
 
 local plenary = vim.env.PLENARY_DIR
 if not plenary or plenary == "" then
@@ -60,9 +60,11 @@ vim.g.clipboard = {
 }
 
 if vim.env.NEOAGENT_COVERAGE == "1" then
-  vim.fn.mkdir(root .. "/.coverage", "p")
+  vim.fn.mkdir(root .. "/.coverage/raw", "p")
+  package.path = root .. "/.deps/coverage-native/cluacov/src/?.lua;" .. package.path
+  package.cpath = root .. "/.deps/coverage-native/lib/?.so;" .. package.cpath
   local runner = require("luacov.runner")
-  runner((vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
+  runner(dofile(vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
   vim.api.nvim_create_autocmd("VimLeavePre", {
     once = true,
     callback = function() runner.shutdown() end,

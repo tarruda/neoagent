@@ -1,0 +1,38 @@
+# Adapted from authorized synthetic-image validation on 2026-09-08.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: 16d28d9546c615e8be066e09bf8bd8425b5f1bb6dabdafd3f5d8021301641e4f
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: PUT
+  url: https://storage.example.test/file-managed-codex?sig=synthetic-signature
+  headers:
+    Content-Length: '91'
+    x-ms-blob-type: BlockBlob
+  body: iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==
+  body_encoding: base64
+  body_bytes: 91
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 1
+---
+type: response_body
+at_us: 2000
+bytes: 1
+body: '
+
+  '
+---
+type: response
+at_us: 2000
+status: 201
+headers: {}
+---
+type: complete
+at_us: 2000
+ok: true

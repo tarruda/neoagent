@@ -1,0 +1,43 @@
+# Authorized Files lookup validation on 2026-09-09.
+# Adapt credentials, remote identity and timestamps; retain HTTP response shape.
+# Source SHA-256: 2dab7c11e299efc41a5338abd78fdb9a349bd783b17549c7a8ffe041994098dd
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.openai.com/v1/files/file-openai-inspected
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 190
+---
+type: response_body
+at_us: 2000
+bytes: 190
+body:
+  bytes: 91
+  created_at: 1700000000
+  expires_at: 1700086400
+  filename: image.png
+  id: file-openai-inspected
+  object: file
+  purpose: vision
+  status: processed
+  status_details: null
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

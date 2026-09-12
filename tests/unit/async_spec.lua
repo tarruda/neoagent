@@ -162,6 +162,30 @@ describe("neoagent.async", function()
     assert.is_true(child_cancelled)
   end)
 
+  it("cancels a child awaited after its parent was already cancelled", function()
+    local releases = 0
+    local child = async.run(function()
+      async.await(function()
+        return function()
+          releases = releases + 1
+          error("synthetic cancellation cleanup failure")
+        end
+      end)
+    end)
+    local parent = async.run(function(run)
+      run:cancel()
+      return child:await()
+    end)
+    local propagated = child:is_cancelled()
+    child:cancel()
+    assert(vim.wait(1000, function() return child:is_done() end))
+    assert.is_true(propagated)
+    assert.are.equal(1, releases)
+    assert.are.equal("cancelled", assert(assert(parent:result()).error).kind)
+    assert.are.equal("cancel", assert(parent:diagnostics()[1]).phase)
+    assert.matches("synthetic cancellation cleanup failure", assert(parent:diagnostics()[1]).message)
+  end)
+
   it("rejects await outside a managed coroutine", function()
     -- Intentionally invoke the async entrypoint from an unmanaged caller.
     local unmanaged_await = async.await --[[@as fun(start: fun()): unknown]]
@@ -299,6 +323,26 @@ describe("neoagent.async", function()
     assert(vim.wait(1000, function() return parent:is_done() end))
     assert.is_false(assert(parent:result()).ok)
     assert.are.equal("cancelled", assert(assert(parent:result()).error).kind)
+  end)
+
+  it("unsubscribes diagnostics once and ignores settled await delivery", function()
+    ---@type Neoagent.AwaitCallbacks<string>?
+    local pending
+    local resumed = false
+    local run = async.run(function()
+      async.await(function(done) pending = done end)
+      resumed = true
+    end)
+    local unsubscribe = run:_subscribe_diagnostics(function() end)
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+
+    assert.is_true(assert(pending).resolve("late"))
+    assert.is_true(run:_finish({ ok = true }))
+    vim.wait(20)
+
+    assert.is_false(resumed)
+    assert.is_true(assert(run:result()).ok)
   end)
 
   it("honors cancellation before awaiting and ignores late handlers", function()

@@ -199,6 +199,32 @@ describe("Applet ownership boundaries", function()
       assert.are.same({ "retained content" },
         vim.api.nvim_buf_get_lines((assert(replacement.buffer)), 0, -1, false))
     end)
+
+    it("restores a " .. kind .. " buffer replacement after content failure", function()
+      local content = new_pane("content", { text = "committed" })
+      local value = applet({
+        name = "failed-buffer-identity-" .. kind,
+        host = host(kind),
+      })
+      local function requested(uri)
+        return frame(pane("content", content, { uri = uri }), {
+          focus = "content",
+        })
+      end
+      value:update(requested("applet://failed-buffer/one"))
+      succeeds(value:open())
+      local native = content:native()
+
+      content:set_state({ text = "unpublished", fail = "replacement content failed" })
+      value:update(requested("applet://failed-buffer/two"))
+      local committed, err = value:flush()
+      assert.is_nil(committed)
+      assert.matches("replacement content failed", assert(err).message)
+      assert.are.same(native, content:native())
+      assert.are.same({ "committed" },
+        vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
+      content:set_state({ text = "recovered" })
+    end)
   end
 
   it("retires a sensitive transient buffer before an ordinary generation", function()
@@ -491,10 +517,13 @@ describe("Applet ownership boundaries", function()
     local first = new_pane("first", { text = "first" })
     local second = new_pane("second", { text = "second" })
     local third = new_pane("third", { text = "third" })
+    local floating = new_pane("floating", { text = "floating" })
     local value = applet({ name = "tab-build-rollback", host = host("tab") })
     local function requested(include_third)
       local children = {
-        { key = "first", grow = 1, child = pane("first", first) },
+        { key = "first", grow = 1, child = pane("first", first, {
+          uri = include_third and "applet://tab-build/replacement" or "applet://tab-build/original",
+        }) },
         { key = "second", grow = 1, child = pane("second", second) },
       }
       if include_third then
@@ -502,7 +531,14 @@ describe("Applet ownership boundaries", function()
           key = "third", grow = 1, child = pane("third", third),
         }
       end
-      return frame(split("vertical", children, "main"))
+      return frame(split("vertical", children, "main"), {
+        layers = include_third and { layout.layer({
+          key = "failing-layer",
+          width = 10,
+          height = 3,
+          child = pane("floating", floating),
+        }) } or nil,
+      })
     end
     value:update(requested(false))
     succeeds(value:open())
@@ -510,7 +546,9 @@ describe("Applet ownership boundaries", function()
       assert(value:pane("second")):native()
     local original_open = vim.api.nvim_open_win
     vim.api.nvim_open_win = function(buffer, enter, config)
-      if config and config.split then error("injected split creation failure") end
+      if config and config.relative and config.relative ~= "" then
+        error("injected Layer creation failure")
+      end
       return original_open(buffer, enter, config)
     end
     value:update(requested(true))
@@ -518,7 +556,7 @@ describe("Applet ownership boundaries", function()
     vim.api.nvim_open_win = original_open
     assert.is_true(call_ok)
     assert.is_nil(committed)
-    assert.matches("injected split creation failure", assert(err).message)
+    assert.matches("injected Layer creation failure", assert(err).message)
     assert.are.same(first_native, assert(value:pane("first")):native())
     assert.are.same(second_native, assert(value:pane("second")):native())
   end)
@@ -701,4 +739,146 @@ describe("Applet ownership boundaries", function()
     }))
     vim.cmd("stopinsert")
   end)
+
+  it("contains disappearing native resources at the Host boundary", function()
+    local base = require("applet.host.base")
+    local buffer = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "secret" })
+    vim.api.nvim_buf_delete(buffer, { unload = true })
+    assert.is_true(vim.api.nvim_buf_is_valid(buffer))
+    assert.is_false(vim.api.nvim_buf_is_loaded(buffer))
+    local descriptor = {
+      buffer = { sensitive = true, options = {} },
+      focus = {},
+    }
+    local record = {
+      buffer = buffer,
+      owns_buffer = true,
+      descriptor = descriptor,
+      buffer_option_states = {},
+    }
+    assert.is_false(base.configure_buffer(
+      record --[[@as Applet.BufferRecord]],
+      descriptor --[[@as Applet.MountDescriptor]]
+    ))
+    assert.is_true(base.delete_buffer(record --[[@as Applet.BufferRecord]]))
+
+    assert.is_false(base.restore_view({ window = -1, buffer = -1 }
+      --[[@as Applet.CursorRecord]]))
+    assert.is_nil(base.window_view(-1))
+    local win_call = vim.api.nvim_win_call
+    vim.api.nvim_win_call = function() error("window disappeared") end
+    local inspected, inspection_error = pcall(base.window_view,
+      vim.api.nvim_get_current_win())
+    vim.api.nvim_win_call = win_call
+    assert(inspected, inspection_error)
+    assert.is_nil(inspection_error)
+
+    assert.is_true(base.close_tab(-1))
+    local tab_close = vim.api.nvim_tabpage_close
+    vim.api.nvim_tabpage_close = nil
+    local closed, close_error = pcall(base.close_tab,
+      vim.api.nvim_get_current_tabpage(), true)
+    vim.api.nvim_tabpage_close = tab_close
+    assert(closed, close_error)
+    assert.is_false(close_error)
+
+    assert.is_false(base.pass({
+      window = vim.api.nvim_get_current_win(),
+      buffer = vim.api.nvim_get_current_buf(),
+    } --[[@as Applet.CursorRecord]], {} --[[@as Applet.ActionEvent<Applet.Pane>]]))
+  end)
+
+  it("restores focus only to windows outside Applet ownership", function()
+    local base = require("applet.host.base")
+    assert.is_false(base.restore_origin(nil))
+    local origin = base.capture_origin(vim.api.nvim_get_current_win())
+    vim.cmd("vsplit")
+    local external = vim.api.nvim_get_current_win()
+    local owner = { _windows = { [origin.window] = "owned" } }
+    assert.is_true(base.restore_origin(origin, owner --[[@as Applet.Applet]]))
+    assert.are.equal(external, vim.api.nvim_get_current_win())
+
+    for _, window in ipairs(vim.api.nvim_list_wins()) do
+      owner._windows[window] = "owned"
+    end
+    assert.is_false(base.restore_origin(origin, owner --[[@as Applet.Applet]]))
+  end)
+
+  it("rejects stale live observations after Host scope changes", function()
+    local base = require("applet.host.base")
+    ---@type fun(event: Applet.NativeAutocmd)?
+    local observer
+    local create_autocmd = vim.api.nvim_create_autocmd
+    vim.api.nvim_create_autocmd = function(_, opts)
+      observer = opts.callback
+      return 1
+    end
+    local scheduled = 0
+    local owner = {
+      name = "stale-observer-boundary",
+      lifecycle = "open",
+      mutating = false,
+      records = {},
+      _windows = {},
+      observed_snapshot = { host = { visible = false } },
+      counters = {
+        observer_callbacks = 0,
+        observer_relevant_callbacks = 0,
+        observer_record_scans = 0,
+        observer_activations = 0,
+        observer_releases = 0,
+      },
+      _schedule_observe = function() scheduled = scheduled + 1 end,
+    }
+    local installed, install_error = pcall(base.install_observers,
+      owner --[[@as Applet.Applet]], "live")
+    vim.api.nvim_create_autocmd = create_autocmd
+    assert(installed, install_error)
+    assert(observer)
+    observer({ event = "WinScrolled", buf = 0, match = "" })
+    owner.lifecycle = "closed"
+    observer({ event = "VimResized", buf = 0, match = "" })
+    assert.are.equal(0, scheduled)
+    base.clear_observers(owner --[[@as Applet.Applet]])
+  end)
+
+  it("snapshots a tab Host after its native tab is gone", function()
+    local base = require("applet.host.base")
+    local owner = { _windows = {} }
+    local driver = {
+      kind = "tab",
+      tab = -1,
+      applet = owner,
+      is_open = function() return false end,
+      is_visible = function() return false end,
+      foreign_windows = function() return 0 end,
+    }
+    ---@type table<string, Applet.HostRecord>
+    local records = {}
+    local snapshot = base.snapshot(driver --[[@as Applet.HostDriver]], records, nil)
+    assert.are.same({ kind = "closed" }, snapshot.layout)
+  end)
+
+  for _, kind in ipairs({ "floating", "tab" }) do
+    it("releases an active " .. kind .. " Host transaction exactly once", function()
+      local content = new_pane("content", { text = kind })
+      local value = applet({
+        name = "active-release-" .. kind,
+        host = host(kind),
+      })
+      value:update(frame(pane("content", content), { focus = "content" }))
+      succeeds(value:open())
+      local driver = assert(value.driver)
+      assert(driver.begin)
+      assert.is_true(driver:begin(value.records))
+      driver:release(value.records)
+      driver:release(value.records)
+      assert.is_false(driver:is_open())
+      if kind == "tab" then
+        assert.are.equal(0, assert(driver.foreign_windows)(driver))
+      end
+      value:destroy()
+    end)
+  end
 end)

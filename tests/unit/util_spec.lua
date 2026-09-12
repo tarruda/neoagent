@@ -137,6 +137,17 @@ describe("neoagent.util", function()
     assert.is_true(vim.fn.strchars(
       rawget(bounded, "provider_status_details").label)
       <= util.MAX_ERROR_STRING_CHARACTERS)
+
+    local many = { kind = "provider", message = "failed", metadata = {} }
+    for index = 1, 70 do
+      many.metadata[index] = { value = index }
+    end
+    many.metadata.null = vim.NIL
+    many.metadata.nonfinite = math.huge
+    local limited = util.normalize_error(many)
+    assert.are.equal(vim.NIL, rawget(assert(rawget(limited, "metadata")), "null"))
+    assert.is_nil(rawget(assert(rawget(limited, "metadata")), "nonfinite"))
+    assert.is_true(vim.tbl_count(assert(rawget(limited, "metadata"))) < 72)
   end)
 
   it("bounds error messages without calling Vimscript", function()

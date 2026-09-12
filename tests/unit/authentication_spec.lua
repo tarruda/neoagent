@@ -175,6 +175,7 @@ describe("neoagent Authentication coordinator", function()
     assert.is_true((value:login()))
     assert.is_table(pending)
     assert.is_true(value:is_active())
+    assert.are.equal("presentation", value:activity_kind())
     assert.are.same({ true }, states)
 
     assert.is_true(value:cancel())
@@ -182,6 +183,26 @@ describe("neoagent Authentication coordinator", function()
       return cancelled and not value:is_active()
     end, 5))
     assert.is_false(value:cancel())
+  end)
+
+  it("drops late credential selections while destroying their presentation", function()
+    local cancelled = false
+    local selected = presenter(host({
+      select = function()
+        return function() cancelled = true end
+      end,
+    }))
+    local selected_manager = manager()
+    local value = authentication({
+      auth = selected_manager,
+      presenter = selected,
+    })
+
+    assert.is_true((value:login()))
+    assert.is_true(value:is_active())
+    value:destroy()
+    assert(vim.wait(1000, function() return cancelled and not value:is_active() end, 5))
+    assert.is_nil(selected_manager.login_id)
   end)
 
   it("validates composition and reports empty or unknown methods", function()
@@ -572,10 +593,12 @@ describe("neoagent Authentication coordinator", function()
     assert.are.same({}, notifications)
     assert.is_false(assert(notice_run):is_done())
 
-    assert(finish).resolve(true)
+    assert.is_true(value:cancel())
     assert(vim.wait(1000, function()
       return run:is_done() and assert(notice_run):is_done()
     end, 5))
+    assert.is_nil(finish)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
   end)
 
   it("presents device codes persistently without opening their URI", function()

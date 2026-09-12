@@ -26,6 +26,11 @@ local M = {}
 ---@field transport? Neoagent.ByteBackend
 ---@field report? fun(message: string, level: integer)
 ---@field auth_services table<string, Neoagent.ProviderService[]>
+---@field files? Neoagent.ProviderFiles
+
+---@class Neoagent.ProviderFiles
+---@field retire fun()
+---@field bind fun(api: string, model: Neoagent.ModelConfig): Neoagent.ImageRequest?
 
 ---@class Neoagent.ProviderRuntime: Neoagent.ProviderRuntimeConstruction
 ---@field service Neoagent.ProviderService
@@ -39,8 +44,7 @@ local destroyed = setmetatable({}, { __mode = "k" })
 ---@param context Neoagent.RequestIdentity
 ---@return Neoagent.ByteBackend?
 local function bind_transport(transport, context)
-  if type(transport) == "table"
-      and type(transport.with_context) == "function" then
+  if type(transport) == "table" and type(transport.with_context) == "function" then
     return transport.with_context(context)
   end
   return transport
@@ -73,7 +77,9 @@ local function empty_service(provider_id)
     id = provider_id,
     name = provider_id,
     operations = {},
-    state = function() return false end,
+    state = function()
+      return false
+    end,
   }
 end
 
@@ -83,7 +89,12 @@ local function destroy_values(runtimes, candidate)
   ---@type table<Neoagent.ProviderService, boolean>
   local services = {}
   for _, runtime in pairs(runtimes) do
-    if runtime.catalog then pcall(runtime.catalog.destroy, runtime.catalog) end
+    if runtime.catalog then
+      pcall(runtime.catalog.destroy, runtime.catalog)
+    end
+    if runtime.files then
+      runtime.files.retire()
+    end
     local service = runtime.service
     if type(service) == "table" and not services[service] then
       services[service] = true
@@ -99,8 +110,7 @@ local function destroy_values(runtimes, candidate)
       end
     end
   end
-  if type(candidate) == "table" and type(candidate.destroy) == "function"
-      and not services[candidate] then
+  if type(candidate) == "table" and type(candidate.destroy) == "function" and not services[candidate] then
     pcall(candidate.destroy, candidate)
   end
 end
@@ -111,14 +121,16 @@ end
 ---@return_overload Neoagent.ProviderRuntimes
 ---@return_overload nil, Neoagent.Error
 function M.compose(configured, opts)
-  assert(type(configured) == "table" and not util.is_list(configured),
-    "provider runtime configuration must be an object")
+  assert(
+    type(configured) == "table" and not util.is_list(configured),
+    "provider runtime configuration must be an object"
+  )
   opts = opts or {}
-  assert(type(opts) == "table"
-      and (next(opts) == nil or not util.is_list(opts)),
-    "provider runtime options must be an object")
-  assert(opts.report == nil or type(opts.report) == "function",
-    "provider runtime report must be a function")
+  assert(
+    type(opts) == "table" and (next(opts) == nil or not util.is_list(opts)),
+    "provider runtime options must be an object"
+  )
+  assert(opts.report == nil or type(opts.report) == "function", "provider runtime report must be a function")
   ---@type table<string, Neoagent.ProviderRuntimeConstruction>
   local runtimes = {}
   ---@type table<string, fun(service: Neoagent.ProviderService)>
@@ -138,8 +150,7 @@ function M.compose(configured, opts)
       provider_id = provider_id,
       provider = provider,
       authentication = opts.auth,
-      method = configured.auth and configured.auth.methods
-          and configured.auth.methods[provider.auth] or nil,
+      method = configured.auth and configured.auth.methods and configured.auth.methods[provider.auth] or nil,
     })
     local ok, catalog = pcall(model_catalog.new, {
       provider_id = provider_id,
@@ -157,16 +168,14 @@ function M.compose(configured, opts)
       now = opts.now,
       new_timer = opts.new_timer,
       acquire_use = function()
-        if not bound_service then
-          return { release = function() return true end }
-        end
-        return provider_service.acquire_use(bound_service)
+        return provider_service.acquire_use(
+          assert(bound_service, "Provider Service is not bound")
+        )
       end,
     })
     if not ok then
       destroy_values(runtimes)
-      return nil, util.error("provider",
-        "Failed to construct model catalog for " .. provider_id, catalog)
+      return nil, util.error("provider", "Failed to construct model catalog for " .. provider_id, catalog)
     end
     runtimes[provider_id] = {
       id = provider_id,
@@ -177,7 +186,9 @@ function M.compose(configured, opts)
       report = opts.report,
       auth_services = {},
     }
-    binders[provider_id] = function(service) bound_service = service end
+    binders[provider_id] = function(service)
+      bound_service = service
+    end
   end
 
   for _, provider_id in ipairs(provider_ids) do
@@ -200,8 +211,7 @@ function M.compose(configured, opts)
       })
       if not ok then
         destroy_values(runtimes)
-        return nil, util.error("provider",
-          "Failed to construct provider service for " .. provider_id, value)
+        return nil, util.error("provider", "Failed to construct provider service for " .. provider_id, value)
       end
       service = value
     end
@@ -212,12 +222,22 @@ function M.compose(configured, opts)
     end
     if validated.id ~= provider_id then
       destroy_values(runtimes, validated)
-      return nil, util.error("provider",
-        "Provider Service id for " .. provider_id .. " returned "
-          .. tostring(validated.id))
+      return nil,
+        util.error("provider", "Provider Service id for " .. provider_id .. " returned " .. tostring(validated.id))
     end
     runtime.service = validated
     assert(binders[provider_id])(validated)
+    local method = provider.auth and configured.auth and configured.auth.methods[provider.auth]
+    local files_ok, files = pcall(require("neoagent.providers.file_uploads").new, provider_id, provider, validated, {
+      transport = opts.transport,
+      auth_type = method and method.type,
+      report = opts.report,
+    })
+    if not files_ok then
+      destroy_values(runtimes)
+      return nil, util.error("provider", "Failed to construct file uploads for " .. provider_id)
+    end
+    runtime.files = files
   end
 
   ---@cast runtimes Neoagent.ProviderRuntimes
@@ -243,7 +263,9 @@ function M.compose(configured, opts)
   end
 
   if opts.startup ~= false then
-    for _, runtime in pairs(runtimes) do runtime.catalog:start() end
+    for _, runtime in pairs(runtimes) do
+      runtime.catalog:start()
+    end
   end
   return runtimes
 end
@@ -251,8 +273,12 @@ end
 ---@param runtimes? table<string, Neoagent.ProviderRuntimeConstruction>
 ---@return boolean?
 function M.destroy(runtimes)
-  if type(runtimes) ~= "table" then return end
-  if destroyed[runtimes] then return false end
+  if type(runtimes) ~= "table" then
+    return
+  end
+  if destroyed[runtimes] then
+    return false
+  end
   destroyed[runtimes] = true
   destroy_values(runtimes)
   return true

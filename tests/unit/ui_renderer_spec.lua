@@ -2,6 +2,8 @@ local assert = require("luassert")
 local Applet = require("applet")
 local protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")
+local attachments = require("tests.helpers.attachments").new()
+local image_source, image_reader = require("neoagent.ui.image_source").new(attachments.files)
 
 local ui = Applet.Pane.nodes
 
@@ -21,6 +23,21 @@ end
 local function png(width, height)
   return "\137PNG\r\n\26\n\0\0\0\rIHDR"
     .. uint32(width) .. uint32(height)
+end
+
+---@param value Applet.ImageSource
+---@return Applet.ImageResource
+local function load_image(value)
+  ---@type Applet.ImageResource?, string?
+  local result, failure
+  local cancel = require("applet.image.source").load_async(value, { read_resource = image_reader }, function(resource, err)
+    result, failure = resource, err
+  end)
+  local finished = vim.wait(1000, function() return result ~= nil or failure ~= nil end)
+  cancel()
+  assert(finished)
+  assert.is_nil(failure)
+  return (assert(result))
 end
 
 ---@param node unknown
@@ -159,7 +176,7 @@ describe("neoagent native Renderer protocol", function()
     local node, continuation = protocol.render_block(selected, {
       kind = "assistant",
       text = "continued",
-    }, { width = 40 }, previous)
+    }, { width = 40, image_source = image_source }, previous)
 
     assert.are.same({ "continued" }, layout(assert(node), selected.theme).lines)
     assert.is_true(rawequal(previous, received))
@@ -204,19 +221,15 @@ describe("neoagent native Renderer protocol", function()
       key = "generated-image-details",
       kind = "assistant",
       text = "Generated **preview**",
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = png(8, 4),
-      } },
-    }, { width = 40 }))
+      content = { attachments.image(png(8, 4), "image/png") },
+    }, { width = 40, image_source = image_source }))
 
     local image = assert(find_image(details))
     assert.are.equal("native", image.width)
     local rendered_details = table.concat(
       layout(details, renderers.pi.theme, 40).lines, "\n")
     assert.matches("Generated preview", rendered_details)
-    assert.matches("Image · PNG · 8×4", rendered_details)
+    assert.matches("Image · PNG · 24 B", rendered_details)
   end)
 
   it("bounds Renderer failures and leaves Tree validation to Applet", function()
@@ -231,6 +244,10 @@ describe("neoagent native Renderer protocol", function()
     assert.is_nil(missing)
     assert.matches("returned no Pane content node", assert(missing_error).message)
     assert.is_nil((protocol.render_details(renderer(), { kind = "notice" }, {})))
+    assert.is_nil((protocol.render_details(renderers.pi, {
+      kind = "notice",
+      text = "notice",
+    }, {})))
 
     local physical = assert(protocol.render_block(renderer({
       render_block = function() return { lines = { "physical" } } --[[@as Applet.Node]] end,
@@ -273,10 +290,22 @@ describe("neoagent native Renderer protocol", function()
         assert.matches(case[2], rendered(selected, case[1], {
           width = 50,
           spinner = "*",
+        image_source = image_source,
           details_key = "<CR>",
         }))
       end
     end
+
+    assert.are.equal("", rendered(renderers.pi, {
+      key = "empty-notice", kind = "notice", text = "\n",
+    }))
+    assert.are.equal(" notice\n", rendered(renderers.pi, {
+      key = "trimmed-notice", kind = "notice", text = "notice\n\n",
+    }))
+    assert.matches("null", rendered(renderers.pi, {
+      key = "null-argument", kind = "tool", state = "pending",
+      call = { id = "tool-call", name = "custom", arguments = { value = vim.NIL } },
+    }))
   end)
 
   it("renders tool failures with non-object or incompatible optional metadata", function()
@@ -339,6 +368,7 @@ describe("neoagent native Renderer protocol", function()
     }, {
       width = 50,
       spinner = "*",
+        image_source = image_source,
       details_key = "<CR>",
     })
     assert.matches("name", output)
@@ -444,6 +474,7 @@ describe("neoagent native Renderer protocol", function()
       return layout(assert(protocol.render_details(renderers.codex, block, {
         width = width,
         spinner = "*",
+        image_source = image_source,
         tool = tool,
       })), renderers.codex.theme, width).lines
     end
@@ -466,11 +497,9 @@ describe("neoagent native Renderer protocol", function()
       kind = "user",
       text = "attached",
       content = {
-        { type = "image", mimeType = "image/jpeg", data = "not-png" },
-        { type = "image", mimeType = "image/jpeg",
-          data = vim.base64.encode(string.rep("x", 2 * 1024)) },
-        { type = "image", mimeType = "image/jpeg",
-          data = vim.base64.encode(string.rep("x", 2 * 1024 * 1024)) },
+        attachments.image("not-png", "image/jpeg"),
+        { type = "image", file_id = string.rep("a", 64), bytes = 2 * 1024, mime_type = "image/jpeg" },
+        { type = "image", file_id = string.rep("b", 64), bytes = 2 * 1024 * 1024, mime_type = "image/jpeg" },
       },
     }, { width = 40, spinner = "*" })
     assert.matches("Image · JPEG", text)
@@ -478,7 +507,7 @@ describe("neoagent native Renderer protocol", function()
     assert.matches("2.0 MiB", text)
   end)
 
-  it("emits native image nodes for raw and encoded PNG attachments", function()
+  it("emits native image nodes for stored PNG attachments", function()
     local landscape = png(160, 80)
     local encoded = assert(vim.base64.encode(landscape))
     local cases = {
@@ -486,7 +515,7 @@ describe("neoagent native Renderer protocol", function()
         key = "raw-image",
         kind = "user",
         text = "raw attachment",
-        content = { { type = "image", mimeType = "image/png", data = landscape } },
+        content = { attachments.image(landscape, "image/png") },
       },
       {
         key = "encoded-image",
@@ -495,20 +524,21 @@ describe("neoagent native Renderer protocol", function()
         call = { id = "tool-call", name = "read_file", arguments = {} },
         message = { role = "toolResult", toolCallId = "tool-call",
           toolName = "read_file",
-          content = { { type = "image", mimeType = "image/png", data = encoded } },
+          content = { attachments.image(vim.base64.decode(encoded), "image/png") },
         },
       },
       {
         key = "untyped-image",
         kind = "user",
         text = "untyped attachment",
-        content = { { type = "image", data = landscape } },
+        content = { attachments.image(landscape, "image/png") },
       },
     }
     for _, block in ipairs(cases) do
       local node = assert(protocol.render_block(renderers.pi, block, {
         width = 40,
         spinner = "*",
+        image_source = image_source,
       }))
       local image = assert(find_image(node))
       assert.are.equal("fill", image.width)
@@ -518,7 +548,7 @@ describe("neoagent native Renderer protocol", function()
       assert.are.equal("left", image.align)
       local source = require("applet.image.source")
       local identity = source.identity(image.source)
-      local info = source.png_info((assert(assert(image.source).data)))
+      local info = load_image(image.source)
       local value = assert(Applet.Pane.compile({
         tree = node,
         width = 40,
@@ -547,12 +577,13 @@ describe("neoagent native Renderer protocol", function()
       kind = "user",
       text = "portrait attachment",
       content = {
-        { type = "image", mimeType = "image/png", data = png(40, 160) },
+        attachments.image(png(40, 160), "image/png"),
       },
     }
     local transcript = assert(protocol.render_block(renderers.pi, portrait, {
       width = 40,
       spinner = "*",
+        image_source = image_source,
     }))
     local transcript_image = assert(find_image(transcript))
     assert.are.equal("auto", transcript_image.height)
@@ -561,6 +592,7 @@ describe("neoagent native Renderer protocol", function()
     local details = assert(protocol.render_details(renderers.pi, portrait, {
       width = 40,
       spinner = "*",
+        image_source = image_source,
     }))
     local details_image = assert(find_image(details))
     assert.are.equal("native", details_image.width)
@@ -580,6 +612,7 @@ describe("neoagent native Renderer protocol", function()
       local node = assert(protocol.render_block(renderers.pi, block, {
         width = 40,
         spinner = "*",
+        image_source = image_source,
       }))
       return (assert(find_image(node)))
     end
@@ -589,8 +622,7 @@ describe("neoagent native Renderer protocol", function()
       image_scope = "conversation",
       content = {
         { type = "text", text = "before" },
-        { type = "image", mimeType = "image/png", data = data,
-          id = "preview", revision = 9 },
+        attachments.image(data, "image/png", { id = "preview", revision = 9 }),
       },
     })
     local reordered = rendered_image({
@@ -598,30 +630,28 @@ describe("neoagent native Renderer protocol", function()
       kind = "user",
       image_scope = "conversation",
       content = {
-        { type = "image", mimeType = "image/png", data = data,
-          id = "preview", revision = 9 },
+        attachments.image(data, "image/png", { id = "preview", revision = 9 }),
         { type = "text", text = "after" },
       },
     })
     assert.are.equal(first.key, reordered.key)
     assert.are.equal(first.source.id, reordered.source.id)
-    assert.are.equal(9, first.source.revision)
+    assert.are.equal(#data, first.source.revision)
 
     local left = rendered_image({
       key = "c",
       kind = "user",
       image_scope = "a:b",
-      content = { { type = "image", mimeType = "image/png", data = data,
-        id = "slot", revision = 1 } },
+      content = { attachments.image(data, "image/png", { id = "slot", revision = 1 }) },
     })
     local right = rendered_image({
       key = "b:c",
       kind = "user",
       image_scope = "a",
-      content = { { type = "image", mimeType = "image/png", data = data,
-        id = "slot", revision = 1 } },
+      content = { attachments.image(data, "image/png", { id = "slot", revision = 1 }) },
     })
-    assert.are_not.equal(left.source.id, right.source.id)
+    assert.are.equal(left.source.id, right.source.id)
+    assert.are_not.equal(left.key, right.key)
   end)
 
   it("selects final, transient, and direct image content in lifecycle order", function()
@@ -631,45 +661,29 @@ describe("neoagent native Renderer protocol", function()
       return find_image(assert(protocol.render_block(renderers.pi, block, {
         width = 40,
         spinner = "*",
+        image_source = image_source,
       })))
     end
+    ---@type Neoagent.RenderBlock
     local block = {
       key = "animated-tool",
       kind = "tool",
       state = "running",
       call = { id = "tool-call", name = "animate", arguments = {} },
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = png(10, 10),
-        id = "preview",
-        revision = 1,
-      } },
-      update = { content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = png(20, 20),
-        id = "preview",
-        revision = 2,
-      } } },
+      content = { attachments.image(png(10, 10), "image/png", { id = "preview", revision = 1 }) },
+      update = { content = { attachments.image(png(20, 20), "image/png", { id = "preview", revision = 2 }) } },
     }
 
     local transient = assert(image(block))
-    assert.are.equal(2, assert(transient.source).revision)
+    assert.are.equal(#png(20, 20), assert(transient.source).revision)
     assert.are.equal(20,
-      require("applet.image.source").png_info((assert(assert(transient.source).data))).width)
+      load_image(assert(transient.source)).width)
 
-    block.message = { role = "toolResult", toolCallId = "tool-call", toolName = "animate", content = { {
-      type = "image",
-      mimeType = "image/png",
-      data = png(30, 30),
-      id = "preview",
-      revision = 3,
-    } } }
+    block.message = { role = "toolResult", toolCallId = "tool-call", toolName = "animate", content = { attachments.image(png(30, 30), "image/png", { id = "preview", revision = 3 }) } }
     local final = assert(image(block))
-    assert.are.equal(3, assert(final.source).revision)
+    assert.are.equal(#png(30, 30), assert(final.source).revision)
     assert.are.equal(30,
-      require("applet.image.source").png_info((assert(assert(final.source).data))).width)
+      load_image(assert(final.source)).width)
 
     block.message = { role = "toolResult", toolCallId = "tool-call", toolName = "animate", content = { { type = "text", text = "complete" } } }
     assert.is_nil(image(block))
@@ -684,11 +698,12 @@ describe("neoagent native Renderer protocol", function()
       call = { id = "tool-call", name = "read_file", arguments = { path = "image.png" } },
       message = { role = "toolResult", toolCallId = "tool-call",
         toolName = "read_file",
-        content = { { type = "image", mimeType = "image/png", data = data } },
+        content = { attachments.image(data, "image/png") },
       },
     }, {
       width = 40,
       surface_width = 42,
+      image_source = image_source,
       details_key = "<CR>",
     }))
     local image_node = assert(find_image(node))
@@ -737,6 +752,7 @@ describe("neoagent native Renderer protocol", function()
       }, {
         width = width or 40,
         spinner = "*",
+        image_source = image_source,
         details_key = "<CR>",
         tool = { name = "semantic", render = function() return semantic end },
       })
@@ -770,6 +786,9 @@ describe("neoagent native Renderer protocol", function()
       kind = "plan",
     }, nil, "running")
     assert.matches("Updating plan", updating_plan)
+    assert.matches("ordinary fallback", tool(renderers.pi, {
+      kind = "plan",
+    }, nil, "running"))
 
     local edit = tool(renderers.codex, {
       kind = "edit",
@@ -782,6 +801,11 @@ describe("neoagent native Renderer protocol", function()
     }, 32)
     assert.matches("narrow.lua", edit)
     assert.matches("new", edit)
+    assert.matches("empty.lua", tool(renderers.codex, {
+      kind = "edit",
+      path = "empty.lua",
+      rows = { { kind = "context", number = 1, text = "" } },
+    }, 32))
 
     local overflowing_rows = { { kind = "separator" }, {
       kind = "add", number = 1, text = string.rep("x", 500),
@@ -812,60 +836,20 @@ describe("neoagent native Renderer protocol", function()
 
     for _, malformed in ipairs({
       { kind = "activity", operation = "read", ongoing = "Reading" },
+      { kind = "activity", operation = "read", ongoing = "Reading\nnow",
+        complete = "Read", subject = "a file" },
       { kind = "plan", explanation = {}, plan = {} },
+      { kind = "plan", plan = false },
       { kind = "edit", path = "bad.lua", rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad\npath.lua", rows = {} },
+      { kind = "text", title = "bad\ntitle" },
+      { kind = "text" },
+      false,
     }) do
       assert.matches("ordinary fallback", tool(renderers.codex, malformed))
     end
-  end)
-
-  it("falls back from malformed policy presentations", function()
-    ---@param presentation unknown
-    local function fallback(presentation)
-      local content = require("neoagent.ui.render").block({
-        theme = renderers.pi.theme,
-        render_markdown = function(_, _, source, opts)
-          return require("neoagent.markdown").new():update(source, opts)
-        end,
-        policy = {
-          name = "test",
-          user_background = function() end,
-          compaction_background = function() end,
-          write_output_group = function() end,
-          read_source_syntax = false, write_source_syntax = false,
-          inline_single_line_tool_hint = false,
-          inline_multiline_tool_outline = false,
-          plain_output_group = function() return "NeoagentToolOutput" end,
-          present_tool = function() return presentation --[[@as Neoagent.ToolViewPresentation]] end,
-          separator = function() end,
-          tool_background = function() end,
-          tool_title = function(parts) return parts end,
-        },
-        config = { mappings = {} },
-        resolve_tool = function()
-          return { name = "semantic", render = function() return {} end }
-        end,
-        spinner_frames = { "*" },
-        spinner_frame = 1,
-        _content_width = function() return 40 end,
-      }, {
-        key = "malformed-presentation",
-        kind = "tool",
-        state = "success",
-        call = { id = "tool-call", name = "semantic", arguments = {} },
-        message = { role = "toolResult", toolCallId = "tool-call",
-          toolName = "semantic",
-          content = { { type = "text", text = "ordinary fallback" } },
-        },
-      }, {})
-      assert.matches("ordinary fallback", table.concat(content.lines, "\n"))
-    end
-
-    fallback({ title = { { text = 1 } } })
-    fallback({ title = { { text = "invalid style", style = false } } })
-    fallback({ title = true, status = "success" })
   end)
 
   it("renders partial write content and complete details", function()
@@ -892,8 +876,21 @@ describe("neoagent native Renderer protocol", function()
       assert.matches("new content", rendered(renderers.codex, block, {
         width = 40,
         spinner = "*",
+        image_source = image_source,
         details_key = "<CR>",
       }))
+    end
+
+    for _, raw in ipairs({ false, '{"content":' }) do
+      local pending, err = protocol.render_block(renderers.codex, {
+        key = "incomplete-write",
+        kind = "tool",
+        name = "write_file",
+        state = "pending",
+        raw = raw or nil,
+      }, { width = 40, spinner = "*" })
+      assert(pending, vim.inspect(err))
+      assert.matches("write", table.concat(layout(assert(pending), renderers.codex.theme).lines, "\n"))
     end
 
     local details = assert(protocol.render_details(renderers.pi, {
@@ -927,6 +924,7 @@ describe("neoagent native Renderer protocol", function()
     }, {
       width = 80,
       spinner = "*",
+        image_source = image_source,
       tool = require("neoagent.tools.shell").new(),
     }))
 
@@ -1015,6 +1013,7 @@ describe("neoagent native Renderer protocol", function()
         local node = assert(render(renderers.codex, case.block, {
           width = 80,
           spinner = "*",
+        image_source = image_source,
           tool = case.tool,
         }))
         local lines = layout(assert(node), renderers.codex.theme, 80).lines
@@ -1102,7 +1101,7 @@ describe("neoagent native Renderer protocol", function()
       table_source[#table_source + 1] = "| row " .. index .. " |"
     end
     local rendered_table = markdown.render(
-      table.concat(table_source, "\n"), { width = 40 })
+      table.concat(table_source, "\n"), { width = 40, image_source = image_source })
     local table_node = tree.content("table", rendered_table, {
       wrap = "native",
       partition_rows = 64,

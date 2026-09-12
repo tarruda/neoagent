@@ -57,15 +57,22 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run all suites with coverage
+      - name: Collect native Linux coverage
         if: matrix.neovim == 'stable'
-        run: make coverage-ci
+        run: make coverage-collect
+      - uses: actions/upload-artifact@v4
+        if: matrix.neovim == 'stable'
+        with:
+          name: coverage-Linux
+          path: .coverage/collection.json
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
         run: make test test-http-live test-native-sandbox
-      - name: Check container and transcript performance budgets
+      - name: Check container, transcript, and submission performance budgets
         if: matrix.neovim == 'stable'
-        run: make benchmark-applet benchmark-transcript
+        run: make benchmark-applet benchmark-transcript benchmark-submission
 
   terminal-images:
     name: terminal images (Linux, stable)
@@ -115,17 +122,24 @@ jobs:
           neovim: true
           version: stable
       - name: Install system dependencies
-        run: brew install ripgrep fd yq
+        run: brew install ripgrep fd yq imagemagick
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run fast and host suites
-        run: make test test-http-live test-native-sandbox
+      - name: Collect native macOS coverage
+        run: make coverage-collect
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-Darwin
+          path: .coverage/collection.json
+          include-hidden-files: true
+          if-no-files-found: error
 
   test-windows:
     name: test (Windows, stable)
     runs-on: windows-2022
     env:
       PLENARY_DIR: ${{ github.workspace }}\.deps\plenary.nvim
+      NEOAGENT_COVERAGE: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: rhysd/action-setup-vim@v1
@@ -138,6 +152,13 @@ jobs:
           New-Item -ItemType Directory -Force .deps | Out-Null
           git clone https://github.com/nvim-lua/plenary.nvim.git .deps/plenary.nvim
           git -C .deps/plenary.nvim checkout 74b06c6c75e4eeb3108ec01852001636d85a932b
+          git clone https://github.com/lunarmodules/luacov.git .deps/luacov
+          git -C .deps/luacov checkout b1f9eae400da976b93edb7f94cf5d05f538a0655
+      - name: Check statement layout
+        shell: pwsh
+        run: |
+          nvim --headless -u NONE -i NONE -l scripts/check_statement_layout.lua
+          if ($LASTEXITCODE -ne 0) { throw "Statement layout check failed" }
       - name: Provision Windows sandbox identities and policy
         shell: pwsh
         run: |
@@ -153,6 +174,8 @@ jobs:
       - name: Run Windows sandbox suite
         shell: pwsh
         run: |
+          python scripts/coverage.py start
+          if ($LASTEXITCODE -ne 0) { throw "Coverage setup failed" }
           # Fresh sandbox identities cold-start PowerShell on hosted runners.
           # This timeout covers the complete spec file, including that startup.
           & $env:NEOAGENT_NVIM --headless --noplugin `
@@ -162,20 +185,63 @@ jobs:
           if ($testExit -ne 0) {
             throw "Windows tests failed (Neovim exit code $testExit)"
           }
-      - name: Run portable core and API suites
+      - name: Run portable core, API, and storage suites
         shell: pwsh
         run: |
           $specs = @(
             "async", "agent_loop", "model", "semantic_message",
             "api_messages", "tool_schema", "sse", "http",
             "openai_completions", "openai_responses", "anthropic_messages",
-            "openai_codex_responses", "api_timeouts", "model_rules", "thinking"
-          )
+            "openai_codex_responses", "api_timeouts", "model_rules", "thinking",
+            "attachment_storage"
+          ) | ForEach-Object { "tests/unit/${_}_spec.lua" }
+          $specs += "tests/integration/session_validation_spec.lua"
+          $specs += "tests/integration/file_lock_lifecycle_spec.lua"
           foreach ($spec in $specs) {
             & $env:NEOAGENT_NVIM --headless --noplugin `
               -u tests/minimal_init.lua `
-              -c "lua require('plenary.busted').run('tests/unit/${spec}_spec.lua')"
+              -c "lua require('plenary.busted').run('$spec')"
             if ($LASTEXITCODE -ne 0) {
               throw "Portable suite $spec failed (Neovim exit code $LASTEXITCODE)"
             }
           }
+      - name: Export native Windows coverage
+        shell: pwsh
+        run: |
+          python scripts/coverage.py export
+          if ($LASTEXITCODE -ne 0) { throw "Coverage export failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-Windows
+          path: .coverage/collection.json
+          include-hidden-files: true
+          if-no-files-found: error
+
+  coverage:
+    name: LuaCov coverage (native platform union)
+    runs-on: ubuntu-24.04
+    needs: [test, test-macos, test-windows]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install pinned report dependencies
+        run: make deps coverage-deps
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: .coverage/native
+      - name: Merge counters from identical sources and enforce complete coverage
+        run: |
+          python3 scripts/coverage.py merge .coverage/native/*/collection.json \
+            --require-platforms Linux Darwin Windows
+          make coverage-render coverage-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: .coverage/luacov.report.out
+          include-hidden-files: true
+          if-no-files-found: error

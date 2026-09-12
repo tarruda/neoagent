@@ -27,15 +27,21 @@ local M = {}
 local function load(key)
   local module = modules[key]
   local value
-  if module then value = require(module)
-  else value = require("applet.applet")[key] end
-  if value ~= nil then rawset(M, key, value) end
+  if module then
+    value = require(module)
+  else
+    value = require("applet.applet")[key]
+  end
+  if value ~= nil then
+    rawset(M, key, value)
+  end
   return value
 end
 
 local exports = setmetatable(M, {
-  __index = function(_, key) return load(key) end,
-  __call = function(_, opts) return M.new(opts) end,
+  __index = function(_, key)
+    return load(key)
+  end,
 })
 
 return exports --[[@as Applet.Package]]

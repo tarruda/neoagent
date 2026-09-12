@@ -13,7 +13,6 @@ local M = {}
 ---@field filetype string
 ---@field rectangles? Applet.Rectangle[]
 
-
 ---@param value unknown
 ---@return TypeGuard<integer>
 local function integer(value)
@@ -24,19 +23,27 @@ end
 ---@param lines string[]
 ---@return Applet.Rectangle[]|false|nil
 local function rectangles_for(range, lines)
-  if range.rectangles == nil then return nil end
+  if range.rectangles == nil then
+    return nil
+  end
   if type(range.rectangles) ~= "table" or not vim.islist(range.rectangles) then
     return false
   end
   local result = {}
   for _, rectangle in ipairs(range.rectangles) do
-    if type(rectangle) ~= "table"
-        or not integer(rectangle.row) or rectangle.row < range.first
-        or not integer(rectangle.col) or rectangle.col < 0
-        or not integer(rectangle.width) or rectangle.width < 1
-        or not integer(rectangle.height) or rectangle.height < 1
-        or rectangle.row + rectangle.height > range.last
-        or rectangle.row + rectangle.height > #lines then
+    if
+      type(rectangle) ~= "table"
+      or not integer(rectangle.row)
+      or rectangle.row < range.first
+      or not integer(rectangle.col)
+      or rectangle.col < 0
+      or not integer(rectangle.width)
+      or rectangle.width < 1
+      or not integer(rectangle.height)
+      or rectangle.height < 1
+      or rectangle.row + rectangle.height > range.last
+      or rectangle.row + rectangle.height > #lines
+    then
       return false
     end
     result[#result + 1] = rectangle
@@ -48,8 +55,12 @@ end
 ---@param lines string[]
 ---@return string?
 local function filetype_for(range, lines)
-  if range.language and range.language:match("^[%w_.-]+$") then return range.language end
-  if not range.path or range.path == "" then return nil end
+  if range.language and range.language:match("^[%w_.-]+$") then
+    return range.language
+  end
+  if not range.path or range.path == "" then
+    return nil
+  end
   local contents = vim.list_slice(lines, range.first + 1, range.last)
   local ok, filetype = pcall(vim.filetype.match, {
     filename = range.path,
@@ -69,7 +80,9 @@ end
 
 ---@param buffer integer
 function M.clear(buffer)
-  if not vim.api.nvim_buf_is_valid(buffer) then return end
+  if not vim.api.nvim_buf_is_valid(buffer) then
+    return
+  end
   vim.api.nvim_buf_call(buffer, clear_current_buffer)
 end
 
@@ -80,8 +93,13 @@ end
 function M.apply(buffer, ranges, lines)
   local valid, requested = {}, {}
   for _, range in ipairs(ranges or {}) do
-    if type(range.first) == "number" and type(range.last) == "number"
-        and range.first >= 0 and range.last >= range.first and range.last <= #lines then
+    if
+      type(range.first) == "number"
+      and type(range.last) == "number"
+      and range.first >= 0
+      and range.last >= range.first
+      and range.last <= #lines
+    then
       local filetype = filetype_for(range, lines)
       local rectangles = rectangles_for(range, lines)
       if filetype and rectangles ~= false then
@@ -106,10 +124,11 @@ function M.apply(buffer, ranges, lines)
       if not indexes[filetype] then
         local index = #loaded + 1
         vim.b.current_syntax = nil
-        if pcall(function()
-          vim.cmd("syntax include @AppletSource" .. index
-            .. " syntax/" .. filetype .. ".vim")
-        end) then
+        if
+          pcall(function()
+            vim.cmd("syntax include @AppletSource" .. index .. " syntax/" .. filetype .. ".vim")
+          end)
+        then
           loaded[index], indexes[filetype] = filetype, index
         end
       end
@@ -124,12 +143,18 @@ function M.apply(buffer, ranges, lines)
       count = count + 1
       local first = "\\%" .. tostring(item.range.first + 1) .. "l"
       local following = item.range.last + 1
-      local last = following <= #lines
-          and "\\%" .. tostring(following) .. "l" or "\\%$"
+      local last = following <= #lines and "\\%" .. tostring(following) .. "l" or "\\%$"
       pcall(function()
-        vim.cmd("syntax region AppletSourceContent" .. count
-          .. " start=/" .. first .. "/ end=/" .. last
-          .. "/ keepend contains=@AppletSource" .. syntax_index)
+        vim.cmd(
+          "syntax region AppletSourceContent"
+            .. count
+            .. " start=/"
+            .. first
+            .. "/ end=/"
+            .. last
+            .. "/ keepend contains=@AppletSource"
+            .. syntax_index
+        )
       end)
     end
 
@@ -137,17 +162,21 @@ function M.apply(buffer, ranges, lines)
     ---@param syntax_index integer
     local function rectangular_regions(rectangles, syntax_index)
       for _, rectangle in ipairs(rectangles) do
-        for row = rectangle.row,
-            rectangle.row + rectangle.height - 1 do
+        for row = rectangle.row, rectangle.row + rectangle.height - 1 do
           count = count + 1
-          local first = ("\\%%%dl\\%%%dv"):format(
-            row + 1, rectangle.col + 1)
-          local last = ("\\%%%dl\\%%%dv"):format(
-            row + 1, rectangle.col + rectangle.width + 1)
+          local first = ("\\%%%dl\\%%%dv"):format(row + 1, rectangle.col + 1)
+          local last = ("\\%%%dl\\%%%dv"):format(row + 1, rectangle.col + rectangle.width + 1)
           pcall(function()
-            vim.cmd("syntax region AppletSourceContent" .. count
-              .. " start=/" .. first .. "/ end=/" .. last
-              .. "/ oneline keepend contains=@AppletSource" .. syntax_index)
+            vim.cmd(
+              "syntax region AppletSourceContent"
+                .. count
+                .. " start=/"
+                .. first
+                .. "/ end=/"
+                .. last
+                .. "/ oneline keepend contains=@AppletSource"
+                .. syntax_index
+            )
           end)
         end
       end

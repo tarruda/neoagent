@@ -4,8 +4,8 @@ local no_source_options = require("neoagent.model_catalog.source").no_options
 ---@type Neoagent.DiscoveredModel[]
 local seed = {}
 for _, id in ipairs({
-  "deepseek-v4-flash", "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp",
+  "deepseek-flash",
+  "deepseek-v4-pro",
 }) do
   seed[#seed + 1] = { id = id }
 end
@@ -23,7 +23,9 @@ end
 local provider = {
   api = "openai-completions",
   base_url = "https://api.deepseek.com",
-  api_key = function() return vim.env.DEEPSEEK_API_KEY end,
+  api_key = function()
+    return vim.env.DEEPSEEK_API_KEY
+  end,
   auth = "deepseek",
   catalog = {
     source_id = "deepseek-models",

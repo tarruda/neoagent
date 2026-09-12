@@ -48,7 +48,9 @@ local input_schema = {
 ---@return Neoagent.Plan
 local function validate(arguments)
   local valid, message = tool_schema.validate(input_schema, arguments)
-  if not valid then error(message, 0) end
+  if not valid then
+    error(message, 0)
+  end
   ---@cast arguments Neoagent.Plan
   return arguments
 end
@@ -78,18 +80,18 @@ local function latest(messages)
     if message.role == "assistant" then
       ---@cast message Neoagent.AssistantMessage
       for _, block in ipairs(message.content or {}) do
-        if block.type == "toolCall" and block.name == "update_plan"
-            and type(block.id) == "string" then
+        if block.type == "toolCall" and block.name == "update_plan" and type(block.id) == "string" then
           calls[block.id] = block.arguments
         end
       end
-    elseif message.role == "toolResult" and message.toolName == "update_plan"
-        and message.isError ~= true then
+    elseif message.role == "toolResult" and message.toolName == "update_plan" and message.isError ~= true then
       ---@cast message Neoagent.ToolResultMessage
-      local details = type(message.details) == "table"
-          and rawget(message.details, "plan") ~= nil and message.details or nil
+      local details = type(message.details) == "table" and rawget(message.details, "plan") ~= nil and message.details
+        or nil
       local value = accepted(calls[message.toolCallId] or details)
-      if value then current = value end
+      if value then
+        current = value
+      end
     end
   end
   return current
@@ -98,21 +100,29 @@ end
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.ToolPlanPresentation?
 local function presentation(opts)
-  if type(opts) ~= "table" then return nil end
+  if type(opts) ~= "table" then
+    return nil
+  end
   if opts.state == "pending" or opts.state == "running" then
     return { kind = "plan" }
   end
-  if opts.state ~= "success" then return nil end
+  if opts.state ~= "success" then
+    return nil
+  end
   local result = opts.result
-  local details = result and type(result.details) == "table"
-      and rawget(result.details, "plan") ~= nil and result.details or nil
+  local details = result
+      and type(result.details) == "table"
+      and rawget(result.details, "plan") ~= nil
+      and result.details
+    or nil
   local arguments = accepted(details or opts.arguments)
-  if not arguments then return nil end
+  if not arguments then
+    return nil
+  end
 
   return {
     kind = "plan",
-    explanation = type(arguments.explanation) == "string"
-      and arguments.explanation or nil,
+    explanation = type(arguments.explanation) == "string" and arguments.explanation or nil,
     plan = util.copy(arguments.plan),
   }
 end
@@ -138,7 +148,9 @@ local function new()
     end,
     on_messages = function(messages, ctx)
       local id = session_id(ctx)
-      if id then states[id] = latest(messages) end
+      if id then
+        states[id] = latest(messages)
+      end
     end,
     current = function(ctx)
       local id = session_id(ctx)

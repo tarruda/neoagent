@@ -34,7 +34,9 @@ end
 ---@return_overload nil, nil
 local function index_of(self, id)
   for index, record in ipairs(self._records) do
-    if record.id == id then return index, record end
+    if record.id == id then
+      return index, record
+    end
   end
 end
 
@@ -57,10 +59,14 @@ function Steering:enqueue(id, text, timestamp)
   if type(text) ~= "string" or util.trim(text) == "" then
     return nil, util.error("steering", "steering text must contain content")
   end
-  if type(timestamp) ~= "number" or timestamp < 0 or timestamp % 1 ~= 0
-      or timestamp ~= timestamp or timestamp == math.huge then
-    return nil, util.error("steering",
-      "steering timestamp must be a non-negative integer")
+  if
+    type(timestamp) ~= "number"
+    or timestamp < 0
+    or timestamp % 1 ~= 0
+    or timestamp ~= timestamp
+    or timestamp == math.huge
+  then
+    return nil, util.error("steering", "steering timestamp must be a non-negative integer")
   end
   if index_of(self, id) then
     return nil, util.error("steering", "steering ids must be unique")
@@ -93,21 +99,28 @@ end
 
 ---@return Neoagent.SteeringRecord?, (fun(committed: boolean): Neoagent.SteeringRecord|false)?
 function Steering:offer()
-  assert(self._offered == nil,
-    "a steering record is already awaiting acknowledgement")
+  assert(self._offered == nil, "a steering record is already awaiting acknowledgement")
   local record = self._records[1]
-  if not record then return nil end
+  if not record then
+    return nil
+  end
   self._offered = record
   local active = true
   ---@param committed boolean
   ---@return Neoagent.SteeringRecord|false
   local function acknowledge(committed)
-    if not active then return false end
+    if not active then
+      return false
+    end
     active = false
-    if self._offered == record then self._offered = nil end
+    if self._offered == record then
+      self._offered = nil
+    end
     if committed then
       local index, current = index_of(self, record.id)
-      if current == record then table.remove(self._records, index) end
+      if current == record then
+        table.remove(self._records, index)
+      end
     end
     return copy_record(record)
   end
@@ -117,11 +130,9 @@ end
 ---@param id integer
 ---@return Neoagent.SteeringClaim?, Neoagent.Error?
 function Steering:claim(id)
-  assert(type(id) == "number" and id >= 1 and id % 1 == 0,
-    "steering id must be a positive integer")
+  assert(type(id) == "number" and id >= 1 and id % 1 == 0, "steering id must be a positive integer")
   if self._offered then
-    return nil, util.error("steering",
-      "Cannot claim steering while acknowledgement is pending")
+    return nil, util.error("steering", "Cannot claim steering while acknowledgement is pending")
   end
   local index, record = index_of(self, id)
   if not record then
@@ -132,15 +143,18 @@ function Steering:claim(id)
   local owner = self
   local claim = { record = copy_record(record) }
   function claim:commit()
-    if not active then return false end
+    if not active then
+      return false
+    end
     active = false
     return true
   end
   function claim:rollback()
-    if not active then return false end
+    if not active then
+      return false
+    end
     active = false
-    table.insert(owner._records,
-      math.min(index, #owner._records + 1), record)
+    table.insert(owner._records, math.min(index, #owner._records + 1), record)
     return true
   end
   return claim
@@ -148,8 +162,7 @@ end
 
 ---@return Neoagent.SteeringRecord[]
 function Steering:dequeue_all()
-  assert(self._offered == nil,
-    "cannot dequeue steering while acknowledgement is pending")
+  assert(self._offered == nil, "cannot dequeue steering while acknowledgement is pending")
   local records = util.copy(self._records)
   self._records = {}
   return records
@@ -157,8 +170,7 @@ end
 
 ---@return boolean
 function Steering:clear()
-  assert(self._offered == nil,
-    "cannot clear steering while acknowledgement is pending")
+  assert(self._offered == nil, "cannot clear steering while acknowledgement is pending")
   local changed = #self._records > 0
   self._records = {}
   return changed

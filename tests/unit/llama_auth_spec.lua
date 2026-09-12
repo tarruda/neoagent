@@ -161,6 +161,24 @@ describe("neoagent llama.cpp auth", function()
     assert(ok, tostring(fallback))
     assert.is_false(fallback.ok)
     assert.matches("server check failed", assert(fallback.error).message)
+
+    transport = fake_transport.new()
+    transport.fetches = {
+      { status = 401, body = vim.json.encode({ error = "key required" }) },
+      { status = 403, body = vim.json.encode({ error = "key rejected" }) },
+    }
+    seen, restore = patch_client(transport)
+    result = wait(method.login({
+      notify = function() end,
+      prompt = function(prompt, done)
+        done.resolve(prompt.type == "secret" and "rejected-key"
+          or "http://127.0.0.1:8080")
+        return function() end
+      end,
+    }))
+    restore()
+    assert.is_false(result.ok)
+    assert.matches("key rejected", assert(result.error).message)
   end)
 
   it("derives request options and public metadata", function()

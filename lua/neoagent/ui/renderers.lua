@@ -4,10 +4,6 @@ local render = require("neoagent.ui.render")
 local tree = require("neoagent.ui.tree")
 local tool_presentation = require("neoagent.ui.tool_presentation")
 
----@class Neoagent.RenderImage: Neoagent.ImageBlock
----@field media_type? string
----@field mime_type? string
-
 ---@class Neoagent.RenderedImages
 ---@field signature string
 ---@field nodes Applet.Node[]
@@ -29,18 +25,30 @@ end
 ---@type Neoagent.RenderPolicy
 local pi = {
   name = "pi",
-  user_background = function() return "NeoagentUserBackground" end,
-  compaction_background = function() return "NeoagentUserBackground" end,
+  user_background = function()
+    return "NeoagentUserBackground"
+  end,
+  compaction_background = function()
+    return "NeoagentUserBackground"
+  end,
   tool_background = function(state)
-    if state == "error" then return "NeoagentToolErrorBackground" end
-    if state == "success" then return "NeoagentToolSuccessBackground" end
+    if state == "error" then
+      return "NeoagentToolErrorBackground"
+    end
+    if state == "success" then
+      return "NeoagentToolSuccessBackground"
+    end
     return "NeoagentToolPendingBackground"
   end,
-  tool_title = function(parts) return parts end,
+  tool_title = function(parts)
+    return parts
+  end,
   plain_output_group = function(error)
     return error and "NeoagentError" or "NeoagentToolOutput"
   end,
-  write_output_group = function() return "NeoagentToolOutput" end,
+  write_output_group = function()
+    return "NeoagentToolOutput"
+  end,
   read_source_syntax = false,
   write_source_syntax = false,
   inline_single_line_tool_hint = false,
@@ -52,10 +60,14 @@ local pi = {
 ---@type Neoagent.RenderPolicy
 local codex = {
   name = "codex",
-  user_background = function() return "NeoagentCodexUserBackground" end,
+  user_background = function()
+    return "NeoagentCodexUserBackground"
+  end,
   compaction_background = function() end,
   tool_background = function() end,
-  plain_output_group = function() return "Normal" end,
+  plain_output_group = function()
+    return "Normal"
+  end,
   write_output_group = function() end,
   read_source_syntax = true,
   write_preview_lines = 3,
@@ -78,7 +90,9 @@ local codex = {
     return title
   end,
   separator = function(previous, current)
-    if not previous or not current then return nil end
+    if not previous or not current then
+      return nil
+    end
     if previous.kind == "tool" and prose(current.kind) then
       return "after_previous"
     end
@@ -96,9 +110,8 @@ local codex = {
 ---@return Neoagent.RenderContext, Neoagent.RenderContinuation
 local function context(policy, theme, env, continuation, block)
   local spinner = env.spinner or "⠋"
-  local previous = type(continuation) == "table"
-    and type(continuation.markdown) == "table"
-    and continuation.markdown or {}
+  local previous = type(continuation) == "table" and type(continuation.markdown) == "table" and continuation.markdown
+    or {}
   ---@type table<string, Neoagent.MarkdownDocument>
   local documents = {}
   ---@type Neoagent.RenderContext
@@ -109,10 +122,14 @@ local function context(policy, theme, env, continuation, block)
       mappings = { card_details = env.details_key },
       wrap_cards = env.wrap_cards == true,
     },
-    resolve_tool = function() return env.tool end,
+    resolve_tool = function()
+      return env.tool
+    end,
     spinner_frames = { spinner },
     spinner_frame = 1,
-    _content_width = function() return env.width or 80 end,
+    _content_width = function()
+      return env.width or 80
+    end,
     render_markdown = function(_, key, source, opts)
       local document = previous[key] or markdown.new()
       document:update(source, opts, block.text_epoch)
@@ -123,50 +140,23 @@ local function context(policy, theme, env, continuation, block)
   return value, { markdown = documents }
 end
 
----@param block Neoagent.RenderImage
----@return string?
-local function decoded_data(block)
-  if type(block.data) ~= "string" then return nil end
-  local data = block.data
-  if data:sub(1, 8) == "\137PNG\r\n\26\n" then return data end
-  if vim.base64 and type(vim.base64.decode) == "function" then
-    local ok, value = pcall(vim.base64.decode, data)
-    if ok and type(value) == "string" then return value end
-  end
-  return data
-end
-
----@param block Neoagent.RenderImage
----@return string?
-local function png_data(block)
-  local mime = block.mimeType or block.media_type or block.mime_type
-  if mime ~= nil and mime ~= "image/png" then return nil end
-  local data = decoded_data(block)
-  if data and data:sub(1, 8) == "\137PNG\r\n\26\n" then return data end
-end
-
 ---@param bytes integer
 ---@return string
 local function byte_size(bytes)
-  if bytes < 1024 then return tostring(bytes) .. " B" end
-  if bytes < 1024 * 1024 then return string.format("%.1f KiB", bytes / 1024) end
+  if bytes < 1024 then
+    return tostring(bytes) .. " B"
+  end
+  if bytes < 1024 * 1024 then
+    return string.format("%.1f KiB", bytes / 1024)
+  end
   return string.format("%.1f MiB", bytes / 1024 / 1024)
 end
 
----@param block Neoagent.RenderImage
----@param mime string
----@param data? string
+---@param block Neoagent.ImageBlock
 ---@return string
-local function image_tag(block, mime, data)
-  local format = tostring(mime):match("^image/(.+)$") or tostring(mime)
-  local parts = { "Image", format:upper() }
-  if data and mime == "image/png" then
-    local ok, info = pcall(require("applet").ImageSystem.png_info, data)
-    if ok then parts[#parts + 1] = info.width .. "×" .. info.height end
-  end
-  local decoded = data or decoded_data(block)
-  if decoded then parts[#parts + 1] = byte_size(#decoded) end
-  return table.concat(parts, " · ")
+local function image_tag(block)
+  local format = block.mime_type:match("^image/(.+)$") or block.mime_type
+  return "Image · " .. format:upper() .. " · " .. byte_size(block.bytes)
 end
 
 ---@param value unknown
@@ -176,7 +166,7 @@ local function identity_component(value)
   return tostring(#value) .. ":" .. value
 end
 
----@param value Neoagent.RenderImage
+---@param value Neoagent.ImageBlock
 ---@param index integer
 ---@return string
 local function image_slot(value, index)
@@ -189,8 +179,12 @@ end
 ---@param block Neoagent.RenderBlock
 ---@return string|Neoagent.Block[]|nil
 local function image_content(block)
-  if type(block.message) == "table" then return block.message.content end
-  if type(block.update) == "table" then return block.update.content end
+  if type(block.message) == "table" then
+    return block.message.content
+  end
+  if type(block.update) == "table" then
+    return block.update.content
+  end
   return block.content
 end
 
@@ -200,16 +194,18 @@ end
 ---@param env Neoagent.RenderOptions
 ---@return string?
 local function image_render_signature(block, key, native, env)
-  if block.revision == nil then return nil end
+  if block.revision == nil then
+    return nil
+  end
   local details = env.image_mode == "details"
   return table.concat({
     identity_component(block.revision),
     identity_component(block.image_scope or ""),
     identity_component(key),
     native == false and "0" or "1",
+    identity_component(env.image_source),
     details and "1" or "0",
-    not details and type(env.width) == "number" and env.width > 1
-      and "1" or "0",
+    not details and type(env.width) == "number" and env.width > 1 and "1" or "0",
   })
 end
 
@@ -234,27 +230,15 @@ local function image_nodes(block, key, native, env, continuation)
   end
   for index, value in ipairs(content) do
     if type(value) == "table" and value.type == "image" then
-      ---@cast value Neoagent.RenderImage
       local slot = image_slot(value, index)
       local image_key = key .. ":image:" .. slot
-      local data = png_data(value)
-      local mime = value.mimeType or value.media_type or value.mime_type
-        or (data and "image/png") or "image"
-      local alt = image_tag(value, mime, data)
-      if data and native ~= false then
+      local alt = image_tag(value)
+      if value.mime_type == "image/png" and native ~= false and env.image_source then
         local details = env.image_mode == "details"
         ---@type Applet.Node
         local image = ui.image({
           key = image_key,
-          source = {
-            kind = "png_bytes",
-            id = "neoagent:" .. identity_component(
-              block.image_scope or "direct")
-              .. identity_component(block.key or key)
-              .. identity_component(slot),
-            data = data,
-            revision = value.revision ~= nil and value.revision or 1,
-          },
+          source = env.image_source(value),
           alt = alt,
           width = details and "native" or "fill",
           height = "auto",
@@ -300,8 +284,7 @@ local function new(policy)
     render_block = function(_, block, env, continuation)
       env = env or {}
       local key = "renderer:" .. tostring(block.key or env.key or "block")
-      local render_context, next_continuation = context(
-        policy, theme, env, continuation, block)
+      local render_context, next_continuation = context(policy, theme, env, continuation, block)
       local content = render.block(render_context, block, {
         previous = env.previous,
         next = env.following,
@@ -309,8 +292,7 @@ local function new(policy)
       if content.card and content.card.last < content.card.first then
         content.card = nil
       end
-      local images, image_continuation = image_nodes(
-        block, key, env.show_images, env, continuation)
+      local images, image_continuation = image_nodes(block, key, env.show_images, env, continuation)
       next_continuation.images = image_continuation
       local focus = tree.focus(block, content, {
         width = env.surface_width or (env.width and env.width + 2) or 2,
@@ -336,26 +318,24 @@ local function new(policy)
     end,
     render_details = function(_, block, env, continuation)
       env = env or {}
-      local render_context, next_continuation = context(
-        policy, theme, env, continuation, block)
-      local content, background = render.details(
-        render_context, block, { width = env.width })
-      if not content then return nil end
+      local render_context, next_continuation = context(policy, theme, env, continuation, block)
+      local content, background = render.details(render_context, block, { width = env.width })
+      if not content then
+        return nil
+      end
       local details_key = "details:" .. tostring(block.key or env.key or "block")
-      local images, image_continuation = image_nodes(
-        block, details_key, true,
-        vim.tbl_extend("force", env, { image_mode = "details" }), continuation)
+      local images, image_continuation =
+        image_nodes(block, details_key, true, vim.tbl_extend("force", env, { image_mode = "details" }), continuation)
       next_continuation.images = image_continuation
       local node
       if content.markdown_document then
         ---@cast content Neoagent.MarkdownView
-        node, next_continuation.tree = tree.retained_markdown(
-          details_key, content, {
-            wrap = "native",
-            partition_rows = DETAILS_REGION_TARGET_ROWS,
-            line_group = background,
-            attachments = images,
-          }, continuation and continuation.tree)
+        node, next_continuation.tree = tree.retained_markdown(details_key, content, {
+          wrap = "native",
+          partition_rows = DETAILS_REGION_TARGET_ROWS,
+          line_group = background,
+          attachments = images,
+        }, continuation and continuation.tree)
       else
         ---@cast content Neoagent.RenderContent
         if background then

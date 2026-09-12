@@ -143,6 +143,18 @@ describe("neoagent workspace trust", function()
     vim.uv.fs_stat = stat
     assert.is_nil(value)
     assert.are.equal("workspace_trust", assert(err).kind)
+
+    vim.uv.fs_stat = function(candidate)
+      if candidate == path then return nil, string.rep("denied", 250) end
+      return stat(candidate)
+    end
+    value, err = store:list()
+    vim.uv.fs_stat = stat
+    assert.is_nil(value)
+    local detail = assert(assert(err).detail)
+    assert(type(detail) == "string")
+    assert.are.equal(1000, #detail)
+    assert.matches("%.%.%.$", detail)
   end)
 
   it("fails closed for local storage and lock failures", function()
@@ -289,6 +301,20 @@ describe("neoagent workspace trust", function()
     assert(vim.wait(1000, function() return cancelled:is_done() end, 5))
     assert.are.equal("cancelled", assert(assert(cancelled:result()).error).kind)
     assert(holder:release())
+
+    local changed_dir = directory("changed-while-locked")
+    local changed_path = changed_dir .. "/trust.json"
+    vim.fn.mkdir(changed_dir, "p")
+    assert(fs.write_all(changed_path, '{"version":1,"trusted":[]}\n'))
+    local changed_holder = assert(require("neoagent.file_lock").new({
+      path = changed_path .. ".lock",
+    }):acquire())
+    local changed = trust.new_store(changed_path):trust(root)
+    assert(fs.write_all(changed_path, "{\n"))
+    assert(changed_holder:release())
+    local changed_result = wait(changed)
+    assert.is_false(changed_result.ok)
+    assert.matches("Invalid workspace trust store", assert(changed_result.error).message)
   end)
 
   it("reports effective sandbox status and prompt preparation failures", function()
@@ -338,6 +364,14 @@ describe("neoagent workspace trust", function()
     }, second)
     assert.is_not_nil((failed.body:find(
       "Tool execution is blocked because sandbox activation failed: native probe failed", 1, true)))
+    local long_reason = prompt({
+      enabled = true,
+      active = false,
+      message = string.rep("unsafe", 120),
+    }, root)
+    local reason = assert(long_reason.body:match("activation failed: ([^\n]+)"))
+    assert.are.equal(500, #reason)
+    assert.matches("%.%.%.$", reason)
 
     local invalid_path = directory .. "/invalid.json"
     vim.fn.mkdir(directory, "p")
@@ -460,6 +494,116 @@ describe("neoagent workspace trust", function()
     detach()
     assert.are.equal(4, #notices)
     assert.is_false(dismissed:is_trusted(root))
+  end)
+
+  it("coalesces scheduled trust checks and contains attachment failures", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    paths = { root, directory }
+    local dialogs = unexpected_dialogs()
+    ---@type Neoagent.Error[]
+    local notices = {}
+    ---@type Neoagent.WorkspaceTrustResult?
+    local completed
+    local policy = trust.new({
+      path = directory .. "/trust.json",
+      dialogs = dialogs,
+      notify = function(err) notices[#notices + 1] = err end,
+      session = {},
+    })
+    policy:attach({
+      on_result = function(result)
+        completed = result
+        error("result observer failed")
+      end,
+      on_trusted = function()
+        error("trusted observer failed")
+      end,
+    })
+
+    local requested, request_err, request_state = policy:request(root)
+    assert.is_false(requested)
+    assert.is_nil(request_err)
+    assert.are.equal("scheduled", request_state)
+    local duplicate, duplicate_err, duplicate_state = policy:request(root)
+    assert.is_false(duplicate)
+    assert.is_nil(duplicate_err)
+    assert.are.equal("scheduled", duplicate_state)
+    assert.is_true(policy:trust_session(root))
+
+    assert(vim.wait(1000, function() return #notices == 2 end, 5))
+    assert.is_true(assert(completed).ok)
+    assert.is_true(assert(completed).already_trusted)
+    assert.matches("result observer failed", assert(notices[1]).message)
+    assert.matches("trusted observer failed", assert(notices[2]).message)
+    assert.is_true((policy:request(root)))
+  end)
+
+  it("coalesces a trust request reentered while activating its prompt", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    paths = { root, directory }
+    local dialogs = require("neoagent.dialog").new()
+    local unsubscribe = dialogs:subscribe(function() end)
+    local policy
+    local reentered = false
+    policy = trust.new({
+      path = directory .. "/trust.json",
+      dialogs = dialogs,
+      session = {},
+    })
+    policy:attach({
+      activate = function()
+        local requested, request_err, request_state = policy:request(root)
+        assert.is_false(requested)
+        assert.is_nil(request_err)
+        assert.are.equal("scheduled", request_state)
+        reentered = true
+      end,
+    })
+
+    assert.is_false(policy:request(root))
+    assert(vim.wait(1000, function()
+      return reentered and dialogs:snapshot().active ~= nil
+    end, 5))
+    local requested, request_err, request_state = policy:request(root)
+    assert.is_false(requested)
+    assert.is_nil(request_err)
+    assert.are.equal("active", request_state)
+    assert(dialogs:cancel_pending("dialog dismissed by user"))
+    assert(vim.wait(1000, function()
+      return dialogs:snapshot().active == nil and next(policy.pending) == nil
+    end, 5))
+    unsubscribe()
+  end)
+
+  it("bounds the workspace path reported by a pending check", function()
+    local component = string.rep("segment", 28)
+    local root = "/" .. table.concat({ component, component, component, component, component }, "/")
+    local dialogs = require("neoagent.dialog").new()
+    local unsubscribe = dialogs:subscribe(function() end)
+    local store = trust.new_store(vim.fn.tempname() .. "/trust.json")
+    function store:is_trusted() return false end
+    local policy = trust.new({
+      path = vim.fn.tempname() .. "/trust.json",
+      dialogs = dialogs,
+      session = {},
+      store = store,
+    })
+
+    local trusted, err = policy:check(root)
+    assert.is_nil(trusted)
+    local pending = assert(err) --[[@as Neoagent.WorkspaceTrustError]]
+    assert.is_true(pending.pending)
+    assert.are.equal("scheduled", pending.request_state)
+    assert.is_true(#pending.message <= #"Workspace trust is required for " + 900)
+    assert.matches("%.%.%.$", pending.message)
+    assert(vim.wait(1000, function() return dialogs:snapshot().active ~= nil end, 5))
+    assert(dialogs:cancel_pending("dialog dismissed by user"))
+    assert(vim.wait(1000, function() return dialogs:snapshot().active == nil end, 5))
+    unsubscribe()
   end)
 
   it("shares process-lifetime decisions and normalizes Windows keys", function()

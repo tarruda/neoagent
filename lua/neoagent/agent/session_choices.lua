@@ -18,12 +18,24 @@ local function relative_age(modified_at, now)
   local minutes = math.floor(milliseconds / 60000)
   local hours = math.floor(milliseconds / 3600000)
   local days = math.floor(milliseconds / 86400000)
-  if minutes < 1 then return "now" end
-  if minutes < 60 then return minutes .. "m" end
-  if hours < 24 then return hours .. "h" end
-  if days < 7 then return days .. "d" end
-  if days < 30 then return math.floor(days / 7) .. "w" end
-  if days < 365 then return math.floor(days / 30) .. "mo" end
+  if minutes < 1 then
+    return "now"
+  end
+  if minutes < 60 then
+    return minutes .. "m"
+  end
+  if hours < 24 then
+    return hours .. "h"
+  end
+  if days < 7 then
+    return days .. "d"
+  end
+  if days < 30 then
+    return math.floor(days / 7) .. "w"
+  end
+  if days < 365 then
+    return math.floor(days / 30) .. "mo"
+  end
   return math.floor(days / 365) .. "y"
 end
 
@@ -33,20 +45,20 @@ end
 ---@return Neoagent.SessionChoice<T>[]
 function M.build(sessions, current_path)
   ---@type table<string, Neoagent.SessionChoiceNode<T>>
-  local by_path = {}
+  local by_id = {}
   ---@type Neoagent.SessionChoiceNode<T>[]
   local nodes = {}
   for _, info in ipairs(sessions) do
     ---@type Neoagent.SessionChoiceNode<T>
     local node = { info = info, children = {}, latest = info.modified_at }
     nodes[#nodes + 1] = node
-    by_path[fs.canonical(info.path)] = node
+    by_id[info.id] = node
   end
 
   ---@type Neoagent.SessionChoiceNode<T>[]
   local roots = {}
   for _, node in ipairs(nodes) do
-    local parent = node.info.parent_session and by_path[fs.canonical(node.info.parent_session)]
+    local parent = node.info.parent_session and by_id[node.info.parent_session]
     if parent and parent ~= node then
       parent.children[#parent.children + 1] = node
     else
@@ -65,12 +77,18 @@ function M.build(sessions, current_path)
   ---@param values Neoagent.SessionChoiceNode<T>[]
   local function sort_nodes(values)
     table.sort(values, function(a, b)
-      if a.latest == b.latest then return a.info.path > b.info.path end
+      if a.latest == b.latest then
+        return a.info.path > b.info.path
+      end
       return a.latest > b.latest
     end)
-    for _, node in ipairs(values) do sort_nodes(node.children) end
+    for _, node in ipairs(values) do
+      sort_nodes(node.children)
+    end
   end
-  for _, root in ipairs(roots) do update_latest(root) end
+  for _, root in ipairs(roots) do
+    update_latest(root)
+  end
   sort_nodes(roots)
 
   ---@type Neoagent.SessionChoice<T>[]
@@ -87,19 +105,22 @@ function M.build(sessions, current_path)
     local marker = is_current and "● " or "  "
     local choice = vim.tbl_extend("force", util.copy(info), {
       current = is_current,
-      label = string.format("%s%s%s  %s", marker, prefix .. branch,
-        info.text, relative_age(info.modified_at, now)),
+      label = string.format("%s%s%s  %s", marker, prefix .. branch, info.text, relative_age(info.modified_at, now)),
     })
     ---@cast choice Neoagent.SessionChoice<T>
     choices[#choices + 1] = choice
     local child_prefix = prefix
-    if branch ~= "" then child_prefix = child_prefix .. (is_last and "   " or "│  ") end
+    if branch ~= "" then
+      child_prefix = child_prefix .. (is_last and "   " or "│  ")
+    end
     for index, child in ipairs(node.children) do
       local child_last = index == #node.children
       visit(child, child_prefix, child_last and "└─ " or "├─ ", child_last)
     end
   end
-  for _, root in ipairs(roots) do visit(root, "", "", true) end
+  for _, root in ipairs(roots) do
+    visit(root, "", "", true)
+  end
   return choices
 end
 

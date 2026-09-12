@@ -64,10 +64,14 @@ end
 local function append_headers(command, headers)
   headers = headers or {}
   local names = {}
-  for name in pairs(headers) do names[#names + 1] = name end
+  for name in pairs(headers) do
+    names[#names + 1] = name
+  end
   table.sort(names, function(a, b)
     local left, right = a:lower(), b:lower()
-    if left == right then return a < b end
+    if left == right then
+      return a < b
+    end
     return left < right
   end)
   for _, name in ipairs(names) do
@@ -77,11 +81,14 @@ local function append_headers(command, headers)
 end
 
 ---@param path string
----@return table<string, string> headers
+---@return table<string, string>? headers
 ---@return number? status
+---@return unknown? error
 local function response_headers(path)
   local ok, lines = pcall(vim.fn.readfile, path, "b")
-  if not ok then return {}, nil end
+  if not ok then
+    return nil, nil, lines
+  end
   -- Neovim readfile in binary mode returns a list of lines.
   ---@cast lines string[]
   local headers = {}
@@ -93,7 +100,9 @@ local function response_headers(path)
       headers = {}
     else
       local name, value = line:match("^([^:]+):%s*(.-)%s*$")
-      if name then headers[name:lower()] = value end
+      if name then
+        headers[name:lower()] = value
+      end
     end
   end
   return headers, status
@@ -107,13 +116,17 @@ local function curl_error(code, stderr)
   local message = "curl exited with status " .. tostring(code)
   if detail ~= "" then
     local summary = detail:gsub("%s+", " ")
-    if #summary > 300 then summary = summary:sub(1, 297) .. "..." end
+    if #summary > 300 then
+      summary = summary:sub(1, 297) .. "..."
+    end
     message = message .. ": " .. summary
   end
   ---@type Neoagent.HttpError
   local err = util.error("transport", message, detail)
   err.exit_code = code
-  if detail ~= "" then err.stderr = detail end
+  if detail ~= "" then
+    err.stderr = detail
+  end
   return err
 end
 
@@ -131,8 +144,13 @@ end
 ---@return string[]
 local function fetch_command(request, header_path)
   local command = {
-    "curl", "--silent", "--show-error", "-X", request.method or "POST",
-    "--dump-header", header_path,
+    "curl",
+    "--silent",
+    "--show-error",
+    "-X",
+    request.method or "POST",
+    "--dump-header",
+    header_path,
   }
   append_headers(command, request.headers)
   if request.body ~= nil then
@@ -141,8 +159,7 @@ local function fetch_command(request, header_path)
   end
   if type(request.timeout_ms) == "number" then
     command[#command + 1] = "--max-time"
-    command[#command + 1] = string.format("%.3f",
-      math.max(0.001, request.timeout_ms / 1000))
+    command[#command + 1] = string.format("%.3f", math.max(0.001, request.timeout_ms / 1000))
   end
   command[#command + 1] = "--write-out"
   command[#command + 1] = "\n%{http_code}"
@@ -176,8 +193,7 @@ function M.command(request, header_path)
   end
   if type(request.timeout_ms) == "number" then
     command[#command + 1] = "--max-time"
-    command[#command + 1] = string.format("%.3f",
-      math.max(0.001, request.timeout_ms / 1000))
+    command[#command + 1] = string.format("%.3f", math.max(0.001, request.timeout_ms / 1000))
   end
   command[#command + 1] = request.url
   return command
@@ -190,74 +206,95 @@ function M.fetch(opts)
   local request = assert(opts.request, "request is required")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
   return async.run(
-  ---@return Neoagent.ByteFetchSuccess
-  function()
-    local maximum = request.max_response_bytes
-    if maximum ~= nil then
-      assert(type(maximum) == "number" and maximum >= 0
-          and maximum % 1 == 0,
-        "request.max_response_bytes must be a non-negative integer")
-    end
-    local header_path = header_file()
-    local completed_ok, completed = pcall(function()
-      local command = fetch_command(request, header_path)
-      return async.await(
-      ---@param done Neoagent.AwaitCallbacks<vim.SystemCompleted>
-      function(done)
-        ---@type vim.SystemObj?
-        local process
-        local stdout = ""
-        local ok, err = pcall(function()
-          ---@type vim.SystemOpts
-          local system_opts = {
-            stdin = request.body or "",
-            text = false,
-          }
-          if maximum then
-            system_opts.stdout = function(read_err, data)
-              if read_err then
-                done.reject(util.error("transport",
-                  "Failed reading curl stdout", read_err))
-                if process then pcall(process.kill, process, 15) end
-              elseif data and data ~= "" then
-                stdout = stdout .. data
-                if #stdout > maximum + 4 then
-                  done.reject(util.error("transport",
-                    "curl response exceeds " .. tostring(maximum)
-                      .. " bytes"))
-                  if process then pcall(process.kill, process, 15) end
+    ---@return Neoagent.ByteFetchSuccess
+    function()
+      local maximum = request.max_response_bytes
+      if maximum ~= nil then
+        assert(
+          type(maximum) == "number" and maximum >= 0 and maximum % 1 == 0,
+          "request.max_response_bytes must be a non-negative integer"
+        )
+      end
+      local header_path = header_file()
+      local completed_ok, completed = pcall(function()
+        local command = fetch_command(request, header_path)
+        return async.await(
+          ---@param done Neoagent.AwaitCallbacks<vim.SystemCompleted>
+          function(done)
+            ---@type vim.SystemObj?
+            local process
+            local stdout = ""
+            local ok, err = pcall(function()
+              ---@type vim.SystemOpts
+              local system_opts = {
+                stdin = request.body or "",
+                text = false,
+              }
+              if maximum then
+                system_opts.stdout = function(read_err, data)
+                  if read_err then
+                    done.reject(util.error("transport", "Failed reading curl stdout", read_err))
+                    if process then
+                      pcall(process.kill, process, 15)
+                    end
+                  elseif data and data ~= "" then
+                    stdout = stdout .. data
+                    if #stdout > maximum + 4 then
+                      done.reject(util.error("transport", "curl response exceeds " .. tostring(maximum) .. " bytes"))
+                      if process then
+                        pcall(process.kill, process, 15)
+                      end
+                    end
+                  end
                 end
+              end
+              process = vim.system(command, system_opts, function(result)
+                if maximum then
+                  result.stdout = stdout
+                end
+                if result.code == 0 then
+                  done.resolve(result)
+                else
+                  done.reject(
+                    util.error("transport", "curl exited with status " .. tostring(result.code), result.stderr)
+                  )
+                end
+              end)
+            end)
+            if not ok then
+              done.reject(util.error("transport", "Failed to start curl", err))
+            end
+            return function()
+              if process then
+                pcall(process.kill, process, 15)
               end
             end
           end
-          process = vim.system(command, system_opts, function(result)
-            if maximum then result.stdout = stdout end
-            if result.code == 0 then done.resolve(result) else done.reject(util.error(
-              "transport", "curl exited with status " .. tostring(result.code), result.stderr
-            )) end
-          end)
-        end)
-        if not ok then done.reject(util.error("transport", "Failed to start curl", err)) end
-        return function() if process then pcall(process.kill, process, 15) end end
+        )
       end)
-    end)
-    local headers, header_status = response_headers(header_path)
-    pcall(vim.fn.delete, header_path)
-    if not completed_ok then error(completed, 0) end
-    local body, status = (completed.stdout or ""):match("^(.*)\n(%d%d%d)$")
-    if not status then
-      error(util.error(
-        "protocol", "curl response is missing an HTTP status"), 0)
-    end
-    -- Both captures exist when the trailing HTTP status matched.
-    ---@cast body string
-    return {
-      ok = true,
-      status = header_status or tonumber(status),
-      headers = headers,
-      body = body,
-    }
-  end, { on_done = opts.on_done, error_kind = "transport" })
+      local headers, header_status, header_error = response_headers(header_path)
+      pcall(vim.fn.delete, header_path)
+      if not completed_ok then
+        error(completed, 0)
+      end
+      if not headers then
+        error(util.error("transport", "Failed reading curl response headers", header_error), 0)
+      end
+      local body, status = (completed.stdout or ""):match("^(.*)\n(%d%d%d)$")
+      if not status then
+        error(util.error("protocol", "curl response is missing an HTTP status"), 0)
+      end
+      -- Both captures exist when the trailing HTTP status matched.
+      ---@cast body string
+      return {
+        ok = true,
+        status = header_status or tonumber(status),
+        headers = headers,
+        body = body,
+      }
+    end,
+    { on_done = opts.on_done, error_kind = "transport" }
+  )
 end
 
 ---@param opts Neoagent.ByteStreamOptions
@@ -266,76 +303,94 @@ function M.request(opts)
   opts = opts or {}
   local request = assert(opts.request, "request is required")
   return async.run(
-  ---@return Neoagent.ByteStreamSuccess
-  function()
-    local header_path = header_file()
-    local stderr = ""
-    local stdout = ""
-    local completed, result = pcall(function()
-      return async.await(
-      ---@param done Neoagent.AwaitCallbacks<{ code: integer, stdout: string, stderr: string, headers?: table<string, string>, status?: number }>
-      function(done)
-        ---@type vim.SystemObj?
-        local process
-        local ok, err = pcall(function()
-          process = vim.system(M.command(request, header_path), {
-            stdin = request.body or "",
-            text = false,
-            stdout = function(read_err, data)
-              if read_err then
-                done.reject(util.error("transport", "Failed reading curl stdout", read_err))
-                return
-              end
-              if data and data ~= "" then
-                stdout = append_bounded(stdout, data)
-                if opts.on_chunk then
-                  local chunk_ok, chunk_err = pcall(opts.on_chunk, data)
-                  if not chunk_ok then
-                    done.reject(util.normalize_error(chunk_err, "protocol"))
-                    if process then pcall(process.kill, process, 15) end
+    ---@return Neoagent.ByteStreamSuccess
+    function()
+      local header_path = header_file()
+      local stderr = ""
+      local stdout = ""
+      local completed, result = pcall(function()
+        return async.await(
+          ---@param done Neoagent.AwaitCallbacks<{ code: integer, stdout: string, stderr: string, headers?: table<string, string>, status?: number }>
+          function(done)
+            ---@type vim.SystemObj?
+            local process
+            local ok, err = pcall(function()
+              process = vim.system(M.command(request, header_path), {
+                stdin = request.body or "",
+                text = false,
+                stdout = function(read_err, data)
+                  if read_err then
+                    done.reject(util.error("transport", "Failed reading curl stdout", read_err))
+                    return
                   end
+                  if data and data ~= "" then
+                    stdout = append_bounded(stdout, data)
+                    if opts.on_chunk then
+                      local chunk_ok, chunk_err = pcall(opts.on_chunk, data)
+                      if not chunk_ok then
+                        done.reject(util.normalize_error(chunk_err, "protocol"))
+                        if process then
+                          pcall(process.kill, process, 15)
+                        end
+                      end
+                    end
+                  end
+                end,
+                stderr = function(read_err, data)
+                  if read_err then
+                    stderr = append_bounded(stderr, tostring(read_err))
+                  elseif data then
+                    stderr = append_bounded(stderr, data)
+                  end
+                end,
+              }, function(finished)
+                if finished.code == 0 then
+                  done.resolve({ code = 0, stdout = stdout, stderr = stderr })
+                else
+                  done.reject(curl_error(finished.code, stderr))
                 end
-              end
-            end,
-            stderr = function(read_err, data)
-              if read_err then
-                stderr = append_bounded(stderr, tostring(read_err))
-              elseif data then
-                stderr = append_bounded(stderr, data)
-              end
-            end,
-          }, function(finished)
-            if finished.code == 0 then
-              done.resolve({ code = 0, stdout = stdout, stderr = stderr })
-            else
-              done.reject(curl_error(finished.code, stderr))
+              end)
+            end)
+            if not ok then
+              done.reject(util.error("transport", "Failed to start curl", err))
             end
-          end)
-        end)
-        if not ok then done.reject(util.error("transport", "Failed to start curl", err)) end
-        return function()
-          if process then pcall(process.kill, process, 15) end
-        end
+            return function()
+              if process then
+                pcall(process.kill, process, 15)
+              end
+            end
+          end
+        )
       end)
-    end)
-    local headers, status = response_headers(header_path)
-    pcall(vim.fn.delete, header_path)
-    if not completed then
-      ---@type Neoagent.HttpError
-      local err = util.normalize_error(result, "transport")
-      if status or next(headers) ~= nil then
-        err.response = { status = status, headers = headers }
+      local headers, status, header_error = response_headers(header_path)
+      pcall(vim.fn.delete, header_path)
+      if not completed then
+        ---@type Neoagent.HttpError
+        local err = util.normalize_error(result, "transport")
+        if headers and (status or next(headers) ~= nil) then
+          err.response = { status = status, headers = headers }
+        end
+        error(err, 0)
       end
-      error(err, 0)
-    end
-    return { ok = true, response = {
-      headers = headers, status = status,
-      code = result.code, stdout = result.stdout, stderr = result.stderr,
-    } }
-  end, {
-    on_done = opts.on_done,
-    error_kind = "transport",
-  })
+      if not headers then
+        error(util.error("transport", "Failed reading curl response headers", header_error), 0)
+      end
+      return {
+        ok = true,
+        response = {
+          headers = headers,
+          status = status,
+          code = result.code,
+          stdout = result.stdout,
+          stderr = result.stderr,
+        },
+      }
+    end,
+    {
+      on_done = opts.on_done,
+      error_kind = "transport",
+    }
+  )
 end
 
 return M

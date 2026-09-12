@@ -94,7 +94,9 @@ unsigned long __stdcall GetLastError(void);
   return {
     create = function()
       local job = kernel.CreateJobObjectW(nil, nil)
-      if job == nil then return nil, failure() end
+      if job == nil then
+        return nil, failure()
+      end
       local limits = ffi.new("NEOAGENT_JOB_EXTENDED_LIMIT_INFORMATION")
       limits.BasicLimitInformation.LimitFlags = 0x2000
       if kernel.SetInformationJobObject(job, 9, limits, ffi.sizeof(limits)) == 0 then
@@ -106,7 +108,9 @@ unsigned long __stdcall GetLastError(void);
     end,
     open = function(pid)
       local handle = kernel.OpenProcess(bit.bor(0x0001, 0x0100), 0, pid)
-      if handle == nil then return nil, failure() end
+      if handle == nil then
+        return nil, failure()
+      end
       return handle
     end,
     assign = function(job, process)
@@ -122,7 +126,9 @@ unsigned long __stdcall GetLastError(void);
       return true
     end,
     close = function(handle)
-      if handle ~= nil then kernel.CloseHandle(handle) end
+      if handle ~= nil then
+        kernel.CloseHandle(handle)
+      end
     end,
   }
 end
@@ -130,13 +136,21 @@ end
 ---@param pid integer
 ---@return true?, string?
 function Tree:attach(pid)
-  if self.closed then return nil, "process tree is closed" end
-  if type(pid) ~= "number" or pid <= 0 then return true end
+  if self.closed then
+    return nil, "process tree is closed"
+  end
+  if type(pid) ~= "number" or pid <= 0 then
+    return true
+  end
   local process, open_err = self.backend.open(pid)
-  if not process then return nil, open_err end
+  if not process then
+    return nil, open_err
+  end
   local assigned, assign_err = self.backend.assign(self.job, process)
   self.backend.close(process)
-  if not assigned then return nil, assign_err end
+  if not assigned then
+    return nil, assign_err
+  end
   self.attached = true
   return true
 end
@@ -144,15 +158,21 @@ end
 ---@param code? integer
 ---@return boolean
 function Tree:terminate(code)
-  if self.closed or not self.attached then return false end
+  if self.closed or not self.attached then
+    return false
+  end
   local terminated = self.backend.terminate(self.job, code or 125)
   return terminated ~= nil and terminated ~= false
 end
 
 ---@param terminate? boolean
 function Tree:close(terminate)
-  if self.closed then return end
-  if terminate then self:terminate(125) end
+  if self.closed then
+    return
+  end
+  if terminate then
+    self:terminate(125)
+  end
   self.closed = true
   self.backend.close(self.job)
   self.job = nil
@@ -164,7 +184,9 @@ function M.new(opts)
   opts = opts or {}
   local backend = opts.backend or native_backend(opts.native)
   local job, err = backend.create()
-  if not job then return nil, err end
+  if not job then
+    return nil, err
+  end
   return setmetatable({ backend = backend, job = job }, Tree)
 end
 

@@ -28,9 +28,19 @@ describe("neoagent llama.cpp client", function()
       client.normalize_server_url("http://127.0.0.1:8080/v1"))
     assert.are.equal("http://127.0.0.1:8080/v1",
       client.inference_url("http://127.0.0.1:8080/v1/"))
+    assert.are.equal("http://127.0.0.1:8080/api",
+      client.normalize_server_url("http://127.0.0.1:8080/api/v1"))
     assert.has_error(function() client.normalize_server_url("ftp://host") end)
     assert.are.equal("4.20 GiB", client.format_bytes(4511000000))
     assert.are.equal("512 B", client.format_bytes(512))
+    assert.is_nil(client.parse_load_progress(nil))
+    assert.are.same({ message = "Loading warm up", ratio = 0.25 },
+      client.parse_load_progress({
+        progress = { stage = "warm_up", value = 0.25 },
+      }))
+    assert.is_nil(client.parse_download_progress({
+      progress = { weights = { done = 0, total = 0 } },
+    }))
   end)
 
   it("lists and validates router models", function()
@@ -55,6 +65,13 @@ describe("neoagent llama.cpp client", function()
     local result = wait(value:list())
     assert.is_false(result.ok)
     assert.matches("router mode", assert(result.error).message)
+
+    transport.fetches = {
+      { body = vim.json.encode({ data = { 7 } }) },
+    }
+    result = wait(value:list())
+    assert.is_false(result.ok)
+    assert.matches("router mode", assert(result.error).message)
   end)
 
   it("reports HTTP errors with provider payload messages", function()
@@ -77,6 +94,22 @@ describe("neoagent llama.cpp client", function()
     assert.is_false(third.ok)
     assert.matches("HTTP 403", assert(third.error).message)
     assert.are.equal(403, rawget(assert(third.error), "status"))
+  end)
+
+  it("propagates event-stream transport failures", function()
+    local transport = fake_transport.new({ {
+      error = { kind = "transport", message = "event stream reset" },
+    } })
+    local value = client.new({
+      server_url = "http://127.0.0.1:8080",
+      api_key = "local-secret",
+      transport = transport,
+    })
+    local result = wait(value:watch(function() end))
+    assert.is_false(result.ok)
+    assert.matches("event stream reset", assert(result.error).message)
+    assert.are.equal("Bearer local-secret",
+      rawget(assert(assert(transport.requests[1]).headers), "Authorization"))
   end)
 
   it("rejects catalogs without a data list", function()
@@ -188,6 +221,16 @@ describe("neoagent llama.cpp client", function()
       {
         chunks = {
           "data: " .. vim.json.encode({
+            model = "other/repo",
+            event = "download_finished",
+            data = {},
+          }) .. "\n\n",
+          "data: " .. vim.json.encode({
+            model = "qwen3",
+            event = "heartbeat",
+            data = {},
+          }) .. "\n\n",
+          "data: " .. vim.json.encode({
             model = "qwen3",
             event = "status_change",
             data = { status = "loading", progress = { current = "tensors", value = 0.5, stages = { "load", "tensors" } } },
@@ -243,6 +286,11 @@ describe("neoagent llama.cpp client", function()
     transport.responses = {
       {
         chunks = {
+          "data: " .. vim.json.encode({
+            model = "other/repo",
+            event = "download_finished",
+            data = {},
+          }) .. "\n\n",
           "data: " .. vim.json.encode({
             model = "qwen3",
             event = "status_change",
@@ -433,6 +481,11 @@ describe("neoagent llama.cpp client", function()
     transport.responses = {
       {
         chunks = {
+          "data: " .. vim.json.encode({
+            model = "other/repo",
+            event = "download_finished",
+            data = {},
+          }) .. "\n\n",
           "data: " .. vim.json.encode({
             model = "owner/repo:Q4_K_M",
             event = "download_progress",

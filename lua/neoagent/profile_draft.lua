@@ -32,14 +32,10 @@ ProfileDraft.__index = ProfileDraft
 ---@return Neoagent.ProfileDraft
 function ProfileDraft.new(opts)
   assert(type(opts) == "table", "ProfileDraft options are required")
-  assert(type(opts.key) == "string" and opts.key ~= "",
-    "ProfileDraft key is required")
-  assert(type(opts.profile) == "table" and type(opts.profile.id) == "string",
-    "ProfileDraft Profile is required")
-  assert(type(opts.workspace) == "string" and opts.workspace ~= "",
-    "ProfileDraft Workspace is required")
-  assert(type(opts.applet) == "table",
-    "ProfileDraft Agent Applet is required")
+  assert(type(opts.key) == "string" and opts.key ~= "", "ProfileDraft key is required")
+  assert(type(opts.profile) == "table" and type(opts.profile.id) == "string", "ProfileDraft Profile is required")
+  assert(type(opts.workspace) == "string" and opts.workspace ~= "", "ProfileDraft Workspace is required")
+  assert(type(opts.applet) == "table", "ProfileDraft Agent Applet is required")
   local options = util.copy(opts.options or {})
   local selected_model = options.default_model
   local selected_thinking = options.default_thinking_level
@@ -66,14 +62,15 @@ function ProfileDraft.new(opts)
   }, ProfileDraft)
   local selected = selection:candidate()
   if selected then
-    selection:stage(selected, selected_thinking
-      or opts.profile.config.default_thinking_level)
+    selection:stage(selected, selected_thinking or opts.profile.config.default_thinking_level)
   end
   return self
 end
 
 ---@return Neoagent.ProfileDraftState
-function ProfileDraft:state() return self.state_value end
+function ProfileDraft:state()
+  return self.state_value
+end
 
 ---@return boolean
 function ProfileDraft:is_active()
@@ -89,9 +86,13 @@ end
 function ProfileDraft:options()
   local options = util.copy(self.options_value)
   local selected = self.selection:model_selection()
-  if selected then options.default_model = selected end
+  if selected then
+    options.default_model = selected
+  end
   local level = self.selection:thinking_level()
-  if level ~= nil then options.default_thinking_level = level end
+  if level ~= nil then
+    options.default_thinking_level = level
+  end
   return options
 end
 
@@ -101,7 +102,8 @@ function ProfileDraft:snapshot()
   return {
     options = util.copy(self.options_value),
     initial_selection = selected.model and {
-      model = selected.model, thinking_level = selected.thinking_level,
+      model = selected.model,
+      thinking_level = selected.thinking_level,
     } or nil,
   }
 end
@@ -114,8 +116,7 @@ end
 ---@param patch Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 ---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?, Neoagent.Error?
 function ProfileDraft:update(patch)
-  assert(type(patch) == "table" and not util.is_list(patch),
-    "Profile draft options must be an object")
+  assert(type(patch) == "table" and not util.is_list(patch), "Profile draft options must be an object")
   assert(self:is_active(), "ProfileDraft is not active")
   local options_patch = util.copy(patch)
   options_patch.default_model = nil
@@ -123,14 +124,15 @@ function ProfileDraft:update(patch)
   local selected_options = util.deep_merge(self.options_value, options_patch)
   if patch.default_model ~= nil then
     local selected = patch.default_model
-    local model, err = self.selection:select(
-      selected.provider, selected.model,
-      patch.default_thinking_level)
-    if not model then return nil, err end
+    local model, err = self.selection:select(selected.provider, selected.model, patch.default_thinking_level)
+    if not model then
+      return nil, err
+    end
   elseif patch.default_thinking_level ~= nil then
-    local level, err = self.selection:set_thinking_level(
-      patch.default_thinking_level)
-    if not level then return nil, err end
+    local level, err = self.selection:set_thinking_level(patch.default_thinking_level)
+    if not level then
+      return nil, err
+    end
   end
   self.options_value = selected_options --[[@as Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>]]
   return self:options()
@@ -142,14 +144,15 @@ end
 function ProfileDraft:set_model(provider, model)
   assert(self:is_active(), "ProfileDraft is not active")
   local resolved, err = self.selection:select(provider, model)
-  if not resolved then return nil, err end
+  if not resolved then
+    return nil, err
+  end
   return self.selection:model_selection()
 end
 
 ---@return Neoagent.ThinkingLevel
 function ProfileDraft:thinking_level()
-  return self.selection:thinking_level()
-    or self.profile.config.default_thinking_level
+  return self.selection:thinking_level() or self.profile.config.default_thinking_level
 end
 
 ---@return Neoagent.ThinkingLevel[]?, Neoagent.Error?
@@ -162,7 +165,9 @@ end
 function ProfileDraft:set_thinking_level(level)
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:set_thinking_level(level)
-  if not selected then return nil, err end
+  if not selected then
+    return nil, err
+  end
   return selected
 end
 
@@ -170,7 +175,9 @@ end
 function ProfileDraft:cycle_thinking_level()
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:cycle_thinking_level()
-  if not selected then return nil, err end
+  if not selected then
+    return nil, err
+  end
   return selected
 end
 
@@ -183,17 +190,14 @@ end
 
 ---@return Neoagent.ProfileDraft
 function ProfileDraft:restore()
-  assert(self.state_value == "provisional",
-    "ProfileDraft is not provisional")
+  assert(self.state_value == "provisional", "ProfileDraft is not provisional")
   self.state_value = "draft"
   return self
 end
 
 ---@return Neoagent.ProfileDraft
 function ProfileDraft:bind()
-  assert(self.state_value == "draft"
-      or self.state_value == "provisional",
-    "ProfileDraft cannot bind")
+  assert(self.state_value == "draft" or self.state_value == "provisional", "ProfileDraft cannot bind")
   self.state_value = "bound"
   return self
 end

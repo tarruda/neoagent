@@ -98,8 +98,13 @@ describe("Alibaba Cloud Token Plan console client", function()
 
   it("accepts absent unlimited windows and rejects unsafe responses", function()
     local transport = fake_transport({
+      response(200, vim.empty_dict()),
       response(200, { data = { data = vim.empty_dict() } }),
       response(200, { data = { data = { per1WeekPercentage = 2 } } }),
+      response(200, { data = { data = { per5HourResetTime = 0 } } }),
+      response(200, { data = { 1 } }),
+      response(200, { 1 }),
+      response(200, "scalar"),
       response(200, { data = {
         success = false, errorCode = "NotLogined",
       } }),
@@ -112,7 +117,14 @@ describe("Alibaba Cloud Token Plan console client", function()
     local result = wait(client:usage(ctx))
     assert(result.ok)
     assert.are.same({}, result.usage)
+    result = wait(client:usage(ctx))
+    assert(result.ok)
+    assert.are.same({}, result.usage)
     assert.matches("invalid usage", assert(wait(client:usage(ctx)).error).message)
+    assert.matches("invalid usage", assert(wait(client:usage(ctx)).error).message)
+    assert.matches("invalid usage", assert(wait(client:usage(ctx)).error).message)
+    assert.matches("invalid usage", assert(wait(client:usage(ctx)).error).message)
+    assert.matches("invalid JSON", assert(wait(client:usage(ctx)).error).message)
     result = wait(client:usage(ctx))
     assert.are.equal("auth", assert(result.error).kind)
     assert.matches("expired", assert(result.error).message)

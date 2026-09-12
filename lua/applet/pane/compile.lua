@@ -127,6 +127,7 @@ local canvas = require("applet.pane.canvas")
 ---@field width integer
 ---@field height? integer
 ---@field extent Applet.PaneExtent
+---@field scope? string
 ---@field background_group? string
 ---@field theme_generation integer
 ---@field image_generation integer
@@ -275,7 +276,9 @@ end
 ---@param path string
 ---@param message string
 local function applet_expect(condition, path, message)
-  if not condition then fail(path, message) end
+  if not condition then
+    fail(path, message)
+  end
 end
 
 ---@param value unknown
@@ -283,8 +286,11 @@ end
 ---@param minimum integer
 ---@return integer
 local function integer(value, path, minimum)
-  applet_expect(type(value) == "number" and value % 1 == 0 and value >= minimum,
-    path, ("must be an integer >= %d"):format(minimum))
+  applet_expect(
+    type(value) == "number" and value % 1 == 0 and value >= minimum,
+    path,
+    ("must be an integer >= %d"):format(minimum)
+  )
   return value --[[@as integer]]
 end
 
@@ -292,8 +298,7 @@ end
 ---@param path string
 ---@return integer
 local function signed_integer(value, path)
-  applet_expect(type(value) == "number" and value % 1 == 0,
-    path, "must be an integer")
+  applet_expect(type(value) == "number" and value % 1 == 0, path, "must be an integer")
   return value --[[@as integer]]
 end
 
@@ -319,11 +324,15 @@ end
 ---@param first integer
 ---@param last integer
 local function add_coverage(value, row, first, last)
-  if first >= last then return end
+  if first >= last then
+    return
+  end
   local intervals = value.coverage[row] or {}
   intervals[#intervals + 1] = { first = first, last = last }
   table.sort(intervals, function(left, right)
-    if left.first == right.first then return left.last < right.last end
+    if left.first == right.first then
+      return left.last < right.last
+    end
     return left.first < right.first
   end)
   local merged = {}
@@ -384,12 +393,10 @@ end
 ---@param display_col integer
 ---@param byte_cols integer[]
 ---@param preserve_linewise? boolean
-local function append_metadata(
-    destination, source, row, display_col, byte_cols, preserve_linewise)
+local function append_metadata(destination, source, row, display_col, byte_cols, preserve_linewise)
   for source_row, intervals in pairs(source.coverage or {}) do
     for _, interval in ipairs(intervals) do
-      add_coverage(destination, source_row + row,
-        interval.first + display_col, interval.last + display_col)
+      add_coverage(destination, source_row + row, interval.first + display_col, interval.last + display_col)
     end
   end
   for _, decoration in ipairs(source.decorations) do
@@ -410,10 +417,8 @@ local function append_metadata(
       col = target.point.col + display_col,
     }
     shifted.focus = {
-      active = shift_target_decorations(
-        target.focus and target.focus.active, row, display_col),
-      inactive = shift_target_decorations(
-        target.focus and target.focus.inactive, row, display_col),
+      active = shift_target_decorations(target.focus and target.focus.active, row, display_col),
+      inactive = shift_target_decorations(target.focus and target.focus.inactive, row, display_col),
     }
     destination.targets[key] = shifted
   end
@@ -440,9 +445,10 @@ local function append_metadata(
     local shifted = util.copy(range)
     shifted.first = range.first + row
     shifted.last = range.last + row
-    shifted.rectangles = shift_rectangles(
-      range.rectangles, row, display_col)
-    if preserve_linewise == false then shifted.linewise = false end
+    shifted.rectangles = shift_rectangles(range.rectangles, row, display_col)
+    if preserve_linewise == false then
+      shifted.linewise = false
+    end
     destination.source_ranges[#destination.source_ranges + 1] = shifted
   end
   for _, virtual in ipairs(source.virtuals) do
@@ -456,15 +462,23 @@ end
 ---@param source Applet.Fragment
 ---@param gap integer
 local function append_vertical(destination, source, gap)
-  if #source.lines == 0 and #source.virtuals == 0 then return end
+  if #source.lines == 0 and #source.virtuals == 0 then
+    return
+  end
   local row = #destination.lines
   if #destination.lines > 0 and #source.lines > 0 then
-    for _ = 1, gap do destination.lines[#destination.lines + 1] = "" end
+    for _ = 1, gap do
+      destination.lines[#destination.lines + 1] = ""
+    end
     row = #destination.lines
   end
-  for _, line in ipairs(source.lines) do destination.lines[#destination.lines + 1] = line end
+  for _, line in ipairs(source.lines) do
+    destination.lines[#destination.lines + 1] = line
+  end
   local byte_cols = {}
-  for index = 1, math.max(#source.lines, 1) do byte_cols[index] = 0 end
+  for index = 1, math.max(#source.lines, 1) do
+    byte_cols[index] = 0
+  end
   append_metadata(destination, source, row, 0, byte_cols, true)
 end
 
@@ -474,7 +488,9 @@ end
 local function placed_metadata(source, row)
   local result = fragment()
   local byte_cols = {}
-  for index = 1, math.max(#source.lines, 1) do byte_cols[index] = 0 end
+  for index = 1, math.max(#source.lines, 1) do
+    byte_cols[index] = 0
+  end
   append_metadata(result, source, row, 0, byte_cols, true)
   return result
 end
@@ -491,8 +507,7 @@ local function append_placed_metadata(destination, source)
     destination.decorations[#destination.decorations + 1] = decoration
   end
   for key, target in pairs(source.targets) do
-    applet_expect(destination.targets[key] == nil, "tree",
-      ("duplicate target key %q"):format(key))
+    applet_expect(destination.targets[key] == nil, "tree", ("duplicate target key %q"):format(key))
     destination.targets[key] = target
   end
   for _, key in ipairs(source.target_order) do
@@ -502,13 +517,11 @@ local function append_placed_metadata(destination, source)
     destination.hit_order[#destination.hit_order + 1] = key
   end
   for key, scope in pairs(source.scopes) do
-    applet_expect(destination.scopes[key] == nil, "tree",
-      ("duplicate scope key %q"):format(key))
+    applet_expect(destination.scopes[key] == nil, "tree", ("duplicate scope key %q"):format(key))
     destination.scopes[key] = scope
   end
   for key, image in pairs(source.images) do
-    applet_expect(destination.images[key] == nil, "tree",
-      ("duplicate image key %q"):format(key))
+    applet_expect(destination.images[key] == nil, "tree", ("duplicate image key %q"):format(key))
     destination.images[key] = image
   end
   for _, range in ipairs(source.source_ranges) do
@@ -530,7 +543,9 @@ local function append_region(destination, source, gap, cache_entry)
   end
   local row = #destination.lines
   if #destination.lines > 0 and #source.lines > 0 then
-    for _ = 1, gap do destination.lines[#destination.lines + 1] = "" end
+    for _ = 1, gap do
+      destination.lines[#destination.lines + 1] = ""
+    end
     row = #destination.lines
   end
   for _, line in ipairs(source.lines) do
@@ -539,7 +554,9 @@ local function append_region(destination, source, gap, cache_entry)
   local placement = cache_entry and cache_entry.placement
   if not placement or placement.row ~= row then
     placement = { row = row, metadata = placed_metadata(source, row) }
-    if cache_entry then cache_entry.placement = placement end
+    if cache_entry then
+      cache_entry.placement = placement
+    end
   end
   append_placed_metadata(destination, placement.metadata)
   return row
@@ -551,10 +568,11 @@ end
 ---@param revised_regions? boolean
 local function validate_plain(value, path, seen, revised_regions)
   local kind = type(value)
-  if kind == "nil" or kind == "boolean" or kind == "string" then return end
+  if kind == "nil" or kind == "boolean" or kind == "string" then
+    return
+  end
   if kind == "number" then
-    applet_expect(value == value and value ~= math.huge and value ~= -math.huge,
-      path, "must be finite")
+    applet_expect(value == value and value ~= math.huge and value ~= -math.huge, path, "must be finite")
     return
   end
   applet_expect(kind == "table", path, "must contain plain data")
@@ -563,10 +581,8 @@ local function validate_plain(value, path, seen, revised_regions)
   seen[value] = true
   for key, item in pairs(value) do
     local key_kind = type(key)
-    applet_expect(key_kind == "string" or key_kind == "number",
-      path, "has a non-data key")
-    if not (revised_regions and value.type == "region"
-        and value.revision ~= nil and key == "child") then
+    applet_expect(key_kind == "string" or key_kind == "number", path, "has a non-data key")
+    if not (revised_regions and value.type == "region" and value.revision ~= nil and key == "child") then
       validate_plain(item, path .. "." .. tostring(key), seen, revised_regions)
     end
   end
@@ -577,40 +593,48 @@ end
 ---@param path string
 local function validate_action(action, path)
   applet_expect(type(action) == "table", path, "must be an action reference")
-  applet_expect(util.nonempty_string(action.action), path .. ".action",
-    "must be a non-empty string")
-  if action.payload ~= nil then validate_plain(action.payload, path .. ".payload", {}) end
+  applet_expect(util.nonempty_string(action.action), path .. ".action", "must be a non-empty string")
+  if action.payload ~= nil then
+    validate_plain(action.payload, path .. ".payload", {})
+  end
   if action.action:match("^applet%.") then
-    applet_expect(BUILT_IN_ACTIONS[action.action], path .. ".action",
-      "is not a known built-in action")
-    applet_expect(action.payload == nil or type(action.payload) == "table",
-      path .. ".payload", "must be a table")
+    applet_expect(BUILT_IN_ACTIONS[action.action], path .. ".action", "is not a known built-in action")
+    applet_expect(action.payload == nil or type(action.payload) == "table", path .. ".payload", "must be a table")
   end
   local payload = action.payload or {}
   if action.action == "applet.target.move" then
-    applet_expect(payload.direction == "previous" or payload.direction == "next",
-      path .. ".payload.direction", "must be previous or next")
-    applet_expect(payload.group == nil or util.nonempty_string(payload.group),
-      path .. ".payload.group", "must be a non-empty string")
-    applet_expect(payload.wrap == nil or type(payload.wrap) == "boolean",
-      path .. ".payload.wrap", "must be a boolean")
-    applet_expect(payload.entry == nil or payload.entry == "first",
-      path .. ".payload.entry", "must be first")
+    applet_expect(
+      payload.direction == "previous" or payload.direction == "next",
+      path .. ".payload.direction",
+      "must be previous or next"
+    )
+    applet_expect(
+      payload.group == nil or util.nonempty_string(payload.group),
+      path .. ".payload.group",
+      "must be a non-empty string"
+    )
+    applet_expect(payload.wrap == nil or type(payload.wrap) == "boolean", path .. ".payload.wrap", "must be a boolean")
+    applet_expect(payload.entry == nil or payload.entry == "first", path .. ".payload.entry", "must be first")
   elseif action.action == "applet.target.activate" then
-    applet_expect(payload.target == nil or util.nonempty_string(payload.target),
-      path .. ".payload.target", "must be a non-empty string")
+    applet_expect(
+      payload.target == nil or util.nonempty_string(payload.target),
+      path .. ".payload.target",
+      "must be a non-empty string"
+    )
   elseif action.action == "applet.target.reveal" then
-    applet_expect(util.nonempty_string(payload.target), path .. ".payload.target",
-      "must be a non-empty string")
+    applet_expect(util.nonempty_string(payload.target), path .. ".payload.target", "must be a non-empty string")
   elseif action.action == "applet.focus" then
-    applet_expect(util.nonempty_string(payload.pane), path .. ".payload.pane",
-      "must be a non-empty string")
+    applet_expect(util.nonempty_string(payload.pane), path .. ".payload.pane", "must be a non-empty string")
   elseif action.action == "applet.focus.move" then
-    applet_expect(payload.direction == "left" or payload.direction == "right"
-        or payload.direction == "up" or payload.direction == "down",
-      path .. ".payload.direction", "must be left, right, up, or down")
-    applet_expect(payload.wrap == nil or type(payload.wrap) == "boolean",
-      path .. ".payload.wrap", "must be a boolean")
+    applet_expect(
+      payload.direction == "left"
+        or payload.direction == "right"
+        or payload.direction == "up"
+        or payload.direction == "down",
+      path .. ".payload.direction",
+      "must be left, right, up, or down"
+    )
+    applet_expect(payload.wrap == nil or type(payload.wrap) == "boolean", path .. ".payload.wrap", "must be a boolean")
   end
 end
 
@@ -621,14 +645,14 @@ end
 local function resolve_group(run, theme, path)
   applet_expect(type(run) == "table", path, "must be a table")
   applet_expect(type(run.text) == "string", path .. ".text", "must be a string")
-  applet_expect(not (run.style and run.group), path,
-    "may specify style or group, not both")
+  applet_expect(not (run.style and run.group), path, "may specify style or group, not both")
   if run.group ~= nil then
-    applet_expect(util.nonempty_string(run.group), path .. ".group",
-      "must be a non-empty string")
+    applet_expect(util.nonempty_string(run.group), path .. ".group", "must be a non-empty string")
     return run.group
   end
-  if run.style ~= nil then return theme:group(run.style) end
+  if run.style ~= nil then
+    return theme:group(run.style)
+  end
 end
 
 ---@param run Applet.TextRun
@@ -636,15 +660,16 @@ end
 ---@param path string
 ---@return Applet.TokenGroup[]
 local function resolve_run_groups(run, theme, path)
-  applet_expect(not (run.groups and (run.style or run.group)), path,
-    "may specify groups or one style/group, not both")
+  applet_expect(not (run.groups and (run.style or run.group)), path, "may specify groups or one style/group, not both")
   if run.groups == nil then
     local group = resolve_group(run, theme, path)
     return group and { { group = group } } or {}
   end
-  applet_expect(type(run.groups) == "table" and vim.islist(run.groups)
-      and #run.groups > 0,
-    path .. ".groups", "must be a non-empty list")
+  applet_expect(
+    type(run.groups) == "table" and vim.islist(run.groups) and #run.groups > 0,
+    path .. ".groups",
+    "must be a non-empty list"
+  )
   local result, claimed = {}, {}
   for index, value in ipairs(run.groups) do
     local item_path = ("%s.groups[%d]"):format(path, index)
@@ -653,17 +678,20 @@ local function resolve_run_groups(run, theme, path)
       descriptor = { text = "", group = value }
     else
       descriptor = {
-        text = "", group = value.group, style = value.style,
+        text = "",
+        group = value.group,
+        style = value.style,
         priority = value.priority,
       }
     end
-    applet_expect(type(descriptor) == "table", item_path,
-      "must be a group name or descriptor")
+    applet_expect(type(descriptor) == "table", item_path, "must be a group name or descriptor")
     descriptor.text = ""
     local group = resolve_group(descriptor, theme, item_path)
     applet_expect(group ~= nil, item_path, "must specify a style or group")
     local priority = descriptor.priority
-    if priority ~= nil then integer(priority, item_path .. ".priority", 0) end
+    if priority ~= nil then
+      integer(priority, item_path .. ".priority", 0)
+    end
     local id = group .. "\0" .. tostring(priority or "")
     if not claimed[id] then
       claimed[id] = true
@@ -679,19 +707,20 @@ end
 ---@return Applet.TextToken[][]
 local function text_tokens(node, ctx, path)
   local runs = node.runs
-  if runs == nil and node.text ~= nil then runs = { { text = node.text } } end
-  applet_expect(type(runs) == "table" and #runs > 0, path .. ".runs",
-    "must be a non-empty list")
+  if runs == nil and node.text ~= nil then
+    runs = { { text = node.text } }
+  end
+  applet_expect(type(runs) == "table" and #runs > 0, path .. ".runs", "must be a non-empty list")
   local tabstop = node.tabstop
-  if tabstop ~= nil then integer(tabstop, path .. ".tabstop", 1) end
+  if tabstop ~= nil then
+    integer(tabstop, path .. ".tabstop", 1)
+  end
   ---@type Applet.TextToken[][]
   local lines = { {} }
   local display_col = 0
   for run_index, run in ipairs(runs) do
-    local groups = resolve_run_groups(run, ctx.theme,
-      ("%s.runs[%d]"):format(path, run_index))
-    for _, character in ipairs(util.characters(run.text,
-      ("%s.runs[%d].text"):format(path, run_index))) do
+    local groups = resolve_run_groups(run, ctx.theme, ("%s.runs[%d]"):format(path, run_index))
+    for _, character in ipairs(util.characters(run.text, ("%s.runs[%d].text"):format(path, run_index))) do
       if character == "\n" then
         lines[#lines + 1] = {}
         display_col = 0
@@ -700,7 +729,9 @@ local function text_tokens(node, ctx, path)
         local count = tabstop - (display_col % tabstop)
         for _ = 1, count do
           lines[#lines][#lines[#lines] + 1] = {
-            text = " ", width = 1, groups = groups,
+            text = " ",
+            width = 1,
+            groups = groups,
           }
           display_col = display_col + 1
         end
@@ -724,7 +755,9 @@ end
 ---@return integer
 local function token_width(tokens, first, last)
   local width = 0
-  for index = first, last do width = width + assert(tokens[index]).width end
+  for index = first, last do
+    width = width + assert(tokens[index]).width
+  end
   return width
 end
 
@@ -733,16 +766,24 @@ end
 ---@param mode Applet.TextWrap
 ---@return Applet.TextToken[][], boolean?
 local function wrap_tokens(tokens, width, mode)
-  if #tokens == 0 then return { {} } end
-  if mode == "native" then return { vim.list_slice(tokens) }, false end
+  if #tokens == 0 then
+    return { {} }
+  end
+  if mode == "native" then
+    return { vim.list_slice(tokens) }, false
+  end
   if mode == "none" then
     local last, used = 0, 0
     for index, token in ipairs(tokens) do
-      if used + token.width > width then break end
+      if used + token.width > width then
+        break
+      end
       last, used = index, used + token.width
     end
     local row = {}
-    for index = 1, last do row[#row + 1] = tokens[index] end
+    for index = 1, last do
+      row[#row + 1] = tokens[index]
+    end
     return { row }, last < #tokens
   end
   local rows, first = {}, 1
@@ -752,20 +793,31 @@ local function wrap_tokens(tokens, width, mode)
       last = last + 1
       used = used + assert(tokens[last]).width
     end
-    if last < first then last = first end
+    if last < first then
+      last = first
+    end
     if mode == "word" and last < #tokens then
       local boundary
       for index = last, first, -1 do
-        if assert(tokens[index]).text:match("^%s$") then boundary = index break end
+        if assert(tokens[index]).text:match("^%s$") then
+          boundary = index
+          break
+        end
       end
-      if boundary and boundary > first then last = boundary end
+      if boundary and boundary > first then
+        last = boundary
+      end
     end
     local row = {}
-    for index = first, last do row[#row + 1] = tokens[index] end
+    for index = first, last do
+      row[#row + 1] = tokens[index]
+    end
     rows[#rows + 1] = row
     first = last + 1
     if mode == "word" then
-      while first <= #tokens and assert(tokens[first]).text:match("^%s$") do first = first + 1 end
+      while first <= #tokens and assert(tokens[first]).text:match("^%s$") do
+        first = first + 1
+      end
     end
   end
   return rows, false
@@ -778,7 +830,9 @@ local function ellipsize(tokens, width)
   while #tokens > 0 and token_width(tokens, 1, #tokens) + 1 > width do
     table.remove(tokens)
   end
-  if width >= 1 then tokens[#tokens + 1] = ellipsis end
+  if width >= 1 then
+    tokens[#tokens + 1] = ellipsis
+  end
 end
 
 ---@param node Applet.TextNode
@@ -787,18 +841,23 @@ end
 ---@return Applet.TextToken[][]
 local function native_text_rows(node, ctx, path)
   local runs = node.runs
-  if runs == nil and node.text ~= nil then runs = { { text = node.text } } end
-  applet_expect(type(runs) == "table" and #runs > 0, path .. ".runs",
-    "must be a non-empty list")
+  if runs == nil and node.text ~= nil then
+    runs = { { text = node.text } }
+  end
+  applet_expect(type(runs) == "table" and #runs > 0, path .. ".runs", "must be a non-empty list")
   local tabstop = node.tabstop
-  if tabstop ~= nil then integer(tabstop, path .. ".tabstop", 1) end
+  if tabstop ~= nil then
+    integer(tabstop, path .. ".tabstop", 1)
+  end
   ---@type Applet.TextToken[][]
   local rows = { {} }
   local display_col = 0
   ---@param text string
   ---@param groups Applet.TokenGroup[]
   local function add(text, groups)
-    if text == "" then return end
+    if text == "" then
+      return
+    end
     local value = {
       text = text,
       width = util.display_width(text),
@@ -839,13 +898,16 @@ end
 ---@return Applet.Fragment
 local function compile_text(node, ctx, path)
   local mode = node.wrap or "word"
-  applet_expect(mode == "word" or mode == "character" or mode == "none"
-      or mode == "native",
-    path .. ".wrap", "must be word, character, none, or native")
-  if node.max_lines ~= nil then integer(node.max_lines, path .. ".max_lines", 1) end
+  applet_expect(
+    mode == "word" or mode == "character" or mode == "none" or mode == "native",
+    path .. ".wrap",
+    "must be word, character, none, or native"
+  )
+  if node.max_lines ~= nil then
+    integer(node.max_lines, path .. ".max_lines", 1)
+  end
   local overflow = node.overflow or "clip"
-  applet_expect(overflow == "clip" or overflow == "ellipsis",
-    path .. ".overflow", "must be clip or ellipsis")
+  applet_expect(overflow == "clip" or overflow == "ellipsis", path .. ".overflow", "must be clip or ellipsis")
   ---@type Applet.TextToken[][]
   local rows = {}
   local truncated = false
@@ -855,14 +917,20 @@ local function compile_text(node, ctx, path)
     for _, logical in ipairs(text_tokens(node, ctx, path)) do
       local wrapped, clipped = wrap_tokens(logical, ctx.width, mode)
       truncated = truncated or clipped == true
-      for _, row in ipairs(wrapped) do rows[#rows + 1] = row end
+      for _, row in ipairs(wrapped) do
+        rows[#rows + 1] = row
+      end
     end
   end
   if node.max_lines and #rows > node.max_lines then
-    while #rows > node.max_lines do table.remove(rows) end
+    while #rows > node.max_lines do
+      table.remove(rows)
+    end
     truncated = true
   end
-  if truncated and overflow == "ellipsis" then ellipsize(assert(rows[#rows]), ctx.width) end
+  if truncated and overflow == "ellipsis" then
+    ellipsize(assert(rows[#rows]), ctx.width)
+  end
   local result = fragment()
   for row_index, tokens in ipairs(rows) do
     ---@type string[], string[], table<string, Applet.TokenGroup>
@@ -884,13 +952,14 @@ local function compile_text(node, ctx, path)
       for _, token in ipairs(tokens) do
         local present = false
         for _, candidate in ipairs(token.groups or {}) do
-          if candidate.group == descriptor.group
-              and candidate.priority == descriptor.priority then
+          if candidate.group == descriptor.group and candidate.priority == descriptor.priority then
             present = true
             break
           end
         end
-        if present and start_col == nil then start_col = byte_col end
+        if present and start_col == nil then
+          start_col = byte_col
+        end
         if not present and start_col ~= nil then
           result.decorations[#result.decorations + 1] = {
             row = row_index - 1,
@@ -914,8 +983,7 @@ local function compile_text(node, ctx, path)
       end
     end
     result.lines[#result.lines + 1] = table.concat(parts)
-    add_coverage(result, row_index - 1, 0,
-      token_width(tokens, 1, #tokens))
+    add_coverage(result, row_index - 1, 0, token_width(tokens, 1, #tokens))
   end
   if node.background ~= nil then
     local group = assert(ctx.theme:group(node.background))
@@ -941,7 +1009,9 @@ local compile_node
 ---@param path string
 ---@return Applet.Insets
 local function padding(value, path)
-  if value == nil then return { left = 0, right = 0, top = 0, bottom = 0 } end
+  if value == nil then
+    return { left = 0, right = 0, top = 0, bottom = 0 }
+  end
   if type(value) == "number" then
     integer(value, path, 0)
     return { left = value, right = value, top = value, bottom = value }
@@ -983,8 +1053,7 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_scope(node, ctx, path)
-  applet_expect(type(node.bindings or {}) == "table", path .. ".bindings",
-    "must be a list")
+  applet_expect(type(node.bindings or {}) == "table", path .. ".bindings", "must be a list")
   local bindings, claimed = {}, {}
   ---@type Applet.Binding[]
   local declared_bindings = node.bindings or {}
@@ -992,16 +1061,16 @@ local function compile_scope(node, ctx, path)
     local binding_path = ("%s.bindings[%d]"):format(path, index)
     applet_expect(type(binding) == "table", binding_path, "must be a table")
     local mode = binding.mode or "n"
-    applet_expect(util.nonempty_string(mode), binding_path .. ".mode",
-      "must be a non-empty string")
-    applet_expect(util.nonempty_string(binding.lhs), binding_path .. ".lhs",
-      "must be a non-empty string")
+    applet_expect(util.nonempty_string(mode), binding_path .. ".mode", "must be a non-empty string")
+    applet_expect(util.nonempty_string(binding.lhs), binding_path .. ".lhs", "must be a non-empty string")
     validate_action(binding.action, binding_path .. ".action")
-    applet_expect(binding.count == nil or type(binding.count) == "boolean",
-      binding_path .. ".count", "must be a boolean")
+    applet_expect(
+      binding.count == nil or type(binding.count) == "boolean",
+      binding_path .. ".count",
+      "must be a boolean"
+    )
     if binding.desc ~= nil then
-      applet_expect(type(binding.desc) == "string", binding_path .. ".desc",
-        "must be a string")
+      applet_expect(type(binding.desc) == "string", binding_path .. ".desc", "must be a string")
     end
     local normalized = util.copy(binding)
     normalized.mode = mode
@@ -1021,9 +1090,6 @@ local function compile_scope(node, ctx, path)
     rectangles = content_rectangles(child),
     bindings = bindings,
   }
-  for key, scope in pairs(child.scopes) do
-    if key ~= node.key and scope.parent == nil then scope.parent = node.key end
-  end
   return child
 end
 
@@ -1036,8 +1102,7 @@ local function compile_column(node, ctx, path)
   local gap = integer(node.gap or 0, path .. ".gap", 0)
   local result = fragment()
   for index, child in ipairs(node.children) do
-    append_vertical(result, compile_node(child, ctx,
-      ("%s.children[%d]"):format(path, index)), gap)
+    append_vertical(result, compile_node(child, ctx, ("%s.children[%d]"):format(path, index)), gap)
   end
   return result
 end
@@ -1045,8 +1110,12 @@ end
 ---@param value Applet.RowChild|Applet.Node
 ---@return Applet.RowChild
 local function row_child(value)
-  if value.node then return value --[[@as Applet.RowChild]] end
-  return { node = value --[[@as Applet.Node]] }
+  if value.node then
+    return value --[[@as Applet.RowChild]]
+  end
+  return {
+    node = value --[[@as Applet.Node]],
+  }
 end
 
 ---@param children (Applet.RowChild|Applet.Node)[]
@@ -1062,11 +1131,13 @@ local function row_widths(children, available, gap, path)
   local minimum_total = 0
   for index, descriptor in ipairs(children) do
     local item = row_child(descriptor)
-    local minimum = integer(item.min_width or 1,
-      ("%s.children[%d].min_width"):format(path, index), 1)
+    local minimum = integer(item.min_width or 1, ("%s.children[%d].min_width"):format(path, index), 1)
     local grow = item.grow == nil and 1 or item.grow
-    applet_expect(type(grow) == "number" and grow >= 0,
-      ("%s.children[%d].grow"):format(path, index), "must be a number >= 0")
+    applet_expect(
+      type(grow) == "number" and grow >= 0,
+      ("%s.children[%d].grow"):format(path, index),
+      "must be a number >= 0"
+    )
     widths[index] = minimum
     minimum_total = minimum_total + minimum
     grow_total = grow_total + grow
@@ -1077,11 +1148,15 @@ local function row_widths(children, available, gap, path)
     local item = row_child(descriptor)
     local grow = item.grow == nil and 1 or item.grow
     local share = 0
-    if grow_total > 0 then share = math.floor(remaining * assert(grow) / grow_total) end
+    if grow_total > 0 then
+      share = math.floor(remaining * assert(grow) / grow_total)
+    end
     widths[index] = assert(widths[index]) + share
   end
   local used = gap * math.max(0, #children - 1)
-  for _, allocated in ipairs(widths) do used = used + allocated end
+  for _, allocated in ipairs(widths) do
+    used = used + allocated
+  end
   local index = 1
   while used < available and #widths > 0 do
     widths[index] = assert(widths[index]) + 1
@@ -1095,29 +1170,26 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_row(node, ctx, path)
-  applet_expect(type(node.children) == "table" and #node.children > 0,
-    path .. ".children", "must be a non-empty list")
+  applet_expect(type(node.children) == "table" and #node.children > 0, path .. ".children", "must be a non-empty list")
   local gap = integer(node.gap or 0, path .. ".gap", 0)
-  local width = node.width and integer(node.width, path .. ".width", 1)
-    or ctx.width
-  applet_expect(width >= ctx.width, path .. ".width",
-    "must cover the available width")
+  local width = node.width and integer(node.width, path .. ".width", 1) or ctx.width
+  applet_expect(width >= ctx.width, path .. ".width", "must cover the available width")
   local widths = row_widths(node.children, width, gap, path)
   ---@type Applet.Fragment[]
   local children = {}
   local height = 0
   for index, descriptor in ipairs(node.children) do
     local child_node = row_child(descriptor).node
-    applet_expect(child_node.type ~= "region",
-      ("%s.children[%d]"):format(path, index), "regions cannot appear in rows")
+    applet_expect(child_node.type ~= "region", ("%s.children[%d]"):format(path, index), "regions cannot appear in rows")
     local child_ctx = util.copy(ctx)
     child_ctx.width = assert(widths[index])
-    children[index] = compile_node(child_node, child_ctx,
-      ("%s.children[%d]"):format(path, index))
+    children[index] = compile_node(child_node, child_ctx, ("%s.children[%d]"):format(path, index))
     height = math.max(height, #children[index].lines)
   end
   local result = fragment()
-  for _ = 1, height do result.lines[#result.lines + 1] = "" end
+  for _ = 1, height do
+    result.lines[#result.lines + 1] = ""
+  end
   local display_col = 0
   for index, child in ipairs(children) do
     local byte_cols = {}
@@ -1127,7 +1199,9 @@ local function compile_row(node, ctx, path)
       local line = child.lines[row] or ""
       local padding_width = assert(widths[index]) - util.display_width(line)
       result.lines[row] = prefix .. line .. string.rep(" ", math.max(0, padding_width))
-      if index < #children then result.lines[row] = result.lines[row] .. string.rep(" ", gap) end
+      if index < #children then
+        result.lines[row] = result.lines[row] .. string.rep(" ", gap)
+      end
     end
     append_metadata(result, child, 0, display_col, byte_cols, false)
     display_col = display_col + assert(widths[index]) + (index < #children and gap or 0)
@@ -1141,8 +1215,7 @@ end
 ---@return Applet.Fragment
 local function compile_panel(node, ctx, path)
   local pad = padding(node.padding, path .. ".padding")
-  applet_expect(pad.left + pad.right < ctx.width, path .. ".padding",
-    "horizontal padding leaves no content width")
+  applet_expect(pad.left + pad.right < ctx.width, path .. ".padding", "horizontal padding leaves no content width")
   local child_ctx = util.copy(ctx)
   child_ctx.width = ctx.width - pad.left - pad.right
   if node.background ~= nil then
@@ -1150,23 +1223,33 @@ local function compile_panel(node, ctx, path)
   end
   local child = compile_node(node.child, child_ctx, path .. ".child")
   local result = fragment()
-  for _ = 1, pad.top do result.lines[#result.lines + 1] = string.rep(" ", ctx.width) end
+  for _ = 1, pad.top do
+    result.lines[#result.lines + 1] = string.rep(" ", ctx.width)
+  end
   local start = #result.lines
   for _, line in ipairs(child.lines) do
     local right = child_ctx.width - util.display_width(line)
-    result.lines[#result.lines + 1] = string.rep(" ", pad.left) .. line
+    result.lines[#result.lines + 1] = string.rep(" ", pad.left)
+      .. line
       .. string.rep(" ", math.max(0, right + pad.right))
   end
-  for _ = 1, pad.bottom do result.lines[#result.lines + 1] = string.rep(" ", ctx.width) end
+  for _ = 1, pad.bottom do
+    result.lines[#result.lines + 1] = string.rep(" ", ctx.width)
+  end
   local byte_cols = {}
-  for index = 1, math.max(#child.lines, 1) do byte_cols[index] = pad.left end
+  for index = 1, math.max(#child.lines, 1) do
+    byte_cols[index] = pad.left
+  end
   append_metadata(result, child, start, pad.left, byte_cols, true)
   if node.background ~= nil then
     local group = assert(ctx.theme:group(node.background))
     for row = 0, #result.lines - 1 do
       add_coverage(result, row, 0, ctx.width)
       result.decorations[#result.decorations + 1] = {
-        row = row, col = 0, group = group, whole_line = true,
+        row = row,
+        col = 0,
+        group = group,
+        whole_line = true,
       }
     end
   end
@@ -1181,7 +1264,9 @@ local function intersect_rectangle(left, right)
   local col = math.max(left.col, right.col)
   local bottom = math.min(left.row + left.height, right.row + right.height)
   local edge = math.min(left.col + left.width, right.col + right.width)
-  if row >= bottom or col >= edge then return nil end
+  if row >= bottom or col >= edge then
+    return nil
+  end
   return {
     row = row,
     col = col,
@@ -1196,8 +1281,7 @@ local function canonical_rectangles(rectangles)
   local rows, first_row, last_row = {}, nil, nil
   for _, rectangle in ipairs(rectangles) do
     first_row = math.min(first_row or rectangle.row, rectangle.row)
-    last_row = math.max(
-      last_row or rectangle.row, rectangle.row + rectangle.height)
+    last_row = math.max(last_row or rectangle.row, rectangle.row + rectangle.height)
     for row = rectangle.row, rectangle.row + rectangle.height - 1 do
       rows[row] = rows[row] or {}
       rows[row][#rows[row] + 1] = {
@@ -1210,7 +1294,9 @@ local function canonical_rectangles(rectangles)
   for row = first_row or 0, (last_row or 0) - 1 do
     local intervals = rows[row] or {}
     table.sort(intervals, function(left, right)
-      if left.first == right.first then return left.last < right.last end
+      if left.first == right.first then
+        return left.last < right.last
+      end
       return left.first < right.first
     end)
     local merged = {}
@@ -1242,7 +1328,9 @@ local function canonical_rectangles(rectangles)
     active = continued
   end
   table.sort(result, function(left, right)
-    if left.row ~= right.row then return left.row < right.row end
+    if left.row ~= right.row then
+      return left.row < right.row
+    end
     return left.col < right.col
   end)
   return result
@@ -1264,7 +1352,9 @@ local function visible_rectangles(rectangles, row, col, visible)
     }
     for _, boundary in ipairs(visible or {}) do
       local intersection = intersect_rectangle(shifted, boundary)
-      if intersection then result[#result + 1] = intersection end
+      if intersection then
+        result[#result + 1] = intersection
+      end
     end
   end
   return canonical_rectangles(result)
@@ -1281,10 +1371,14 @@ local function visible_spans(rectangles, row, first, last)
     if row >= rectangle.row and row < rectangle.row + rectangle.height then
       local left = math.max(first, rectangle.col)
       local right = math.min(last, rectangle.col + rectangle.width)
-      if left < right then spans[#spans + 1] = { first = left, last = right } end
+      if left < right then
+        spans[#spans + 1] = { first = left, last = right }
+      end
     end
   end
-  table.sort(spans, function(left, right) return left.first < right.first end)
+  table.sort(spans, function(left, right)
+    return left.first < right.first
+  end)
   return spans
 end
 
@@ -1300,7 +1394,9 @@ end
 ---@param col integer
 ---@return integer
 local function output_byte_col(result, row, col)
-  if result.cell_map then return canvas.byte_col(result.cell_map, row, col) end
+  if result.cell_map then
+    return canvas.byte_col(result.cell_map, row, col)
+  end
   return util.byte_col(result.lines[row + 1] or "", col)
 end
 
@@ -1321,8 +1417,7 @@ local function project_decorations(result, source, row, col, width, visible)
       last = col + display_col(line, decoration.end_col)
     end
     local output_row = row + decoration.row
-    for _, span in ipairs(visible_spans(
-        visible, output_row, first, last)) do
+    for _, span in ipairs(visible_spans(visible, output_row, first, last)) do
       local projected = util.copy(decoration)
       projected.row = output_row
       projected.col = output_byte_col(result, output_row, span.first)
@@ -1342,16 +1437,13 @@ end
 ---@param width integer
 ---@param visible? Applet.Rectangle[]
 ---@param include_decorations? boolean
-local function project_metadata(
-    result, source, row, col, width, visible, include_decorations)
+local function project_metadata(result, source, row, col, width, visible, include_decorations)
   if include_decorations ~= false then
     project_decorations(result, source, row, col, width, visible)
   end
   for key, target in pairs(source.targets) do
-    applet_expect(result.targets[key] == nil, "tree",
-      ("duplicate target key %q"):format(key))
-    local rectangles = visible_rectangles(
-      target.rectangles, row, col, visible)
+    applet_expect(result.targets[key] == nil, "tree", ("duplicate target key %q"):format(key))
+    local rectangles = visible_rectangles(target.rectangles, row, col, visible)
     if #rectangles > 0 then
       local shifted = util.copy(target)
       shifted.rectangles = rectangles
@@ -1361,10 +1453,12 @@ local function project_metadata(
       }
       local point_visible = false
       for _, rectangle in ipairs(rectangles) do
-        if shifted.point.row >= rectangle.row
-            and shifted.point.row < rectangle.row + rectangle.height
-            and shifted.point.col >= rectangle.col
-            and shifted.point.col < rectangle.col + rectangle.width then
+        if
+          shifted.point.row >= rectangle.row
+          and shifted.point.row < rectangle.row + rectangle.height
+          and shifted.point.col >= rectangle.col
+          and shifted.point.col < rectangle.col + rectangle.width
+        then
           point_visible = true
           break
         end
@@ -1373,22 +1467,20 @@ local function project_metadata(
         shifted.point = { row = rectangles[1].row, col = rectangles[1].col }
       end
       shifted.focus = {
-        active = shift_target_decorations(
-          target.focus and target.focus.active, row, col),
-        inactive = shift_target_decorations(
-          target.focus and target.focus.inactive, row, col),
+        active = shift_target_decorations(target.focus and target.focus.active, row, col),
+        inactive = shift_target_decorations(target.focus and target.focus.inactive, row, col),
       }
       result.targets[key] = shifted
     end
   end
   for _, key in ipairs(source.target_order) do
-    if result.targets[key] then result.target_order[#result.target_order + 1] = key end
+    if result.targets[key] then
+      result.target_order[#result.target_order + 1] = key
+    end
   end
   for key, scope in pairs(source.scopes) do
-    applet_expect(result.scopes[key] == nil, "tree",
-      ("duplicate scope key %q"):format(key))
-    local rectangles = visible_rectangles(
-      scope.rectangles, row, col, visible)
+    applet_expect(result.scopes[key] == nil, "tree", ("duplicate scope key %q"):format(key))
+    local rectangles = visible_rectangles(scope.rectangles, row, col, visible)
     if #rectangles > 0 or scope.root or scope.modal then
       local shifted = util.copy(scope)
       shifted.rectangles = rectangles
@@ -1396,8 +1488,7 @@ local function project_metadata(
     end
   end
   for key, image in pairs(source.images) do
-    applet_expect(result.images[key] == nil, "tree",
-      ("duplicate image key %q"):format(key))
+    applet_expect(result.images[key] == nil, "tree", ("duplicate image key %q"):format(key))
     local candidates = {}
     for _, rectangle in ipairs(image.visible) do
       candidates[#candidates + 1] = {
@@ -1424,18 +1515,15 @@ local function project_metadata(
     end
   end
   for _, range in ipairs(source.source_ranges) do
-    local rectangles = visible_rectangles(
-      range.rectangles, row, col, visible)
+    local rectangles = visible_rectangles(range.rectangles, row, col, visible)
     if #rectangles > 0 then
       local shifted = util.copy(range)
       shifted.rectangles = rectangles
       shifted.linewise = false
-      shifted.first, shifted.last = rectangles[1].row,
-        rectangles[1].row + rectangles[1].height
+      shifted.first, shifted.last = rectangles[1].row, rectangles[1].row + rectangles[1].height
       for _, rectangle in ipairs(rectangles) do
         shifted.first = math.min(shifted.first, rectangle.row)
-        shifted.last = math.max(
-          shifted.last, rectangle.row + rectangle.height)
+        shifted.last = math.max(shifted.last, rectangle.row + rectangle.height)
       end
       result.source_ranges[#result.source_ranges + 1] = shifted
     end
@@ -1455,13 +1543,14 @@ local function project_scene(scene)
   result.cell_map = composed.cell_map
   result.scene = scene
   for _, layer in ipairs(scene.layers) do
-    project_metadata(result, layer.fragment, layer.row, layer.col,
-      layer.width, composed.visible[layer.id])
+    project_metadata(result, layer.fragment, layer.row, layer.col, layer.width, composed.visible[layer.id])
   end
   for index = #composed.layers, 1, -1 do
     local layer = assert(composed.layers[index]) --[[@as Applet.CompiledSceneLayer]]
     for _, key in ipairs(layer.fragment.hit_order) do
-      if result.targets[key] then result.hit_order[#result.hit_order + 1] = key end
+      if result.targets[key] then
+        result.hit_order[#result.hit_order + 1] = key
+      end
     end
   end
   return result
@@ -1472,7 +1561,9 @@ end
 local function scene_lines(scene)
   local line = string.rep(" ", scene.width)
   local result = {}
-  for _ = 1, scene.height do result[#result + 1] = line end
+  for _ = 1, scene.height do
+    result[#result + 1] = line
+  end
   return result
 end
 
@@ -1511,7 +1602,9 @@ local function subtract_intervals(values, blockers)
       end
     end
     result = remaining
-    if #result == 0 then break end
+    if #result == 0 then
+      break
+    end
   end
   return result
 end
@@ -1546,28 +1639,26 @@ local function retained_layer_visibility(scene, layers, index)
       end
       for higher_index = index + 1, #layers do
         local higher = layers[higher_index]
-        local higher_clip = higher.clip or {
-          row = 0,
-          col = 0,
-          width = scene.width,
-          height = scene.height,
-        }
-        if row >= higher_clip.row
-            and row < higher_clip.row + higher_clip.height then
+        local higher_clip = higher.clip
+          or {
+            row = 0,
+            col = 0,
+            width = scene.width,
+            height = scene.height,
+          }
+        if row >= higher_clip.row and row < higher_clip.row + higher_clip.height then
           local blockers = {}
-          for _, interval in ipairs(
-              higher.coverage[row - higher.row] or {}) do
-            local first = math.max(0, higher_clip.col,
-              higher.col + interval.first)
-            local last = math.min(scene.width,
-              higher_clip.col + higher_clip.width,
-              higher.col + interval.last)
+          for _, interval in ipairs(higher.coverage[row - higher.row] or {}) do
+            local first = math.max(0, higher_clip.col, higher.col + interval.first)
+            local last = math.min(scene.width, higher_clip.col + higher_clip.width, higher.col + interval.last)
             if first < last then
               blockers[#blockers + 1] = { first = first, last = last }
             end
           end
           visible = subtract_intervals(visible, blockers)
-          if #visible == 0 then break end
+          if #visible == 0 then
+            break
+          end
         end
       end
       for _, interval in ipairs(visible) do
@@ -1598,19 +1689,30 @@ local function project_retained_scene(scene, previous)
   end
   local layers = vim.list_slice(scene.layers)
   table.sort(layers, function(left, right)
-    if left.zindex ~= right.zindex then return left.zindex < right.zindex end
+    if left.zindex ~= right.zindex then
+      return left.zindex < right.zindex
+    end
     return left.order < right.order
   end)
   for index, layer in ipairs(layers) do
     if fragment_has_spatial_metadata(layer.fragment) then
-      project_metadata(result, layer.fragment, layer.row, layer.col,
-        layer.width, retained_layer_visibility(scene, layers, index), false)
+      project_metadata(
+        result,
+        layer.fragment,
+        layer.row,
+        layer.col,
+        layer.width,
+        retained_layer_visibility(scene, layers, index),
+        false
+      )
     end
   end
   for index = #layers, 1, -1 do
     local layer = assert(layers[index])
     for _, key in ipairs(layer.fragment.hit_order) do
-      if result.targets[key] then result.hit_order[#result.hit_order + 1] = key end
+      if result.targets[key] then
+        result.hit_order[#result.hit_order + 1] = key
+      end
     end
   end
   return result
@@ -1627,7 +1729,9 @@ local BORDER_CHARACTERS = {
 ---@param path string
 ---@return string?
 local function box_group(value, ctx, path)
-  if value.style == nil and value.group == nil then return nil end
+  if value.style == nil and value.group == nil then
+    return nil
+  end
   return resolve_group({
     text = "",
     style = value.style,
@@ -1640,40 +1744,46 @@ end
 ---@param path string
 ---@return Applet.CompiledBorder?
 local function border_spec(value, ctx, path)
-  if value == nil or value == false or value == "none" then return nil end
-  if type(value) == "string" then value = { kind = value } end
+  if value == nil or value == false or value == "none" then
+    return nil
+  end
+  if type(value) == "string" then
+    value = { kind = value }
+  end
   applet_expect(type(value) == "table", path, "must be a table or border name")
   local characters = value.characters
   if characters == nil then
     local kind = value.kind or "single"
-    applet_expect(BORDER_CHARACTERS[kind] ~= nil, path .. ".kind",
-      "must be single, rounded, or double")
+    applet_expect(BORDER_CHARACTERS[kind] ~= nil, path .. ".kind", "must be single, rounded, or double")
     characters = BORDER_CHARACTERS[kind]
   end
-  applet_expect(type(characters) == "table" and vim.islist(characters)
-      and #characters == 8, path .. ".characters",
-    "must contain eight cells")
+  applet_expect(
+    type(characters) == "table" and vim.islist(characters) and #characters == 8,
+    path .. ".characters",
+    "must contain eight cells"
+  )
   local result = {}
   for index, character in ipairs(characters) do
-    applet_expect(type(character) == "string"
-        and util.display_width(character) == 1,
+    applet_expect(
+      type(character) == "string" and util.display_width(character) == 1,
       ("%s.characters[%d]"):format(path, index),
-      "must be one display cell")
+      "must be one display cell"
+    )
     result[index] = character
   end
   local title = value.title
   if title ~= nil then
-    applet_expect(type(title) == "string", path .. ".title",
-      "must be a string")
+    applet_expect(type(title) == "string", path .. ".title", "must be a string")
     for _, character in ipairs(util.characters(title, path .. ".title")) do
-      applet_expect(character ~= "\n", path .. ".title",
-        "must occupy one line")
+      applet_expect(character ~= "\n", path .. ".title", "must occupy one line")
     end
   end
   local title_pos = value.title_pos or "center"
-  applet_expect(title_pos == "left" or title_pos == "center"
-      or title_pos == "right", path .. ".title_pos",
-    "must be left, center, or right")
+  applet_expect(
+    title_pos == "left" or title_pos == "center" or title_pos == "right",
+    path .. ".title_pos",
+    "must be left, center, or right"
+  )
   local title_group
   if value.title_group ~= nil or value.title_style ~= nil then
     title_group = resolve_group({
@@ -1723,21 +1833,21 @@ local function border_fragment(width, height, spec)
   local chars = spec.characters
   local title = spec.title or ""
   local title_width = util.display_width(title)
-  applet_expect(title_width <= width, spec.path .. ".title",
-    "exceeds the border width")
+  applet_expect(title_width <= width, spec.path .. ".title", "exceeds the border width")
   local remaining = width - title_width
-  local left = spec.title_pos == "right" and remaining
-    or spec.title_pos == "center" and math.floor(remaining / 2) or 0
-  result.lines[1] = chars[1] .. string.rep(chars[2], left)
-    .. title .. string.rep(chars[2], remaining - left) .. chars[3]
+  local left = spec.title_pos == "right" and remaining or spec.title_pos == "center" and math.floor(remaining / 2) or 0
+  result.lines[1] = chars[1]
+    .. string.rep(chars[2], left)
+    .. title
+    .. string.rep(chars[2], remaining - left)
+    .. chars[3]
   add_coverage(result, 0, 0, width + 2)
   for row = 1, height do
     result.lines[row + 1] = chars[8] .. string.rep(" ", width) .. chars[4]
     add_coverage(result, row, 0, 1)
     add_coverage(result, row, width + 1, width + 2)
   end
-  result.lines[height + 2] = chars[7]
-    .. string.rep(chars[6], width) .. chars[5]
+  result.lines[height + 2] = chars[7] .. string.rep(chars[6], width) .. chars[5]
   add_coverage(result, height + 1, 0, width + 2)
   if spec.group then
     for row, line in ipairs(result.lines) do
@@ -1765,16 +1875,22 @@ end
 ---@param right Applet.Node
 ---@return boolean
 local function same_positioned_content(left, right)
-  if rawequal(left, right) then return true end
+  if rawequal(left, right) then
+    return true
+  end
   local left_count, right_count = 0, 0
   for key, value in pairs(left) do
     if key ~= "position" then
       left_count = left_count + 1
-      if not util.equal(value, right[key]) then return false end
+      if not util.equal(value, right[key]) then
+        return false
+      end
     end
   end
   for key in pairs(right) do
-    if key ~= "position" then right_count = right_count + 1 end
+    if key ~= "position" then
+      right_count = right_count + 1
+    end
   end
   return left_count == right_count
 end
@@ -1786,6 +1902,7 @@ local function layer_constraints(ctx)
     width = ctx.width,
     height = ctx.height,
     extent = ctx.extent,
+    scope = ctx.scope,
     background_group = ctx.background_group,
     theme_generation = ctx.theme.generation or 0,
     image_generation = ctx.images.generation or 0,
@@ -1805,7 +1922,9 @@ local function activate_layer_cache(ctx, key, descendants)
   end
   for _, capture in ipairs(ctx.layer_cache_captures) do
     capture[key] = true
-    for descendant in pairs(descendants or {}) do capture[descendant] = true end
+    for descendant in pairs(descendants or {}) do
+      capture[descendant] = true
+    end
   end
 end
 
@@ -1814,8 +1933,7 @@ end
 ---@param path string
 local function claim_fragment_images(ctx, value, path)
   for image_key in pairs(value.images) do
-    applet_expect(not ctx.image_keys[image_key], path,
-      ("duplicate image key %q"):format(image_key))
+    applet_expect(not ctx.image_keys[image_key], path, ("duplicate image key %q"):format(image_key))
     ctx.image_keys[image_key] = true
   end
 end
@@ -1829,8 +1947,7 @@ local function compile_positioned_layer(node, ctx, path, cache_key)
   local cache = ctx.layer_cache
   local constraints = layer_constraints(ctx)
   local cached = cache and cache[cache_key]
-  if cached and same_positioned_content(cached.content, node)
-      and util.equal(cached.constraints, constraints) then
+  if cached and same_positioned_content(cached.content, node) and util.equal(cached.constraints, constraints) then
     activate_layer_cache(ctx, cache_key, cached.descendants)
     claim_fragment_images(ctx, cached.fragment, path)
     if ctx.stats then
@@ -1863,50 +1980,52 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_container(node, ctx, path)
-  applet_expect(node.position == nil or ctx.positioned == true,
-    path .. ".position", "is only valid in a parent container's layers")
+  applet_expect(
+    node.position == nil or ctx.positioned == true,
+    path .. ".position",
+    "is only valid in a parent container's layers"
+  )
   local border = border_spec(node.border, ctx, path .. ".border")
   local border_size = border and 1 or 0
   local shadow
   if node.shadow ~= nil and node.shadow ~= false then
-    applet_expect(type(node.shadow) == "table", path .. ".shadow",
-      "must be a table")
+    applet_expect(type(node.shadow) == "table", path .. ".shadow", "must be a table")
     local character = node.shadow.character or " "
-    applet_expect(type(character) == "string"
-        and util.display_width(character) == 1,
-      path .. ".shadow.character", "must be one display cell")
+    applet_expect(
+      type(character) == "string" and util.display_width(character) == 1,
+      path .. ".shadow.character",
+      "must be one display cell"
+    )
     shadow = {
       row = integer(node.shadow.row or 1, path .. ".shadow.row", 0),
       col = integer(node.shadow.col or 2, path .. ".shadow.col", 0),
       character = character,
       group = box_group(node.shadow, ctx, path .. ".shadow"),
     }
-    applet_expect(shadow.group ~= nil, path .. ".shadow",
-      "must specify a style or group")
+    applet_expect(shadow.group ~= nil, path .. ".shadow", "must specify a style or group")
   end
 
   local reserved_width = border_size * 2 + (shadow and shadow.col or 0)
-  local width = node.width == nil
-      and math.max(1, ctx.width - reserved_width)
+  local width = node.width == nil and math.max(1, ctx.width - reserved_width)
     or integer(node.width, path .. ".width", 1)
   local box_width = width + border_size * 2
   local outer_width = box_width + (shadow and shadow.col or 0)
   if not ctx.positioned then
-    applet_expect(outer_width <= ctx.width, path .. ".width",
-      "exceeds available width")
+    applet_expect(outer_width <= ctx.width, path .. ".width", "exceeds available width")
   end
   local explicit_height = node.height
   if explicit_height ~= nil then
     explicit_height = integer(explicit_height, path .. ".height", 1)
   end
-  applet_expect(node.child ~= nil or explicit_height ~= nil,
-    path .. ".height", "is required without a child")
-  applet_expect(node.layers == nil or type(node.layers) == "table"
-      and vim.islist(node.layers), path .. ".layers", "must be a list")
+  applet_expect(node.child ~= nil or explicit_height ~= nil, path .. ".height", "is required without a child")
+  applet_expect(
+    node.layers == nil or type(node.layers) == "table" and vim.islist(node.layers),
+    path .. ".layers",
+    "must be a list"
+  )
 
   local pad = padding(node.padding, path .. ".padding")
-  applet_expect(pad.left + pad.right < width, path .. ".padding",
-    "horizontal padding leaves no content width")
+  applet_expect(pad.left + pad.right < width, path .. ".padding", "horizontal padding leaves no content width")
 
   local child_ctx = util.copy(ctx)
   child_ctx.width = width - pad.left - pad.right
@@ -1915,14 +2034,10 @@ local function compile_container(node, ctx, path)
   if node.background ~= nil then
     child_ctx.background_group = ctx.theme:group(node.background)
   end
-  local child = node.child and compile_node(
-    node.child, child_ctx, path .. ".child") or fragment()
-  applet_expect(#child.virtuals == 0, path .. ".child",
-    "cannot contain virtual lines")
-  local height = explicit_height or math.max(
-    1, #child.lines + pad.top + pad.bottom)
-  applet_expect(pad.top + pad.bottom < height, path .. ".padding",
-    "vertical padding leaves no content height")
+  local child = node.child and compile_node(node.child, child_ctx, path .. ".child") or fragment()
+  applet_expect(#child.virtuals == 0, path .. ".child", "cannot contain virtual lines")
+  local height = explicit_height or math.max(1, #child.lines + pad.top + pad.bottom)
+  applet_expect(pad.top + pad.bottom < height, path .. ".padding", "vertical padding leaves no content height")
   local box_height = height + border_size * 2
   local outer_height = box_height + (shadow and shadow.row or 0)
   local content_clip = {
@@ -1947,8 +2062,7 @@ local function compile_container(node, ctx, path)
     return layer
   end
   if shadow then
-    local shadow_fragment = solid_fragment(
-      box_width, box_height, shadow.character, shadow.group)
+    local shadow_fragment = solid_fragment(box_width, box_height, shadow.character, shadow.group)
     add_layer({
       row = shadow.row,
       col = shadow.col,
@@ -1960,8 +2074,7 @@ local function compile_container(node, ctx, path)
     })
   end
   if node.background ~= nil then
-    local background = solid_fragment(
-      width, height, " ", ctx.theme:group(node.background))
+    local background = solid_fragment(width, height, " ", ctx.theme:group(node.background))
     add_layer({
       row = border_size,
       col = border_size,
@@ -1986,40 +2099,32 @@ local function compile_container(node, ctx, path)
   local container_path = ctx.scene_path .. "/" .. node.key
   for index, layer_node in ipairs(node.layers or {}) do
     local layer_path = ("%s.layers[%d]"):format(path, index)
-    applet_expect(type(layer_node) == "table"
-        and layer_node.type == "container", layer_path,
-      "must be a container")
+    applet_expect(type(layer_node) == "table" and layer_node.type == "container", layer_path, "must be a container")
     local position = layer_node.position
-    applet_expect(type(position) == "table"
-        and position.mode == "absolute", layer_path .. ".position",
-      "must be absolute")
-    applet_expect(not layer_keys[layer_node.key], layer_path .. ".key",
-      "must be unique within its parent container")
+    applet_expect(
+      type(position) == "table" and position.mode == "absolute",
+      layer_path .. ".position",
+      "must be absolute"
+    )
+    applet_expect(not layer_keys[layer_node.key], layer_path .. ".key", "must be unique within its parent container")
     layer_keys[layer_node.key] = true
-    local layer_width = integer(
-      layer_node.width, layer_path .. ".width", 1)
-    local layer_height = integer(
-      layer_node.height, layer_path .. ".height", 1)
+    local layer_width = integer(layer_node.width, layer_path .. ".width", 1)
+    local layer_height = integer(layer_node.height, layer_path .. ".height", 1)
     local layer_ctx = util.copy(ctx)
     layer_ctx.width = layer_width
     layer_ctx.height = layer_height
     layer_ctx.positioned = true
     layer_ctx.scene_path = container_path .. "/layers"
-    local compiled = compile_positioned_layer(
-      layer_node, layer_ctx, layer_path,
-      container_path .. "/layer:" .. layer_node.key)
-    applet_expect(#compiled.virtuals == 0, layer_path,
-      "cannot contain virtual lines")
-    local layer_row = signed_integer(
-      position.row, layer_path .. ".position.row")
-    local layer_col = signed_integer(
-      position.col, layer_path .. ".position.col")
+    local compiled =
+      compile_positioned_layer(layer_node, layer_ctx, layer_path, container_path .. "/layer:" .. layer_node.key)
+    applet_expect(#compiled.virtuals == 0, layer_path, "cannot contain virtual lines")
+    local layer_row = signed_integer(position.row, layer_path .. ".position.row")
+    local layer_col = signed_integer(position.col, layer_path .. ".position.col")
     add_layer({
       key = layer_node.key,
       row = border_size + layer_row,
       col = border_size + layer_col,
-      zindex = position.zindex == nil and 0
-        or signed_integer(position.zindex, layer_path .. ".position.zindex"),
+      zindex = position.zindex == nil and 0 or signed_integer(position.zindex, layer_path .. ".position.zindex"),
       position_offset = border_size,
       width = vim.fn.strdisplaywidth(compiled.lines[1] or ""),
       lines = compiled.lines,
@@ -2050,7 +2155,9 @@ local function compile_container(node, ctx, path)
     retained = node == ctx.retained_scene_root,
   }
   for index, layer in ipairs(layers) do
-    if layer.key then scene.positions[layer.key] = index end
+    if layer.key then
+      scene.positions[layer.key] = index
+    end
     if fragment_has_spatial_metadata(layer.fragment) then
       scene.spatial = true
     end
@@ -2062,8 +2169,7 @@ local function compile_container(node, ctx, path)
     result = project_scene(scene)
   end
   if ctx.stats and not scene.retained then
-    ctx.stats.composed_cells = (ctx.stats.composed_cells or 0)
-      + outer_width * outer_height
+    ctx.stats.composed_cells = (ctx.stats.composed_cells or 0) + outer_width * outer_height
   end
   return result
 end
@@ -2073,8 +2179,7 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_responsive(node, ctx, path)
-  applet_expect(type(node.variants) == "table" and #node.variants > 0,
-    path .. ".variants", "must be a non-empty list")
+  applet_expect(type(node.variants) == "table" and #node.variants > 0, path .. ".variants", "must be a non-empty list")
   for index, variant in ipairs(node.variants) do
     local variant_path = ("%s.variants[%d]"):format(path, index)
     applet_expect(type(variant) == "table", variant_path, "must be a table")
@@ -2092,7 +2197,9 @@ local function compile_responsive(node, ctx, path)
         matches = matches and value ~= nil and value <= maximum
       end
     end
-    if matches then return compile_node(variant.node, ctx, variant_path .. ".node") end
+    if matches then
+      return compile_node(variant.node, ctx, variant_path .. ".node")
+    end
   end
   return fail(path, "no responsive variant matches the current dimensions") --[[@as Applet.Fragment]]
 end
@@ -2102,7 +2209,9 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_source(node, ctx, path)
-  if node.path ~= nil then applet_expect(type(node.path) == "string", path .. ".path", "must be a string") end
+  if node.path ~= nil then
+    applet_expect(type(node.path) == "string", path .. ".path", "must be a string")
+  end
   if node.language ~= nil then
     applet_expect(type(node.language) == "string", path .. ".language", "must be a string")
   end
@@ -2127,29 +2236,32 @@ end
 ---@param reserve_height boolean
 ---@return Applet.Fragment
 local function image_fallback(node, ctx, path, width, height, reserve_height)
-  local fallback = node.fallback or {
-    type = "text",
-    key = node.key .. ":fallback",
-    runs = { { text = "[Image unavailable: " .. node.alt .. "]", style = "muted" } },
-    wrap = "word",
-  }
+  local fallback = node.fallback
+    or {
+      type = "text",
+      key = node.key .. ":fallback",
+      runs = { { text = "[Image unavailable: " .. node.alt .. "]", style = "muted" } },
+      wrap = "word",
+    }
   applet_expect(fallback.type ~= "image", path .. ".fallback", "must not be an image")
   local child_ctx = util.copy(ctx)
   child_ctx.width = width
   local result = compile_node(fallback, child_ctx, path .. ".fallback")
-  while #result.lines > height do table.remove(result.lines) end
+  while #result.lines > height do
+    table.remove(result.lines)
+  end
   for row in pairs(result.coverage) do
-    if row >= height then result.coverage[row] = nil end
+    if row >= height then
+      result.coverage[row] = nil
+    end
   end
   local decorations = {}
   for _, decoration in ipairs(result.decorations) do
     if decoration.row < height then
       if decoration.end_col then
-        decoration.end_col = math.min(
-          decoration.end_col, #(result.lines[decoration.row + 1] or ""))
+        decoration.end_col = math.min(decoration.end_col, #(result.lines[decoration.row + 1] or ""))
       end
-      if decoration.whole_line or decoration.end_col == nil
-          or decoration.end_col > decoration.col then
+      if decoration.whole_line or decoration.end_col == nil or decoration.end_col > decoration.col then
         decorations[#decorations + 1] = decoration
       end
     end
@@ -2179,8 +2291,7 @@ local function image_fallback(node, ctx, path, width, height, reserve_height)
     if range.first < height then
       local rectangles = {}
       for _, rectangle in ipairs(range.rectangles or {}) do
-        local bottom = math.min(
-          rectangle.row + rectangle.height, height)
+        local bottom = math.min(rectangle.row + rectangle.height, height)
         if rectangle.row < bottom then
           rectangles[#rectangles + 1] = {
             row = rectangle.row,
@@ -2199,7 +2310,9 @@ local function image_fallback(node, ctx, path, width, height, reserve_height)
   end
   result.source_ranges = ranges
   if reserve_height then
-    while #result.lines < height do result.lines[#result.lines + 1] = "" end
+    while #result.lines < height do
+      result.lines[#result.lines + 1] = ""
+    end
   end
   for index, line in ipairs(result.lines) do
     local missing = width - util.display_width(line)
@@ -2222,40 +2335,43 @@ end
 ---@return integer, integer
 local function image_size(node, ctx, path, resource)
   local width_mode = node.width
-  applet_expect(width_mode == "fill" or width_mode == "native"
-      or type(width_mode) == "number",
-    path .. ".width", "must be an integer, fill, or native")
+  applet_expect(
+    width_mode == "fill" or width_mode == "native" or type(width_mode) == "number",
+    path .. ".width",
+    "must be an integer, fill, or native"
+  )
   local width
   if width_mode == "fill" then
     width = ctx.width
   elseif width_mode == "native" then
-    width = resource and math.max(1, math.ceil(
-      resource.width / ctx.images.cell_width)) or ctx.width
+    width = resource and math.max(1, math.ceil(resource.width / ctx.images.cell_width)) or ctx.width
     width = math.min(width, ctx.width)
   else
     width = integer(width_mode, path .. ".width", 1)
-    applet_expect(width <= ctx.width, path .. ".width",
-      "exceeds available width")
+    applet_expect(width <= ctx.width, path .. ".width", "exceeds available width")
   end
 
   local height_mode = node.height
-  applet_expect(height_mode == "auto" or type(height_mode) == "number",
-    path .. ".height", "must be an integer or auto")
+  applet_expect(height_mode == "auto" or type(height_mode) == "number", path .. ".height", "must be an integer or auto")
   local maximum = node.max_height
   if maximum ~= nil then
     maximum = integer(maximum, path .. ".max_height", 1)
-    applet_expect(height_mode == "auto", path .. ".max_height",
-      "requires auto height")
+    applet_expect(height_mode == "auto", path .. ".max_height", "requires auto height")
   end
   local height
   if height_mode == "auto" then
-    height = resource and rounded(resource.height / resource.width
-      * width * ctx.images.cell_width / ctx.images.cell_height) or 1
+    height = resource
+        and rounded(resource.height / resource.width * width * ctx.images.cell_width / ctx.images.cell_height)
+      or 1
     if maximum and height > maximum then
       height = maximum
       if type(width_mode) ~= "number" then
-        width = math.min(width, rounded(assert(resource).width / assert(resource).height
-          * height * ctx.images.cell_height / ctx.images.cell_width))
+        width = math.min(
+          width,
+          rounded(
+            assert(resource).width / assert(resource).height * height * ctx.images.cell_height / ctx.images.cell_width
+          )
+        )
       end
     end
   else
@@ -2275,42 +2391,44 @@ local function compile_image(node, ctx, path)
   applet_expect(util.nonempty_string(node.alt), path .. ".alt", "must be a non-empty string")
   local desired_identity = require("applet.image.source").identity(node.source)
   local identity = desired_identity
-  local resource = ctx.images.resources
-    and ctx.images.resources[desired_identity]
+  local resource = ctx.images.resources and ctx.images.resources[desired_identity]
   if not resource and ctx.images.status == "available" then
     local presented = ctx.images.presented[node.key]
-    local presented_identity = type(presented) == "string"
-      and presented or nil
-    local presented_resource = presented_identity and ctx.images.resources
-      and ctx.images.resources[presented_identity] or nil
+    local presented_identity = type(presented) == "string" and presented or nil
+    local presented_resource = presented_identity and ctx.images.resources and ctx.images.resources[presented_identity]
+      or nil
     if presented_resource then
       identity, resource = assert(presented_identity), presented_resource
     end
   end
   local available = ctx.images.status == "available" and resource ~= nil
   if available and (node.width == "native" or node.height == "auto") then
-    applet_expect(type(resource.width) == "number" and resource.width > 0
-        and type(resource.height) == "number" and resource.height > 0,
-      path .. ".source", "has invalid prepared dimensions")
+    applet_expect(
+      type(resource.width) == "number"
+        and resource.width > 0
+        and type(resource.height) == "number"
+        and resource.height > 0,
+      path .. ".source",
+      "has invalid prepared dimensions"
+    )
   end
-  local width, height = image_size(
-    node, ctx, path, available and resource or nil)
+  local width, height = image_size(node, ctx, path, available and resource or nil)
   local fit = node.fit or "contain"
-  applet_expect(fit == "contain" or fit == "cover" or fit == "fill",
-    path .. ".fit", "must be contain, cover, or fill")
+  applet_expect(fit == "contain" or fit == "cover" or fit == "fill", path .. ".fit", "must be contain, cover, or fill")
   local align = node.align or "center"
-  applet_expect(align == "left" or align == "center" or align == "right",
-    path .. ".align", "must be left, center, or right")
-  local fallback = image_fallback(
-    node, ctx, path, width, height, available)
+  applet_expect(
+    align == "left" or align == "center" or align == "right",
+    path .. ".align",
+    "must be left, center, or right"
+  )
+  local fallback = image_fallback(node, ctx, path, width, height, available)
   local col = align == "right" and (ctx.width - width)
     or (align == "center" and math.floor((ctx.width - width) / 2) or 0)
   local result = fragment()
   local byte_cols = {}
   for index, line in ipairs(fallback.lines) do
     byte_cols[index] = col
-    result.lines[index] = string.rep(" ", col) .. line
-      .. string.rep(" ", ctx.width - col - width)
+    result.lines[index] = string.rep(" ", col) .. line .. string.rep(" ", ctx.width - col - width)
   end
   append_metadata(result, fallback, 0, col, byte_cols, true)
   if available then
@@ -2338,14 +2456,15 @@ end
 ---@return Applet.Fragment
 local function compile_virtual(node, ctx, path)
   local placement = node.placement or "above-end"
-  applet_expect(placement == "above" or placement == "below"
-      or placement == "above-end" or placement == "below-end",
-    path .. ".placement", "has an unknown placement")
+  applet_expect(
+    placement == "above" or placement == "below" or placement == "above-end" or placement == "below-end",
+    path .. ".placement",
+    "has an unknown placement"
+  )
   applet_expect(type(node.lines) == "table", path .. ".lines", "must be a list")
   local lines = {}
   for line_index, runs in ipairs(node.lines) do
-    applet_expect(type(runs) == "table", ("%s.lines[%d]"):format(path, line_index),
-      "must be a list")
+    applet_expect(type(runs) == "table", ("%s.lines[%d]"):format(path, line_index), "must be a list")
     local chunks = {}
     for run_index, run in ipairs(runs) do
       local run_path = ("%s.lines[%d][%d]"):format(path, line_index, run_index)
@@ -2373,38 +2492,38 @@ local focus_positions = {
 ---@param path string
 ---@return Applet.CompiledFocusDecoration[]
 local function compile_target_decorations(value, child, ctx, path)
-  if value == nil then return {} end
-  applet_expect(type(value) == "table" and vim.islist(value), path,
-    "must be a list")
+  if value == nil then
+    return {}
+  end
+  applet_expect(type(value) == "table" and vim.islist(value), path, "must be a list")
   local result = {}
   for index, decoration in ipairs(value) do
     local item_path = ("%s[%d]"):format(path, index)
-    applet_expect(type(decoration) == "table", item_path,
-      "must be a table")
+    applet_expect(type(decoration) == "table", item_path, "must be a table")
     local row
     if decoration.row == "end" then
       row = #child.lines
     else
       row = integer(decoration.row, item_path .. ".row", 0)
-      applet_expect(row <= #child.lines, item_path .. ".row",
-        "must address the target or its following boundary")
+      applet_expect(row <= #child.lines, item_path .. ".row", "must address the target or its following boundary")
     end
-    local col = decoration.col == nil and 0
-      or integer(decoration.col, item_path .. ".col", 0)
-    applet_expect(decoration.position == nil
-        or focus_positions[decoration.position],
-      item_path .. ".position", "is unknown")
+    local col = decoration.col == nil and 0 or integer(decoration.col, item_path .. ".col", 0)
+    applet_expect(
+      decoration.position == nil or focus_positions[decoration.position],
+      item_path .. ".position",
+      "is unknown"
+    )
     local win_col = decoration.win_col
     if win_col ~= nil then
       integer(win_col, item_path .. ".win_col", 0)
-      applet_expect(decoration.position == nil,
-        item_path, "cannot combine position and win_col")
+      applet_expect(decoration.position == nil, item_path, "cannot combine position and win_col")
     end
-    local priority = decoration.priority == nil and 200
-      or integer(decoration.priority, item_path .. ".priority", 0)
-    applet_expect(type(decoration.chunks) == "table"
-        and vim.islist(decoration.chunks) and #decoration.chunks > 0,
-      item_path .. ".chunks", "must be a non-empty list")
+    local priority = decoration.priority == nil and 200 or integer(decoration.priority, item_path .. ".priority", 0)
+    applet_expect(
+      type(decoration.chunks) == "table" and vim.islist(decoration.chunks) and #decoration.chunks > 0,
+      item_path .. ".chunks",
+      "must be a non-empty list"
+    )
     local chunks = {}
     for chunk_index, run in ipairs(decoration.chunks) do
       local run_path = ("%s.chunks[%d]"):format(item_path, chunk_index)
@@ -2432,25 +2551,49 @@ compile_node = function(node, ctx, path)
   applet_expect(type(node) == "table", path, "must be a node")
   applet_expect(NODE_TYPES[node.type], path .. ".type", "is unknown")
   applet_expect(util.nonempty_string(node.key), path .. ".key", "must be a non-empty string")
-  if node.type == "region" then fail(path, "region is only valid at the Tree root") end
-  if node.type == "text" then return compile_text(node, ctx, path) end
-  if node.type == "column" then return compile_column(node, ctx, path) end
-  if node.type == "row" then return compile_row(node, ctx, path) end
-  if node.type == "container" then return compile_container(node, ctx, path) end
-  if node.type == "responsive" then return compile_responsive(node, ctx, path) end
-  if node.type == "panel" then return compile_panel(node, ctx, path) end
-  if node.type == "source" then return compile_source(node, ctx, path) end
-  if node.type == "image" then return compile_image(node, ctx, path) end
-  if node.type == "virtual" then return compile_virtual(node, ctx, path) end
+  if node.type == "region" then
+    fail(path, "region is only valid at the Tree root")
+  end
+  if node.type == "text" then
+    return compile_text(node, ctx, path)
+  end
+  if node.type == "column" then
+    return compile_column(node, ctx, path)
+  end
+  if node.type == "row" then
+    return compile_row(node, ctx, path)
+  end
+  if node.type == "container" then
+    return compile_container(node, ctx, path)
+  end
+  if node.type == "responsive" then
+    return compile_responsive(node, ctx, path)
+  end
+  if node.type == "panel" then
+    return compile_panel(node, ctx, path)
+  end
+  if node.type == "source" then
+    return compile_source(node, ctx, path)
+  end
+  if node.type == "image" then
+    return compile_image(node, ctx, path)
+  end
+  if node.type == "virtual" then
+    return compile_virtual(node, ctx, path)
+  end
   if node.type == "target" then
-    applet_expect(node.disabled == nil or type(node.disabled) == "boolean",
-      path .. ".disabled", "must be a boolean")
-    if node.group ~= nil then applet_expect(util.nonempty_string(node.group), path .. ".group", "must be non-empty") end
-    if node.role ~= nil then applet_expect(util.nonempty_string(node.role), path .. ".role", "must be non-empty") end
-    if node.action ~= nil then validate_action(node.action, path .. ".action") end
+    applet_expect(node.disabled == nil or type(node.disabled) == "boolean", path .. ".disabled", "must be a boolean")
+    if node.group ~= nil then
+      applet_expect(util.nonempty_string(node.group), path .. ".group", "must be non-empty")
+    end
+    if node.role ~= nil then
+      applet_expect(util.nonempty_string(node.role), path .. ".role", "must be non-empty")
+    end
+    if node.action ~= nil then
+      validate_action(node.action, path .. ".action")
+    end
     local child = compile_node(node.child, ctx, path .. ".child")
-    applet_expect(node.focus == nil or type(node.focus) == "table",
-      path .. ".focus", "must be a table")
+    applet_expect(node.focus == nil or type(node.focus) == "table", path .. ".focus", "must be a table")
     local focus = node.focus or {}
     local point = { row = 0, col = 0 }
     for index, line in ipairs(child.lines) do
@@ -2467,10 +2610,8 @@ compile_node = function(node, ctx, path)
       action = node.action,
       focus_style = node.focus_style and ctx.theme:group(node.focus_style) or nil,
       focus = {
-        active = compile_target_decorations(
-          focus.active, child, ctx, path .. ".focus.active"),
-        inactive = compile_target_decorations(
-          focus.inactive, child, ctx, path .. ".focus.inactive"),
+        active = compile_target_decorations(focus.active, child, ctx, path .. ".focus.active"),
+        inactive = compile_target_decorations(focus.inactive, child, ctx, path .. ".focus.inactive"),
       },
       point = point,
       rectangles = content_rectangles(child),
@@ -2488,26 +2629,27 @@ end
 local function compile_chrome(chrome, theme)
   chrome = chrome or {}
   applet_expect(type(chrome) == "table", "tree.chrome", "must be a table")
-  applet_expect(chrome.options == nil or type(chrome.options) == "table",
-    "tree.chrome.options", "must be a table")
+  applet_expect(chrome.options == nil or type(chrome.options) == "table", "tree.chrome.options", "must be a table")
   local result = { options = util.copy(chrome.options or {}) }
   local positions = { left = true, center = true, right = true }
   for _, field in ipairs({ "title_pos", "footer_pos" }) do
     if chrome[field] ~= nil then
-      applet_expect(positions[chrome[field]] == true,
-        "tree.chrome." .. field, "must be left, center, or right")
+      applet_expect(positions[chrome[field]] == true, "tree.chrome." .. field, "must be left, center, or right")
       result[field] = chrome[field]
     end
   end
   for _, field in ipairs({ "title", "footer" }) do
     if chrome[field] ~= nil then
       applet_expect(type(chrome[field]) == "table", "tree.chrome." .. field, "must be a list")
-      result[field] = {}
+      local runs = {}
       for index, run in ipairs(chrome[field]) do
         local path = ("tree.chrome.%s[%d]"):format(field, index)
         local group = resolve_group(run, theme, path)
         util.characters(run.text, path .. ".text")
-        result[field][#result[field] + 1] = { run.text, group }
+        runs[#runs + 1] = { run.text, group }
+      end
+      if #runs > 0 then
+        result[field] = runs
       end
     end
   end
@@ -2523,7 +2665,9 @@ local presentation_rows
 ---@return Applet.Fragment
 local function slice_fragment(value, first, last)
   local result = fragment()
-  for index = first + 1, last do result.lines[#result.lines + 1] = value.lines[index] end
+  for index = first + 1, last do
+    result.lines[#result.lines + 1] = value.lines[index]
+  end
   for row, intervals in pairs(value.coverage or {}) do
     if row >= first and row < last then
       for _, interval in ipairs(intervals) do
@@ -2590,10 +2734,14 @@ local function slice_fragment(value, first, last)
     end
   end
   for _, key in ipairs(value.target_order) do
-    if result.targets[key] then result.target_order[#result.target_order + 1] = key end
+    if result.targets[key] then
+      result.target_order[#result.target_order + 1] = key
+    end
   end
   for _, key in ipairs(value.hit_order or value.target_order) do
-    if result.targets[key] then result.hit_order[#result.hit_order + 1] = key end
+    if result.targets[key] then
+      result.hit_order[#result.hit_order + 1] = key
+    end
   end
   for key, scope in pairs(value.scopes) do
     local rectangles = slice_rectangles(scope.rectangles)
@@ -2604,15 +2752,18 @@ local function slice_fragment(value, first, last)
   end
   for key, image in pairs(value.images) do
     local visible = {}
-    for _, rectangle in ipairs(image.visible or { {
-      row = 0,
-      col = 0,
-      width = image.width,
-      height = image.height,
-    } }) do
+    for _, rectangle in
+      ipairs(image.visible or {
+        {
+          row = 0,
+          col = 0,
+          width = image.width,
+          height = image.height,
+        },
+      })
+    do
       local top = math.max(image.row + rectangle.row, first)
-      local bottom = math.min(
-        image.row + rectangle.row + rectangle.height, last)
+      local bottom = math.min(image.row + rectangle.row + rectangle.height, last)
       if top < bottom then
         visible[#visible + 1] = {
           row = top - image.row,
@@ -2633,12 +2784,10 @@ local function slice_fragment(value, first, last)
     if #rectangles > 0 then
       local shifted = util.copy(range)
       shifted.rectangles = rectangles
-      shifted.first, shifted.last = rectangles[1].row,
-        rectangles[1].row + rectangles[1].height
+      shifted.first, shifted.last = rectangles[1].row, rectangles[1].row + rectangles[1].height
       for _, rectangle in ipairs(rectangles) do
         shifted.first = math.min(shifted.first, rectangle.row)
-        shifted.last = math.max(
-          shifted.last, rectangle.row + rectangle.height)
+        shifted.last = math.max(shifted.last, rectangle.row + rectangle.height)
       end
       result.source_ranges[#result.source_ranges + 1] = shifted
     end
@@ -2649,26 +2798,30 @@ end
 ---@param value Applet.Fragment
 ---@param key string
 local function reset_regions(value, key)
-  value.regions = { {
-    key = key,
-    first = 0,
-    last = #value.lines,
-    lines = value.lines,
-    decorations = value.decorations,
-    coverage = value.coverage,
-    targets = value.targets,
-    target_order = value.target_order,
-    hit_order = value.hit_order,
-    scopes = value.scopes,
-    images = value.images,
-    source_ranges = value.source_ranges,
-    virtuals = value.virtuals,
-  } }
+  value.regions = {
+    {
+      key = key,
+      first = 0,
+      last = #value.lines,
+      lines = value.lines,
+      decorations = value.decorations,
+      coverage = value.coverage,
+      targets = value.targets,
+      target_order = value.target_order,
+      hit_order = value.hit_order,
+      scopes = value.scopes,
+      images = value.images,
+      source_ranges = value.source_ranges,
+      virtuals = value.virtuals,
+    },
+  }
 end
 
 ---@param value Applet.Fragment
 local function ensure_physical_line(value)
-  if #value.lines > 0 then return end
+  if #value.lines > 0 then
+    return
+  end
   value.lines = { "" }
   local regions = assert(value.regions)
   local region = regions[#regions]
@@ -2684,44 +2837,46 @@ end
 ---@param height integer
 ---@return Applet.Fragment
 local function apply_viewport_overflow(value, root, ctx, height)
-  if presentation_rows(value) <= height then return value end
+  if presentation_rows(value) <= height then
+    return value
+  end
   local policy = root.overflow or "error"
-  applet_expect(policy == "error" or policy == "clip" or policy == "collapse",
-    "tree.root.overflow", "must be error, clip, or collapse")
-  if policy == "error" then return value end
+  applet_expect(
+    policy == "error" or policy == "clip" or policy == "collapse",
+    "tree.root.overflow",
+    "must be error, clip, or collapse"
+  )
+  if policy == "error" then
+    return value
+  end
   if policy == "collapse" then
-    applet_expect(type(root.collapse) == "table", "tree.root.collapse",
-      "is required for collapse overflow")
+    applet_expect(type(root.collapse) == "table", "tree.root.collapse", "is required for collapse overflow")
     local collapsed = compile_node(root.collapse, ctx, "tree.root.collapse")
-    applet_expect(presentation_rows(collapsed) <= height, "tree.root.collapse",
-      "exceeds the viewport height")
+    applet_expect(presentation_rows(collapsed) <= height, "tree.root.collapse", "exceeds the viewport height")
     reset_regions(collapsed, root.key .. ":collapsed")
     return collapsed
   end
-  local marker = root.overflow_marker or {
-    type = "text",
-    key = root.key .. ":overflow",
-    runs = { { text = "…", style = "muted" } },
-    wrap = "none",
-  }
+  local marker = root.overflow_marker
+    or {
+      type = "text",
+      key = root.key .. ":overflow",
+      runs = { { text = "…", style = "muted" } },
+      wrap = "none",
+    }
   local compiled_marker = compile_node(marker, ctx, "tree.root.overflow_marker")
-  applet_expect(#compiled_marker.virtuals == 0, "tree.root.overflow_marker",
-    "must use physical lines")
+  applet_expect(#compiled_marker.virtuals == 0, "tree.root.overflow_marker", "must use physical lines")
   local virtual_rows = presentation_rows(value) - #value.lines
   local budget = height - virtual_rows - #compiled_marker.lines
-  applet_expect(budget >= 0, "tree.root.overflow_marker",
-    "leaves no viewport space")
+  applet_expect(budget >= 0, "tree.root.overflow_marker", "leaves no viewport space")
   local from = root.clip_from or "end"
-  applet_expect(from == "start" or from == "end", "tree.root.clip_from",
-    "must be start or end")
+  applet_expect(from == "start" or from == "end", "tree.root.clip_from", "must be start or end")
   local result = fragment()
   if from == "end" then
     append_vertical(result, slice_fragment(value, 0, math.min(budget, #value.lines)), 0)
     append_vertical(result, compiled_marker, 0)
   else
     append_vertical(result, compiled_marker, 0)
-    append_vertical(result, slice_fragment(value,
-      math.max(0, #value.lines - budget), #value.lines), 0)
+    append_vertical(result, slice_fragment(value, math.max(0, #value.lines - budget), #value.lines), 0)
   end
   result.virtuals = value.virtuals
   reset_regions(result, root.key .. ":clipped")
@@ -2748,13 +2903,19 @@ local function normalize_regions(root)
   end
   if root.type == "region" then
     shape.kind = "region"
-    return { root --[[@as Applet.RegionNode]] }, wrappers, 0, shape
+    return {
+      root --[[@as Applet.RegionNode]],
+    }, wrappers, 0, shape
   end
   if root.type == "column" then
     ---@cast root Applet.ColumnNode
     local has_region, has_other = false, false
     for _, child in ipairs(root.children or {}) do
-      if child.type == "region" then has_region = true else has_other = true end
+      if child.type == "region" then
+        has_region = true
+      else
+        has_other = true
+      end
     end
     if has_region and has_other then
       fail("tree.root.children", "cannot mix region and non-region nodes")
@@ -2763,7 +2924,9 @@ local function normalize_regions(root)
       shape.kind = "column"
       shape.key = root.key
       shape.gap = root.gap or 0
-      return root.children --[[@as Applet.RegionNode[] ]], wrappers, root.gap or 0, shape
+      local regions = root.children
+      ---@cast regions Applet.RegionNode[]
+      return regions, wrappers, root.gap or 0, shape
     end
   end
   return nil, wrappers
@@ -2775,32 +2938,46 @@ end
 local function retained_prefix(previous, count)
   local value = fragment()
   value.regions = {}
-  if count == 0 then return value end
-
   local boundary = assert(previous.regions[count]).last
-  for index = 1, boundary do value.lines[index] = previous.lines[index] end
+  for index = 1, boundary do
+    value.lines[index] = previous.lines[index]
+  end
   for row, intervals in pairs(previous.coverage or {}) do
-    if row < boundary then value.coverage[row] = intervals end
+    if row < boundary then
+      value.coverage[row] = intervals
+    end
   end
 
   value.targets = util.copy(previous.targets)
   value.scopes = util.copy(previous.scopes)
   value.images = util.copy(previous.images)
   for key, scope in pairs(value.scopes) do
-    if scope.root then value.scopes[key] = nil end
+    if scope.root then
+      value.scopes[key] = nil
+    end
   end
   for index = count + 1, #previous.regions do
     local region = previous.regions[index]
-    for key in pairs(region.targets or {}) do value.targets[key] = nil end
-    for key in pairs(region.scopes or {}) do value.scopes[key] = nil end
-    for key in pairs(region.images or {}) do value.images[key] = nil end
+    for key in pairs(region.targets or {}) do
+      value.targets[key] = nil
+    end
+    for key in pairs(region.scopes or {}) do
+      value.scopes[key] = nil
+    end
+    for key in pairs(region.images or {}) do
+      value.images[key] = nil
+    end
   end
 
   for _, key in ipairs(previous.target_order or {}) do
-    if value.targets[key] then value.target_order[#value.target_order + 1] = key end
+    if value.targets[key] then
+      value.target_order[#value.target_order + 1] = key
+    end
   end
   for _, key in ipairs(previous.hit_order or previous.target_order or {}) do
-    if value.targets[key] then value.hit_order[#value.hit_order + 1] = key end
+    if value.targets[key] then
+      value.hit_order[#value.hit_order + 1] = key
+    end
   end
 
   local decoration_count = #previous.decorations
@@ -2821,13 +2998,17 @@ local function retained_prefix(previous, count)
   for index = 1, virtual_count do
     value.virtuals[index] = previous.virtuals[index]
   end
-  for index = 1, count do value.regions[index] = previous.regions[index] end
+  for index = 1, count do
+    value.regions[index] = previous.regions[index]
+  end
   return value
 end
 
 ---@param stats? Applet.PaneCompileStats
 local function count_document_reuse(stats)
-  if not stats then return end
+  if not stats then
+    return
+  end
   stats.document_reuses = (stats.document_reuses or 0) + 1
 end
 
@@ -2887,11 +3068,12 @@ end
 ---@return Applet.ImageDependency
 local function image_dependency(key, identity, images)
   local desired = images.resources and images.resources[identity]
-  local presented = not desired and images.presented
-    and images.presented[key] or nil
+  local presented = not desired and images.presented and images.presented[key] or nil
   local presented_resource = type(presented) == "string"
-    and images.status == "available" and images.resources
-    and images.resources[presented] or nil
+      and images.status == "available"
+      and images.resources
+      and images.resources[presented]
+    or nil
   return {
     desired_identity = identity,
     status = images.status,
@@ -2910,7 +3092,9 @@ end
 ---@param result table<string, Applet.ImageDependency|'invalid'>
 ---@param seen table<table, boolean>
 local function image_dependencies(node, images, result, seen)
-  if type(node) ~= "table" or seen[node] then return end
+  if type(node) ~= "table" or seen[node] then
+    return
+  end
   seen[node] = true
   if node.type == "image" then
     local ok, identity = pcall(require("applet.image.source").identity, node.source)
@@ -2923,7 +3107,9 @@ local function image_dependencies(node, images, result, seen)
   end
   for key, value in pairs(node) do
     if key ~= "source" or node.type ~= "image" then
-      if type(value) == "table" then image_dependencies(value.node or value, images, result, seen) end
+      if type(value) == "table" then
+        image_dependencies(value.node or value, images, result, seen)
+      end
     end
   end
   seen[node] = nil
@@ -2947,8 +3133,7 @@ end
 local function resolve_image_dependencies(keys, images)
   local result = {}
   for key, dependency in pairs(keys) do
-    result[key] = image_dependency(
-      key, assert(dependency.desired_identity), images)
+    result[key] = image_dependency(key, assert(dependency.desired_identity), images)
   end
   return result
 end
@@ -2970,7 +3155,8 @@ end
 ---@param right? Applet.RegionConstraints
 ---@return boolean?
 local function same_constraints(left, right)
-  return left and right
+  return left
+    and right
     and left.width == right.width
     and left.height == right.height
     and left.extent == right.extent
@@ -2992,7 +3178,9 @@ end
 ---@return integer
 presentation_rows = function(value)
   local count = #value.lines
-  for _, virtual in ipairs(value.virtuals) do count = count + #virtual.lines end
+  for _, virtual in ipairs(value.virtuals) do
+    count = count + #virtual.lines
+  end
   return count
 end
 
@@ -3002,8 +3190,12 @@ end
 local function rectangles_overlap(left, right)
   for _, a in ipairs(left) do
     for _, b in ipairs(right) do
-      if a.row < b.row + b.height and b.row < a.row + a.height
-          and a.col < b.col + b.width and b.col < a.col + a.width then
+      if
+        a.row < b.row + b.height
+        and b.row < a.row + a.height
+        and a.col < b.col + b.width
+        and b.col < a.col + a.width
+      then
         return true
       end
     end
@@ -3031,35 +3223,48 @@ local function validate_layout(value, extent, height)
   local function ancestor(parent, child)
     local current = value.scopes[child]
     while current and current.parent do
-      if current.parent == parent then return true end
+      if current.parent == parent then
+        return true
+      end
       current = value.scopes[current.parent]
     end
     return false
   end
   for left = 1, #modal do
     for right = left + 1, #modal do
-      applet_expect(ancestor(modal[left], modal[right])
-          or ancestor(modal[right], modal[left]), "tree",
-        "contains more than one modal scope outside one nested path")
+      applet_expect(
+        ancestor(modal[left], modal[right]) or ancestor(modal[right], modal[left]),
+        "tree",
+        "contains more than one modal scope outside one nested path"
+      )
     end
   end
   ---@type string[]
   local scope_keys = {}
-  for key in pairs(value.scopes) do scope_keys[#scope_keys + 1] = key end
+  for key in pairs(value.scopes) do
+    scope_keys[#scope_keys + 1] = key
+  end
   table.sort(scope_keys)
   for left_index = 1, #scope_keys do
     local left = value.scopes[scope_keys[left_index]]
     if not left.modal then
       local claims = {}
-      for _, binding in ipairs(left.bindings) do claims[binding_id(binding)] = true end
+      for _, binding in ipairs(left.bindings) do
+        claims[binding_id(binding)] = true
+      end
       for right_index = left_index + 1, #scope_keys do
         local right = value.scopes[scope_keys[right_index]]
-        if not right.modal and left.parent == right.parent
-            and rectangles_overlap(left.rectangles, right.rectangles) then
+        if
+          not right.modal
+          and left.parent == right.parent
+          and rectangles_overlap(left.rectangles, right.rectangles)
+        then
           for _, binding in ipairs(right.bindings) do
-            applet_expect(not claims[binding_id(binding)], "tree",
-              ("sibling scopes %q and %q claim the same mapping"):format(
-                left.key, right.key))
+            applet_expect(
+              not claims[binding_id(binding)],
+              "tree",
+              ("sibling scopes %q and %q claim the same mapping"):format(left.key, right.key)
+            )
           end
         end
       end
@@ -3067,11 +3272,12 @@ local function validate_layout(value, extent, height)
   end
   if extent == "viewport" then
     applet_expect(height ~= nil, "layout.height", "is required for viewport extent")
-    applet_expect(presentation_rows(value) <= height, "tree.root",
-      "viewport content exceeds its height")
+    applet_expect(presentation_rows(value) <= height, "tree.root", "viewport content exceeds its height")
   end
   value.binding_pairs = {}
-  for _, pair in pairs(pairs_union) do value.binding_pairs[#value.binding_pairs + 1] = pair end
+  for _, pair in pairs(pairs_union) do
+    value.binding_pairs[#value.binding_pairs + 1] = pair
+  end
   table.sort(value.binding_pairs, function(left, right)
     return left.mode == right.mode and left.lhs < right.lhs or left.mode < right.mode
   end)
@@ -3085,33 +3291,38 @@ local function compile_view(tree, targets)
   applet_expect(type(view) == "table", "tree.view", "must be a table")
   validate_plain(view, "tree.view", {})
   local scroll = view.scroll or "preserve"
-  applet_expect(scroll == "preserve" or scroll == "follow_end",
-    "tree.view.scroll", "must be preserve or follow_end")
+  applet_expect(scroll == "preserve" or scroll == "follow_end", "tree.view.scroll", "must be preserve or follow_end")
   if view.initial_target ~= nil then
-    applet_expect(util.nonempty_string(view.initial_target),
-      "tree.view.initial_target", "must be a non-empty string")
-    applet_expect(targets[view.initial_target] ~= nil,
-      "tree.view.initial_target", "must name a target")
+    applet_expect(util.nonempty_string(view.initial_target), "tree.view.initial_target", "must be a non-empty string")
+    applet_expect(targets[view.initial_target] ~= nil, "tree.view.initial_target", "must name a target")
   end
   if view.target_intent ~= nil then
-    applet_expect(type(view.target_intent) == "table", "tree.view.target_intent",
-      "must be a table")
-    applet_expect(util.nonempty_string(view.target_intent.key),
-      "tree.view.target_intent.key", "must be a non-empty string")
+    applet_expect(type(view.target_intent) == "table", "tree.view.target_intent", "must be a table")
+    applet_expect(
+      util.nonempty_string(view.target_intent.key),
+      "tree.view.target_intent.key",
+      "must be a non-empty string"
+    )
     for field in pairs(view.target_intent) do
-      applet_expect(field == "key" or field == "select" or field == "reveal",
+      applet_expect(
+        field == "key" or field == "select" or field == "reveal",
         "tree.view.target_intent." .. tostring(field),
-        "is not a recognized field")
+        "is not a recognized field"
+      )
     end
-    applet_expect(util.nonempty_string(view.target_intent.select),
-      "tree.view.target_intent.select", "must be a non-empty string")
-    applet_expect(targets[view.target_intent.select] ~= nil,
-      "tree.view.target_intent.select", "must name a target")
+    applet_expect(
+      util.nonempty_string(view.target_intent.select),
+      "tree.view.target_intent.select",
+      "must be a non-empty string"
+    )
+    applet_expect(targets[view.target_intent.select] ~= nil, "tree.view.target_intent.select", "must name a target")
     if view.target_intent.reveal ~= nil then
-      applet_expect(util.nonempty_string(view.target_intent.reveal),
-        "tree.view.target_intent.reveal", "must be a non-empty string")
-      applet_expect(targets[view.target_intent.reveal] ~= nil,
-        "tree.view.target_intent.reveal", "must name a target")
+      applet_expect(
+        util.nonempty_string(view.target_intent.reveal),
+        "tree.view.target_intent.reveal",
+        "must be a non-empty string"
+      )
+      applet_expect(targets[view.target_intent.reveal] ~= nil, "tree.view.target_intent.reveal", "must name a target")
     end
   end
   local result = util.copy(view)
@@ -3122,20 +3333,23 @@ end
 ---@param tree Applet.Tree
 ---@return Applet.EditOptions?
 local function compile_edit(tree)
-  if tree.edit == nil then return nil end
+  if tree.edit == nil then
+    return nil
+  end
   applet_expect(type(tree.edit) == "table", "tree.edit", "must be a table")
   validate_plain(tree.edit, "tree.edit", {})
   for key in pairs(tree.edit) do
-    applet_expect(key == "on_change" or key == "mask", "tree.edit." .. tostring(key),
-      "is not a recognized field")
+    applet_expect(key == "on_change" or key == "mask", "tree.edit." .. tostring(key), "is not a recognized field")
   end
   if tree.edit.on_change ~= nil then
     validate_action(tree.edit.on_change, "tree.edit.on_change")
   end
   if tree.edit.mask ~= nil then
-    applet_expect(type(tree.edit.mask) == "string"
-        and util.display_width(tree.edit.mask) == 1,
-      "tree.edit.mask", "must be one display cell")
+    applet_expect(
+      type(tree.edit.mask) == "string" and util.display_width(tree.edit.mask) == 1,
+      "tree.edit.mask",
+      "must be one display cell"
+    )
   end
   return util.copy(tree.edit)
 end
@@ -3145,7 +3359,9 @@ end
 local function scene_scope_keys(scene)
   local result = {}
   for _, layer in ipairs(scene.layers) do
-    for key in pairs(layer.fragment.scopes) do result[key] = true end
+    for key in pairs(layer.fragment.scopes) do
+      result[key] = true
+    end
   end
   return result
 end
@@ -3157,14 +3373,25 @@ local function replace_scene_projection(layout, scene)
   local projected = project_retained_scene(scene, layout)
   local dynamic_scopes = scene_scope_keys(scene)
   for key, scope in pairs(layout.scopes) do
-    if not dynamic_scopes[key] then projected.scopes[key] = scope end
+    if not dynamic_scopes[key] then
+      projected.scopes[key] = scope
+    end
   end
 
   local result = util.copy(layout)
   for _, field in ipairs({
-    "lines", "coverage", "cell_map", "decorations", "targets",
-    "target_order", "hit_order", "scopes", "images", "source_ranges",
-    "virtuals", "scene",
+    "lines",
+    "coverage",
+    "cell_map",
+    "decorations",
+    "targets",
+    "target_order",
+    "hit_order",
+    "scopes",
+    "images",
+    "source_ranges",
+    "virtuals",
+    "scene",
   }) do
     result[field] = projected[field]
   end
@@ -3174,8 +3401,14 @@ local function replace_scene_projection(layout, scene)
     replacement.first = index == 1 and 0 or region.first
     replacement.last = replacement.first + #projected.lines
     for _, field in ipairs({
-      "lines", "coverage", "decorations", "targets", "scopes", "images",
-      "source_ranges", "virtuals",
+      "lines",
+      "coverage",
+      "decorations",
+      "targets",
+      "scopes",
+      "images",
+      "source_ranges",
+      "virtuals",
     }) do
       replacement[field] = projected[field]
     end
@@ -3188,14 +3421,19 @@ end
 ---@return Applet.PaneLayout
 function M.project_scene(opts)
   opts = opts or {}
-  applet_expect(type(opts) == "table", "project_scene",
-    "options must be a table")
+  applet_expect(type(opts) == "table", "project_scene", "options must be a table")
   local layout = opts.layout
-  applet_expect(type(layout) == "table" and type(layout.scene) == "table",
-    "project_scene.layout", "must be a retained container Layout")
+  applet_expect(
+    type(layout) == "table" and type(layout.scene) == "table",
+    "project_scene.layout",
+    "must be a retained container Layout"
+  )
   local scene = opts.scene
-  applet_expect(type(scene) == "table" and scene.retained == true,
-    "project_scene.scene", "must be retained placement state")
+  applet_expect(
+    type(scene) == "table" and scene.retained == true,
+    "project_scene.scene",
+    "must be retained placement state"
+  )
   return replace_scene_projection(layout, scene)
 end
 
@@ -3207,7 +3445,9 @@ function M.reuse(opts)
   local previous = opts.previous
   applet_expect(type(previous) == "table", "reuse.previous", "must be a Layout")
   local tree = opts.tree
-  if tree and tree.type then tree = { root = tree } end
+  if tree and tree.type then
+    tree = { root = tree }
+  end
   applet_expect(type(tree) == "table", "tree", "must be a table")
   ---@cast tree Applet.Tree
   applet_expect(type(tree.root) == "table", "tree.root", "must be a node")
@@ -3229,15 +3469,18 @@ function M.compile(opts)
   applet_expect(type(opts) == "table", "compile", "options must be a table")
   local width = integer(opts.width, "layout.width", 1)
   local extent = opts.extent or "document"
-  applet_expect(extent == "document" or extent == "viewport",
-    "layout.extent", "must be document or viewport")
+  applet_expect(extent == "document" or extent == "viewport", "layout.extent", "must be document or viewport")
   local height = opts.height
-  if height ~= nil then integer(height, "layout.height", 1) end
+  if height ~= nil then
+    integer(height, "layout.height", 1)
+  end
   if extent == "viewport" then
     applet_expect(height ~= nil, "layout.height", "is required for viewport extent")
   end
   local tree = opts.tree
-  if tree and tree.type then tree = { root = tree } end
+  if tree and tree.type then
+    tree = { root = tree }
+  end
   applet_expect(type(tree) == "table", "tree", "must be a table")
   ---@cast tree Applet.Tree
   validate_plain(tree, "tree", {}, true)
@@ -3249,7 +3492,9 @@ function M.compile(opts)
     resources = {},
   }
   local presented = supplied_images.presented
-  if presented == nil then presented = {} end
+  if presented == nil then
+    presented = {}
+  end
   ---@type Applet.ResolvedCompileImages
   local images = {
     status = supplied_images.status,
@@ -3259,16 +3504,19 @@ function M.compile(opts)
     resources = supplied_images.resources,
     presented = presented,
   }
-  applet_expect(type(images.presented) == "table",
-    "images.presented", "must be a table")
-  applet_expect(type(images.cell_width) == "number" and images.cell_width > 0,
-    "images.cell_width", "must be positive")
-  applet_expect(type(images.cell_height) == "number" and images.cell_height > 0,
-    "images.cell_height", "must be positive")
+  applet_expect(type(images.presented) == "table", "images.presented", "must be a table")
+  applet_expect(type(images.cell_width) == "number" and images.cell_width > 0, "images.cell_width", "must be positive")
+  applet_expect(
+    type(images.cell_height) == "number" and images.cell_height > 0,
+    "images.cell_height",
+    "must be positive"
+  )
   local stats = opts.stats
-  applet_expect(opts.retain_scene == nil
-      or type(opts.retain_scene) == "boolean",
-    "compile.retain_scene", "must be a boolean")
+  applet_expect(
+    opts.retain_scene == nil or type(opts.retain_scene) == "boolean",
+    "compile.retain_scene",
+    "must be a boolean"
+  )
   local cache = opts.cache
   if cache then
     applet_expect(type(cache) == "table", "compile.cache", "must be a table")
@@ -3317,8 +3565,7 @@ function M.compile(opts)
       if region.revision ~= nil then
         local kind = type(region.revision)
         if kind ~= "string" and kind ~= "number" then
-          fail(("tree.root.regions[%d].revision"):format(index),
-            "must be a string or number")
+          fail(("tree.root.regions[%d].revision"):format(index), "must be a string or number")
         end
       else
         all_revised = false
@@ -3326,7 +3573,9 @@ function M.compile(opts)
     end
 
     local previous = opts.previous
-    local can_retain = all_revised and extent == "document" and cache
+    local can_retain = all_revised
+      and extent == "document"
+      and cache
       and type(previous) == "table"
       and type(previous.region_document) == "table"
       and util.equal(previous.region_document.shape, document_shape)
@@ -3340,13 +3589,15 @@ function M.compile(opts)
       local dependencies, dependencies_keys
       ---@type Applet.RegionConstraints?, boolean?
       local constraints, reusable
-      if cached and cached.revision == region.revision
-          and cached.dependency_keys then
+      if cached and cached.revision == region.revision and cached.dependency_keys then
         dependencies_keys = cached.dependency_keys
-        if not next(dependencies_keys) and cached.constraints
-            and cached.constraints.images == false
-            and same_region_base(cached.constraints, ctx)
-            and cached.fragment ~= nil then
+        if
+          not next(dependencies_keys)
+          and cached.constraints
+          and cached.constraints.images == false
+          and same_region_base(cached.constraints, ctx)
+          and cached.fragment ~= nil
+        then
           constraints = cached.constraints
           reusable = true
         else
@@ -3359,14 +3610,14 @@ function M.compile(opts)
       end
       if not constraints then
         constraints = region_constraints(ctx, (assert(dependencies)))
-        reusable = region.revision ~= nil and cached
+        reusable = region.revision ~= nil
+          and cached
           and cached.revision == region.revision
           and same_constraints(cached.constraints, constraints)
           and cached.fragment ~= nil
       end
       local prior = retaining and assert(previous).regions[index] or nil
-      if prior and prior.key == region.key
-          and prior.revision == region.revision and reusable then
+      if prior and prior.key == region.key and prior.revision == region.revision and reusable then
         stable_prefix = index
       else
         retaining = false
@@ -3380,13 +3631,14 @@ function M.compile(opts)
       end
     end
 
-    if can_retain and stable_prefix == #explicit
-        and #assert(previous).regions == #explicit then
+    if can_retain and stable_prefix == #explicit and #assert(previous).regions == #explicit then
       assert(cache)
       assert(previous)
       count_document_reuse(stats)
       for key in pairs(cache.regions) do
-        if not active_cache[key] then cache.regions[key] = nil end
+        if not active_cache[key] then
+          cache.regions[key] = nil
+        end
       end
       value = util.copy(previous)
       value.chrome = compile_chrome(tree.chrome, theme)
@@ -3404,7 +3656,9 @@ function M.compile(opts)
     if can_retain and stable_prefix > 0 then
       value = retained_prefix(assert(previous), stable_prefix)
       count_document_reuse(stats)
-      for image_key in pairs(value.images) do ctx.image_keys[image_key] = true end
+      for image_key in pairs(value.images) do
+        ctx.image_keys[image_key] = true
+      end
     end
 
     for index = stable_prefix + 1, #explicit do
@@ -3419,22 +3673,24 @@ function M.compile(opts)
         cache_entry = assert(descriptor.cached)
         child = cache_entry.fragment
         for image_key in pairs(cache_entry.image_keys) do
-          applet_expect(not ctx.image_keys[image_key], path,
-            ("duplicate image key %q"):format(image_key))
+          applet_expect(not ctx.image_keys[image_key], path, ("duplicate image key %q"):format(image_key))
           ctx.image_keys[image_key] = true
         end
-        if stats then stats.region_reuses = stats.region_reuses + 1 end
+        if stats then
+          stats.region_reuses = stats.region_reuses + 1
+        end
       else
         validate_plain(region.child, path .. ".child", {})
         local region_ctx = util.copy(ctx)
         region_ctx.image_keys = {}
         child = compile_node(region.child, region_ctx, path .. ".child")
         for image_key in pairs(region_ctx.image_keys) do
-          applet_expect(not ctx.image_keys[image_key], path,
-            ("duplicate image key %q"):format(image_key))
+          applet_expect(not ctx.image_keys[image_key], path, ("duplicate image key %q"):format(image_key))
           ctx.image_keys[image_key] = true
         end
-        if stats then stats.region_compilations = stats.region_compilations + 1 end
+        if stats then
+          stats.region_compilations = stats.region_compilations + 1
+        end
         if region.revision ~= nil and cache then
           cache_entry = {
             revision = region.revision,
@@ -3467,16 +3723,22 @@ function M.compile(opts)
     end
     if cache then
       for key in pairs(cache.regions) do
-        if not active_cache[key] then cache.regions[key] = nil end
+        if not active_cache[key] then
+          cache.regions[key] = nil
+        end
       end
     end
     add_root_scopes(value, wrappers)
-    value.region_document = all_revised and {
-      shape = document_shape,
-      changed_first = stable_prefix + 1,
-    } or nil
+    value.region_document = all_revised
+        and {
+          shape = document_shape,
+          changed_first = stable_prefix + 1,
+        }
+      or nil
   else
-    if stats then stats.region_compilations = stats.region_compilations + 1 end
+    if stats then
+      stats.region_compilations = stats.region_compilations + 1
+    end
     local child = compile_node(tree.root, ctx, "tree.root")
     value = child
     value.regions = {}
@@ -3499,7 +3761,9 @@ function M.compile(opts)
   end
   if cache then
     for key in pairs(cache.layers) do
-      if not ctx.active_layer_cache[key] then cache.layers[key] = nil end
+      if not ctx.active_layer_cache[key] then
+        cache.layers[key] = nil
+      end
     end
   end
   if extent == "viewport" then

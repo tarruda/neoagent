@@ -1193,17 +1193,19 @@ describe("neoagent.ui", function()
 
   it("renders attachments, structured arguments, and unannounced tool events", function()
     local result = view({ position = "center" })
+    local attachments = require("tests.helpers.attachments").new()
+    result:set_files(attachments.files)
     result:set_messages({
       { role = "user", content = {
         { type = "text", text = "look" },
-        { type = "image", mimeType = "image/png", data = "AAAA" },
+        attachments.image("png"),
       } },
       { role = "assistant", content = {
         { type = "thinking", thinking = "inspect it" },
         { type = "toolCall", id = "history", name = "inspect", arguments = { "one", "two" } },
       } },
       { role = "toolResult", toolCallId = "history", toolName = "inspect", content = {
-        { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+        attachments.image("jpg", "image/jpeg"),
       } },
     })
     assert(result:open())
@@ -1301,7 +1303,7 @@ describe("neoagent.ui", function()
       {
         role = "compactionSummary",
         summary = "Earlier work",
-        tokensBefore = 100, timestamp = 1,
+        tokens_before = 100, created_at = 1,
       },
       { role = "assistant", content = {
         { type = "thinking", thinking = "I will inspect the files." },
@@ -3442,7 +3444,7 @@ describe("neoagent.ui", function()
     result:set_messages({ {
       role = "compactionSummary",
       summary = table.concat(summary, "\n"),
-      tokensBefore = 12345, timestamp = 1,
+      tokens_before = 12345, created_at = 1,
     }, {
       role = "assistant",
       content = { { type = "text", text = "retained suffix" } },

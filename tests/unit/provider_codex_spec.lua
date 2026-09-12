@@ -152,6 +152,12 @@ describe("neoagent Codex provider service", function()
 
     assert(service.destroy)(service)
     assert.are.same({}, service:state().blocks)
+    assert(service.on_event)(service, {
+      type = "usage",
+      usage = { inputTokens = 1 },
+    })
+    assert.are.same({}, service:state().blocks)
+    assert(service.destroy)(service)
   end)
 
   it("publishes a secondary quota before any primary window arrives", function()
@@ -199,9 +205,42 @@ describe("neoagent Codex provider service", function()
 
   it("ignores events without usable status or usage", function()
     local service = codex.new()
+    assert(service.on_event)(service, "invalid")
     assert(service.on_event)(service, { type = "usage" })
+    assert(service.on_event)(service, { type = "usage", usage = {} })
     assert(service.on_event)(service, { type = "provider_status" })
+    assert(service.on_event)(service, { type = "provider_status", details = {
+      limits = {
+        42,
+        { id = "", primary = { remaining = 1 } },
+        { id = "empty", primary = {} },
+      },
+    } })
     assert.are.same({}, service:state().blocks)
+  end)
+
+  it("bounds streamed quota inventories and marks exhausted windows", function()
+    local limits = {}
+    for index = 1, 26 do
+      limits[index] = {
+        id = "limit-" .. index,
+        name = "Limit " .. index,
+        primary = { remaining = index == 1 and 0 or 1 },
+      }
+    end
+    local service = codex.new()
+
+    assert(service.on_event)(service, {
+      type = "provider_status",
+      details = { limits = limits },
+    })
+
+    local snapshot = service:state()
+    assert(snapshot)
+    assert.are.equal(25, #snapshot.blocks)
+    assert.are.equal("error",
+      assert(block(snapshot, "limit", "Limit 1 usage limit")).level)
+    assert.is_nil(block(snapshot, "limit", "Limit 26 usage limit"))
   end)
 
   it("ignores provider status that exceeds dashboard bounds", function()
@@ -220,7 +259,9 @@ describe("neoagent Codex provider service", function()
 
   it("keeps startup, unavailable, and API-key states explicit", function()
     local transport = fake_transport.new()
-    transport.fetches = { { body = "{}" } }
+    transport.fetches = { { body = vim.json.encode({
+      rate_limit = vim.empty_dict(),
+    }) } }
     local service = codex.new({ base_url = "https://example.test/backend-api" }, {
       transport = transport,
     })
@@ -229,6 +270,12 @@ describe("neoagent Codex provider service", function()
     assert.are.equal(0, #transport.fetch_requests)
     unsubscribe()
 
+    assert(service.on_event)(service, {
+      type = "provider_status",
+      text = "Temporary connection failure",
+    })
+    assert.matches("Temporary connection failure",
+      assert(block(service:state(), "status")).text)
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
     assert(snapshot)

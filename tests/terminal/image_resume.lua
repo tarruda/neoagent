@@ -79,6 +79,14 @@ assert(session:append(assistant({
     arguments = { path = source_path },
   },
 }, "toolUse")))
+local publication = require("neoagent.async").run(function()
+  local file, err = session:files().put(read_file(source_path))
+  if not file then error(err, 0) end
+  return { ok = true, file = file }
+end)
+assert(vim.wait(10000, function() return publication:is_done() end, 1))
+local published = assert(publication:result())
+if published.ok == false then error(vim.inspect(published.error), 0) end
 assert(session:append({
   role = "toolResult",
   toolCallId = "read-image",
@@ -89,8 +97,9 @@ assert(session:append({
     { type = "text", text = "Read image file [image/png]" },
     {
       type = "image",
-      mimeType = "image/png",
-      data = vim.base64.encode(read_file(source_path)),
+      mime_type = "image/png",
+      file_id = published.file.file_id,
+      bytes = published.file.bytes,
     },
   },
 }))

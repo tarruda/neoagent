@@ -293,6 +293,9 @@ describe("neoagent Applet Presenter", function()
         vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
     end))
     assert.is_nil(pane:focused_target())
+    local filter = assert(assert(view.presentation_component).filter)
+    assert.is_false(require("applet.pane.input").dispatch(filter, "i", "<C-j>"))
+    assert.is_false(require("applet.pane.input").dispatch(filter, "i", "<CR>"))
     assert.is_false(require("applet.pane.input").dispatch_action(
       (assert(assert(view.presentation_component).results)),
       Applet.Pane.nodes.action("presentation.choose_item", { id = "alpha-one" }),
@@ -535,8 +538,11 @@ describe("neoagent Applet Presenter", function()
     end)
     assert.is_nil((table.concat(vim.api.nvim_buf_get_lines(
       (assert(ordinary.buffer)), 0, -1, false), "\n"):find("s3cr3t", 1, true)))
-    assert(presenter:cancel(assert(presenter:snapshot().active).id))
+    assert.is_true(require("applet.pane.input").dispatch(
+      assert(assert(view).presentation_component).pane, "i", "<C-c>"))
     assert(vim.wait(1000, function() return queued:is_done() end))
+    assert.are.equal("cancelled", assert(assert(queued:result()).error).kind)
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(ordinary.buffer))))
   end)
 
   it("fails a semantic request when a custom View cannot present it", function()
@@ -548,10 +554,23 @@ describe("neoagent Applet Presenter", function()
       close = function() end,
       is_open = function() return true end,
       destroy = function(self) self.destroyed = true end,
+      pane = function() return nil end,
+      notify = function() return true end,
+      open_uri = function() return true end,
       get_input = function() return "" end,
       set_input = function() end,
+      focus_input = function() return false end,
+      focus_transcript = function() return false end,
+      submission_accepted = function() return true end,
       set_messages = function() end,
+      set_files = function() end,
       set_context = function() end,
+      set_dialog = function() return true end,
+      set_presentation = function()
+        return nil, require("neoagent.util").error("ui", "presentation rejected")
+      end,
+      set_position = function() return true end,
+      set_renderer = function(_, renderer) return renderer end,
       apply = function() end,
       finish = function() end,
     }
@@ -567,7 +586,7 @@ describe("neoagent Applet Presenter", function()
 
     assert(vim.wait(1000, function() return pending:is_done() end, 5))
     assert.is_false(assert(pending:result()).ok)
-    assert.matches("does not support semantic presentations",
+    assert.matches("presentation rejected",
       assert(assert(pending:result()).error).message)
     assert.is_nil(agent:presenter():snapshot().active)
     assert.are.equal("idle", agent:activity().state)

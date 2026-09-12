@@ -30,12 +30,13 @@ local M = {}
 ---@field text string
 ---@field usage? Neoagent.Usage
 
-
-M.system_prompt = [[You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+M.system_prompt =
+  [[You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.]]
 
-local summary_prompt = [[The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+local summary_prompt =
+  [[The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
 
@@ -68,7 +69,8 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.]]
 
-local update_summary_prompt = [[The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+local update_summary_prompt =
+  [[The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
@@ -80,7 +82,8 @@ Update the existing structured summary with new information. RULES:
 
 Use the same structured format as the existing summary. Keep each section concise.]]
 
-local turn_prefix_prompt = [[This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+local turn_prefix_prompt =
+  [[This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
 Summarize the prefix to provide context for the retained suffix:
 
@@ -98,10 +101,14 @@ Be concise. Focus on what's needed to understand the kept suffix.]]
 ---@param content? string|(Neoagent.InputBlock|Neoagent.AssistantBlock)[]
 ---@return string
 local function content_text(content)
-  if type(content) == "string" then return content end
+  if type(content) == "string" then
+    return content
+  end
   local parts = {}
   for _, block in ipairs(content or {}) do
-    if block.type == "text" then parts[#parts + 1] = block.text or "" end
+    if block.type == "text" then
+      parts[#parts + 1] = block.text or ""
+    end
   end
   return table.concat(parts)
 end
@@ -110,7 +117,9 @@ end
 ---@param maximum integer
 ---@return string
 local function truncate(text, maximum)
-  if vim.fn.strchars(text) <= maximum then return text end
+  if vim.fn.strchars(text) <= maximum then
+    return text
+  end
   local omitted = vim.fn.strchars(text) - maximum
   return vim.fn.strcharpart(text, 0, maximum) .. "\n\n[... " .. omitted .. " more characters truncated]"
 end
@@ -122,7 +131,9 @@ function M.serialize(messages)
   for _, message in ipairs(tree.to_llm(messages)) do
     if message.role == "user" then
       local text = content_text(message.content)
-      if text ~= "" then parts[#parts + 1] = "[User]: " .. text end
+      if text ~= "" then
+        parts[#parts + 1] = "[User]: " .. text
+      end
     elseif message.role == "assistant" then
       local thinking, calls, text = {}, {}, {}
       for _, block in ipairs(message.content or {}) do
@@ -140,12 +151,20 @@ function M.serialize(messages)
           calls[#calls + 1] = tostring(block.name) .. "(" .. table.concat(fields, ", ") .. ")"
         end
       end
-      if #thinking > 0 then parts[#parts + 1] = "[Assistant thinking]: " .. table.concat(thinking, "\n") end
-      if #text > 0 then parts[#parts + 1] = "[Assistant]: " .. table.concat(text) end
-      if #calls > 0 then parts[#parts + 1] = "[Assistant tool calls]: " .. table.concat(calls, "; ") end
+      if #thinking > 0 then
+        parts[#parts + 1] = "[Assistant thinking]: " .. table.concat(thinking, "\n")
+      end
+      if #text > 0 then
+        parts[#parts + 1] = "[Assistant]: " .. table.concat(text)
+      end
+      if #calls > 0 then
+        parts[#parts + 1] = "[Assistant tool calls]: " .. table.concat(calls, "; ")
+      end
     elseif message.role == "toolResult" then
       local text = content_text(message.content)
-      if text ~= "" then parts[#parts + 1] = "[Tool result]: " .. truncate(text, 2000) end
+      if text ~= "" then
+        parts[#parts + 1] = "[Tool result]: " .. truncate(text, 2000)
+      end
     end
   end
   return table.concat(parts, "\n\n")
@@ -155,12 +174,21 @@ end
 ---@param second? Neoagent.Usage
 ---@return Neoagent.Usage?
 local function add_usage(first, second)
-  if not first then return util.copy(second) end
-  if not second then return util.copy(first) end
+  if not first then
+    return util.copy(second)
+  end
+  if not second then
+    return util.copy(first)
+  end
   ---@type Neoagent.Usage
   local result = {}
   for _, key in ipairs({
-    "input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens",
+    "input",
+    "output",
+    "cacheRead",
+    "cacheWrite",
+    "reasoning",
+    "totalTokens",
   }) do
     result[key] = (first[key] or 0) + (second[key] or 0)
   end
@@ -184,7 +212,9 @@ local function prompt(messages, previous_summary, instructions, suffix)
     text = text .. "<previous-summary>\n" .. previous_summary .. "\n</previous-summary>\n\n"
   end
   text = text .. suffix
-  if instructions and util.trim(instructions) ~= "" then text = text .. "\n\nAdditional focus: " .. instructions end
+  if instructions and util.trim(instructions) ~= "" then
+    text = text .. "\n\nAdditional focus: " .. instructions
+  end
   return text
 end
 
@@ -203,11 +233,13 @@ end
 local function summarize(run, opts, messages, previous, instructions, suffix, phase, system_prompt)
   local model_options = util.copy(opts.model_options or {})
   ---@cast model_options Neoagent.StreamOptions
-  model_options.messages = { {
-    role = "user",
-    content = { { type = "text", text = prompt(messages, previous, instructions, suffix) } },
-    timestamp = util.now_ms(),
-  } }
+  model_options.messages = {
+    {
+      role = "user",
+      content = { { type = "text", text = prompt(messages, previous, instructions, suffix) } },
+      timestamp = util.now_ms(),
+    },
+  }
   model_options.system_prompt = system_prompt or M.system_prompt
   model_options.tools = {}
   ---@param event Neoagent.ModelEvent
@@ -224,10 +256,14 @@ local function summarize(run, opts, messages, previous, instructions, suffix, ph
     end
   end
   local result = opts.model:stream(model_options):await()
-  if not result.ok then return nil, util.normalize_error(result.error, "compaction") end
+  if not result.ok then
+    return nil, util.normalize_error(result.error, "compaction")
+  end
   local text = result.text or (result.message and content_text(result.message.content)) or ""
   text = util.trim(text)
-  if text == "" then return nil, util.error("compaction", "Summarization returned no text") end
+  if text == "" then
+    return nil, util.error("compaction", "Summarization returned no text")
+  end
   return { text = text, usage = result.message and result.message.usage }
 end
 
@@ -237,49 +273,70 @@ end
 function M.run(opts, system_prompt)
   assert(type(opts) == "table" and type(opts.preparation) == "table", "preparation is required")
   assert(type(opts.model) == "table" and type(opts.model.stream) == "function", "model is required")
-  assert(opts.report == nil or type(opts.report) == "function",
-    "report must be a function")
+  assert(opts.report == nil or type(opts.report) == "function", "report must be a function")
   return async.run(
-  ---@param run Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
-  ---@return Neoagent.CompactionSuccess|Neoagent.AsyncFailure
-  function(run)
-    local preparation = opts.preparation
-    local summary
-    local usage
-    if preparation.split_turn and #preparation.turn_prefix > 0 then
-      local history = preparation.previous_summary or "No prior history."
-      if #preparation.messages > 0 then
-        local generated, err = summarize(run, opts, preparation.messages, preparation.previous_summary,
-          opts.instructions, preparation.previous_summary and update_summary_prompt or summary_prompt, "history",
-          system_prompt)
-        if not generated then return { ok = false, error = err } end
-        history, usage = generated.text, generated.usage
+    ---@param run Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+    ---@return Neoagent.CompactionSuccess|Neoagent.AsyncFailure
+    function(run)
+      local preparation = opts.preparation
+      local summary
+      local usage
+      if preparation.split_turn and #preparation.turn_prefix > 0 then
+        local history = preparation.previous_summary or "No prior history."
+        if #preparation.messages > 0 then
+          local generated, err = summarize(
+            run,
+            opts,
+            preparation.messages,
+            preparation.previous_summary,
+            opts.instructions,
+            preparation.previous_summary and update_summary_prompt or summary_prompt,
+            "history",
+            system_prompt
+          )
+          if not generated then
+            return { ok = false, error = err }
+          end
+          history, usage = generated.text, generated.usage
+        end
+        local prefix, err =
+          summarize(run, opts, preparation.turn_prefix, nil, nil, turn_prefix_prompt, "turn_prefix", system_prompt)
+        if not prefix then
+          return { ok = false, error = err }
+        end
+        summary = history .. "\n\n---\n\n**Turn Context (split turn):**\n\n" .. prefix.text
+        usage = add_usage(usage, prefix.usage)
+      else
+        local generated, err = summarize(
+          run,
+          opts,
+          preparation.messages,
+          preparation.previous_summary,
+          opts.instructions,
+          preparation.previous_summary and update_summary_prompt or summary_prompt,
+          "history",
+          system_prompt
+        )
+        if not generated then
+          return { ok = false, error = err }
+        end
+        summary, usage = generated.text, generated.usage
       end
-      local prefix, err = summarize(run, opts, preparation.turn_prefix, nil, nil, turn_prefix_prompt,
-        "turn_prefix", system_prompt)
-      if not prefix then return { ok = false, error = err } end
-      summary = history .. "\n\n---\n\n**Turn Context (split turn):**\n\n" .. prefix.text
-      usage = add_usage(usage, prefix.usage)
-    else
-      local generated, err = summarize(run, opts, preparation.messages, preparation.previous_summary,
-        opts.instructions, preparation.previous_summary and update_summary_prompt or summary_prompt, "history",
-        system_prompt)
-      if not generated then return { ok = false, error = err } end
-      summary, usage = generated.text, generated.usage
-    end
-    return {
-      ok = true,
-      summary = summary,
-      first_kept_entry_id = preparation.first_kept_entry_id,
-      tokens_before = preparation.tokens_before,
-      usage = usage,
+      return {
+        ok = true,
+        summary = summary,
+        first_kept_entry_id = preparation.first_kept_entry_id,
+        tokens_before = preparation.tokens_before,
+        usage = usage,
+      }
+    end,
+    {
+      on_event = opts.on_event,
+      on_done = opts.on_done,
+      report = opts.report,
+      error_kind = "compaction",
     }
-  end, {
-    on_event = opts.on_event,
-    on_done = opts.on_done,
-    report = opts.report,
-    error_kind = "compaction",
-  })
+  )
 end
 
 return M

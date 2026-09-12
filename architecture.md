@@ -22,20 +22,24 @@ Neoagent Applet
 ## Core and execution
 
 The reusable core consists of `neoagent.async`, `neoagent.transport.*`,
-`neoagent.api.*`, `neoagent.semantic_message`, and `neoagent.agent_loop`.
+`neoagent.api.*`, `neoagent.semantic_message`, `neoagent.files`, and
+`neoagent.agent_loop`.
 These modules must not import configuration, Sessions, storage, Workspace,
 bundled tools, Agents, or UI.
 
 A Model supplies identity, input modalities, and `stream(opts)`. API adapters
-encode requests, decode provider streams, and recover meaningful partial
-output. They adapt images and provider-specific metadata in request copies;
-the original conversation remains unchanged.
+shape semantic requests before encoding, decode provider streams, and recover
+meaningful partial output. Images carry immutable local content IDs and metadata;
+image-bearing calls receive an explicit file reader. Text-only calls need no
+file dependency. Adapters resolve images and provider-specific metadata in
+request copies; the original conversation remains unchanged.
 
-The shared HTTP client supplies parsed response headers, status, and JSON
-values or decoded SSE events to API adapters, Authentication, catalogs, and
-Services. It owns JSON decoding and SSE framing; consumers own provider
-semantics. A byte transport beneath it owns network I/O, allowing the HTTP
-client to use curl or replayed responses without changing those consumers.
+The shared HTTP client supplies parsed response headers, status, JSON values,
+decoded SSE events, or explicitly requested response bytes to API adapters,
+Authentication, catalogs, Services, and file backends. It owns JSON decoding
+and SSE framing; consumers own provider semantics. A byte transport beneath it
+owns network I/O, allowing the HTTP client to use curl or replayed responses
+without changing those consumers.
 
 The Agent Loop receives its Model, messages, toolset, executor, context,
 steering source, and commit function explicitly. It validates the turn before
@@ -70,6 +74,8 @@ Drafts are keyed by Profile and canonical Workspace. They retain input and
 request choices until a message is accepted. Acceptance binds the new Agent;
 failure before acceptance leaves the draft available for retry. A resumed
 Agent restores request choices from its Session.
+Bundled Profile Applets own their Presenters, which the resulting Agents borrow.
+Destroying an Applet cancels its pending presentations.
 
 | Value | Owner | Lifetime |
 | --- | --- | --- |
@@ -116,9 +122,48 @@ private atomic storage and never enter provider state or diagnostics.
 
 Provider Service coordination is keyed by the shared Service value. Models,
 catalog requests, compaction, and non-mutating operations may share use.
-Mutating operations require exclusive use. Login and logout coordinate all
-Services using the affected Authentication method. Retired Services are
-destroyed after leases and operations finish.
+Request-scoped file creation and preparation also use shared leases; their
+content-key coordination belongs to the provider runtime. Credential changes
+and mutating management operations require exclusive use. Login and logout
+coordinate all Services using the affected Authentication method. Retired
+Services are destroyed after leases and operations finish.
+
+Capable provider runtimes own upload protocols and request preparation. Each
+workspace supplies its file reader and optional mapping cache explicitly.
+Provider configuration can disable uploads; encoding then reads local bytes
+inline and ignores cached remote IDs. Final semantic request shaping and
+modality adaptation precede attachment preparation. Protocol message containers
+belong to encoders; request shaping can replace semantic messages separately
+from endpoint, headers, and protocol options.
+
+In-memory mappings and shared producers are scoped by workspace storage
+identity. Mapping compatibility includes the backend, authorization namespace,
+MIME type, and purpose; compatible Models share mappings. Shared producers also
+require the same credential snapshot. Validation freshness belongs to that
+snapshot and advances only after a remote check. File operations receive
+local file references and copied access values without Agent state. Local
+metadata checks do not materialize image bodies. Bytes are read and verified
+only for upload, inline encoding, or local rendering.
+
+Each file-capable Model call holds a Service lease from credential resolution
+through completion, including direct Model use. Shared inspection and upload
+producers hold independent leases and bounded preparation budgets. Cancelling
+a waiter detaches it; the last waiter cancels the producer. Retirement blocks
+new preparation and prevents stale producers from publishing.
+
+The workspace-local provider cache stores opaque remote IDs, processing state,
+and tagged object lifetimes under content and authorization hashes. It excludes
+credentials, signed access URLs, and image bodies. Backends with a reliable
+stale-reference rejection contract reuse ready objects optimistically, including
+after restart. Other backends inspect availability before reuse. Known expiry
+is checked before dispatch. An explicit input rejection can repair confirmed
+stale generations and resubmit the frozen request once, before any streamed
+output. Repair does not rerun tools, commits, or request shaping. Upload and
+local-read failures end preparation without an inline fallback.
+
+Cache publication uses generation comparison; uncertain persistence blocks
+further cache mutations while valid in-memory results remain usable. Closing
+an Agent or invalidating a mapping does not delete local or remote files.
 
 The Provider Shell presents authentication, catalogs, Service state, and
 operations independently of Agent selection. Provider diagnostics exclude
@@ -153,10 +198,28 @@ It works in memory or with an injected store. The tree retains branches,
 derivations, request selections, and compaction entries. Model context is a
 projection of that path.
 
-The bundled store is append-only JSONL. Session documents are authoritative;
-Workspace indexes are rebuildable discovery data. Derivations publish their
-document before Agent activation, allowing recovery when activation fails.
-No file is created for an empty Session.
+The bundled store uses Neoagent's append-only JSONL format. Each workspace
+storage root has an exact format marker, Session documents, immutable blobs
+indexed by SHA-256, a rebuildable Session index, and provider mappings. The
+workspace storage composition owns this layout and its validation. Unsupported
+workspace and Session formats are rejected without migration or recovery writes.
+A Session document depends on its workspace's sibling blob storage; backing up
+the complete workspace preserves its authoritative data.
+
+File-producing tools store snapshots through the bound file writer before
+returning semantic references. Session commits validate blob existence and size;
+opening a Session validates journal structure without loading image bytes.
+In-memory Sessions use the same reference shape with an in-memory file store.
+The original source pathname is never a recovery source for an attachment.
+
+Same-workspace derivations share blobs and provider mappings. Cross-workspace
+derivations import every attachment in the retained tree before publishing the
+new document and keep provider mappings independent. The top-level Applet owns
+cancellable derivation Runs and publishes Agents only after durable Session
+publication. Provenance refers to a source Session ID, not a pathname.
+No Session document is created for an empty, unaccepted Session. Unreferenced
+published blobs and unused mappings remain until workspace storage is removed;
+there is no garbage collector.
 
 Persistence uses private files, verified atomic publication, and cross-process
 locks. Uncertain write outcomes make the affected Store reject later
@@ -190,9 +253,14 @@ native handles; components own semantic state.
 Semantic presentation can use a fallback host without a View. Sensitive input
 uses transient mounts whose buffers are cleared and disposed on unmount.
 
-A View's ImageSystem owns prepared PNG resources and replaces each Pane's
-complete visible placement set through a backend. Backend failure clears
-placements and leaves text fallbacks.
+A View receives the Session's file reader separately from semantic messages.
+Renderers produce plain resource descriptors without reading attachment bytes.
+Panes request visible resources through the View's bound reader; resource
+identity includes workspace storage and content identity, while placement keys
+identify occurrences. A View's ImageSystem owns prepared PNG resources and
+replaces each Pane's complete visible placement set through a backend. Backend
+failure clears placements and leaves text fallbacks. The Applet package knows
+only resource descriptors and readers, not Session or workspace storage.
 
 ## HTTP recording
 
@@ -218,7 +286,8 @@ recycled descriptor. Close errors still prevent recording publication.
 Each exchange's sanitizer owns protocol credentials and Authentication's
 response sensitivity classification. It prepares masked protocol fields and
 sensitive bodies for the recorder, without owning transport or files. Model
-and ordinary provider bodies retain their content. Recordings use private
+and explicitly classified media-upload bodies retain their content, as do
+ordinary provider response bodies. Recordings use private
 storage; failures emit content-free diagnostics. Storage, formats, and sharing
 precautions are documented in
 `:help neoagent-recording`.

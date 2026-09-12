@@ -31,9 +31,13 @@ function M.discover_models(ctx)
   })
   return async.run(function()
     local result = selected:models({ resolve_auth = ctx.resolve_auth }):await()
-    if result.ok == false then error(result.error, 0) end
+    if result.ok == false then
+      error(result.error, 0)
+    end
     local models = {}
-    for _, id in ipairs(result.models) do models[#models + 1] = { id = id } end
+    for _, id in ipairs(result.models) do
+      models[#models + 1] = { id = id }
+    end
     return { ok = true, models = models }
   end, { error_kind = "provider" })
 end
@@ -45,14 +49,18 @@ local function grouped(value)
   while true do
     local next_value, count = digits:gsub("^(%d+)(%d%d%d)", "%1,%2")
     digits = next_value
-    if count == 0 then return digits end
+    if count == 0 then
+      return digits
+    end
   end
 end
 
 ---@param entry Neoagent.OpenAIOrganizationCost
 ---@return string
 local function currency(entry)
-  if entry.currency == "usd" then return string.format("$%.2f", entry.value) end
+  if entry.currency == "usd" then
+    return string.format("$%.2f", entry.value)
+  end
   return string.format("%.2f %s", entry.value, entry.currency:upper())
 end
 
@@ -74,14 +82,20 @@ function M.new(opts, resources)
   local function blocks()
     ---@type Neoagent.ProviderBlock[]
     local result = {}
-    if status then result[#result + 1] = util.copy(status) end
+    if status then
+      result[#result + 1] = util.copy(status)
+    end
     result[#result + 1] = {
-      type = "field", label = "Endpoint", value = base_url,
+      type = "field",
+      label = "Endpoint",
+      value = base_url,
     }
     if report then
       for _, cost in ipairs(report.costs) do
         result[#result + 1] = {
-          type = "field", label = "30-day cost", value = currency(cost),
+          type = "field",
+          label = "30-day cost",
+          value = currency(cost),
         }
       end
       result[#result + 1] = {
@@ -98,10 +112,11 @@ function M.new(opts, resources)
     return result
   end
 
-  local dashboard = provider_state.new(
-    { blocks = blocks() }, { report = resources.report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
   local function publish()
-    if not destroyed then assert(dashboard:push({ blocks = blocks() })) end
+    if not destroyed then
+      assert(dashboard:push({ blocks = blocks() }))
+    end
   end
   ---@class Neoagent.OpenAIService: Neoagent.ProviderService
   local service = {
@@ -110,8 +125,12 @@ function M.new(opts, resources)
     operations = {},
   }
 
-  function service:state() return dashboard:state() end
-  function service:subscribe(listener) return dashboard:subscribe(listener) end
+  function service:state()
+    return dashboard:state()
+  end
+  function service:subscribe(listener)
+    return dashboard:subscribe(listener)
+  end
 
   service.operations.refresh = {
     label = "Refresh organization data",
@@ -141,8 +160,7 @@ function M.new(opts, resources)
           end
           status = {
             type = "status",
-            text = "Organization refresh failed: " .. tostring(
-              err and err.message or "unknown error"),
+            text = "Organization refresh failed: " .. tostring(err and err.message or "unknown error"),
             level = "error",
           }
           publish()
@@ -157,7 +175,9 @@ function M.new(opts, resources)
   }
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     dashboard:destroy()
   end

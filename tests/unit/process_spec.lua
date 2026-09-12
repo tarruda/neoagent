@@ -46,6 +46,57 @@ describe("neoagent process runner", function()
     assert.are.equal("visible:unset", completed.stdout)
   end)
 
+  it("passes a list environment to legacy Neovim process spawning", function()
+    local tree_module = jit.os == "Windows"
+      and "neoagent.process.windows" or "neoagent.process.posix"
+    local original_tree = package.loaded[tree_module]
+    local original_process = package.loaded["neoagent.process"]
+    local original_system = vim.system
+    local original_has = vim.fn.has
+    ---@type table<string, string|number>|string[]|nil
+    local environment
+    local ok, completed = pcall(function()
+      package.loaded[tree_module] = {
+        detach = false,
+        new = function()
+          return {
+            attach = function() return true end,
+            close = function() end,
+          }
+        end,
+      }
+      package.loaded["neoagent.process"] = nil
+      vim.fn.has = function(feature)
+        if feature == "nvim-0.12" then return 0 end
+        return original_has(feature)
+      end
+      vim.system = function(_, options, on_exit)
+        if not options or not on_exit then
+          error("process options and completion callback are required")
+        end
+        environment = options.env
+        vim.schedule(function()
+          on_exit({ code = 0, signal = 0 })
+        end)
+        return { pid = 42, kill = function() end } --[[@as vim.SystemObj]]
+      end
+      return complete(function()
+        return require("neoagent.process").run({ "true" }, {
+          clear_env = true,
+          env = { SAFE = "visible" },
+        })
+      end)
+    end)
+    vim.system = original_system
+    vim.fn.has = original_has
+    package.loaded[tree_module] = original_tree
+    package.loaded["neoagent.process"] = original_process
+    assert(ok, completed)
+    assert.are.same({ "SAFE=visible" }, environment)
+    ---@cast completed Neoagent.ProcessResult
+    assert.are.equal(0, completed.code)
+  end)
+
   it("streams output without retaining it when capture is disabled", function()
     ---@type { data: string, is_stderr: boolean }[]
     local chunks = {}
@@ -82,6 +133,7 @@ describe("neoagent process runner", function()
     end)
     assert.is_false(completed.ok)
     assert.matches("exceeded 4 bytes", assert(completed.error).message)
+    assert.are.equal("output_limit", rawget(assert(completed.error), "code"))
   end)
 
   it("escalates timed-out TERM-resistant processes to KILL", function()
@@ -134,6 +186,21 @@ describe("neoagent process runner", function()
     assert.is_false(descendant_survived(marker))
   end)
 
+  it("closes a POSIX process tree only once", function()
+    local signals = {}
+    local tree = require("neoagent.process.posix").new({
+      kill = function(pid, signal)
+        signals[#signals + 1] = { pid, signal }
+        return 0
+      end,
+    })
+    assert(tree:attach(42))
+    tree:close(true)
+    tree:close(true)
+    assert.are.same({ { -42, 9 } }, signals)
+    assert.is_false(tree:terminate(15))
+  end)
+
   it("owns Windows process descendants through a kill-on-close job", function()
     ---@type string[]
     local calls = {}
@@ -152,8 +219,14 @@ describe("neoagent process runner", function()
       close = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) end,
     }
     local tree = assert(require("neoagent.process.windows").new({ backend = backend }))
+    assert.is_false(tree:terminate(15))
+    assert(tree:attach(0))
     assert(tree:attach(42))
     assert.is_true(tree:terminate(15))
+    tree:close(true)
+    local attached, attach_err = tree:attach(42)
+    assert.is_nil(attached)
+    assert.are.equal("process tree is closed", attach_err)
     tree:close(true)
     assert.are.same({
       "create", "open:42", "assign:job:process", "close:process",

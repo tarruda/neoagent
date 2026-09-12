@@ -154,7 +154,9 @@ function M.line(value, max_chars)
   max_chars = max_chars or M.GREP_LINE_LENGTH
   local index = 1
   for _ = 1, max_chars do
-    if index > #value then return value, false end
+    if index > #value then
+      return value, false
+    end
     local byte = value:byte(index)
     local width = byte >= 240 and byte <= 244 and 4
       or byte >= 224 and byte <= 239 and 3
@@ -169,7 +171,9 @@ function M.line(value, max_chars)
     end
     index = index + width
   end
-  if index > #value then return value, false end
+  if index > #value then
+    return value, false
+  end
   return value:sub(1, index - 1) .. "... [truncated]", true
 end
 

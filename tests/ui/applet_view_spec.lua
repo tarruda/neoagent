@@ -118,18 +118,17 @@ describe("neoagent Applet View composition", function()
   local views = {}
   ---@type (Neoagent.InputPane|Neoagent.DialogPane|Neoagent.ProviderPane|Neoagent.ProvidersPane)[]
   local components = {}
-  local base64_decode = vim.base64.decode
+  local attachments = require("tests.helpers.attachments").new()
 
   before_each(function()
     config._reset()
-    base64_decode = vim.base64.decode
+    attachments = require("tests.helpers.attachments").new()
     vim.o.columns = 120
     vim.o.lines = 40
     vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "x", false)
   end)
 
   after_each(function()
-    vim.base64.decode = base64_decode
     for _, view in ipairs(views) do view:destroy() end
     for _, component in ipairs(components) do component:destroy() end
     views = {}
@@ -153,6 +152,212 @@ describe("neoagent Applet View composition", function()
     views[#views + 1] = value
     return value
   end
+
+  it("keeps optional callbacks and repeated lifecycle transitions inert", function()
+    local value = view({ mappings = { help = false } })
+    assert.are.equal(0, value:_restore_steering())
+    assert.is_false(value.input:_browse_history(-1))
+    assert.is_false(value.input:_move_history(-1))
+    assert.is_false(value.input:_complete())
+    assert.is_false(value:show_card_details("missing"))
+    assert.is_false(value:_focus_dialog_menu())
+
+    value:set_files(attachments.files)
+    value:set_files(attachments.files)
+    assert(value:open())
+    assert.are.equal("", value.input.state.footer)
+    assert.is_true(applet_input.dispatch_action(value.transcript.pane,
+      Applet.Pane.nodes.action("neoagent.close"), nil, 1, "n", 0, 0))
+    assert.is_false(value:is_open())
+
+    value:destroy()
+    assert.is_false(value:_submit_frame())
+    value:close()
+    value:destroy()
+  end)
+
+  it("contains View opening, routing, and Renderer setup failures", function()
+    local uri
+    local resolved = config.setup({
+      ui = { style = "pi", position = "center" },
+    }).ui
+    local value = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      open_uri = function(candidate)
+        uri = candidate
+        return nil, "opening blocked"
+      end,
+    })
+    views[#views + 1] = value
+
+    local opened_uri, uri_error = value:open_uri("https://example.test/help")
+    assert.is_nil(opened_uri)
+    assert.are.equal("opening blocked", uri_error)
+    assert.are.equal("https://example.test/help", uri)
+
+    value.config.margin = 1000
+    local opened, open_error = value:open()
+    assert.is_nil(opened)
+    assert.is_table(open_error)
+    value.config.margin = resolved.margin
+    assert(value:open())
+
+    value:set_messages({
+      { role = "assistant", content = { { type = "text", text = "first" } } },
+      { role = "assistant", content = { { type = "text", text = "second" } } },
+    })
+    value.transcript.pane:flush()
+    local transcript = assert(value:pane("transcript"))
+    local focus, scroll = transcript.focus, transcript.scroll
+    transcript.focus = function() return false end
+    assert.is_false(value:_focus_previous_card())
+    transcript.focus = function() return true end
+    transcript.scroll = function() return false end
+    assert.is_false(value:_focus_previous_card())
+    transcript.focus, transcript.scroll = focus, scroll
+
+    assert(value:set_dialog({
+      active = {
+        id = "routing",
+        placement = "float",
+        title = "Routing",
+        body = "Choose",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_true(value:_focus_dialog_menu())
+    value:set_dialog(nil)
+
+    local block = assert(value.transcript.blocks[1])
+    assert(value:show_card_details(block.key))
+    local reveal = transcript.reveal_target
+    transcript.reveal_target = function() return false end
+    assert.is_false(value:_center_details())
+    transcript.reveal_target = reveal
+
+    local original = value.renderer
+    local invalid, invalid_error = value:set_renderer(false)
+    assert.is_nil(invalid)
+    assert.are.equal("ui", assert(invalid_error).kind)
+    assert.are.equal(original, value.renderer)
+
+    local theme = Applet.Theme.new()
+    theme.define = function() error("injected theme failure") end
+    local undefined, define_error = value:set_renderer({
+      name = "undefined",
+      theme = theme,
+      render_block = function() return Applet.Pane.nodes.text({ key = "block", text = "block" }) end,
+      render_details = function() return nil end,
+    })
+    assert.is_nil(undefined)
+    assert.matches("injected theme failure", assert(define_error).message)
+    assert.are.equal(original, value.renderer)
+  end)
+
+  it("rebuilds a damaged presentation when its Renderer changes", function()
+    local value = view()
+    assert(value:set_presentation({
+      active = {
+        id = "renderer-repair",
+        kind = "select",
+        prompt = "Repair presentation",
+        items = { { id = "one", label = "One" } },
+      },
+      queue_count = 0,
+    }))
+    local damaged = assert(value.presentation_component)
+    assert(damaged.filter):destroy()
+
+    assert.are.equal(renderers.codex, value:set_renderer(renderers.codex))
+    assert.is_true(damaged:is_destroyed())
+    assert.are_not.equal(damaged, value.presentation_component)
+    assert.is_false(assert(value.presentation_component):is_destroyed())
+    assert(value:open())
+  end)
+
+  it("falls back from optional details and contains Renderer failures", function()
+    local fallback = view({ mappings = {
+      card_previous = false,
+      card_next = false,
+      card_center = false,
+      card_raw = false,
+      close = false,
+    } })
+    local optional = {
+      name = "optional-details",
+      theme = renderers.pi.theme,
+      render_block = function(_, block)
+        return Applet.Pane.nodes.text({
+          key = "optional:" .. block.key,
+          text = block.text or block.kind,
+        })
+      end,
+      render_details = function() return nil end,
+    }
+    assert.are.equal(optional, fallback:set_renderer(optional))
+    fallback:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "fallback details" },
+    } } })
+    assert(fallback:open())
+    assert(fallback:show_card_details(assert(fallback.transcript.blocks[1]).key))
+    assert.matches("fallback details", assert(fallback.details):text(), 1, true)
+
+    ---@type (Applet.Error|Applet.PaneError)?
+    local failure
+    local resolved = config.setup({
+      ui = { style = "pi", position = "center" },
+    }).ui
+    local failing = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      on_error = function(err) failure = err end,
+    })
+    views[#views + 1] = failing
+    local broken = {
+      name = "broken-details",
+      theme = renderers.pi.theme,
+      render_block = optional.render_block,
+      render_details = function() error("injected details Renderer failure") end,
+    }
+    assert.are.equal(broken, failing:set_renderer(broken))
+    failing:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "unrenderable details" },
+    } } })
+    assert(failing:open())
+    assert(failing:show_card_details(
+      assert(failing.transcript.blocks[1]).key))
+    assert.matches("injected details Renderer failure",
+      assert(failure).message, 1, true)
+
+    ---@type (Applet.Error|Applet.PaneError)?
+    local transcript_failure
+    local failing_transcript = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      on_error = function(err) transcript_failure = err end,
+    })
+    views[#views + 1] = failing_transcript
+    local broken_transcript = {
+      name = "broken-transcript",
+      theme = renderers.pi.theme,
+      render_block = function() error("injected transcript Renderer failure") end,
+      render_details = optional.render_details,
+    }
+    failing_transcript:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "unrenderable transcript" },
+    } } })
+    assert(failing_transcript:open())
+    assert.are.equal(broken_transcript,
+      failing_transcript:set_renderer(broken_transcript))
+    local rendered, render_error = failing_transcript.transcript.pane:flush()
+    assert.is_nil(rendered)
+    assert.matches("injected transcript Renderer failure",
+      assert(render_error).message, 1, true)
+    assert.matches("injected transcript Renderer failure",
+      assert(transcript_failure).message, 1, true)
+  end)
 
   it("retains input text and state before its Pane is connected", function()
     local input = Input.new({
@@ -272,6 +477,9 @@ describe("neoagent Applet View composition", function()
     assert.are.equal("unavailable", assert(images).status)
     assert.are.equal(images, value.transcript.image_system)
     assert.are.equal(images, value.transcript.pane.image_system)
+    local revision = value.transcript.document_revision
+    value.transcript:set_image_source(value.image_source, value.image_reader)
+    assert.are.equal(revision, value.transcript.document_revision)
 
     value:destroy()
     assert.is_true(assert(images).destroyed)
@@ -320,6 +528,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -327,11 +536,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "read-image",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(4, 3)),
-      } },
+      content = { attachments.image(png(4, 3)) },
     } })
     assert(value:open())
     assert(vim.wait(1000, function() return #placements > 0 end))
@@ -362,6 +567,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
 
@@ -369,13 +575,9 @@ describe("neoagent Applet View composition", function()
     ---@param revision integer
     ---@return Neoagent.ImageBlock
     local function frame(width, revision)
-      return {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(width, width)),
-        id = "preview",
-        revision = revision,
-      }
+      return attachments.image(png(width, width), "image/png", {
+        id = "preview", revision = revision,
+      })
     end
 
     ---@param pane Applet.Pane
@@ -484,10 +686,11 @@ describe("neoagent Applet View composition", function()
   end)
 
   it("retains stable image placements while clipped thinking streams", function()
-    local decodes = 0
-    vim.base64.decode = function(value)
-      decodes = decodes + 1
-      return base64_decode(value)
+    local reads = 0
+    local open = attachments.files.open
+    attachments.files.open = function(...)
+      reads = reads + 1
+      return open(...)
     end
     local batches = {}
     local images = Applet.ImageSystem._new({
@@ -504,6 +707,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -511,11 +715,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "screenshot",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(640, 400)),
-      } },
+      content = { attachments.image(png(640, 400)) },
     } })
     value:set_context({ state = "running" })
     local lines = {}
@@ -533,7 +733,7 @@ describe("neoagent Applet View composition", function()
     value.transcript.pane:flush()
 
     local batch_count = #batches
-    local decode_count = decodes
+    local read_count = reads
     local image_layout = vim.deepcopy(assert(value.transcript.pane.layout).images)
     value:apply({
       type = "thinking_delta",
@@ -544,7 +744,7 @@ describe("neoagent Applet View composition", function()
     assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "thinking line 12"))
     assert.are.same(image_layout, assert(value.transcript.pane.layout).images)
     assert.are.equal(batch_count, #batches)
-    assert.are.equal(decode_count, decodes)
+    assert.are.equal(read_count, reads)
 
     local row, line = line_index((assert(view_handles.buffer(value, "transcript"))), "thinking line 12")
     row = assert(row) - 1
@@ -567,6 +767,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -582,11 +783,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "screenshot",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(640, 400)),
-      } },
+      content = { attachments.image(png(640, 400)) },
     }, {
       role = "assistant",
       content = { { type = "text", text = "after screenshot" } },
@@ -627,7 +824,7 @@ describe("neoagent Applet View composition", function()
     images:destroy()
   end)
 
-  it("prepares replacement-conversation images with independent identities", function()
+  it("shares identical stored images across conversations and replaces changed content", function()
     local images = Applet.ImageSystem._new({
       _backend = image_backend(),
     })
@@ -636,6 +833,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     ---@param width integer
@@ -644,11 +842,7 @@ describe("neoagent Applet View composition", function()
     local function messages(width, height)
       return { {
         role = "user",
-        content = { {
-          type = "image",
-          mimeType = "image/png",
-          data = vim.base64.encode(png(width, height)),
-        } },
+        content = { attachments.image(png(width, height)) },
       } }
     end
 
@@ -657,6 +851,10 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return images:_stats().prepared_resources == 1
     end))
+
+    value:set_messages(messages(1, 1))
+    assert(value.transcript.pane:flush())
+    assert.are.equal(1, images:_stats().preparations)
 
     value:set_messages(messages(2, 2))
     assert.is_true((value.transcript.pane:flush()))
@@ -692,6 +890,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -699,15 +898,11 @@ describe("neoagent Applet View composition", function()
       toolCallId = "expanded-image",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(6, 5)),
-      } },
+      content = { attachments.image(png(6, 5)) },
     } })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG · 6×5")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG · 24 B")
     end))
     assert.is_false((vim.wait(100, function() return #placements > 0 end)))
 
@@ -908,6 +1103,65 @@ describe("neoagent Applet View composition", function()
     assert.is_true((value.transcript.pane:flush()))
     assert.are.equal(value.transcript.pane.generation,
       value.transcript.pane.committed_generation)
+  end)
+
+  it("does not rearm a spinner after it is stopped", function()
+    local value = view()
+    assert(value:open())
+    assert(value.transcript.pane:flush())
+    local starts = 0
+    local active = false
+    local closed = false
+    local callback
+    local timer = {
+      start = function(_, _, _, selected)
+        starts = starts + 1
+        active = true
+        callback = selected
+      end,
+      stop = function() active = false end,
+      is_closing = function() return closed end,
+      close = function() closed = true end,
+    }
+    local original_new_timer = vim.uv.new_timer
+    local original_schedule = vim.schedule
+    local original_settled = value.transcript.pane.is_settled
+    local original_spinner = value.transcript.set_spinner
+    ---@type (fun())[]
+    local scheduled = {}
+    vim.uv.new_timer = function()
+      return timer --[[@as uv.uv_timer_t]]
+    end
+    local ok, err = pcall(function()
+      value.context = { state = "running" }
+      value:_sync_spinner()
+      assert.are.equal(1, starts)
+      assert.is_true(active)
+      assert.is_function(callback)
+      vim.uv.new_timer = original_new_timer
+      vim.schedule = function(selected)
+        scheduled[#scheduled + 1] = selected
+      end
+      rawset(value.transcript.pane, "is_settled", function() return true end)
+      rawset(value.transcript, "set_spinner", function() end)
+
+      if not callback then error("spinner callback was not installed") end
+      callback()
+      assert.are.equal(1, #scheduled)
+      assert(table.remove(scheduled, 1))()
+      assert.are.equal(1, #scheduled)
+      value:_stop_spinner()
+      assert(table.remove(scheduled, 1))()
+
+      assert.are.equal(1, starts)
+      assert.is_false(active)
+      assert.is_true(closed)
+    end)
+    vim.uv.new_timer = original_new_timer
+    vim.schedule = original_schedule
+    rawset(value.transcript.pane, "is_settled", original_settled)
+    rawset(value.transcript, "set_spinner", original_spinner)
+    assert(ok, err)
   end)
 
   it("returns Renderer continuations to transcript and details updates", function()
@@ -1300,11 +1554,44 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return value.dialog_component and value.dialog_component.pane.layout ~= nil
     end))
+    assert.are.equal("", assert(value.dialog_component):text())
     vim.wait(50)
     assert.are.same({}, dismissed)
     assert.is_true(applet_input.dispatch_action(assert(value.dialog_component).pane,
       Applet.Pane.nodes.action("dialog.cancel"), nil, 1, "n", 0, 0))
     assert.are.same({ "info" }, dismissed)
+  end)
+
+  it("accepts string and disabled dialog focus mappings", function()
+    local mapped = view({ mappings = { card_next = "L" } })
+    assert(mapped:open())
+    assert(mapped:set_dialog({
+      active = {
+        id = "mapped-dialog",
+        placement = "float",
+        title = "Mapped",
+        body = "Body",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_true(applet_input.dispatch(
+      assert(mapped.dialog_component).pane, "n", "L"))
+
+    local disabled = view({ mappings = { card_next = false } })
+    assert(disabled:open())
+    assert(disabled:set_dialog({
+      active = {
+        id = "unmapped-dialog",
+        placement = "float",
+        title = "Unmapped",
+        body = "Body",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_false(applet_input.dispatch(
+      assert(disabled.dialog_component).pane, "n", "<A-j>"))
   end)
 
   it("renders a deferred topology generation from its submitted ViewState", function()
@@ -1340,7 +1627,7 @@ describe("neoagent Applet View composition", function()
       } },
       { role = "toolResult", toolCallId = "call", toolName = "shell",
         isError = false, content = { { type = "text", text = "done" } } },
-      { role = "compactionSummary", summary = "summary", tokensBefore = 10 },
+      { role = "compactionSummary", summary = "summary", tokens_before = 10 },
     })
     assert(value:open())
     assert(vim.wait(1000, function()
@@ -1529,6 +1816,11 @@ describe("neoagent Applet View composition", function()
     value.input:set_text("draft")
     assert.is_true(value.input:_move_history(-1))
     assert.are.equal("older prompt", value:get_input())
+    assert.is_true(value.input:_move_history(-1))
+    assert.are.equal("oldest prompt", value:get_input())
+    assert.is_false(value.input:_move_history(-1))
+    assert.is_true(value.input:_move_history(1))
+    assert.are.equal("older prompt", value:get_input())
     assert.is_true(value.input:_move_history(1))
     assert.are.equal("draft", value:get_input())
     value.input.callbacks.submit = function(text)
@@ -1575,7 +1867,7 @@ describe("neoagent Applet View composition", function()
     value:set_messages({
       { role = "toolResult", toolCallId = "missing", toolName = "inspect",
         isError = false, content = { { type = "text", text = "result" } } },
-      { role = "compactionSummary", summary = "compact", tokensBefore = 2000 },
+      { role = "compactionSummary", summary = "compact", tokens_before = 2000 },
     })
     value:apply({ type = "message_end", message = {
       role = "user", content = "new prompt",
@@ -1680,13 +1972,6 @@ describe("neoagent Applet View composition", function()
     assert(value:_interrupt())
     assert.is_true(stopped)
 
-    local margin = value.config.margin
-    value.config.margin = 1000
-    local positioned, position_error = value:_reposition()
-    assert.is_nil(positioned)
-    assert.matches("does not fit", (assert(position_error)))
-    value.config.margin = margin
-    assert(value:_reposition())
     assert(value:set_position("left"))
 
     value:set_messages({

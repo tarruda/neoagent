@@ -37,7 +37,6 @@ local M = {}
 ---@field measure fun(): Applet.Insets
 ---@field restore fun()
 
-
 local copy_value = util.copy_value
 
 ---@param window? integer
@@ -52,17 +51,20 @@ local function statusline(runs)
   local result = {}
   for _, run in ipairs(runs or {}) do
     local text, group = run[1] or run.text or "", run[2] or run.group
-    if group and group ~= "" then result[#result + 1] = "%#" .. group .. "#" end
+    if group and group ~= "" then
+      result[#result + 1] = "%#" .. group .. "#"
+    end
     result[#result + 1] = tostring(text):gsub("%%", "%%%%")
-    if group and group ~= "" then result[#result + 1] = "%*" end
+    if group and group ~= "" then
+      result[#result + 1] = "%*"
+    end
   end
   return table.concat(result)
 end
 
----@param runs? Applet.ChromeRun[]
----@return string|[string, string?][]
+---@param runs Applet.ChromeRun[]
+---@return [string, string?][]
 local function float_runs(runs)
-  if not runs or #runs == 0 then return "" end
   local result = {}
   for _, run in ipairs(runs) do
     result[#result + 1] = { run[1] or run.text or "", run[2] or run.group }
@@ -75,7 +77,9 @@ end
 ---@return Applet.OptionValue?
 local function current_option(window, option)
   local ok, value = pcall(vim.api.nvim_get_option_value, option, { win = window })
-  if ok then return value end
+  if ok then
+    return value
+  end
 end
 
 ---@param window integer
@@ -94,9 +98,13 @@ local config_fields = { "title", "title_pos", "footer", "footer_pos" }
 ---@param original? vim.api.keyset.win_config
 ---@param written? vim.api.keyset.win_config
 local function restore_config(window, original, written)
-  if not original or not written then return end
+  if not original or not written then
+    return
+  end
   local ok, current = pcall(vim.api.nvim_win_get_config, window)
-  if not ok then return end
+  if not ok then
+    return
+  end
   local changed = false
   for _, field in ipairs(config_fields) do
     if written[field] ~= nil and util.equal(current[field], written[field]) then
@@ -108,7 +116,9 @@ local function restore_config(window, original, written)
       changed = true
     end
   end
-  if changed then pcall(vim.api.nvim_win_set_config, window, current) end
+  if changed then
+    pcall(vim.api.nvim_win_set_config, window, current)
+  end
 end
 
 ---@param record Applet.ChromeRecord
@@ -141,7 +151,9 @@ function M.new(record, kind)
 
   ---@param window integer
   local function capture(window)
-    if state.window == window then return end
+    if state.window == window then
+      return
+    end
     restore()
     state.window = window
     if kind == "floating" then
@@ -157,7 +169,9 @@ function M.new(record, kind)
   ---@param window_options? Applet.Options
   local function apply(value, window_options)
     local window = record.window
-    if not valid_window(window) then return end
+    if not valid_window(window) then
+      return
+    end
     capture(window)
     local desired = util.copy(window_options or {})
     for option, option_value in pairs(value.options or {}) do
@@ -224,7 +238,9 @@ function M.new(record, kind)
           changed = true
         end
       end
-      if changed then vim.api.nvim_win_set_config(window, config) end
+      if changed then
+        vim.api.nvim_win_set_config(window, config)
+      end
       state.written_config = written
       state.metrics = util.copy(record.descriptor.chrome)
     else
@@ -240,7 +256,9 @@ function M.new(record, kind)
   return {
     kind = kind,
     apply = apply,
-    measure = function() return util.copy(state.metrics) end,
+    measure = function()
+      return util.copy(state.metrics)
+    end,
     restore = restore,
   }
 end

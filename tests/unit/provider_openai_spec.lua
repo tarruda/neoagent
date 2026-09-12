@@ -93,6 +93,9 @@ describe("OpenAI API provider service", function()
       rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
     assert.are.equal("Bearer inference-key",
       rawget(assert(assert(transport.fetch_requests[2]).headers), "Authorization"))
+    assert(service.destroy)(service)
+    assert.are.same({}, service:state().blocks)
+    assert(service.destroy)(service)
   end)
 
   it("warns when the API key lacks report permission", function()

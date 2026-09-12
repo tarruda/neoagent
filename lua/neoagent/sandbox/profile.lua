@@ -50,7 +50,6 @@ local M = {}
 ---@field inherit? unknown
 ---@field set? unknown
 
-
 ---@type table<string, boolean>
 local access = { deny = true, read = true, write = true }
 ---@type table<string, boolean>
@@ -137,8 +136,7 @@ local function normalize_filesystem(value, paths)
     end
     local key = paths.key(path)
     local existing = by_path[key]
-    if not existing
-        or precedence[rawget(source, "access")] > precedence[existing.access] then
+    if not existing or precedence[rawget(source, "access")] > precedence[existing.access] then
       by_path[key] = {
         path = path,
         access = rawget(source, "access"),
@@ -147,11 +145,14 @@ local function normalize_filesystem(value, paths)
   end
   ---@type Neoagent.SandboxFilesystemEntry[]
   local entries = {}
-  for _, entry in pairs(by_path) do entries[#entries + 1] = entry end
+  for _, entry in pairs(by_path) do
+    entries[#entries + 1] = entry
+  end
   table.sort(entries, function(left, right)
-    local left_depth, right_depth =
-      paths.depth(left.path), paths.depth(right.path)
-    if left_depth ~= right_depth then return left_depth < right_depth end
+    local left_depth, right_depth = paths.depth(left.path), paths.depth(right.path)
+    if left_depth ~= right_depth then
+      return left_depth < right_depth
+    end
     return paths.key(left.path) < paths.key(right.path)
   end)
   return { default = "read", entries = entries }
@@ -245,7 +246,9 @@ end
 function M.resolve(source, ctx, opts)
   if type(source) == "function" then
     local ok, value = pcall(source, ctx)
-    if not ok then error(util.normalize_error(value, "sandbox"), 0) end
+    if not ok then
+      error(util.normalize_error(value, "sandbox"), 0)
+    end
     source = value
   end
   return M.validate(source, opts)

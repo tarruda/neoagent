@@ -30,9 +30,13 @@ function M.discover_models(ctx)
   })
   return async.run(function()
     local result = selected:models({ resolve_auth = ctx.resolve_auth }):await()
-    if result.ok == false then error(result.error, 0) end
+    if result.ok == false then
+      error(result.error, 0)
+    end
     local models = {}
-    for _, id in ipairs(result.models) do models[#models + 1] = { id = id } end
+    for _, id in ipairs(result.models) do
+      models[#models + 1] = { id = id }
+    end
     return { ok = true, models = models }
   end, { error_kind = "provider" })
 end
@@ -63,9 +67,13 @@ function M.new(opts, resources)
   local function blocks()
     ---@type Neoagent.ProviderBlock[]
     local result = {}
-    if status then result[#result + 1] = util.copy(status) end
+    if status then
+      result[#result + 1] = util.copy(status)
+    end
     result[#result + 1] = {
-      type = "field", label = "Endpoint", value = base_url,
+      type = "field",
+      label = "Endpoint",
+      value = base_url,
     }
     if balance then
       for _, currency in ipairs(balance.currencies) do
@@ -83,10 +91,11 @@ function M.new(opts, resources)
     return result
   end
 
-  local dashboard = provider_state.new(
-    { blocks = blocks() }, { report = resources.report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
   local function publish()
-    if not destroyed then assert(dashboard:push({ blocks = blocks() })) end
+    if not destroyed then
+      assert(dashboard:push({ blocks = blocks() }))
+    end
   end
   ---@class Neoagent.DeepSeekService: Neoagent.ProviderService
   local service = {
@@ -95,8 +104,12 @@ function M.new(opts, resources)
     operations = {},
   }
 
-  function service:state() return dashboard:state() end
-  function service:subscribe(listener) return dashboard:subscribe(listener) end
+  function service:state()
+    return dashboard:state()
+  end
+  function service:subscribe(listener)
+    return dashboard:subscribe(listener)
+  end
 
   service.operations.refresh = {
     label = "Refresh balance",
@@ -126,8 +139,7 @@ function M.new(opts, resources)
           end
           status = {
             type = "status",
-            text = "Balance refresh failed: " .. tostring(
-              err and err.message or "unknown error"),
+            text = "Balance refresh failed: " .. tostring(err and err.message or "unknown error"),
             level = "error",
           }
           publish()
@@ -142,7 +154,9 @@ function M.new(opts, resources)
   }
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     dashboard:destroy()
   end

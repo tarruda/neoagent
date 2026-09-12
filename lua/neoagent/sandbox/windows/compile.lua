@@ -13,8 +13,7 @@ local M = {}
 ---@param message string
 ---@return never
 local function failure(message)
-  error(util.error("sandbox_unavailable",
-    "Windows sandbox cannot enforce this profile: " .. message), 0)
+  error(util.error("sandbox_unavailable", "Windows sandbox cannot enforce this profile: " .. message), 0)
 end
 
 ---@param values string[]
@@ -23,7 +22,9 @@ end
 local function ordered(values, paths)
   table.sort(values, function(left, right)
     local left_depth, right_depth = paths.depth(left), paths.depth(right)
-    if left_depth ~= right_depth then return left_depth < right_depth end
+    if left_depth ~= right_depth then
+      return left_depth < right_depth
+    end
     return paths.key(left) < paths.key(right)
   end)
   return values
@@ -53,7 +54,9 @@ end
 ---@return string?
 local function writable_ancestor(write_roots, path, paths)
   for _, root in ipairs(write_roots) do
-    if paths.contains(root, path) then return root end
+    if paths.contains(root, path) then
+      return root
+    end
   end
 end
 
@@ -70,8 +73,7 @@ function M.compile(profile, opts)
   for _, entry in ipairs(entries) do
     local parent = ancestor(entries, entry, paths)
     if parent and parent.access == "deny" and entry.access ~= "deny" then
-      failure("cannot reopen " .. entry.access .. " access beneath deny path "
-        .. parent.path)
+      failure("cannot reopen " .. entry.access .. " access beneath deny path " .. parent.path)
     end
     if entry.access == "write" then
       if not parent or parent.access ~= "write" then
@@ -98,23 +100,24 @@ function M.compile(profile, opts)
   for _, entry in ipairs(entries) do
     local write_root = writable_ancestor(write_roots, entry.path, paths)
     local needs_deny_read = entry.access == "deny"
-    local needs_deny_write = entry.access == "deny"
-      or entry.access == "read" and write_root ~= nil
+    local needs_deny_write = entry.access == "deny" or entry.access == "read" and write_root ~= nil
     local exists = paths.stat(entry.path) ~= nil
     if not exists and needs_deny_write then
       if needs_deny_read and not write_root then
-        failure("cannot protect missing deny path outside a writable root "
-          .. entry.path)
+        failure("cannot protect missing deny path outside a writable root " .. entry.path)
       end
       local parent = paths.dirname(entry.path)
       local parent_stat = paths.stat(parent)
       if not parent_stat or parent_stat.type ~= "directory" then
-        failure("missing protected path requires an existing parent "
-          .. entry.path)
+        failure("missing protected path requires an existing parent " .. entry.path)
       end
     end
-    if needs_deny_read then add(deny_read, seen_read, entry.path) end
-    if needs_deny_write then add(deny_write, seen_write, entry.path) end
+    if needs_deny_read then
+      add(deny_read, seen_read, entry.path)
+    end
+    if needs_deny_write then
+      add(deny_write, seen_write, entry.path)
+    end
     if needs_deny_write and write_root then
       protected_create[#protected_create + 1] = {
         path = entry.path,

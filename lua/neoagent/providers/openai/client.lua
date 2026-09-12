@@ -41,7 +41,9 @@ local M = {}
 ---@param value unknown
 ---@return TypeGuard<string>
 local function safe_id(value)
-  return type(value) == "string" and value ~= "" and #value <= 512
+  return type(value) == "string"
+    and value ~= ""
+    and #value <= 512
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
@@ -49,8 +51,7 @@ end
 ---@param value unknown
 ---@return TypeGuard<number>
 local function finite(value)
-  return type(value) == "number" and value == value
-    and value ~= math.huge and value ~= -math.huge
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
 ---@param value unknown
@@ -62,15 +63,21 @@ end
 ---@param value Neoagent.JsonValue
 ---@return string[]?
 local function parse_models(value)
-  if type(value) ~= "table" or util.is_list(value)
-      or type(value.data) ~= "table" or not util.is_list(value.data)
-      or #value.data > 5000 then
+  if
+    type(value) ~= "table"
+    or util.is_list(value)
+    or type(value.data) ~= "table"
+    or not util.is_list(value.data)
+    or #value.data > 5000
+  then
     return nil
   end
   local result, seen = {}, {}
   for _, entry in ipairs(value.data) do
     local id = type(entry) == "table" and entry.id or nil
-    if not safe_id(id) or seen[id] then return nil end
+    if not safe_id(id) or seen[id] then
+      return nil
+    end
     seen[id] = true
     result[#result + 1] = id
   end
@@ -81,10 +88,14 @@ end
 ---@param value Neoagent.JsonValue
 ---@return Neoagent.OpenAIReportingPage?
 local function page(value)
-  if type(value) ~= "table" or util.is_list(value)
-      or type(value.has_more) ~= "boolean"
-      or type(value.data) ~= "table" or not util.is_list(value.data)
-      or #value.data > 31 then
+  if
+    type(value) ~= "table"
+    or util.is_list(value)
+    or type(value.has_more) ~= "boolean"
+    or type(value.data) ~= "table"
+    or not util.is_list(value.data)
+    or #value.data > 31
+  then
     return nil
   end
   ---@cast value Neoagent.OpenAIReportingPage
@@ -95,7 +106,9 @@ end
 ---@return Neoagent.OpenAIOrganizationUsage?, "incomplete"|"invalid"?
 local function parse_usage(value)
   local parsed = page(value)
-  if not parsed or parsed.has_more then return nil, parsed and "incomplete" or "invalid" end
+  if not parsed or parsed.has_more then
+    return nil, parsed and "incomplete" or "invalid"
+  end
   local result = {
     requests = 0,
     input_tokens = 0,
@@ -103,19 +116,21 @@ local function parse_usage(value)
     output_tokens = 0,
   }
   for _, bucket in ipairs(parsed.data) do
-    if type(bucket) ~= "table" or util.is_list(bucket)
-        or type(bucket.results) ~= "table" or not util.is_list(bucket.results)
-        or #bucket.results > 1000 then
+    if
+      type(bucket) ~= "table"
+      or util.is_list(bucket)
+      or type(bucket.results) ~= "table"
+      or not util.is_list(bucket.results)
+      or #bucket.results > 1000
+    then
       return nil, "invalid"
     end
     for _, entry in ipairs(bucket.results) do
       local requests = type(entry) == "table" and entry.num_model_requests or nil
       local input = type(entry) == "table" and entry.input_tokens or nil
-      local cached = type(entry) == "table"
-        and (entry.input_cached_tokens or 0) or nil
+      local cached = type(entry) == "table" and (entry.input_cached_tokens or 0) or nil
       local output = type(entry) == "table" and entry.output_tokens or nil
-      if not count(requests) or not count(input)
-          or not count(cached) or not count(output) then
+      if not count(requests) or not count(input) or not count(cached) or not count(output) then
         return nil, "invalid"
       end
       result.requests = result.requests + requests
@@ -131,22 +146,33 @@ end
 ---@return Neoagent.OpenAIOrganizationCost[]?, "incomplete"|"invalid"?
 local function parse_costs(value)
   local parsed = page(value)
-  if not parsed or parsed.has_more then return nil, parsed and "incomplete" or "invalid" end
+  if not parsed or parsed.has_more then
+    return nil, parsed and "incomplete" or "invalid"
+  end
   ---@type table<string, number>
   local totals = {}
   for _, bucket in ipairs(parsed.data) do
-    if type(bucket) ~= "table" or util.is_list(bucket)
-        or type(bucket.results) ~= "table" or not util.is_list(bucket.results)
-        or #bucket.results > 1000 then
+    if
+      type(bucket) ~= "table"
+      or util.is_list(bucket)
+      or type(bucket.results) ~= "table"
+      or not util.is_list(bucket.results)
+      or #bucket.results > 1000
+    then
       return nil, "invalid"
     end
     for _, entry in ipairs(bucket.results) do
       local amount = type(entry) == "table" and entry.amount or nil
       local currency = type(amount) == "table" and amount.currency or nil
       local number = type(amount) == "table" and amount.value or nil
-      if type(currency) ~= "string" or currency == "" or #currency > 16
-          or not currency:match("^[a-z]+$")
-          or not finite(number) or number < 0 then
+      if
+        type(currency) ~= "string"
+        or currency == ""
+        or #currency > 16
+        or not currency:match("^[a-z]+$")
+        or not finite(number)
+        or number < 0
+      then
         return nil, "invalid"
       end
       totals[currency] = (totals[currency] or 0) + number
@@ -156,7 +182,9 @@ local function parse_costs(value)
   for currency, value_number in pairs(totals) do
     result[#result + 1] = { currency = currency, value = value_number }
   end
-  table.sort(result, function(left, right) return left.currency < right.currency end)
+  table.sort(result, function(left, right)
+    return left.currency < right.currency
+  end)
   return result
 end
 
@@ -179,8 +207,7 @@ end
 ---@return Neoagent.OpenAIClient
 function M.new(opts)
   opts = opts or {}
-  assert(type(opts.base_url) == "string" and opts.base_url ~= "",
-    "OpenAI base_url is required")
+  assert(type(opts.base_url) == "string" and opts.base_url ~= "", "OpenAI base_url is required")
   local ambient_api_key = opts.ambient_api_key or function()
     return vim.env.OPENAI_API_KEY
   end
@@ -201,73 +228,86 @@ function M.new(opts)
   ---@return Neoagent.Run<Neoagent.OpenAIModelsSuccess|Neoagent.AsyncFailure, nil>
   function client:models(ctx)
     return async.run(
-    ---@return Neoagent.OpenAIModelsSuccess
-    function()
-      local resolved = auth_headers.resolve(ctx, {
-        name = "OpenAI",
-        environment = "OPENAI_API_KEY",
-        ambient_api_key = ambient_api_key,
-        missing_message = "Connect OpenAI or set OPENAI_API_KEY to load models",
-      }):await()
-      if resolved.ok == false then error(resolved.error, 0) end
-      local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
-      local fetched = request:get("/models", "model catalog",
-        headers):await()
-      if fetched.ok == false then error(fetched.error, 0) end
-      local models = parse_models(fetched.value)
-      if not models then
-        error(util.error("provider",
-          "OpenAI returned an invalid model catalog"), 0)
-      end
-      return { ok = true, models = models }
-    end, { error_kind = "provider" })
+      ---@return Neoagent.OpenAIModelsSuccess
+      function()
+        local resolved = auth_headers
+          .resolve(ctx, {
+            name = "OpenAI",
+            environment = "OPENAI_API_KEY",
+            ambient_api_key = ambient_api_key,
+            missing_message = "Connect OpenAI or set OPENAI_API_KEY to load models",
+          })
+          :await()
+        if resolved.ok == false then
+          error(resolved.error, 0)
+        end
+        local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
+        local fetched = request:get("/models", "model catalog", headers):await()
+        if fetched.ok == false then
+          error(fetched.error, 0)
+        end
+        local models = parse_models(fetched.value)
+        if not models then
+          error(util.error("provider", "OpenAI returned an invalid model catalog"), 0)
+        end
+        return { ok = true, models = models }
+      end,
+      { error_kind = "provider" }
+    )
   end
 
   ---@param ctx Neoagent.ProviderAuthContext
   ---@return Neoagent.Run<Neoagent.OpenAIOrganizationSuccess|Neoagent.AsyncFailure, nil>
   function client:organization(ctx)
     return async.run(
-    ---@return Neoagent.OpenAIOrganizationSuccess
-    function()
-      local resolved = auth_headers.resolve(ctx, {
-        name = "OpenAI organization reporting",
-        environment = "OPENAI_API_KEY",
-        ambient_api_key = ambient_api_key,
-        missing_message = "Connect OpenAI or set OPENAI_API_KEY to query organization usage and costs",
-      }):await()
-      if resolved.ok == false then error(resolved.error, 0) end
-      local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
-      local end_time = math.floor(now())
-      local start_time = end_time - 30 * 86400
-      local query = "?start_time=" .. tostring(start_time)
-        .. "&end_time=" .. tostring(end_time)
-        .. "&bucket_width=1d&limit=31"
-      local usage_response = request:get(
-        "/organization/usage/completions" .. query,
-        "organization usage", headers):await()
-      if usage_response.ok == false then error(usage_response.error, 0) end
-      local usage, usage_error = parse_usage(usage_response.value)
-      if not usage then
-        error(util.error("provider", "OpenAI returned " .. usage_error
-          .. " usage data"), 0)
-      end
-      local cost_response = request:get(
-        "/organization/costs" .. query,
-        "organization costs", headers):await()
-      if cost_response.ok == false then error(cost_response.error, 0) end
-      local costs, costs_error = parse_costs(cost_response.value)
-      if not costs then
-        error(util.error("provider",
-          "OpenAI returned " .. costs_error .. " cost data"), 0)
-      end
-      return {
-        ok = true,
-        start_time = start_time,
-        end_time = end_time,
-        usage = usage,
-        costs = costs,
-      }
-    end, { error_kind = "provider" })
+      ---@return Neoagent.OpenAIOrganizationSuccess
+      function()
+        local resolved = auth_headers
+          .resolve(ctx, {
+            name = "OpenAI organization reporting",
+            environment = "OPENAI_API_KEY",
+            ambient_api_key = ambient_api_key,
+            missing_message = "Connect OpenAI or set OPENAI_API_KEY to query organization usage and costs",
+          })
+          :await()
+        if resolved.ok == false then
+          error(resolved.error, 0)
+        end
+        local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
+        local end_time = math.floor(now())
+        local start_time = end_time - 30 * 86400
+        local query = "?start_time="
+          .. tostring(start_time)
+          .. "&end_time="
+          .. tostring(end_time)
+          .. "&bucket_width=1d&limit=31"
+        local usage_response =
+          request:get("/organization/usage/completions" .. query, "organization usage", headers):await()
+        if usage_response.ok == false then
+          error(usage_response.error, 0)
+        end
+        local usage, usage_error = parse_usage(usage_response.value)
+        if not usage then
+          error(util.error("provider", "OpenAI returned " .. usage_error .. " usage data"), 0)
+        end
+        local cost_response = request:get("/organization/costs" .. query, "organization costs", headers):await()
+        if cost_response.ok == false then
+          error(cost_response.error, 0)
+        end
+        local costs, costs_error = parse_costs(cost_response.value)
+        if not costs then
+          error(util.error("provider", "OpenAI returned " .. costs_error .. " cost data"), 0)
+        end
+        return {
+          ok = true,
+          start_time = start_time,
+          end_time = end_time,
+          usage = usage,
+          costs = costs,
+        }
+      end,
+      { error_kind = "provider" }
+    )
   end
 
   return client

@@ -43,6 +43,7 @@ describe("neoagent Provider Shell UI", function()
     local value = ProviderShellView.new({
       config = configured,
       renderer = configured.renderer,
+      host = opts.host,
       on_action = opts.on_action,
       on_select = opts.on_select,
       on_close = opts.on_close,
@@ -212,9 +213,51 @@ describe("neoagent Provider Shell UI", function()
     vim.api.nvim_buf_delete(foreign, { force = true })
   end)
 
+  it("reports publication and Host failures and closes idempotently", function()
+    local value = view()
+    assert(value:set(snapshot("Stable", {
+      blocks = { { type = "status", level = "info", text = "Stable" } },
+    }), {
+      { id = "stable", name = "Stable", selected = true, enabled = true },
+    }))
+    assert(value:open())
+    local flush = value.applet.flush
+    function value.applet:flush()
+      return nil, {
+        applet = self.name,
+        phase = "flush",
+        generation = self.generation,
+        message = "injected provider publication failure",
+      }
+    end
+    local updated, update_error = value:set(snapshot("Changed", {
+      blocks = { { type = "status", level = "info", text = "Changed" } },
+    }), {
+      { id = "changed", name = "Changed", selected = true, enabled = true },
+    })
+    value.applet.flush = flush
+    assert.is_nil(updated)
+    assert.are.equal("injected provider publication failure",
+      assert(update_error).message)
+    assert(value.applet:flush())
+
+    local failed_host = view({
+      host = function() error("injected Provider Shell Host failure") end,
+    })
+    local opened, open_error = failed_host:open()
+    assert.is_nil(opened)
+    assert.matches("injected Provider Shell Host failure",
+      assert(open_error).message, 1, true)
+    assert.is_false(failed_host:close())
+  end)
+
   it("jumps into provider actions and closes from either shell pane", function()
     local closed = 0
     local value = view({
+      config = { mappings = {
+        provider_close = { "q", "<C-c>" },
+        toggle_provider_shell = false,
+      } },
       on_close = function() closed = closed + 1 end,
     })
     assert(value:set(snapshot("Local", {

@@ -123,41 +123,49 @@ end
 ---@param allow_empty? boolean
 ---@return string
 local function valid_text(value, name, allow_empty)
-  assert(type(value) == "string" and (allow_empty or value ~= "")
-    and not value:find("\0", 1, true), name .. " must be valid text")
+  assert(
+    type(value) == "string" and (allow_empty or value ~= "") and not value:find("\0", 1, true),
+    name .. " must be valid text"
+  )
   return value
 end
 
 ---@param request Neoagent.SelectRequest
 ---@return Neoagent.NormalizedSelect
 local function normalize_select(request)
-  assert(type(request) == "table"
-      and (next(request) == nil or not util.is_list(request)),
-    "selection request must be an object")
+  assert(
+    type(request) == "table" and (next(request) == nil or not util.is_list(request)),
+    "selection request must be an object"
+  )
   ---@type Neoagent.NormalizedSelect
   local result = {
     kind = "select",
     prompt = valid_text(request.prompt or "Select", "selection prompt"),
     items = {},
   }
-  assert(type(request.items) == "table" and util.is_list(request.items),
-    "selection items must be a list")
+  assert(type(request.items) == "table" and util.is_list(request.items), "selection items must be a list")
   local seen = {}
   for index, source in ipairs(request.items) do
     ---@type Neoagent.NormalizedSelectItem
     local item
     if type(source) == "string" then
       item = {
-        id = tostring(index), label = source, value = source, fallback = source,
+        id = tostring(index),
+        label = source,
+        value = source,
+        fallback = source,
       }
     else
-      assert(type(source) == "table" and not util.is_list(source),
-        "selection item must be an object or string")
+      assert(type(source) == "table" and not util.is_list(source), "selection item must be an object or string")
       local id = valid_text(source.id or tostring(index), "selection item id")
       local value = source.value
-      if value == nil then value = source.id or source end
+      if value == nil then
+        value = source.id or source
+      end
       local fallback = source.fallback
-      if fallback == nil then fallback = source end
+      if fallback == nil then
+        fallback = source
+      end
       item = {
         id = id,
         label = valid_text(source.label or id, "selection item label"),
@@ -180,9 +188,10 @@ end
 ---@param request Neoagent.InputRequest
 ---@return Neoagent.NormalizedInput
 local function normalize_input(request)
-  assert(type(request) == "table"
-      and (next(request) == nil or not util.is_list(request)),
-    "input request must be an object")
+  assert(
+    type(request) == "table" and (next(request) == nil or not util.is_list(request)),
+    "input request must be an object"
+  )
   local result = {
     kind = "input",
     prompt = valid_text(request.prompt or "Input", "input prompt"),
@@ -192,17 +201,17 @@ local function normalize_input(request)
     allow_empty = request.allow_empty == true,
     mask = request.mask or "•",
   }
-  assert(not result.secret or not result.multiline,
-    "secret input must be a single line")
+  assert(not result.secret or not result.multiline, "secret input must be a single line")
   return result
 end
 
 ---@param request Neoagent.NoticeRequest
 ---@return Neoagent.NormalizedNotice
 local function normalize_notice(request)
-  assert(type(request) == "table"
-      and (next(request) == nil or not util.is_list(request)),
-    "notice request must be an object")
+  assert(
+    type(request) == "table" and (next(request) == nil or not util.is_list(request)),
+    "notice request must be an object"
+  )
   return {
     kind = "notice",
     prompt = valid_text(request.prompt or "Notice", "notice prompt"),
@@ -213,7 +222,9 @@ end
 ---@param entry? Neoagent.PresentationEntry
 ---@return Neoagent.PublicPresentation?
 local function public_entry(entry)
-  if not entry then return nil end
+  if not entry then
+    return nil
+  end
   local request = entry.request
   local result = {
     id = entry.id,
@@ -255,19 +266,27 @@ end
 ---@param entry? Neoagent.PresentationEntry
 ---@return boolean
 local function finish_fallback(entry)
-  if not entry then return false end
+  if not entry then
+    return false
+  end
   local cancel = entry.cancel_fallback
   entry.cancel_fallback = nil
-  if not cancel then return false end
+  if not cancel then
+    return false
+  end
   pcall(cancel)
   return true
 end
 
 ---@return true?, string?
 function Presenter:_publish()
-  if not self.attachment then return true end
+  if not self.attachment then
+    return true
+  end
   local ok, err = pcall(self.attachment.present, snapshot(self.state))
-  if ok then return true end
+  if ok then
+    return true
+  end
   local failure = util.normalize_error(err, "presentation")
   local message = "Presenter surface failed: " .. failure.message
   self:detach(self.attachment, message)
@@ -275,7 +294,6 @@ function Presenter:_publish()
 end
 
 ---@param entry Neoagent.PresentationEntry
----@return boolean
 function Presenter:_remove(entry)
   local state = self.state
   if state.active == entry then
@@ -291,19 +309,26 @@ function Presenter:_remove(entry)
       return true
     end
   end
-  return false
 end
 
 ---@return true?, string?
 function Presenter:_start_active()
   local entry = self.state.active
-  if not entry then return self:_publish() end
-  if self.attachment then return self:_publish() end
+  if not entry then
+    return self:_publish()
+  end
+  if self.attachment then
+    return self:_publish()
+  end
   local host = self.host
   ---@type Applet.PresentationCallbacks<unknown>
   local done = {
-    resolve = function(value) self:resolve(entry.id, value) end,
-    reject = function(err) self:reject(entry.id, err) end,
+    resolve = function(value)
+      self:resolve(entry.id, value)
+    end,
+    reject = function(err)
+      self:reject(entry.id, err)
+    end,
   }
   local ok, cancel_or_error = pcall(function()
     local request = entry.request
@@ -336,28 +361,33 @@ function Presenter:_request(request)
   ---@type Neoagent.PresentationEntry?
   local entry
   local run = async.run(
-  ---@return Neoagent.PresentationResult
-  function()
-    local value = async.await(
-    ---@param done Neoagent.AwaitCallbacks<unknown>
-    function(done)
-      self.state.sequence = self.state.sequence + 1
-      entry = {
-        id = "presentation-" .. self.state.sequence,
-        request = request,
-        done = done,
-      }
-      if self.state.active then
-        self.state.queue[#self.state.queue + 1] = entry
-        self:_publish()
-      else
-        self.state.active = entry
-        self:_start_active()
-      end
-      return function() self:_remove(assert(entry)) end
-    end)
-    return { ok = true, value = value }
-  end, { error_kind = "presentation" })
+    ---@return Neoagent.PresentationResult
+    function()
+      local value = async.await(
+        ---@param done Neoagent.AwaitCallbacks<unknown>
+        function(done)
+          self.state.sequence = self.state.sequence + 1
+          entry = {
+            id = "presentation-" .. self.state.sequence,
+            request = request,
+            done = done,
+          }
+          if self.state.active then
+            self.state.queue[#self.state.queue + 1] = entry
+            self:_publish()
+          else
+            self.state.active = entry
+            self:_start_active()
+          end
+          return function()
+            self:_remove(assert(entry))
+          end
+        end
+      )
+      return { ok = true, value = value }
+    end,
+    { error_kind = "presentation" }
+  )
   return run, entry
 end
 
@@ -369,7 +399,9 @@ function Presenter:_update(entry, request)
     return false
   end
   if self.state.active == entry then
-    if not self.attachment then return false end
+    if not self.attachment then
+      return false
+    end
     entry.request = request
     return self:_publish()
   end
@@ -388,12 +420,16 @@ end
 function Presenter:select(request)
   local normalized = normalize_select(request)
   local run, entry = self:_request(normalized)
-  return run, function(items)
-    return self:_update(entry, normalize_select({
-      prompt = normalized.prompt,
-      items = items,
-    }))
-  end
+  return run,
+    function(items)
+      return self:_update(
+        entry,
+        normalize_select({
+          prompt = normalized.prompt,
+          items = items,
+        })
+      )
+    end
 end
 
 ---@param request Neoagent.InputRequest
@@ -414,9 +450,10 @@ end
 ---@return Neoagent.PresentationRun
 function Presenter:confirm(request)
   request = request or {}
-  assert(type(request) == "table"
-      and (next(request) == nil or not util.is_list(request)),
-    "confirmation request must be an object")
+  assert(
+    type(request) == "table" and (next(request) == nil or not util.is_list(request)),
+    "confirmation request must be an object"
+  )
   local normalized = normalize_select({
     prompt = request.prompt or "Confirm",
     items = {
@@ -442,7 +479,10 @@ function Presenter:resolve(id, value)
     ---@type Neoagent.NormalizedSelectItem?
     local selected
     for _, item in ipairs(request.items) do
-      if item.id == value and not item.disabled then selected = item break end
+      if item.id == value and not item.disabled then
+        selected = item
+        break
+      end
     end
     if not selected then
       return nil, presentation_error("Selection is unavailable: " .. tostring(value))
@@ -451,8 +491,11 @@ function Presenter:resolve(id, value)
   elseif entry.request.kind == "notice" then
     value = true
   else
-    if type(value) ~= "string" or value:find("\0", 1, true)
-        or not entry.request.multiline and value:find("\n", 1, true) then
+    if
+      type(value) ~= "string"
+      or value:find("\0", 1, true)
+      or not entry.request.multiline and value:find("\n", 1, true)
+    then
       return nil, presentation_error("Input response is invalid")
     end
     if value == "" and not entry.request.allow_empty then
@@ -471,7 +514,9 @@ end
 ---@return boolean
 function Presenter:reject(id, err)
   local entry = self.state.active
-  if not entry or entry.id ~= id then return false end
+  if not entry or entry.id ~= id then
+    return false
+  end
   finish_fallback(entry)
   self.state.active = table.remove(self.state.queue, 1)
   entry.done.reject(util.normalize_error(err, "presentation"))
@@ -490,13 +535,12 @@ end
 ---@return fun(reason?: string)
 function Presenter:attach(opts)
   assert(not self.destroyed, "Presenter is destroyed")
-  assert(type(opts) == "table" and type(opts.present) == "function",
-    "Presenter attachment requires present")
-  assert(opts.notify == nil or type(opts.notify) == "function",
-    "Presenter attachment notify must be a function")
-  assert(opts.open_uri == nil or type(opts.open_uri) == "function",
-    "Presenter attachment open_uri must be a function")
-  if self.attachment then self:detach(self.attachment, "Presenter surface replaced") end
+  assert(type(opts) == "table" and type(opts.present) == "function", "Presenter attachment requires present")
+  assert(opts.notify == nil or type(opts.notify) == "function", "Presenter attachment notify must be a function")
+  assert(opts.open_uri == nil or type(opts.open_uri) == "function", "Presenter attachment open_uri must be a function")
+  if self.attachment then
+    self:detach(self.attachment, "Presenter surface replaced")
+  end
   local attachment = {
     present = opts.present,
     notify = opts.notify,
@@ -505,10 +549,14 @@ function Presenter:attach(opts)
   finish_fallback(self.state.active)
   self.attachment = attachment
   local ok, err = self:_publish()
-  if not ok then error(err, 0) end
+  if not ok then
+    error(err, 0)
+  end
   local active = true
   return function(reason)
-    if not active then return end
+    if not active then
+      return
+    end
     active = false
     self:detach(attachment, reason)
   end
@@ -518,11 +566,15 @@ end
 ---@param reason? string
 ---@return boolean
 function Presenter:detach(attachment, reason)
-  if self.attachment ~= attachment then return false end
+  if self.attachment ~= attachment then
+    return false
+  end
   self.attachment = nil
   if reason then
     local pending = {}
-    if self.state.active then pending[#pending + 1] = self.state.active end
+    if self.state.active then
+      pending[#pending + 1] = self.state.active
+    end
     vim.list_extend(pending, self.state.queue)
     self.state.active, self.state.queue = nil, {}
     for _, entry in ipairs(pending) do
@@ -561,10 +613,14 @@ function Presenter:open_uri(request)
 end
 
 function Presenter:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   local pending = {}
-  if self.state.active then pending[#pending + 1] = self.state.active end
+  if self.state.active then
+    pending[#pending + 1] = self.state.active
+  end
   vim.list_extend(pending, self.state.queue)
   self.state.active, self.state.queue, self.attachment = nil, {}, nil
   for _, entry in ipairs(pending) do
@@ -577,9 +633,7 @@ end
 ---@return Neoagent.Presenter
 function M.new(opts)
   opts = opts or {}
-  assert(type(opts) == "table"
-      and (next(opts) == nil or not util.is_list(opts)),
-    "Presenter options must be an object")
+  assert(type(opts) == "table" and (next(opts) == nil or not util.is_list(opts)), "Presenter options must be an object")
   local host = opts.host or Applet.Presenter
   for _, method in ipairs({ "select", "input", "notice", "notify", "open_uri" }) do
     assert(type(host[method]) == "function", "Presenter host requires " .. method)

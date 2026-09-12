@@ -13,8 +13,17 @@ local function response_thinking(levels)
 end
 
 local excluded_openai_kinds = {
-  "embedding", "moderation", "dall%-e", "image", "sora", "tts",
-  "transcribe", "whisper", "audio", "realtime", "search",
+  "embedding",
+  "moderation",
+  "dall%-e",
+  "image",
+  "sora",
+  "tts",
+  "transcribe",
+  "whisper",
+  "audio",
+  "realtime",
+  "search",
 }
 
 ---@param model Neoagent.ModelConfigInput
@@ -23,7 +32,9 @@ local function conversational(model)
   local id = model.id
   assert(type(id) == "string", "model rule input must contain an id")
   for _, pattern in ipairs(excluded_openai_kinds) do
-    if id:find(pattern) then return false end
+    if id:find(pattern) then
+      return false
+    end
   end
   return true
 end
@@ -46,12 +57,18 @@ end
 
 local transform_openai = rules.compile({
   {
-    match = function(model) return conversational(model) end,
+    match = function(model)
+      return conversational(model)
+    end,
     defaults = { input = { "text" } },
   },
   {
-    match = function(model) return not conversational(model) end,
-    apply = function() return false end,
+    match = function(model)
+      return not conversational(model)
+    end,
+    apply = function()
+      return false
+    end,
   },
   {
     match = "^gpt%-4",
@@ -110,15 +127,19 @@ local transform_openai = rules.compile({
   {
     match = "^gpt%-5%.6",
     apply = thinking_levels({
-      "off", "low", "medium", "high", "xhigh", "max",
+      "off",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
     }),
   },
   {
     match = function(model)
       local id = model.id
       assert(type(id) == "string", "model rule input must contain an id")
-      return id:match("^gpt%-5%.4%-mini") ~= nil
-        or id:match("^gpt%-5%.4%-nano") ~= nil
+      return id:match("^gpt%-5%.4%-mini") ~= nil or id:match("^gpt%-5%.4%-nano") ~= nil
     end,
     set = { context_window = 400000 },
   },
@@ -156,31 +177,64 @@ local transform_openai = rules.compile({
 })
 
 local openai_ids = {
-  "gpt-4", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini",
-  "gpt-4.1-nano", "gpt-4o", "gpt-4o-2024-05-13",
-  "gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4o-mini",
-  "gpt-5", "gpt-5-chat-latest", "gpt-5-codex", "gpt-5-mini",
-  "gpt-5-nano", "gpt-5-pro", "gpt-5.1", "gpt-5.1-chat-latest",
-  "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
-  "gpt-5.2", "gpt-5.2-chat-latest", "gpt-5.2-codex",
-  "gpt-5.2-pro", "gpt-5.3-chat-latest", "gpt-5.3-codex",
-  "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
-  "gpt-5.4-nano", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
-  "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "o1", "o1-pro",
-  "o3", "o3-deep-research", "o3-mini", "o3-pro", "o4-mini",
+  "gpt-4",
+  "gpt-4-turbo",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "gpt-4o",
+  "gpt-4o-2024-05-13",
+  "gpt-4o-2024-08-06",
+  "gpt-4o-2024-11-20",
+  "gpt-4o-mini",
+  "gpt-5",
+  "gpt-5-chat-latest",
+  "gpt-5-codex",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5-pro",
+  "gpt-5.1",
+  "gpt-5.1-chat-latest",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+  "gpt-5.2",
+  "gpt-5.2-chat-latest",
+  "gpt-5.2-codex",
+  "gpt-5.2-pro",
+  "gpt-5.3-chat-latest",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-spark",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.4-pro",
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "o1",
+  "o1-pro",
+  "o3",
+  "o3-deep-research",
+  "o3-mini",
+  "o3-pro",
+  "o4-mini",
   "o4-mini-deep-research",
 }
 ---@type Neoagent.DiscoveredModel[]
 local openai_seed = {}
-for _, id in ipairs(openai_ids) do openai_seed[#openai_seed + 1] = { id = id } end
+for _, id in ipairs(openai_ids) do
+  openai_seed[#openai_seed + 1] = { id = id }
+end
 
 ---@param levels Neoagent.ThinkingLevel[]
 ---@return Neoagent.ThinkingOptions
 local function codex_thinking(levels)
   local result = {}
   for _, level in ipairs(levels) do
-    result[level] = level == "off" and {}
-      or efforts.openai_response(level)
+    result[level] = level == "off" and {} or efforts.openai_response(level)
   end
   return result
 end
@@ -215,7 +269,9 @@ M.transform_codex = transform_codex
 M.openai = {
   api = "openai-responses",
   base_url = "https://api.openai.com/v1",
-  api_key = function() return vim.env.OPENAI_API_KEY end,
+  api_key = function()
+    return vim.env.OPENAI_API_KEY
+  end,
   auth = "openai",
   catalog = {
     source_id = "openai-models",

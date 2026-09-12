@@ -201,6 +201,40 @@ describe("OpenAI management client", function()
     end
   end)
 
+  it("reports incomplete and failed cost requests after valid usage", function()
+    local valid_usage = {
+      has_more = false,
+      data = { { results = { {
+        input_tokens = 1,
+        output_tokens = 1,
+        num_model_requests = 1,
+      } } } },
+    }
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = vim.json.encode(valid_usage) },
+      { body = vim.json.encode({ has_more = true, data = {} }) },
+      { body = vim.json.encode(valid_usage) },
+      { status = 503, body = "private cost response" },
+    }
+    local value = client.new({
+      base_url = "https://example.test/v1",
+      transport = transport,
+    })
+    local request = {
+      resolve_auth = auth({ Authorization = "Bearer admin-key" }),
+    }
+
+    local incomplete = wait(value:organization(request))
+    assert.is_false(incomplete.ok)
+    assert.matches("incomplete cost data", assert(incomplete.error).message)
+
+    local unavailable = wait(value:organization(request))
+    assert.is_false(unavailable.ok)
+    assert.are.equal(503, rawget(assert(unavailable.error), "status"))
+    assert.is_nil((vim.inspect(unavailable.error):find("private cost response", 1, true)))
+  end)
+
   it("reports invalid keys and reads OPENAI_API_KEY by default", function()
     local transport = fake_transport.new()
     transport.fetches = {

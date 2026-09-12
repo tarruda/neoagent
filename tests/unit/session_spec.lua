@@ -5,8 +5,8 @@ local Session = require("neoagent.session")
 ---@return Neoagent.MessageEntry
 local function stored_entry(id)
   return {
-    type = "message", id = id, parentId = vim.NIL,
-    timestamp = "2026-01-01T00:00:00.000Z",
+    type = "message", id = id, parent_id = vim.NIL,
+    created_at = 1767225600000,
     message = { role = "user", content = "stored", timestamp = 1 },
   }
 end
@@ -18,9 +18,9 @@ describe("neoagent.session", function()
     assert.is_nil(ok)
     assert.matches("Entry not found", assert(err).message)
     ok, err = session:append_compaction({
-      firstKeptEntryId = "missing",
+      first_kept_entry_id = "missing",
       summary = "compacted",
-      tokensBefore = 1,
+      tokens_before = 1,
     })
     assert.is_nil(ok)
     assert.matches("Invalid compaction", assert(err).message)
@@ -76,6 +76,25 @@ describe("neoagent.session", function()
     assert.are.equal(2, #session:messages())
   end)
 
+  it("rejects unavailable attachment content at construction and append", function()
+    local image = {
+      type = "image", file_id = string.rep("a", 64), bytes = 5,
+      mime_type = "image/png",
+    }
+    local session, err = Session.new({ messages = {
+      { role = "user", content = { image } },
+    } })
+    assert.is_nil(session)
+    assert.matches("attachment", assert(err).message:lower())
+
+    session = assert(Session.new())
+    local appended
+    appended, err = session:append({ role = "user", content = { image } })
+    assert.is_nil(appended)
+    assert.matches("attachment", assert(err).message:lower())
+    assert.are.same({}, session:messages())
+  end)
+
   it("associates model state with an accepted in-memory message", function()
     local session = assert(Session.new())
     assert(session:append({ role = "user", content = "first" }, {
@@ -87,7 +106,7 @@ describe("neoagent.session", function()
     assert.are.equal("high", assert(session:state()).thinking_level)
     assert.are.same({
       model = { provider = "local", model = "coder" },
-      thinkingLevel = "high",
+      thinking_level = "high",
     }, assert(session:entries()[1]).request)
     assert.are.same({ "message" },
       vim.tbl_map(function(entry) return entry.type end, session:entries()))
@@ -134,7 +153,7 @@ describe("neoagent.session", function()
 
     assert.is_nil(assert(session:state()).thinking_level)
     assert.are.equal(vim.NIL,
-      assert(assert(session:entries()[4]).request).thinkingLevel)
+      assert(assert(session:entries()[4]).request).thinking_level)
     assert(session:move_to(thinking.id))
     assert.are.equal("high", assert(session:state()).thinking_level)
     assert(session:move_to(cleared.id))
@@ -289,8 +308,8 @@ describe("neoagent.session", function()
   it("contains invalid indexed and projected entry dependencies", function()
     local tree = require("neoagent.session_tree")
     local entry = {
-      type = "message", id = "entry", parentId = vim.NIL,
-      timestamp = "2026-01-01T00:00:00.000Z",
+      type = "message", id = "entry", parent_id = vim.NIL,
+      created_at = 1767225600000,
       message = { role = "user", content = "valid" },
     }
     local indexed_path = tree.indexed_path
@@ -308,6 +327,50 @@ describe("neoagent.session", function()
     tree.normalize_projection = normalize_projection
     assert.is_nil(session)
     assert.matches("projection dependency failed", tostring(assert(err).detail))
+  end)
+
+  it("propagates in-memory path failures through context and state", function()
+    local tree = require("neoagent.session_tree")
+    local session = assert(Session.new())
+    assert(session:append({ role = "user", content = "one" }))
+    local indexed_path = tree.indexed_path
+    tree.indexed_path = function() return nil, "path dependency failed" end
+    local path, path_err = session:path()
+    assert.is_nil(path)
+    assert.matches("path dependency failed", tostring(assert(path_err).detail))
+    local context, context_err = session:context_messages()
+    assert.is_nil(context)
+    assert.matches("path dependency failed", tostring(assert(context_err).detail))
+    local state, state_err = session:state()
+    assert.is_nil(state)
+    assert.matches("path dependency failed", tostring(assert(state_err).detail))
+    tree.indexed_path = indexed_path
+  end)
+
+  it("propagates store and in-memory branch publication failures", function()
+    local stored = assert(Session.new({ store = {
+      load = function() return {} end,
+      append = function() return true end,
+      entry = function(_, id) return stored_entry(id) end,
+      set_leaf = function() return nil, { kind = "storage", message = "branch denied" } end,
+    } }))
+    local moved, move_err = stored:move_to("entry")
+    assert.is_nil(moved)
+    assert.are.equal("branch denied", assert(move_err).message)
+
+    local random = vim.uv.random
+    vim.uv.random = function() return string.rep("x", 8) end
+    local ok, memory_err = pcall(function()
+      local memory = assert(Session.new())
+      local _, _, first = memory:append({ role = "user", content = "one" })
+      assert(first)
+      local accepted, err = memory:move_to(first.id)
+      assert.is_nil(accepted)
+      return err
+    end)
+    vim.uv.random = random
+    assert.is_true(ok)
+    assert.matches("duplicate entry id", tostring(assert(memory_err).detail))
   end)
 
   it("does not add a message when storage rejects it", function()
@@ -368,9 +431,9 @@ describe("neoagent.session", function()
       },
       {
         messages = { { role = "user", content = {
-          { type = "image", data = "aW1hZ2U=" },
+          { type = "image", file_id = string.rep("a", 64), bytes = 5 },
         } } },
-        detail = "message 1: content block 1: image mimeType is required",
+        detail = "message 1: content block 1: image mime_type is required",
       },
       {
         messages = { { role = "assistant", content = {
@@ -406,7 +469,7 @@ describe("neoagent.session", function()
     local _, _, left = session:append({ role = "assistant", content = { { type = "text", text = "left" } } })
     assert(session:move_to(assert(first).id))
     local _, _, right = session:append({ role = "assistant", content = { { type = "text", text = "right" } } })
-    assert.are.equal(assert(first).id, assert(right).parentId)
+    assert.are.equal(assert(first).id, assert(right).parent_id)
     assert.are.same({ "one", "right" }, vim.tbl_map(function(message)
       return require("neoagent.util").text_content(message.content)
     end, session:messages()))
@@ -445,7 +508,7 @@ describe("neoagent.session", function()
       thinking_level = "high",
     }, session:state())
     assert(session:append_compaction({
-      summary = "earlier", firstKeptEntryId = assert(first).id, tokensBefore = 20,
+      summary = "earlier", first_kept_entry_id = assert(first).id, tokens_before = 20,
     }))
     local summary = assert(assert(session:context_messages())[1])
     assert.matches("earlier", require("neoagent.util").text_content(summary.content))
@@ -456,7 +519,7 @@ describe("neoagent.session", function()
   end)
 
   it("rejects protected compaction fields identically with a Store", function()
-    for _, field in ipairs({ "type", "id", "parentId", "timestamp" }) do
+    for _, field in ipairs({ "type", "id", "parent_id", "created_at" }) do
       local directory = vim.fn.tempname()
       local memory = assert(Session.new())
       local stored = assert(Session.new({
@@ -473,14 +536,14 @@ describe("neoagent.session", function()
       })
       local memory_values = {
         summary = "summary",
-        firstKeptEntryId = assert(memory_first).id,
-        tokensBefore = 1,
+        first_kept_entry_id = assert(memory_first).id,
+        tokens_before = 1,
         [field] = "forged",
       }
       local stored_values = {
         summary = "summary",
-        firstKeptEntryId = assert(stored_first).id,
-        tokensBefore = 1,
+        first_kept_entry_id = assert(stored_first).id,
+        tokens_before = 1,
         [field] = "forged",
       }
       local memory_ok, memory_err = memory:append_compaction(memory_values)
@@ -524,8 +587,8 @@ describe("neoagent.session", function()
     assert.are.equal("one", session:leaf_id())
     assert.are.equal("one", assert(assert(session:path())[1]).id)
     assert.are.equal("low", assert(session:state()).thinking_level)
-    assert(session:append_compaction({ summary = "done", firstKeptEntryId = "one", tokensBefore = 1 }))
-    assert.are.same({ summary = "done", firstKeptEntryId = "one", tokensBefore = 1 }, calls.compaction)
+    assert(session:append_compaction({ summary = "done", first_kept_entry_id = "one", tokens_before = 1 }))
+    assert.are.same({ summary = "done", first_kept_entry_id = "one", tokens_before = 1 }, calls.compaction)
     assert(session:move_to("one"))
     assert.are.equal("one", calls.leaf)
   end)
@@ -560,7 +623,7 @@ describe("neoagent.session", function()
     assert.matches("invalid projection", assert(err).message)
 
     session = assert(Session.new({ store = { load = function() return {} end, append = function() return true end } }))
-    ok, err = session:append_compaction({ summary = "x", firstKeptEntryId = "one", tokensBefore = 1 })
+    ok, err = session:append_compaction({ summary = "x", first_kept_entry_id = "one", tokens_before = 1 })
     assert.is_nil(ok)
     assert.matches("does not support compaction", assert(err).message)
     ok, err = session:move_to(nil)
@@ -576,7 +639,7 @@ describe("neoagent.session", function()
         return true, nil, stored_entry("entry")
       end,
     } }))
-    local ok, err = session:append_compaction({ summary = "x", firstKeptEntryId = "one", tokensBefore = 1 })
+    local ok, err = session:append_compaction({ summary = "x", first_kept_entry_id = "one", tokens_before = 1 })
     assert.is_nil(ok)
     assert.are.equal("storage", assert(err).kind)
     assert.matches("invalid projection", assert(err).message)

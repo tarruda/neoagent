@@ -97,6 +97,36 @@ describe("neoagent provider diagnostics", function()
     assert.are.equal("new", vim.json.decode(raw).message)
   end)
 
+  it("reports serialization, rotation, and append failures", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert(fs.mkdirp(directory))
+    local path = directory .. "/codex.log"
+
+    local encoded, encode_err = provider_log.append(path, { status = math.huge })
+    assert.is_nil(encoded)
+    assert.is_not_nil(encode_err)
+
+    assert(fs.write_all(path, string.rep("x", 1024 * 1024), "w"))
+    local rename = vim.uv.fs_rename
+    vim.uv.fs_rename = function() return nil, "rotation denied" end
+    local rotated, rotate_err = provider_log.append(path, { type = "failure" })
+    vim.uv.fs_rename = rename
+    assert.is_nil(rotated)
+    assert.matches("rotation denied", tostring(rotate_err))
+
+    assert(vim.uv.fs_unlink(path))
+    local write_all = fs.write_all
+    fs.write_all = function(candidate, ...)
+      if candidate == path then return nil, "append denied" end
+      return write_all(candidate, ...)
+    end
+    local written, write_err = provider_log.append(path, { type = "failure" })
+    fs.write_all = write_all
+    assert.is_nil(written)
+    assert.matches("append denied", tostring(write_err))
+  end)
+
   it("serializes appends with a concurrent writer", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory

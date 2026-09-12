@@ -1,0 +1,44 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Reconstruct masked capability metadata with nonfunctional storage URLs.
+# Source SHA-256: 71a50256feea2a1998d876c29f2feb8633248bd37f159194db095eb96e80e275
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://chatgpt.com/backend-api/files/file-codex-lite-1/uploaded
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+    chatgpt-account-id: account-replay
+  body: {}
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 169
+---
+type: response_body
+at_us: 2000
+bytes: 169
+body:
+  status: success
+  download_url: https://storage.example.test/file-codex-lite-1?sig=synthetic-download
+  file_name: image.png
+  mime_type: null
+  file_size_bytes: 91
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

@@ -37,22 +37,26 @@ function M.discover_models(ctx)
   })
   return async.run(function()
     local resolved = ctx.resolve_auth():await()
-    if resolved.ok == false then error(resolved.error, 0) end
+    if resolved.ok == false then
+      error(resolved.error, 0)
+    end
     if resolved.configured ~= true then
       local ok, key = pcall(ctx.resolve_api_key)
       if not ok then
-        error(util.error("auth",
-          "Failed to resolve OPENCODE_API_KEY", key), 0)
+        error(util.error("auth", "Failed to resolve OPENCODE_API_KEY", key), 0)
       end
       if type(key) ~= "string" or util.trim(key) == "" then
-        error(util.error("auth",
-          "Connect OpenCode Go or set OPENCODE_API_KEY to load models"), 0)
+        error(util.error("auth", "Connect OpenCode Go or set OPENCODE_API_KEY to load models"), 0)
       end
     end
     local result = selected:models():await()
-    if result.ok == false then error(result.error, 0) end
+    if result.ok == false then
+      error(result.error, 0)
+    end
     local models = {}
-    for _, id in ipairs(result.models) do models[#models + 1] = { id = id } end
+    for _, id in ipairs(result.models) do
+      models[#models + 1] = { id = id }
+    end
     return { ok = true, models = models }
   end, { error_kind = "provider" })
 end
@@ -60,8 +64,12 @@ end
 ---@param window Neoagent.OpenCodeQuotaWindow
 ---@return Neoagent.ProviderLevel
 local function limit_level(window)
-  if window.rate_limited or window.remaining <= 0 then return "error" end
-  if window.remaining <= 0.2 then return "warn" end
+  if window.rate_limited or window.remaining <= 0 then
+    return "error"
+  end
+  if window.remaining <= 0.2 then
+    return "warn"
+  end
   return "success"
 end
 
@@ -83,12 +91,17 @@ function M.new(opts, resources)
   local function blocks()
     ---@type Neoagent.ProviderBlock[]
     local result = {}
-    if status then result[#result + 1] = util.copy(status) end
+    if status then
+      result[#result + 1] = util.copy(status)
+    end
     result[#result + 1] = {
-      type = "field", label = "Endpoint", value = base_url,
+      type = "field",
+      label = "Endpoint",
+      value = base_url,
     }
     result[#result + 1] = {
-      type = "field", label = "Quota scope",
+      type = "field",
+      label = "Quota scope",
       value = "Shared across all Go models",
     }
     if usage then
@@ -99,8 +112,11 @@ function M.new(opts, resources)
           label = definition.label,
           remaining = window.remaining,
           resets_at = window.resets_at,
-          detail = string.format("≈ $%.2f of $%d allowance remaining",
-            definition.dollars * window.remaining, definition.dollars),
+          detail = string.format(
+            "≈ $%.2f of $%d allowance remaining",
+            definition.dollars * window.remaining,
+            definition.dollars
+          ),
           level = limit_level(window),
         }
       end
@@ -108,15 +124,12 @@ function M.new(opts, resources)
     return result
   end
 
-  local report = resources.report or function() end
-  local dashboard = provider_state.new({ blocks = blocks() }, { report = report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
   local function publish()
-    if destroyed then return end
-    local ok, err = dashboard:push({ blocks = blocks() })
-    if not ok then
-      report("neoagent OpenCode Go dashboard failed: "
-        .. tostring(err and err.message or err), vim.log.levels.ERROR)
+    if destroyed then
+      return
     end
+    assert(dashboard:push({ blocks = blocks() }))
   end
   ---@class Neoagent.OpenCodeService: Neoagent.ProviderService
   local service = {
@@ -125,8 +138,12 @@ function M.new(opts, resources)
     operations = {},
   }
 
-  function service:state() return dashboard:state() end
-  function service:subscribe(listener) return dashboard:subscribe(listener) end
+  function service:state()
+    return dashboard:state()
+  end
+  function service:subscribe(listener)
+    return dashboard:subscribe(listener)
+  end
 
   function service:wrap_model(model)
     return require("neoagent.providers.opencode_go.model").wrap(model)
@@ -148,8 +165,7 @@ function M.new(opts, resources)
         if refreshed.ok == false then
           status = {
             type = "status",
-            text = "Usage refresh failed: " .. tostring(
-              refreshed.error and refreshed.error.message or "unknown error"),
+            text = "Usage refresh failed: " .. tostring(refreshed.error and refreshed.error.message or "unknown error"),
             level = "error",
           }
           publish()
@@ -158,13 +174,18 @@ function M.new(opts, resources)
         usage = refreshed.usage
         local exhausted = false
         for _, definition in ipairs(windows) do
-          if usage[definition.id].rate_limited then exhausted = true break end
+          if usage[definition.id].rate_limited then
+            exhausted = true
+            break
+          end
         end
-        status = exhausted and {
-          type = "status",
-          text = "A Go usage window is exhausted",
-          level = "error",
-        } or nil
+        status = exhausted
+            and {
+              type = "status",
+              text = "A Go usage window is exhausted",
+              level = "error",
+            }
+          or nil
         publish()
         return { ok = true }
       end, { error_kind = "provider" })
@@ -172,7 +193,9 @@ function M.new(opts, resources)
   }
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     dashboard:destroy()
   end

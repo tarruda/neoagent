@@ -4,7 +4,7 @@ local messages = require("neoagent.api.messages")
 describe("neoagent.api.messages", function()
   it("preserves image input for multimodal models", function()
     local original = { { role = "user", content = {
-      { type = "image", mimeType = "image/png", data = "AAAA" },
+      { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" },
     } } }
 
     assert.are.equal(original, messages.for_model(original, { input = { "text", "image" } }))
@@ -47,12 +47,12 @@ describe("neoagent.api.messages", function()
     local original = {
       { role = "user", content = {
         { type = "text", text = "before" },
-        { type = "image", mimeType = "image/png", data = "AAAA" },
-        { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+        { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" },
+        { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/jpeg" },
         { type = "text", text = "after" },
       } },
       { role = "toolResult", toolCallId = "call-1", content = {
-        { type = "image", mimeType = "image/png", data = "CCCC" },
+        { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" },
         { type = "text", text = "details" },
       } },
       { role = "assistant", content = { { type = "text", text = "done" } } },

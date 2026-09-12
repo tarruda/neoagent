@@ -3,7 +3,9 @@ local function plugin_root()
   local source = assert(debug.getinfo(1, "S")).source
   local path = source:sub(1, 1) == "@" and source:sub(2) or source
   path = vim.fn.fnamemodify(path, ":p")
-  for _ = 1, 4 do path = assert(vim.fs.dirname(path)) end
+  for _ = 1, 4 do
+    path = assert(vim.fs.dirname(path))
+  end
   return path
 end
 
@@ -33,13 +35,13 @@ local function documentation()
     "## Independent Agent",
     "",
     "```lua",
-    "local neoagent = require(\"neoagent\")",
-    "local session = require(\"neoagent.session\").new()",
+    'local neoagent = require("neoagent")',
+    'local session = require("neoagent.session").new()',
     "",
     "local review = neoagent.new({",
-    "  name = \"Review\",",
-    "  tools = require(\"neoagent.tools\").read_only(),",
-    "  system_prompt = \"Review this workspace.\",",
+    '  name = "Review",',
+    '  tools = require("neoagent.tools").read_only(),',
+    '  system_prompt = "Review this workspace.",',
     "}, {",
     "  session = session,",
     "  workspace = vim.fn.getcwd(),",
@@ -52,14 +54,13 @@ local function documentation()
     "## Tools and execution",
     "",
     "A Tool is a `{ name, description, input_schema, execute }` table. "
-      .. "Bundled presets come from `require(\"neoagent.tools\")`.",
+      .. 'Bundled presets come from `require("neoagent.tools")`.',
     "`execute_tool(tool, arguments, ctx)` is the policy boundary for "
       .. "approval, logging, sandboxing, and other decorators.",
     "",
     "## Runtime policies and UI",
     "",
-    "Workspace trust, sandboxing, resources, persistence, and UI are optional "
-      .. "layers composed around an Agent.",
+    "Workspace trust, sandboxing, resources, persistence, and UI are optional " .. "layers composed around an Agent.",
     "An Agent Applet presents one Agent; the top-level Neoagent Applet owns "
       .. "Profile drafts, Agent selection, and the Provider Shell.",
     "",

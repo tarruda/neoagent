@@ -27,12 +27,13 @@ local M = {}
 ---@field is_terminal fun(): boolean
 ---@field partial fun(): Neoagent.AssistantMessage
 
-
 ---@param value unknown
 ---@param field string
 ---@return string?
 local function optional_string(value, field)
-  if not value then return nil end
+  if not value then
+    return nil
+  end
   if type(value) ~= "string" then
     error(util.error("protocol", "Invalid OpenAI Responses " .. field .. ": expected a string"), 0)
   end
@@ -43,7 +44,9 @@ end
 ---@param field string
 ---@return Neoagent.JsonObject|Neoagent.JsonArray
 local function json_table(value, field)
-  if not value then return {} end
+  if not value then
+    return {}
+  end
   if type(value) ~= "table" then
     error(util.error("protocol", "Invalid OpenAI Responses " .. field .. ": expected a table"), 0)
   end
@@ -155,7 +158,9 @@ function M.new(model, emit)
     elseif index >= next_index then
       next_index = index + 1
     end
-    if item_id then item_indexes[item_id] = index end
+    if item_id then
+      item_indexes[item_id] = index
+    end
     return index
   end
 
@@ -172,7 +177,9 @@ function M.new(model, emit)
     elseif item.type == "message" then
       ---@type Neoagent.TextBlock
       local block = { type = "text", text = "", index = index }
-      if type(item.phase) == "string" and item.phase ~= "" then block.phase = item.phase end
+      if type(item.phase) == "string" and item.phase ~= "" then
+        block.phase = item.phase
+      end
       message.content[#message.content + 1] = block
       block_indexes[block] = index
       slots[index] = { type = "text", block = block }
@@ -205,8 +212,7 @@ function M.new(model, emit)
   ---@return string
   local function appended_text(previous, value)
     if not util.is_valid_utf8(value) then
-      error(util.error("protocol",
-        "OpenAI Responses delta must contain valid UTF-8"), 0)
+      error(util.error("protocol", "OpenAI Responses delta must contain valid UTF-8"), 0)
     end
     return value:sub(1, #previous) == previous and value:sub(#previous + 1) or ""
   end
@@ -218,12 +224,18 @@ function M.new(model, emit)
   local function finalize_thinking(slot, index, item, item_id)
     local summary = content_text(item.summary, "\n\n")
     local text = summary ~= "" and summary or content_text(item.content, "\n\n")
-    if text == "" then text = slot.block.thinking end
+    if text == "" then
+      text = slot.block.thinking
+    end
     local delta = appended_text(slot.block.thinking, text)
     slot.block.thinking = text
-    if delta ~= "" then emit({ type = "thinking_delta", text = delta, index = index }) end
+    if delta ~= "" then
+      emit({ type = "thinking_delta", text = delta, index = index })
+    end
     slot.block.thinkingSignature = vim.json.encode(item)
-    if item_id then reasoning[item_id] = slot.block end
+    if item_id then
+      reasoning[item_id] = slot.block
+    end
   end
 
   ---@param slot Neoagent.ResponsesTextSlot
@@ -232,13 +244,17 @@ function M.new(model, emit)
   ---@param item_id? string
   local function finalize_text(slot, index, item, item_id)
     local text = content_text(item.content, "", true)
-    if type(item.phase) == "string" and item.phase ~= "" then slot.block.phase = item.phase end
+    if type(item.phase) == "string" and item.phase ~= "" then
+      slot.block.phase = item.phase
+    end
     local delta = appended_text(slot.block.text, text)
     slot.block.text = text
     if delta ~= "" then
       emit({ type = "text_delta", text = delta, index = index, phase = slot.block.phase })
     end
-    if item_id then slot.block.textSignature = item_id end
+    if item_id then
+      slot.block.textSignature = item_id
+    end
   end
 
   ---@param slot Neoagent.ResponsesToolSlot
@@ -250,15 +266,21 @@ function M.new(model, emit)
     if delta ~= "" then
       emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
     end
-    if slot.block.id == "" then error(util.error("protocol", "Tool call is missing an id"), 0) end
-    if slot.block.name == "" then error(util.error("protocol", "Tool call is missing a name"), 0) end
+    if slot.block.id == "" then
+      error(util.error("protocol", "Tool call is missing an id"), 0)
+    end
+    if slot.block.name == "" then
+      error(util.error("protocol", "Tool call is missing a name"), 0)
+    end
     slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
   end
 
   ---@param index integer
   ---@param item Neoagent.JsonObject|Neoagent.JsonArray
   local function finalize_item(index, item)
-    if finished[index] then return end
+    if finished[index] then
+      return
+    end
     local slot = slots[index] or create_slot(index, item)
     local item_id = optional_string(item.id, "item id")
     if item.type == "reasoning" and slot and slot.type == "thinking" then
@@ -291,7 +313,9 @@ function M.new(model, emit)
       end
     end
     local response_id = optional_string(response.id, "response id")
-    if response_id then message.responseId = response_id end
+    if response_id then
+      message.responseId = response_id
+    end
     if type(response.usage) == "table" then
       message.usage = usage_from(response.usage)
       emit({ type = "usage", usage = util.copy(message.usage) })
@@ -301,7 +325,14 @@ function M.new(model, emit)
       message.stopReason = "length"
     elseif status ~= nil and status ~= "completed" and status ~= "in_progress" and status ~= "queued" then
       error(util.error("model", "Provider response status: " .. tostring(status)), 0)
-    elseif vim.tbl_contains(vim.tbl_map(function(block) return block.type end, message.content), "toolCall") then
+    elseif
+      vim.tbl_contains(
+        vim.tbl_map(function(block)
+          return block.type
+        end, message.content),
+        "toolCall"
+      )
+    then
       message.stopReason = "toolUse"
     end
     terminal = true
@@ -313,7 +344,10 @@ function M.new(model, emit)
       error(util.error("protocol", "Expected an object in SSE response"), 0)
     end
     if type(event.error) == "table" and event.type == nil then
-      error(util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)), 0)
+      error(
+        util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)),
+        0
+      )
     end
     local item = json_table(event.item, "item")
     local item_id = event.item_id or item.id
@@ -324,47 +358,49 @@ function M.new(model, emit)
     elseif event.type == "response.output_item.added" then
       index = register_index(index, item_id)
       create_slot(index, item)
-    elseif event.type == "response.reasoning_summary_text.delta"
-        or event.type == "response.reasoning_text.delta" then
+    elseif event.type == "response.reasoning_summary_text.delta" or event.type == "response.reasoning_text.delta" then
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "thinking" and type(event.delta) == "string" then
         if not util.is_valid_utf8(event.delta) then
-          error(util.error("protocol",
-            "OpenAI Responses thinking delta must contain valid UTF-8"), 0)
+          error(util.error("protocol", "OpenAI Responses thinking delta must contain valid UTF-8"), 0)
         end
         if event.type == "response.reasoning_summary_text.delta" then
           local summary_index = type(event.summary_index) == "number" and event.summary_index or nil
-          local changed = summary_index ~= nil and slot.summary_index ~= nil
-            and summary_index ~= slot.summary_index
-          if (slot.summary_part_pending or changed) and slot.block.thinking ~= ""
-              and event.delta ~= "" then
+          local changed = summary_index ~= nil and slot.summary_index ~= nil and summary_index ~= slot.summary_index
+          if (slot.summary_part_pending or changed) and slot.block.thinking ~= "" and event.delta ~= "" then
             slot.block.thinking = slot.block.thinking .. "\n\n"
             emit({ type = "thinking_delta", text = "\n\n", index = index })
           end
           slot.summary_part_pending = nil
-          if summary_index ~= nil then slot.summary_index = summary_index end
+          if summary_index ~= nil then
+            slot.summary_index = summary_index
+          end
         end
         slot.block.thinking = slot.block.thinking .. event.delta
         emit({ type = "thinking_delta", text = event.delta, index = index })
       end
-    elseif event.type == "response.reasoning_summary_part.added"
-        or event.type == "response.reasoning_summary_part.done" then
+    elseif
+      event.type == "response.reasoning_summary_part.added"
+      or event.type == "response.reasoning_summary_part.done"
+    then
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "thinking" then
         local summary_index = type(event.summary_index) == "number" and event.summary_index or nil
         slot.summary_part_pending = event.type == "response.reasoning_summary_part.done"
-          or summary_index == nil or summary_index > 0
-        if summary_index ~= nil then slot.summary_index = summary_index end
+          or summary_index == nil
+          or summary_index > 0
+        if summary_index ~= nil then
+          slot.summary_index = summary_index
+        end
       end
     elseif event.type == "response.output_text.delta" or event.type == "response.refusal.delta" then
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "text" and type(event.delta) == "string" then
         if not util.is_valid_utf8(event.delta) then
-          error(util.error("protocol",
-            "OpenAI Responses text delta must contain valid UTF-8"), 0)
+          error(util.error("protocol", "OpenAI Responses text delta must contain valid UTF-8"), 0)
         end
         slot.block.text = slot.block.text .. event.delta
         emit({ type = "text_delta", text = event.delta, index = index, phase = slot.block.phase })
@@ -380,8 +416,7 @@ function M.new(model, emit)
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "toolCall" and type(event.arguments) == "string" then
-        local delta = event.arguments:sub(1, #slot.raw) == slot.raw
-          and event.arguments:sub(#slot.raw + 1) or ""
+        local delta = event.arguments:sub(1, #slot.raw) == slot.raw and event.arguments:sub(#slot.raw + 1) or ""
         slot.raw = event.arguments
         if delta ~= "" then
           emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
@@ -395,18 +430,26 @@ function M.new(model, emit)
     elseif event.type == "response.incomplete" then
       finish_response(json_table(event.response, "response"), true)
     elseif event.type == "error" then
-      error(util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)), 0)
+      error(
+        util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)),
+        0
+      )
     elseif event.type == "response.failed" then
       terminal = true
       local response = json_table(event.response, "response")
-      error(util.error("model", http_response.error_message(response, "Provider response failed"), util.json_encode(event)), 0)
+      error(
+        util.error("model", http_response.error_message(response, "Provider response failed"), util.json_encode(event)),
+        0
+      )
     end
   end
 
   return {
     message = message,
     process = process_payload,
-    is_terminal = function() return terminal end,
+    is_terminal = function()
+      return terminal
+    end,
     partial = function()
       local candidate = util.copy(message)
       candidate.content = {}

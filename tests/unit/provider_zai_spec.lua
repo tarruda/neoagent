@@ -92,6 +92,20 @@ describe("Z.AI provider services", function()
       "private response", 1, true))
   end)
 
+  it("renders balances without a reported currency", function()
+    local transport = fake_transport.new()
+    transport.fetches = { { body = vim.json.encode({
+      data = { total_balance = 20, available_balance = 12.5 },
+    }) } }
+    local service = zai.new({
+      base_url = "https://api.example.test/api/paas/v4",
+    }, { provider_id = "zai", transport = transport })
+
+    assert.is_true(wait(operation(service, "refresh")).ok)
+    assert.are.equal("12.50",
+      assert(block(service:state(), "field", "Available balance")).value)
+  end)
+
   it("reports an exhausted balance and preserves it across later failures", function()
     local transport = fake_transport.new()
     transport.fetches = {
@@ -265,5 +279,41 @@ describe("Z.AI provider services", function()
     assert.are.equal("https://manage.example.test/api/monitor/usage/quota/limit",
       assert(transport.fetch_requests[1]).url)
     assert.is_nil(vim.inspect(service:state()):find("private response", 1, true))
+  end)
+
+  it("ignores an in-flight quota refresh after destruction", function()
+    local pending
+    local transport = fake_transport.new()
+    transport.fetch = function(opts)
+      transport.fetch_requests[#transport.fetch_requests + 1] = opts.request
+      return async.run(function()
+        return async.await(function(done)
+          pending = done
+          return function() end
+        end)
+      end)
+    end
+    local service = zai.new({
+      base_url = "https://manage.example.test/api/coding/paas/v4",
+    }, {
+      provider_id = "zai-coding-plan",
+      transport = transport,
+    })
+    local refresh = operation(service, "refresh")
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    assert(service.destroy)(service)
+    assert(service.destroy)(service)
+    local completion = pending
+    ---@cast completion Neoagent.AwaitCallbacks<Neoagent.ByteFetchResult>
+    completion.resolve({
+      ok = true,
+      status = 200,
+      headers = {},
+      body = vim.json.encode({ data = { limits = {
+        { type = "TOKENS_LIMIT", percentage = 25 },
+      } } }),
+    })
+    assert.is_true(wait(refresh).ok)
+    assert.are.same({}, service:state().blocks)
   end)
 end)

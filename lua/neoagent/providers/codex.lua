@@ -41,9 +41,9 @@ local M = {}
 ---@field account Neoagent.CodexDashboardAccount
 ---@field reached_type? string
 
-
 local STALE_AFTER_MS = 15 * 60 * 1000
 local DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
+local MAX_LIMITS = 25
 
 local plan_labels = {
   free = "Free",
@@ -70,19 +70,18 @@ local plan_labels = {
 ---@param value unknown
 ---@return TypeGuard<number>
 local function finite(value)
-  return type(value) == "number" and value == value
-    and value ~= math.huge and value ~= -math.huge
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
 ---@param value unknown
 ---@param maximum integer
 ---@return string?
 local function safe_text(value, maximum)
-  if type(value) ~= "string" then return nil end
+  if type(value) ~= "string" then
+    return nil
+  end
   value = util.trim(value)
-  if value == "" or #value > maximum
-      or not util.is_valid_utf8(value)
-      or value:find("[%z\1-\31\127]") then
+  if value == "" or #value > maximum or not util.is_valid_utf8(value) or value:find("[%z\1-\31\127]") then
     return nil
   end
   return value
@@ -92,22 +91,31 @@ end
 ---@return string?
 local function plan_label(value)
   value = safe_text(value, 64)
-  return value and plan_labels[
-    value:lower():gsub("%-", "_"):gsub("%s+", "_")] or nil
+  return value and plan_labels[value:lower():gsub("%-", "_"):gsub("%s+", "_")] or nil
 end
 
 ---@param minutes unknown
 ---@return string
 local function duration_label(minutes)
-  if minutes == 300 then return "5h" end
-  if minutes == 10080 then return "Weekly" end
-  if minutes == 43200 or minutes == 44640 then return "Monthly" end
-  if not finite(minutes) or minutes <= 0 then return "Usage" end
+  if minutes == 300 then
+    return "5h"
+  end
+  if minutes == 10080 then
+    return "Weekly"
+  end
+  if minutes == 43200 or minutes == 44640 then
+    return "Monthly"
+  end
+  if not finite(minutes) or minutes <= 0 then
+    return "Usage"
+  end
   if minutes % 1440 == 0 then
     local days = minutes / 1440
     return tostring(days) .. (days == 1 and " day" or " days")
   end
-  if minutes % 60 == 0 then return tostring(minutes / 60) .. "h" end
+  if minutes % 60 == 0 then
+    return tostring(minutes / 60) .. "h"
+  end
   return tostring(minutes) .. "m"
 end
 
@@ -131,20 +139,30 @@ local function grouped_number(value)
   while true do
     local replaced, count = digits:gsub("^(%-?%d+)(%d%d%d)", "%1,%2")
     digits = replaced
-    if count == 0 then return digits end
+    if count == 0 then
+      return digits
+    end
   end
 end
 
 ---@param usage unknown
 ---@return Neoagent.ProviderFieldBlock?
 local function usage_field(usage)
-  if type(usage) ~= "table" then return nil end
+  if type(usage) ~= "table" then
+    return nil
+  end
   local input = tonumber(usage.inputTokens or usage.input_tokens)
   local output = tonumber(usage.outputTokens or usage.output_tokens)
-  if not input and not output then return nil end
+  if not input and not output then
+    return nil
+  end
   local parts = {}
-  if input then parts[#parts + 1] = grouped_number(input) .. " in" end
-  if output then parts[#parts + 1] = grouped_number(output) .. " out" end
+  if input then
+    parts[#parts + 1] = grouped_number(input) .. " in"
+  end
+  if output then
+    parts[#parts + 1] = grouped_number(output) .. " out"
+  end
   return {
     type = "field",
     label = "Last response",
@@ -155,20 +173,25 @@ end
 ---@param value unknown
 ---@return Neoagent.CodexDashboardWindow?
 local function normalized_window(value)
-  if type(value) ~= "table" then return nil end
+  if type(value) ~= "table" then
+    return nil
+  end
   local remaining = value.remaining
   if not finite(remaining) then
     local used = value.used_percent
-    if finite(used) then remaining = (100 - used) / 100 end
+    if finite(used) then
+      remaining = (100 - used) / 100
+    end
   end
-  if not finite(remaining) then return nil end
+  if not finite(remaining) then
+    return nil
+  end
   local result = {
     remaining = math.max(0, math.min(1, remaining)),
   }
   if finite(value.window_minutes) and value.window_minutes > 0 then
     result.window_minutes = value.window_minutes
-  elseif finite(value.limit_window_seconds)
-      and value.limit_window_seconds > 0 then
+  elseif finite(value.limit_window_seconds) and value.limit_window_seconds > 0 then
     result.window_minutes = value.limit_window_seconds / 60
   end
   if finite(value.resets_at) and value.resets_at > 0 then
@@ -184,11 +207,14 @@ end
 ---@param name? unknown
 ---@return Neoagent.CodexDashboardLimit?
 local function normalized_limit(source, id, name)
-  if type(source) ~= "table" then return nil end
+  if type(source) ~= "table" then
+    return nil
+  end
   local primary = normalized_window(source.primary or source.primary_window)
-  local secondary = normalized_window(
-    source.secondary or source.secondary_window)
-  if not primary and not secondary then return nil end
+  local secondary = normalized_window(source.secondary or source.secondary_window)
+  if not primary and not secondary then
+    return nil
+  end
   return {
     id = safe_text(id, 128),
     name = safe_text(name, 128),
@@ -200,15 +226,21 @@ end
 ---@param remaining number
 ---@return Neoagent.ProviderLevel
 local function limit_level(remaining)
-  if remaining <= 0 then return "error" end
-  if remaining <= 0.2 then return "warn" end
+  if remaining <= 0 then
+    return "error"
+  end
+  if remaining <= 0.2 then
+    return "warn"
+  end
   return "success"
 end
 
 ---@param account? Neoagent.CodexDashboardAccount
 ---@return string?
 local function account_display(account)
-  if not account then return nil end
+  if not account then
+    return nil
+  end
   if account.email and account.plan then
     return account.email .. " (" .. account.plan .. ")"
   end
@@ -227,9 +259,10 @@ end
 
 ---@return string
 local function random_id()
-  return "neoagent-" .. assert(vim.uv.random(16)):gsub(".", function(byte)
-    return string.format("%02x", byte:byte())
-  end)
+  return "neoagent-"
+    .. assert(vim.uv.random(16)):gsub(".", function(byte)
+      return string.format("%02x", byte:byte())
+    end)
 end
 
 ---@param opts? Neoagent.ProviderServiceConfig
@@ -286,8 +319,7 @@ function M.new(opts, resources)
 
   ---@return boolean
   local function has_account_data()
-    return account ~= nil or #limit_order > 0 or credits ~= nil
-      or spend_control ~= nil or reset_credit_count ~= nil
+    return account ~= nil or #limit_order > 0 or credits ~= nil or spend_control ~= nil or reset_credit_count ~= nil
   end
 
   ---@return Neoagent.ProviderBlock[]
@@ -301,7 +333,9 @@ function M.new(opts, resources)
     local display = account_display(account)
     if display then
       result[#result + 1] = {
-        type = "field", label = "Account", value = display,
+        type = "field",
+        label = "Account",
+        value = display,
       }
     end
     for _, id in ipairs(limit_order) do
@@ -331,7 +365,9 @@ function M.new(opts, resources)
         value = "None"
       end
       result[#result + 1] = {
-        type = "field", label = "Credits", value = value,
+        type = "field",
+        label = "Credits",
+        value = value,
       }
     end
     if spend_control then
@@ -339,8 +375,7 @@ function M.new(opts, resources)
         result[#result + 1] = {
           type = "limit",
           label = "Monthly spend control",
-          remaining = math.max(0,
-            math.min(1, spend_control.remaining_percent / 100)),
+          remaining = math.max(0, math.min(1, spend_control.remaining_percent / 100)),
           resets_at = spend_control.resets_at,
           detail = spend_control.detail,
           level = spend_control.reached and "error" or "info",
@@ -355,25 +390,33 @@ function M.new(opts, resources)
     end
     if reset_credit_count ~= nil then
       result[#result + 1] = {
-        type = "field", label = "Reset credits",
+        type = "field",
+        label = "Reset credits",
         value = tostring(reset_credit_count),
       }
     end
     if reached_type then
       result[#result + 1] = {
-        type = "status", text = reached_type, level = "error",
+        type = "status",
+        text = reached_type,
+        level = "error",
       }
     end
-    if usage then result[#result + 1] = util.copy(usage) end
-    if activity then result[#result + 1] = util.copy(activity) end
-    if workspaces then result[#result + 1] = util.copy(workspaces) end
+    if usage then
+      result[#result + 1] = util.copy(usage)
+    end
+    if activity then
+      result[#result + 1] = util.copy(activity)
+    end
+    if workspaces then
+      result[#result + 1] = util.copy(workspaces)
+    end
     if #reset_credits > 0 then
       local items = {}
       for _, credit in ipairs(reset_credits) do
         local detail = credit.description
         if credit.expires_at then
-          detail = (detail and detail .. " · " or "")
-            .. "expires " .. credit.expires_at
+          detail = (detail and detail .. " · " or "") .. "expires " .. credit.expires_at
         end
         items[#items + 1] = {
           label = credit.title or "Rate-limit reset",
@@ -381,32 +424,40 @@ function M.new(opts, resources)
         }
       end
       result[#result + 1] = {
-        type = "list", title = "Reset credits", items = items,
+        type = "list",
+        title = "Reset credits",
+        items = items,
       }
     end
     return result
   end
 
   local function publish()
-    if destroyed then return end
-    local ok, err = dashboard:push({ blocks = blocks() })
-    if not ok then
-      report("neoagent Codex dashboard failed: "
-        .. tostring(err and err.message or err), vim.log.levels.ERROR)
+    if destroyed then
+      return
     end
+    assert(dashboard:push({ blocks = blocks() }))
   end
 
   ---@param source unknown
   ---@return boolean
   local function replace_limit(source)
-    if type(source) ~= "table" then return false end
+    if type(source) ~= "table" then
+      return false
+    end
     local id = safe_text(source.id, 128)
-    if not id then return false end
+    if not id then
+      return false
+    end
     local primary = normalized_window(source.primary)
     local secondary = normalized_window(source.secondary)
-    if not primary and not secondary then return false end
+    if not primary and not secondary then
+      return false
+    end
     if not limits[id] then
-      if #limit_order >= 28 then return false end
+      if #limit_order >= MAX_LIMITS then
+        return false
+      end
       limit_order[#limit_order + 1] = id
     end
     local current = limits[id] or { id = id }
@@ -420,16 +471,20 @@ function M.new(opts, resources)
   ---@param details unknown
   ---@return boolean
   local function apply_header_details(details)
-    if type(details) ~= "table" then return false end
+    if type(details) ~= "table" then
+      return false
+    end
     local changed = false
     if type(details.limits) == "table" and util.is_list(details.limits) then
       for _, limit in ipairs(details.limits) do
         changed = replace_limit(limit) or changed
       end
     end
-    if type(details.credits) == "table"
-        and type(details.credits.has_credits) == "boolean"
-        and type(details.credits.unlimited) == "boolean" then
+    if
+      type(details.credits) == "table"
+      and type(details.credits.has_credits) == "boolean"
+      and type(details.credits.unlimited) == "boolean"
+    then
       credits = {
         has_credits = details.credits.has_credits,
         unlimited = details.credits.unlimited,
@@ -447,26 +502,31 @@ function M.new(opts, resources)
     ---@type Neoagent.CodexDashboardLimit[]
     local next_limits = {}
     local base = normalized_limit(payload.rate_limit, "codex")
-    if base then next_limits[#next_limits + 1] = base end
-    if type(payload.additional_rate_limits) == "table"
-        and util.is_list(payload.additional_rate_limits) then
+    if base then
+      next_limits[#next_limits + 1] = base
+    end
+    if type(payload.additional_rate_limits) == "table" and util.is_list(payload.additional_rate_limits) then
       for index, extra in ipairs(payload.additional_rate_limits) do
-        if index > 24 then break end
+        if index > 24 then
+          break
+        end
         if type(extra) == "table" then
-          local id = safe_text(extra.metered_feature, 128)
-            or "metered-" .. tostring(index)
-          local item = normalized_limit(
-            extra.rate_limit, id, extra.limit_name)
-          if item then next_limits[#next_limits + 1] = item end
+          local id = safe_text(extra.metered_feature, 128) or "metered-" .. tostring(index)
+          local item = normalized_limit(extra.rate_limit, id, extra.limit_name)
+          if item then
+            next_limits[#next_limits + 1] = item
+          end
         end
       end
     end
 
     ---@type Neoagent.CodexCredits?
     local next_credits
-    if type(payload.credits) == "table"
-        and type(payload.credits.has_credits) == "boolean"
-        and type(payload.credits.unlimited) == "boolean" then
+    if
+      type(payload.credits) == "table"
+      and type(payload.credits.has_credits) == "boolean"
+      and type(payload.credits.unlimited) == "boolean"
+    then
       next_credits = {
         has_credits = payload.credits.has_credits,
         unlimited = payload.credits.unlimited,
@@ -480,10 +540,8 @@ function M.new(opts, resources)
       local individual = payload.spend_control.individual_limit
       next_spend = { reached = payload.spend_control.reached == true }
       if type(individual) == "table" then
-        next_spend.remaining_percent = finite(individual.remaining_percent)
-          and individual.remaining_percent or nil
-        next_spend.resets_at = finite(individual.reset_at)
-          and individual.reset_at or nil
+        next_spend.remaining_percent = finite(individual.remaining_percent) and individual.remaining_percent or nil
+        next_spend.resets_at = finite(individual.reset_at) and individual.reset_at or nil
         local remaining = safe_text(individual.remaining, 128)
         local maximum = safe_text(individual.limit, 128)
         if remaining and maximum then
@@ -493,18 +551,19 @@ function M.new(opts, resources)
     end
 
     local reset_count
-    if type(payload.rate_limit_reset_credits) == "table"
-        and finite(payload.rate_limit_reset_credits.available_count) then
-      reset_count = math.max(0,
-        math.floor(payload.rate_limit_reset_credits.available_count))
+    if
+      type(payload.rate_limit_reset_credits) == "table"
+      and finite(payload.rate_limit_reset_credits.available_count)
+    then
+      reset_count = math.max(0, math.floor(payload.rate_limit_reset_credits.available_count))
     end
     local next_account = {
       email = safe_text(metadata and metadata.email, 254),
-      plan = plan_label(payload.plan_type)
-        or safe_text(metadata and metadata.plan, 64),
+      plan = plan_label(payload.plan_type) or safe_text(metadata and metadata.plan, 64),
     }
     local reached = type(payload.rate_limit_reached_type) == "table"
-      and safe_text(payload.rate_limit_reached_type.type, 128) or nil
+        and safe_text(payload.rate_limit_reached_type.type, 128)
+      or nil
     if reached then
       reached = reached:gsub("_", " ")
       reached = reached:sub(1, 1):upper() .. reached:sub(2)
@@ -522,7 +581,9 @@ function M.new(opts, resources)
   ---@param snapshot Neoagent.CodexAccountSnapshot
   local function apply_account_snapshot(snapshot)
     limits, limit_order = {}, {}
-    for _, limit in ipairs(snapshot.limits) do replace_limit(limit) end
+    for _, limit in ipairs(snapshot.limits) do
+      replace_limit(limit)
+    end
     account = snapshot.account
     credits = snapshot.credits
     spend_control = snapshot.spend_control
@@ -530,18 +591,20 @@ function M.new(opts, resources)
     reached_type = snapshot.reached_type
     checked_at = now()
     stale_visible = false
-    status = #snapshot.limits == 0 and snapshot.credits == nil
-        and snapshot.spend_control == nil and {
+    status = #snapshot.limits == 0
+        and snapshot.credits == nil
+        and snapshot.spend_control == nil
+        and {
           type = "status",
           text = "Account connected · quota information unavailable",
           level = "muted",
-        } or nil
+        }
+      or nil
   end
 
   ---@param err Neoagent.Error
   local function refresh_failure(err)
-    local message = safe_text(err and err.message, 300)
-      or "Codex usage refresh failed"
+    local message = safe_text(err and err.message, 300) or "Codex usage refresh failed"
     if has_account_data() then
       status = {
         type = "status",
@@ -563,7 +626,9 @@ function M.new(opts, resources)
     run = async.run(fn, {
       on_done = function()
         active_runs[run] = nil
-        if clear then clear(run) end
+        if clear then
+          clear(run)
+        end
       end,
       error_kind = "provider",
     })
@@ -574,7 +639,9 @@ function M.new(opts, resources)
   ---@param ctx Neoagent.ProviderOperationContext
   ---@return Neoagent.ProviderOperationRun
   local function refresh(ctx)
-    if refresh_run and not refresh_run:is_done() then return refresh_run end
+    if refresh_run and not refresh_run:is_done() then
+      return refresh_run
+    end
     if not has_account_data() and status then
       status = nil
       publish()
@@ -591,7 +658,9 @@ function M.new(opts, resources)
       publish()
       return { ok = true }
     end, function(candidate)
-      if refresh_run == candidate then refresh_run = nil end
+      if refresh_run == candidate then
+        refresh_run = nil
+      end
     end)
     refresh_run = run
     return run
@@ -640,7 +709,9 @@ function M.new(opts, resources)
     run = function(ctx)
       return auxiliary(ctx, client.activity, function(payload)
         local stats = type(payload.stats) == "table" and payload.stats or nil
-        if not stats then return util.error("provider", "Codex activity response is malformed") end
+        if not stats then
+          return util.error("provider", "Codex activity response is malformed")
+        end
         local rows = {}
         for _, field in ipairs({
           { "Lifetime tokens", stats.lifetime_tokens },
@@ -657,7 +728,9 @@ function M.new(opts, resources)
           end
         end
         activity = {
-          type = "list", title = "Account activity", items = rows,
+          type = "list",
+          title = "Account activity",
+          items = rows,
         }
         return nil
       end)
@@ -682,25 +755,31 @@ function M.new(opts, resources)
         else
           for id, wrapper in pairs(payload.accounts) do
             local item = type(wrapper) == "table" and wrapper.account or nil
-            if type(item) == "table" then by_id[id] = item end
+            if type(item) == "table" then
+              by_id[id] = item
+            end
           end
         end
         local order = type(payload.account_ordering) == "table"
-          and util.is_list(payload.account_ordering)
-          and payload.account_ordering or vim.tbl_keys(by_id)
+            and util.is_list(payload.account_ordering)
+            and payload.account_ordering
+          or vim.tbl_keys(by_id)
         local items = {}
         for _, id in ipairs(order) do
-          if #items >= 50 then break end
+          if #items >= 50 then
+            break
+          end
           local item = by_id[id]
           if item then
             local name = safe_text(item.name, 512) or "Workspace"
-            local detail = id == payload.default_account_id and "Default"
-              or safe_text(item.structure, 128)
+            local detail = id == payload.default_account_id and "Default" or safe_text(item.structure, 128)
             items[#items + 1] = { label = name, detail = detail }
           end
         end
         workspaces = {
-          type = "list", title = "Workspaces", items = items,
+          type = "list",
+          title = "Workspaces",
+          items = items,
         }
         return nil
       end)
@@ -712,15 +791,19 @@ function M.new(opts, resources)
     description = "Load earned rate-limit resets",
     run = function(ctx)
       return auxiliary(ctx, client.reset_credits, function(payload)
-        if not finite(payload.available_count)
-            or type(payload.credits) ~= "table"
-            or not util.is_list(payload.credits) then
+        if
+          not finite(payload.available_count)
+          or type(payload.credits) ~= "table"
+          or not util.is_list(payload.credits)
+        then
           return util.error("provider", "Codex reset-credit response is malformed")
         end
         reset_credit_count = math.max(0, math.floor(payload.available_count))
         reset_credits = {}
         for index, item in ipairs(payload.credits) do
-          if index > 50 then break end
+          if index > 50 then
+            break
+          end
           if type(item) == "table" then
             local id = safe_text(item.id, 256)
             local state = safe_text(item.status, 32)
@@ -748,17 +831,18 @@ function M.new(opts, resources)
       return start_tracked(function()
         local selected
         for _, credit in ipairs(reset_credits) do
-          if credit.status == "available" then selected = credit break end
+          if credit.status == "available" then
+            selected = credit
+            break
+          end
         end
-        local prompt = selected and selected.title
-          and "Redeem " .. selected.title .. "?"
+        local prompt = selected and selected.title and "Redeem " .. selected.title .. "?"
           or "Redeem one rate-limit reset credit?"
         if not interact_confirm(ctx, { prompt = prompt }) then
           return { ok = true, cancelled = true }
         end
         local redeem_request_id = new_id()
-        local result = client:redeem(ctx, redeem_request_id,
-          selected and selected.id or nil):await()
+        local result = client:redeem(ctx, redeem_request_id, selected and selected.id or nil):await()
         if result.ok == false then
           if not (result.error and result.error.kind == "cancelled") then
             refresh_failure(result.error)
@@ -767,21 +851,24 @@ function M.new(opts, resources)
         end
         local code = safe_text(result.value.code, 64)
         if code == "no_credit" or code == "nothing_to_reset" then
-          local err = util.error("provider",
-            code == "no_credit" and "No reset credit is available"
-              or "No rate-limit window can be reset")
+          local err = util.error(
+            "provider",
+            code == "no_credit" and "No reset credit is available" or "No rate-limit window can be reset"
+          )
           refresh_failure(err)
           return { ok = false, error = err }
         end
         if code ~= "reset" and code ~= "already_redeemed" then
-          local err = util.error("provider",
-            "Codex reset-credit response is malformed")
+          local err = util.error("provider", "Codex reset-credit response is malformed")
           refresh_failure(err)
           return { ok = false, error = err }
         end
         if selected then
           for index, credit in ipairs(reset_credits) do
-            if credit == selected then table.remove(reset_credits, index) break end
+            if credit == selected then
+              table.remove(reset_credits, index)
+              break
+            end
           end
         end
         if reset_credit_count then
@@ -789,8 +876,7 @@ function M.new(opts, resources)
         end
         local refreshed = client:usage(ctx):await()
         if refreshed.ok then
-          apply_account_snapshot(account_snapshot(
-            refreshed.value, refreshed.metadata))
+          apply_account_snapshot(account_snapshot(refreshed.value, refreshed.metadata))
         else
           refresh_failure(refreshed.error)
         end
@@ -801,8 +887,7 @@ function M.new(opts, resources)
   }
 
   function service:state()
-    if checked_at and not stale_visible
-        and now() - checked_at > STALE_AFTER_MS then
+    if checked_at and not stale_visible and now() - checked_at > STALE_AFTER_MS then
       stale_visible = true
       status = {
         type = "status",
@@ -819,13 +904,17 @@ function M.new(opts, resources)
   end
 
   function service:on_event(event)
-    if type(event) ~= "table" then return end
+    if type(event) ~= "table" then
+      return
+    end
     if event.type == "provider_status" then
       local text = safe_text(event.text, 512)
       if type(event.reconnecting) == "boolean" then
         if event.reconnecting and text then
           connection_status = {
-            type = "status", text = text, level = "warn",
+            type = "status",
+            text = text,
+            level = "warn",
           }
         elseif not event.reconnecting then
           connection_status = nil
@@ -834,14 +923,15 @@ function M.new(opts, resources)
         return
       end
       if apply_header_details(event.details) then
-        if not checked_at then status = nil end
+        if not checked_at then
+          status = nil
+        end
         publish()
       elseif text then
         status = {
           type = "status",
           text = text,
-          level = text:lower():find("reconnect", 1, true)
-            and "warn" or "info",
+          level = text:lower():find("reconnect", 1, true) and "warn" or "info",
         }
         publish()
       end
@@ -855,9 +945,13 @@ function M.new(opts, resources)
   end
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
-    for run in pairs(active_runs) do run:cancel() end
+    for run in pairs(active_runs) do
+      run:cancel()
+    end
     active_runs = {}
     refresh_run = nil
     dashboard:destroy()

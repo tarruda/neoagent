@@ -56,12 +56,9 @@ local active = setmetatable({}, { __mode = "k" })
 ---@param entry? Neoagent.JournalEntry
 ---@return Neoagent.ObservedMessage
 local function persisted_message(message, entry)
-  if not entry or type(entry.id) ~= "string" or entry.id == "" then
-    return message
-  end
   ---@type Neoagent.ObservedMessage
   local copied = util.copy(message)
-  copied._neoagent_entry_id = entry.id
+  copied._neoagent_entry_id = entry and entry.id or nil
   return copied
 end
 
@@ -70,56 +67,66 @@ end
 local function session_commit(session)
   return function(message)
     local ok, err, entry = session:append(message)
-    if not ok then return nil, err end
+    if not ok then
+      return nil, err
+    end
     return true, nil, persisted_message(message, entry)
   end
 end
 
----@generic C
 ---@param session Neoagent.Session
----@param opts Neoagent.PreparedChat<C>
+---@param overrides? Neoagent.StreamOverrides
 ---@return Neoagent.StreamOverrides
-local function model_options(session, opts)
-  local result = util.copy(opts.model_options or {})
-  result.request_context = request_context.resolve(
-    { session_id = session:id() }, result.request_context)
+local function model_options(session, overrides)
+  local result = util.copy(overrides or {})
+  local files = session:files()
+  assert(
+    result.files == nil or result.files.identity == files.identity,
+    "Chat Model and Session must share attachment storage"
+  )
+  assert(
+    result.file_cache == nil or result.file_cache.scope == files.identity,
+    "Chat upload cache must belong to the Session's workspace"
+  )
+  result.files, result.file_cache = files, session:file_cache()
+  result.request_context = request_context.resolve({ session_id = session:id() }, result.request_context)
   return result
 end
 
 ---@param report? fun(message: string, level: integer)
 ---@return (fun(diagnostic: Neoagent.AsyncDiagnostic))?
 local function diagnostic_report(report)
-  if not report then return nil end
+  if not report then
+    return nil
+  end
   return function(diagnostic)
-    report("callback failed during " .. diagnostic.phase .. ": "
-      .. diagnostic.message, vim.log.levels.ERROR)
+    report("callback failed during " .. diagnostic.phase .. ": " .. diagnostic.message, vim.log.levels.ERROR)
   end
 end
 
 ---@generic C
+---@param session Neoagent.Session
 ---@param opts Neoagent.ChatOptions<C>
 ---@param tools Neoagent.Tool<C>[]
 ---@param commit_message Neoagent.MessageCommit
 ---@return Neoagent.PreparedChat<C>
-local function preflight(opts, tools, commit_message)
-  assert(opts.report == nil or type(opts.report) == "function",
-    "report must be a function")
-  assert(opts.on_done == nil or type(opts.on_done) == "function",
-    "on_done must be a function")
-  assert(opts.on_accept == nil or type(opts.on_accept) == "function",
-    "on_accept must be a function")
-  assert(opts.context_messages == nil
+local function preflight(session, opts, tools, commit_message)
+  assert(opts.report == nil or type(opts.report) == "function", "report must be a function")
+  assert(opts.on_done == nil or type(opts.on_done) == "function", "on_done must be a function")
+  assert(opts.on_accept == nil or type(opts.on_accept) == "function", "on_accept must be a function")
+  assert(
+    opts.context_messages == nil
       or type(opts.context_messages) == "function"
-      or type(opts.context_messages) == "table"
-        and util.is_list(opts.context_messages),
-    "context_messages must be a list or function")
+      or type(opts.context_messages) == "table" and util.is_list(opts.context_messages),
+    "context_messages must be a list or function"
+  )
   ---@type Neoagent.AgentLoopOptions<C>
   local loop_options = {
     model = opts.model,
     messages = {},
     system_prompt = opts.system_prompt,
     tools = tools,
-    model_options = opts.model_options,
+    model_options = model_options(session, opts.model_options),
     context = opts.context,
     execute_tool = opts.execute_tool,
     get_steering_messages = opts.get_steering_messages,
@@ -142,8 +149,8 @@ local function preflight(opts, tools, commit_message)
     report = opts.report,
     diagnostic_report = prepared.report,
     on_accept = opts.on_accept,
-    context_messages = type(opts.context_messages) == "table"
-        and util.copy(opts.context_messages) or opts.context_messages,
+    context_messages = type(opts.context_messages) == "table" and util.copy(opts.context_messages)
+      or opts.context_messages,
     session_state = opts.session_state and util.copy(opts.session_state) or nil,
   }
 end
@@ -151,15 +158,21 @@ end
 ---@param session Neoagent.Session
 ---@param owner? table
 local function release(session, owner)
-  if active[session] == owner then active[session] = nil end
+  if active[session] == owner then
+    active[session] = nil
+  end
 end
 
 ---@param session Neoagent.Session
 ---@return table
 local function reserve(session)
-  assert(type(session) == "table" and type(session.append) == "function"
+  assert(
+    type(session) == "table"
+      and type(session.append) == "function"
       and type(session.context_messages) == "function"
-      and type(session.id) == "function", "session is required")
+      and type(session.id) == "function",
+    "session is required"
+  )
   if active[session] then
     error(util.error("session", "Session already has an active run"), 0)
   end
@@ -183,7 +196,9 @@ local function context_messages(session, opts)
   else
     messages, err = session:context_messages()
   end
-  if not messages then error(util.normalize_error(err, "session"), 0) end
+  if not messages then
+    error(util.normalize_error(err, "session"), 0)
+  end
   return messages
 end
 
@@ -193,12 +208,14 @@ end
 ---@return table, Neoagent.JournalEntry?
 local function begin(session, prompt, state)
   assert(type(prompt) == "string", "prompt must be a string")
-  local reservation = reserve(session)
-  local called, ok, err, entry = pcall(session.append, session, {
+  ---@type Neoagent.Message
+  local message = {
     role = "user",
     content = prompt,
     timestamp = util.now_ms(),
-  }, state)
+  }
+  local reservation = reserve(session)
+  local called, ok, err, entry = pcall(session.append, session, message, state)
   if not called then
     release(session, reservation)
     error(ok, 0)
@@ -214,12 +231,12 @@ end
 ---@param opts Neoagent.PreparedChat<C>
 ---@param entry? Neoagent.JournalEntry
 local function accepted(opts, entry)
-  if type(opts.on_accept) ~= "function" then return end
+  if type(opts.on_accept) ~= "function" then
+    return
+  end
   local ok, err = pcall(opts.on_accept, entry)
   if not ok and type(opts.report) == "function" then
-    pcall(opts.report,
-      "accepted message callback failed: " .. tostring(err),
-      vim.log.levels.ERROR)
+    pcall(opts.report, "accepted message callback failed: " .. tostring(err), vim.log.levels.ERROR)
   end
 end
 
@@ -230,7 +247,6 @@ end
 local function install(session, reservation, run)
   assert(active[session] == reservation, "Session reservation was lost")
   active[session] = run
-  if run:is_done() then release(session, run) end
   return run
 end
 
@@ -239,12 +255,12 @@ end
 ---@param fn fun(): Neoagent.ChatRun
 ---@return Neoagent.ChatRun
 local function start_reserved(session, reservation, fn)
-  local ok, result = pcall(fn)
+  local ok, run = pcall(fn)
   if not ok then
     release(session, reservation)
-    error(result, 0)
+    error(run, 0)
   end
-  return install(session, reservation, result)
+  return install(session, reservation, run)
 end
 
 ---@param result Neoagent.ModelSuccess|Neoagent.ModelFailure|Neoagent.AgentLoopSuccess|Neoagent.AgentLoopFailure
@@ -259,16 +275,22 @@ local function finish_result(result, session)
     ---@cast result Neoagent.AgentLoopFailure
     local failure = result
     return {
-      ok = false, error = util.copy(failure.error),
-      message = util.copy(failure.message), text = text,
-      new_messages = util.copy(new_messages), session = session,
+      ok = false,
+      error = util.copy(failure.error),
+      message = util.copy(failure.message),
+      text = text,
+      new_messages = util.copy(new_messages),
+      session = session,
     }
   end
   ---@cast result Neoagent.ModelSuccess
   local success = result
   return {
-    ok = true, message = util.copy(success.message), text = text,
-    new_messages = util.copy(new_messages), session = session,
+    ok = true,
+    message = util.copy(success.message),
+    text = text,
+    new_messages = util.copy(new_messages),
+    session = session,
   }
 end
 
@@ -276,9 +298,6 @@ end
 ---@param entry? Neoagent.JournalEntry
 ---@return Neoagent.MessageEndEvent
 local function persisted_event(event, entry)
-  if not entry or type(entry.id) ~= "string" or entry.id == "" then
-    return event
-  end
   local copied = util.copy(event)
   copied.message = persisted_message(copied.message, entry)
   return copied
@@ -291,45 +310,52 @@ end
 ---@return Neoagent.ChatRun
 function M.send(session, prompt, opts)
   opts = opts or {}
-  local prepared = preflight(opts, {}, session_commit(session))
+  local prepared = preflight(session, opts, {}, session_commit(session))
   local reservation, entry = begin(session, prompt, prepared.session_state)
   accepted(prepared, entry)
   return start_reserved(session, reservation, function()
     ---@type Neoagent.ChatRun
     local run
     run = async.run(
-    ---@return Neoagent.ChatResult
-    function()
-      local model_opts = model_options(session, prepared)
-      ---@cast model_opts Neoagent.StreamOptions
-      model_opts.messages = context_messages(session, prepared)
-      model_opts.system_prompt = prepared.system_prompt
-      model_opts.on_event = function(event) run:emit(event) end
-      local result = prepared.model:stream(model_opts):await()
-      if result.message then
-        local ok, err, appended = session:append(result.message)
-        if not ok then
-          return finish_result({
-            ok = false,
-            message = result.message,
-            error = err,
-          }, session)
+      ---@return Neoagent.ChatResult
+      function()
+        async.yield()
+        local model_opts = model_options(session, prepared.model_options)
+        ---@cast model_opts Neoagent.StreamOptions
+        model_opts.messages = context_messages(session, prepared)
+        model_opts.system_prompt = prepared.system_prompt
+        model_opts.on_event = function(event)
+          run:emit(event)
         end
-        run:emit(persisted_event({
-          type = "message_end",
-          message = util.copy(result.message),
-        }, appended))
-      end
-      return finish_result(result, session)
-    end, {
-      on_event = prepared.on_event,
-      on_done = function(result)
-        release(session, run)
-        if prepared.on_done then prepared.on_done(result) end
+        local result = prepared.model:stream(model_opts):await()
+        if result.message then
+          local ok, err, appended = session:append(result.message)
+          if not ok then
+            return finish_result({
+              ok = false,
+              message = result.message,
+              error = err,
+            }, session)
+          end
+          run:emit(persisted_event({
+            type = "message_end",
+            message = util.copy(result.message),
+          }, appended))
+        end
+        return finish_result(result, session)
       end,
-      report = prepared.diagnostic_report,
-      error_kind = "session",
-    })
+      {
+        on_event = prepared.on_event,
+        on_done = function(result)
+          release(session, run)
+          if prepared.on_done then
+            prepared.on_done(result)
+          end
+        end,
+        report = prepared.diagnostic_report,
+        error_kind = "session",
+      }
+    )
     return run
   end)
 end
@@ -344,39 +370,43 @@ local function run_agent(session, opts)
   ---@type Neoagent.ChatRun
   local run
   run = async.run(
-  ---@return Neoagent.ChatResult
-  function()
-    ---@type Neoagent.AgentLoopOptions<C>
-    local child_options = {
-      model = opts.model,
-      messages = context_messages(session, opts),
-      system_prompt = opts.system_prompt,
-      tools = opts.tools,
-      model_options = model_options(session, opts),
-      context = opts.context,
-      execute_tool = opts.execute_tool,
-      get_steering_messages = opts.get_steering_messages,
-      commit_message = opts.commit_message,
-      on_event = function(event)
-        run:emit(event)
+    ---@return Neoagent.ChatResult
+    function()
+      async.yield()
+      ---@type Neoagent.AgentLoopOptions<C>
+      local child_options = {
+        model = opts.model,
+        messages = context_messages(session, opts),
+        system_prompt = opts.system_prompt,
+        tools = opts.tools,
+        model_options = model_options(session, opts.model_options),
+        context = opts.context,
+        execute_tool = opts.execute_tool,
+        get_steering_messages = opts.get_steering_messages,
+        commit_message = opts.commit_message,
+        on_event = function(event)
+          run:emit(event)
+        end,
+        report = opts.diagnostic_report,
+      }
+      local child = agent_loop.run(child_options)
+      local result = child:await()
+      return finish_result(result, session)
+    end,
+    {
+      on_event = opts.on_event,
+      on_done = function(result)
+        release(session, run)
+        if opts.on_done then
+          opts.on_done(result)
+        end
       end,
       report = opts.diagnostic_report,
+      error_kind = "session",
     }
-    local child = agent_loop.run(child_options)
-    local result = child:await()
-    return finish_result(result, session)
-  end, {
-    on_event = opts.on_event,
-    on_done = function(result)
-      release(session, run)
-      if opts.on_done then opts.on_done(result) end
-    end,
-    report = opts.diagnostic_report,
-    error_kind = "session",
-  })
+  )
   return run
 end
-
 
 ---@generic C
 ---@param session Neoagent.Session
@@ -385,7 +415,7 @@ end
 ---@return Neoagent.ChatRun
 function M.run(session, prompt, opts)
   opts = opts or {}
-  local prepared = preflight(opts, opts.tools or {}, session_commit(session))
+  local prepared = preflight(session, opts, opts.tools or {}, session_commit(session))
   local reservation, entry = begin(session, prompt, prepared.session_state)
   accepted(prepared, entry)
   return start_reserved(session, reservation, function()
@@ -399,7 +429,7 @@ end
 ---@return Neoagent.ChatRun
 function M.continue(session, opts)
   opts = opts or {}
-  local prepared = preflight(opts, opts.tools or {}, session_commit(session))
+  local prepared = preflight(session, opts, opts.tools or {}, session_commit(session))
   local reservation = reserve(session)
   return start_reserved(session, reservation, function()
     return run_agent(session, prepared)

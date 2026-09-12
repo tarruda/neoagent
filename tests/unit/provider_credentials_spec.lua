@@ -93,6 +93,13 @@ describe("neoagent provider credential ownership", function()
     local ok, err = pcall(value.ambient_api_key, value)
     assert.is_false(ok)
     assert.matches("environment credential", rawget(err, "message"))
+
+    value = credentials({ auth = "shared" }, {
+      error = "credential store failed",
+    })
+    ok, err = pcall(value.ambient_api_key, value)
+    assert.is_false(ok)
+    assert.matches("credential store failed", rawget(err, "message"))
   end)
 
   it("resolves named authentication independently from inference", function()
@@ -170,6 +177,12 @@ describe("neoagent provider credential ownership", function()
     assert.is_nil(identity)
     assert.matches("identity is unavailable", assert(err).message)
 
+    identity, err = credentials({ auth = "key" }, {
+      error = "credential store failed",
+    }):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("credential store failed", assert(err).message)
+
     local stored = { has_credentials = function() return true end }
     identity, err = value({ auth = "key" }, stored):cache_identity()
     assert.is_nil(identity)
@@ -201,6 +214,14 @@ describe("neoagent provider credential ownership", function()
     assert.are.equal("derived-identity", identity)
     assert.is_string(assert(value({ auth = "key", auth_optional = true },
       ambient):cache_identity()))
+
+    identity, err = value({
+      auth = "key",
+      api_key = function() error("private ambient failure") end,
+    }, ambient):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("environment credential", assert(err).message)
+    assert.is_not_matches("private ambient", assert(err).message)
 
     ambient.derive_cache_identity = function()
       error("private derivation failure")

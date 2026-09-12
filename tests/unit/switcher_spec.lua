@@ -89,10 +89,20 @@ describe("neoagent Agent switcher", function()
       assert(table.remove(scheduled, 1))()
       assert.are.equal(1, refreshes)
       assert.are.equal(1, #scheduled)
-      assert(table.remove(scheduled, 1))()
+      local pending_arm = assert(table.remove(scheduled, 1))
+      pending_arm()
 
       for _ = 1, 5 do timer:fire() end
       assert.are.equal(1, #scheduled)
+
+      local stale_frame = assert(table.remove(scheduled, 1))
+      switcher.is_open = function() return false end
+      stale_frame()
+      assert.are.equal(1, refreshes)
+      assert.are.equal(0, #scheduled)
+
+      switcher.timer = nil
+      pending_arm()
     end)
     vim.uv.new_timer = original_new_timer
     vim.schedule = original_schedule
@@ -148,6 +158,34 @@ describe("neoagent Agent switcher", function()
       assert.matches("destroyed", assert(open_err).message)
     end)
     vim.notify = original_notify
+    if not switcher.destroyed then switcher:destroy() end
+    assert(ok, err)
+  end)
+
+  it("ignores a selection invalidated before scheduled dispatch", function()
+    local value = owner()
+    local switcher = switcher_module.new({ owner = value })
+    local original_schedule = vim.schedule
+    ---@type fun()?
+    local scheduled
+    local selected = false
+    value.new = function()
+      selected = true
+      return nil
+    end
+    vim.schedule = function(callback)
+      scheduled = callback
+    end
+    local ok, err = pcall(function()
+      switcher:_choose("new:neo", switcher.generation)
+      switcher:close()
+      local dispatch = assert(scheduled)
+      dispatch()
+      assert.is_false(selected)
+      switcher:destroy()
+      switcher:destroy()
+    end)
+    vim.schedule = original_schedule
     if not switcher.destroyed then switcher:destroy() end
     assert(ok, err)
   end)

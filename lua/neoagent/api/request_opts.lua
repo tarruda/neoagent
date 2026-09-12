@@ -16,17 +16,26 @@ local M = {}
 ---@field request_opts_layers? Neoagent.RequestLayer[]
 ---@field request_context? Neoagent.RequestIdentity
 ---@field transport? Neoagent.ByteBackend
+---@field _images? Neoagent.ImageRequest Internal provider composition.
 
 ---@class Neoagent.ApiRequest
 ---@field url string
 ---@field headers? table<string, unknown>
 ---@field body? Neoagent.JsonObject
 ---@field timeout_ms? number|false
+---@field messages? Neoagent.Message[] Semantic conversation owned by shaping until encoding.
+
+---@class Neoagent.RequestPlan
+---@field api string
+---@field request Neoagent.ApiRequest
+---@field messages Neoagent.Message[]
+---@field encode async fun(image: Neoagent.ImageEncoder): Neoagent.JsonObject
 
 ---@class Neoagent.RequestOverride
 ---@field url? string
 ---@field headers? table<string, unknown>
 ---@field body? Neoagent.JsonObject
+---@field messages? Neoagent.Message[]
 
 ---@class Neoagent.RequestOptionsInput
 ---@field model Neoagent.Model
@@ -45,13 +54,18 @@ local M = {}
 ---@param override? number|false
 ---@return integer|false|nil
 function M.timeout(default, override)
-  if override == false then return false end
+  if override == false then
+    return false
+  end
   ---@type number?
   local value = default
-  if override ~= nil then value = override end
-  assert(value == nil or type(value) == "number" and value > 0
-      and value < math.huge and value % 1 == 0,
-    "timeout_ms must be a positive integer")
+  if override ~= nil then
+    value = override
+  end
+  assert(
+    value == nil or type(value) == "number" and value > 0 and value < math.huge and value % 1 == 0,
+    "timeout_ms must be a positive integer"
+  )
   ---@cast value integer?
   return value
 end
@@ -61,7 +75,7 @@ end
 ---@return Neoagent.ApiRequest
 local function merge(request, override)
   for key in pairs(override) do
-    if key ~= "url" and key ~= "headers" and key ~= "body" then
+    if key ~= "url" and key ~= "headers" and key ~= "body" and key ~= "messages" then
       error(util.error("model", "Unsupported request_opts field: " .. tostring(key)), 0)
     end
   end
@@ -84,7 +98,16 @@ local function merge(request, override)
     if type(override.body) ~= "table" or (next(override.body) ~= nil and util.is_list(override.body)) then
       error(util.error("model", "request_opts.body must be a table"), 0)
     end
+    if override.body.messages ~= nil or override.body.input ~= nil then
+      error(util.error("model", "Conversation fields are encoder-owned; use request_opts.messages"), 0)
+    end
     result.body = util.deep_merge(result.body, override.body)
+  end
+  if override.messages ~= nil then
+    if type(override.messages) ~= "table" or not util.is_list(override.messages) then
+      error(util.error("model", "request_opts.messages must be a semantic message list"), 0)
+    end
+    result.messages = util.copy(override.messages)
   end
   return result
 end
@@ -94,13 +117,15 @@ end
 ---@param context Neoagent.RequestOptionsInput
 ---@return Neoagent.ApiRequest
 function M.apply(request, layer, context)
-  if layer == nil then return request end
+  if layer == nil then
+    return request
+  end
   local override = layer
   if type(layer) == "function" then
     local snapshot = util.copy(context)
     override = layer({
       model = snapshot.model,
-      messages = snapshot.messages,
+      messages = util.copy(request.messages or snapshot.messages),
       system_prompt = snapshot.system_prompt,
       tools = snapshot.tools,
       request_context = snapshot.request_context,

@@ -323,6 +323,73 @@ describe("neoagent llama.cpp Provider Service", function()
     local result = wait(run)
     assert(result.ok, vim.inspect(result))
     assert.is_true(result.cancelled)
+
+    ---@param args? string
+    ---@return Neoagent.ProviderOperationOptions
+    local function cancelled_context(args)
+      ---@type Neoagent.ProviderOperationOptions
+      local context = {
+        interact = {
+          select = function(_, done)
+            done.resolve(nil)
+            return function() end
+          end,
+          input = function() end,
+          confirm = function() end,
+          progress = function() end,
+          notify = function() end,
+        },
+        resolve_auth = function()
+          return async.run(function()
+            return { ok = true, configured = false }
+          end)
+        end,
+      }
+      context.args = args
+      return context
+    end
+
+    local cancelled_unload = wait(provider_service.run(value, "unload", cancelled_context()))
+    assert.is_true(cancelled_unload.ok)
+    assert.is_true(cancelled_unload.cancelled)
+
+    transport.fetches = {
+      { body = catalog({ model("qwen3", "unloaded") }) },
+      { body = catalog({ model("qwen3", "unloaded") }) },
+    }
+    local cancelled_load = wait(provider_service.run(value, "load", cancelled_context()))
+    assert.is_true(cancelled_load.ok)
+    assert.is_true(cancelled_load.cancelled)
+
+    local unknown = wait(provider_service.run(value, "load", cancelled_context("missing")))
+    assert.is_false(unknown.ok)
+    assert.matches("Unknown model: missing", unknown.error.message)
+
+    transport.fetches = {
+      { body = vim.json.encode({ { id = "owner/repo", downloads = 10 } }) },
+    }
+    local cancelled_search = wait(provider_service.run(value, "download", cancelled_context("search")))
+    assert.is_true(cancelled_search.ok)
+    assert.is_true(cancelled_search.cancelled)
+
+    transport = fake_transport.new()
+    transport.fetches = { {
+      body = vim.json.encode({
+        id = "owner/defined",
+        gated = false,
+        siblings = { { rfilename = "model-Q4_K_M.gguf", size = 1000 } },
+      }),
+    } }
+    local defined = service(transport, nil, {
+      configured = { hf_repo = "owner/defined" },
+    })
+    local cancelled_quantization = wait(provider_service.run(
+      defined,
+      "download",
+      cancelled_context("configured")
+    ))
+    assert.is_true(cancelled_quantization.ok)
+    assert.is_true(cancelled_quantization.cancelled)
   end)
 
   it("downloads a model through Hugging Face search and quant selection", function()
@@ -384,7 +451,9 @@ describe("neoagent llama.cpp Provider Service", function()
         model("dir-one", "loaded", { source = "models_dir" }),
       }) },
     }
-    local value = service(transport)
+    local value = service(transport, nil, {
+      small = { hf_repo = "owner/small", quantization = "Q4_0" },
+    })
     wait(catalog_refresh(value))
     local rows = browse(value, transport, {
       model("small", "loaded", { meta = { n_ctx = 2048, size = 1024 } }),
@@ -398,6 +467,7 @@ describe("neoagent llama.cpp Provider Service", function()
     local by_id = {}
     for _, row in ipairs(rows) do by_id[row.label] = row.description end
     assert.matches("2k context", by_id.small)
+    assert.matches("owner/small", by_id.small)
     assert.matches("8k context", by_id.argctx)
     assert.matches("4k context", by_id.ctxflag)
     assert.matches("16k context", by_id.unloadedctx)
@@ -407,6 +477,51 @@ describe("neoagent llama.cpp Provider Service", function()
     local entries = {}
     for _, entry in ipairs(catalog_models(value)) do entries[entry.id] = entry end
     assert.are.equal(16384, entries.unloadedctx.context_window)
+    assert.are.equal(4096, llama_catalog.reported_context({
+      status = { args = {
+        "--ctx-size", "8192", "--kv-unified-per-slot", "4096",
+      } },
+    }))
+    assert.is_nil(llama_catalog.normalize_model("invalid"))
+    assert.is_nil(llama_catalog.normalize_model({ id = "missing-status" }))
+    assert.is_nil(llama_catalog.normalize({ invalid = true }))
+  end)
+
+  it("propagates catalog authentication and request failures", function()
+    local failed = wait(llama_catalog.discover({
+      provider_id = "llama.cpp",
+      provider = { base_url = "http://127.0.0.1:8080/v1" },
+      force = false,
+      now = function() return 0 end,
+      resolve_api_key = function() return nil end,
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = false, error = util.error("auth", "catalog login failed") }
+        end)
+      end,
+    }))
+    assert.is_false(failed.ok)
+    assert.matches("catalog login failed", assert(failed.error).message)
+
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { error = { kind = "transport", message = "catalog request failed" } },
+    }
+    failed = wait(llama_catalog.discover({
+      provider_id = "llama.cpp",
+      provider = { base_url = "http://127.0.0.1:8080/v1" },
+      transport = transport,
+      force = false,
+      now = function() return 0 end,
+      resolve_api_key = function() return nil end,
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = true, configured = false }
+        end)
+      end,
+    }))
+    assert.is_false(failed.ok)
+    assert.matches("catalog request failed", assert(failed.error).message)
   end)
 
   it("persists a bounded secret-free catalog projection", function()
@@ -1074,6 +1189,90 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.matches("router unavailable", result.error.message)
     assert.are.equal("error",
       assert(block(failed:state(), "field", "Endpoint")).level)
+
+    transport = fake_transport.new()
+    transport.fetches = {
+      { body = catalog({ model("qwen3", "loaded") }) },
+    }
+    local watcher_started, watcher_cancelled = false, false
+    transport.request = function()
+      return async.run(function()
+        return async.await(function()
+          watcher_started = true
+          return function() watcher_cancelled = true end
+        end)
+      end)
+    end
+    local replaced = service(transport)
+    local stop = replaced:subscribe(function() end)
+    assert(vim.wait(1000, function() return watcher_started end, 5))
+    result = wait(provider_service.run(replaced, "reload", {
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = true, configured = false }
+        end)
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.is_true(watcher_cancelled)
+    stop()
+  end)
+
+  it("contains operation authentication, command, and catalog lifecycle failures", function()
+    local function context(args, resolve_auth)
+      return {
+        args = args,
+        interact = {
+          select = function(_, done)
+            done.resolve(nil)
+            return function() end
+          end,
+          input = function() end,
+          confirm = function(_, done)
+            done.resolve(true)
+            return function() end
+          end,
+          progress = function() end,
+          notify = function() end,
+        },
+        resolve_auth = resolve_auth or function()
+          return async.run(function()
+            return { ok = true, configured = false }
+          end)
+        end,
+      }
+    end
+
+    local auth_failed = service(fake_transport.new())
+    local auth_result = wait(provider_service.run(auth_failed, "reload", context(nil, function()
+      return async.run(function()
+        return { ok = false, error = util.error("auth", "router authorization failed") }
+      end)
+    end)))
+    assert.is_false(auth_result.ok)
+    assert.matches("router authorization failed", auth_result.error.message)
+
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = catalog({ model("qwen3", "unloaded") }) },
+      { status = 500, body = vim.json.encode({ error = "load rejected" }) },
+    }
+    local load_failed = service(transport)
+    local load_result = wait(provider_service.run(load_failed, "load", context("qwen3")))
+    assert.is_false(load_result.ok)
+    assert.matches("load rejected", load_result.error.message)
+
+    transport = fake_transport.new()
+    transport.fetches = {
+      { body = catalog({ model("qwen3", "loaded") }) },
+    }
+    local catalog_destroyed = service(transport)
+    assert.is_true(catalog_for(catalog_destroyed):destroy())
+    local catalog_result = wait(provider_service.run(catalog_destroyed, "reload", context()))
+    assert.is_false(catalog_result.ok)
+    assert.matches("destroyed", catalog_result.error.message)
+    catalog_destroyed:destroy()
+    catalog_destroyed:destroy()
   end)
 
   it("routes aliased load and unload operations to the router model id", function()
@@ -1507,6 +1706,7 @@ describe("neoagent llama.cpp Provider Service", function()
       input = { "text" },
       stream = function(_, opts)
         return async.run(function(run)
+          run:emit({ type = "usage", usage = {} })
           run:emit({
             type = "usage",
             usage = { input_tokens = 7, output_tokens = 3 },
@@ -1536,6 +1736,37 @@ describe("neoagent llama.cpp Provider Service", function()
     local failed = wait(value:wrap_model(failed_model):stream({ messages = {} }))
     assert.is_false(failed.ok)
     assert.is_nil(block(value:state(), "activity"))
+
+    ---@type Neoagent.Model
+    local throwing_model = {
+      api = "openai-completions",
+      provider = "llama.cpp",
+      id = "throwing",
+      input = { "text" },
+      stream = function()
+        error("model stream construction failed")
+      end,
+    }
+    local thrown = wait(value:wrap_model(throwing_model):stream({ messages = {} }))
+    assert.is_false(thrown.ok)
+    assert.matches("model stream construction failed", assert(thrown.error).message)
+
+    ---@type Neoagent.Model
+    local retained_model = {
+      api = "openai-completions",
+      provider = "llama.cpp",
+      id = "retained",
+      input = { "text" },
+      stream = function()
+        return async.run(function()
+          return fake_model.assistant({})
+        end)
+      end,
+    }
+    local retained = value:wrap_model(retained_model)
+    value:destroy()
+    value:destroy()
+    assert.is_true(wait(retained:stream({ messages = {} })).ok)
   end)
 
   it("renders defined load parameters as a router preset", function()

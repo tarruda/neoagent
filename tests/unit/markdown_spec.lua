@@ -11,8 +11,12 @@ end
 
 describe("neoagent markdown", function()
   it("renders underscore emphasis at the beginning of headings", function()
-    local result = markdown.render("# _first_\n## _second_ ##\n### _third_", { width = 80 })
-    assert.are.same({ "first", "second", "### third" }, result.lines)
+    local result = markdown.render(
+      "# _first_\n## _second_ ##\n### _third_\n####### ordinary",
+      { width = 80 }
+    )
+    assert.are.same({ "first", "second", "### third", "####### ordinary" },
+      result.lines)
     local emphasis = {}
     for _, span in ipairs(result.highlights) do
       if span.group == "NeoagentMarkdownItalic" then

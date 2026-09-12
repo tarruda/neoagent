@@ -24,10 +24,10 @@ describe("neoagent Windows Session persistence", function()
     local path = store:metadata().path
     local complete = assert(fs.read(path))
 
-    local reopened = assert(storage.open(path))
+    local reopened = assert(storage.open(path, store:workspace_storage()))
     assert.are.same(store:entries(), reopened:entries())
     assert(fs.write_all(path, '{"type":"message"', "a", 384))
-    reopened = assert(storage.open(path))
+    reopened = assert(storage.open(path, store:workspace_storage()))
     assert.are.equal(complete, assert(fs.read(path)))
     assert.are.same(store:entries(), reopened:entries())
   end)

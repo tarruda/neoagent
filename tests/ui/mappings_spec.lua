@@ -1164,6 +1164,8 @@ describe("neoagent UI mappings", function()
   it("completes filenames through the input popup menu", function()
     local submissions = {}
     local popup_seen = false
+    local deferred, retained = false, false
+    local completion_mode
     ---@type {word: string}[]
     local candidates = {}
     ---@type {word: string}?
@@ -1181,6 +1183,14 @@ describe("neoagent UI mappings", function()
       callback = function()
         popup_seen = vim.fn.pumvisible() == 1
         candidates = vim.deepcopy(vim.fn.complete_info({ "items" }).items or {}) --[[@as {word: string}[] ]]
+        if popup_seen and not deferred then
+          completion_mode = assert(result:pane("input")):mode()
+          local transcript = assert(view_handles.buffer(result, "transcript"))
+          local before = vim.api.nvim_buf_get_lines(transcript, 0, -1, false)
+          result:apply({ type = "text_delta", text = "Response during filename completion." })
+          deferred = result.applet.domain:flush() == false
+          retained = vim.deep_equal(before, vim.api.nvim_buf_get_lines(transcript, 0, -1, false))
+        end
       end,
     })
     vim.api.nvim_create_autocmd("CompleteDone", {
@@ -1196,11 +1206,18 @@ describe("neoagent UI mappings", function()
       "A<Tab><Tab><Up><Down><CR>", true, false, true), "x", false)
 
     assert.is_true(popup_seen)
+    assert.is_true(deferred)
+    assert.is_true(retained)
+    assert.are.equal("insert", completion_mode)
     assert.is_true(vim.tbl_contains(vim.tbl_map(function(item) return item.word end, candidates),
       "lua/neoagent/agent.lua"))
     assert.are.equal("lua/neoagent/agent.lua", assert(completed).word)
     assert.are.equal("inspect lua/neoagent/agent.lua", result:get_input())
     assert.are.equal(0, #submissions)
+    assert(vim.wait(1000, function()
+      return contains(vim.api.nvim_buf_get_lines((assert(view_handles.buffer(result, "transcript"))), 0, -1, false),
+        "Response during filename completion.")
+    end))
 
     result:focus_input()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)

@@ -8,8 +8,7 @@ local M = {}
 ---@class Neoagent.AlibabaServiceResources: Neoagent.ProviderServiceResources
 ---@field client? Neoagent.AlibabaTokenPlanClient
 
-local DEFAULT_BASE_URL =
-  "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+local DEFAULT_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
 ---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.AlibabaServiceResources
@@ -17,15 +16,15 @@ local DEFAULT_BASE_URL =
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
-  assert(opts.service_opts == nil or type(opts.service_opts) == "table"
-      and next(opts.service_opts) == nil,
-    "alibaba-token-plan does not support service_opts")
+  assert(
+    opts.service_opts == nil or type(opts.service_opts) == "table" and next(opts.service_opts) == nil,
+    "alibaba-token-plan does not support service_opts"
+  )
   local base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", "")
   local client = resources.client or client_module.new({
     transport = resources.transport,
   })
-  assert(type(client) == "table" and type(client.usage) == "function",
-    "Alibaba Token Plan client requires usage")
+  assert(type(client) == "table" and type(client.usage) == "function", "Alibaba Token Plan client requires usage")
   ---@type Neoagent.ProviderStatusBlock?
   local status
   ---@type Neoagent.AlibabaQuotaUsage?
@@ -35,8 +34,12 @@ function M.new(opts, resources)
   ---@param remaining number
   ---@return Neoagent.ProviderLevel
   local function level(remaining)
-    if remaining <= 0 then return "error" end
-    if remaining <= 0.2 then return "warn" end
+    if remaining <= 0 then
+      return "error"
+    end
+    if remaining <= 0.2 then
+      return "warn"
+    end
     return "success"
   end
 
@@ -63,27 +66,32 @@ function M.new(opts, resources)
   local function blocks()
     ---@type Neoagent.ProviderBlock[]
     local result = {}
-    if status then result[#result + 1] = util.copy(status) end
+    if status then
+      result[#result + 1] = util.copy(status)
+    end
     result[#result + 1] = {
-      type = "field", label = "Plan", value = "Token Plan Personal",
+      type = "field",
+      label = "Plan",
+      value = "Token Plan Personal",
     }
     result[#result + 1] = {
-      type = "field", label = "Endpoint", value = base_url,
+      type = "field",
+      label = "Endpoint",
+      value = base_url,
     }
     if usage then
-      result[#result + 1] = quota_block(
-        "five_hour", "5-hour quota", "No limit reported")
-      result[#result + 1] = quota_block(
-        "seven_day", "7-day quota", "No usage reported")
+      result[#result + 1] = quota_block("five_hour", "5-hour quota", "No limit reported")
+      result[#result + 1] = quota_block("seven_day", "7-day quota", "No usage reported")
     end
     return result
   end
 
-  local dashboard = provider_state.new(
-    { blocks = blocks() }, { report = resources.report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
 
   local function publish()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     assert(dashboard:push({ blocks = blocks() }))
   end
 
@@ -109,8 +117,7 @@ function M.new(opts, resources)
             if refreshed.ok == false then
               local err = refreshed.error
               local status_code = err and rawget(err, "status")
-              if err and (err.kind == "auth" or status_code == 401
-                  or status_code == 403) then
+              if err and (err.kind == "auth" or status_code == 401 or status_code == 403) then
                 status = {
                   type = "status",
                   text = "Alibaba Cloud quota reporting requires current "
@@ -123,8 +130,7 @@ function M.new(opts, resources)
               end
               status = {
                 type = "status",
-                text = "Quota refresh failed: " .. tostring(
-                  err and err.message or "unknown error"),
+                text = "Quota refresh failed: " .. tostring(err and err.message or "unknown error"),
                 level = "error",
               }
               publish()
@@ -149,7 +155,9 @@ function M.new(opts, resources)
   end
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     dashboard:destroy()
   end

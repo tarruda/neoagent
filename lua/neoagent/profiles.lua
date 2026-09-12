@@ -47,18 +47,15 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field provider_view? fun(options: Neoagent.ProviderShellViewOptions): Neoagent.ProviderShellView
 ---@field provider_host? Applet.HostSource<Neoagent.ProviderShellViewState>
 
-
-
 local M = {}
 
 ---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
 ---@return Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
 local function configured_toolset(configured)
   return {
-    tools = configured._tools_supplied and util.copy(configured.tools)
-      or require("neoagent.tools").coding({
-        shell_timeout = configured.shell_timeout,
-      }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]],
+    tools = configured._tools_supplied and util.copy(configured.tools) or require("neoagent.tools").coding({
+      shell_timeout = configured.shell_timeout,
+    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]],
     execute_tool = configured.execute_tool,
   }
 end
@@ -68,10 +65,8 @@ end
 ---@return boolean
 local function trust_protected(configured, toolset)
   return #toolset.tools > 0
-    or configured.agent_instructions ~= false
-      and #configured.agent_instructions.project_filenames > 0
-    or configured.skills ~= false
-      and #configured.skills.project_dirs > 0
+    or configured.agent_instructions ~= false and #configured.agent_instructions.project_filenames > 0
+    or configured.skills ~= false and #configured.skills.project_dirs > 0
 end
 
 ---@return Neoagent.StateStore
@@ -110,15 +105,16 @@ local function draft_options(configured, profile_id, presenter, workspace)
   if not settings then
     assert(err)
     presenter:notify({
-      message = "neoagent: " .. err.message
+      message = "neoagent: "
+        .. err.message
         .. (err.detail and ": " .. err.detail or "")
-        .. "; the file may be outdated, update or delete " .. path,
+        .. "; the file may be outdated, update or delete "
+        .. path,
       level = vim.log.levels.WARN,
     })
     return {}
   end
-  local selected, issues = workspace_preferences.scope(
-    settings, preference_defaults(configured), profile_id)
+  local selected, issues = workspace_preferences.scope(settings, preference_defaults(configured), profile_id)
   local warning = workspace_preferences.warning(issues, path)
   if warning then
     presenter:notify({
@@ -145,22 +141,18 @@ end
 ---@param auth Neoagent.AuthManager
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@return fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet, Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
-local function applet_factory(
-    configured, profile_id, profile_label, auth, runtimes)
+local function applet_factory(configured, profile_id, profile_label, auth, runtimes)
   return function(context)
     local presenter = require("neoagent.presenter").new()
     local built, applet, options = pcall(function()
       local workspace = require("neoagent.fs").canonical(context.workspace)
-      local draft = draft_options(
-        configured, profile_id, presenter, workspace)
+      local draft = draft_options(configured, profile_id, presenter, workspace)
       local selected_model = draft.default_model or configured.default_model
       if not selected_model then
-        local fallback, err = require("neoagent.models").first_available(
-          configured, auth, runtimes)
+        local fallback, err = require("neoagent.models").first_available(configured, auth, runtimes)
         if err then
           presenter:notify({
-            message = "neoagent: " .. err.message
-              .. (err.detail and ": " .. err.detail or ""),
+            message = "neoagent: " .. err.message .. (err.detail and ": " .. err.detail or ""),
             level = vim.log.levels.ERROR,
           })
         elseif fallback then
@@ -177,8 +169,7 @@ local function applet_factory(
         model_label = selected_model.provider .. "/" .. selected_model.model
       end
       local value = AgentApplet.new({
-        config = util.deep_merge(
-          util.deep_merge(configured.ui, draft.ui or {}), context.ui or {}) --[[@as Neoagent.UIConfig]],
+        config = util.deep_merge(util.deep_merge(configured.ui, draft.ui or {}), context.ui or {}) --[[@as Neoagent.UIConfig]],
         persistence = configured.persistence,
         context = {
           model = model_label,
@@ -189,6 +180,7 @@ local function applet_factory(
         profile_id = profile_id,
         label = context.label or profile_label,
         presenter = presenter,
+        owns_presenter = true,
         view = configured._view,
       })
       return value, draft
@@ -234,8 +226,7 @@ local function make_chat(configured, auth, runtimes, runtime)
     id = "chat",
     label = "Chat",
     config = chat,
-    create_applet = applet_factory(
-      chat, "chat", "Chat", auth, runtimes),
+    create_applet = applet_factory(chat, "chat", "Chat", auth, runtimes),
     create_agent = function(context)
       local selected = agent_options(chat, context)
       return Agent.from_config(selected, {
@@ -270,16 +261,15 @@ local function make_neo(configured, auth, runtimes, runtime)
     id = "neo",
     label = neo.name,
     config = neo,
-    create_applet = applet_factory(
-      neo, "neo", neo.name, auth, runtimes),
+    create_applet = applet_factory(neo, "neo", neo.name, auth, runtimes),
     create_agent = function(context)
       local selected = agent_options(neo, context)
       local applet = context.applet
       local dialogs = applet:dialogs()
       local host_toolset = configured_toolset(selected)
       local composition = require("neoagent.sandbox.composition")
-      local toolset, status, _, sandbox_runtime = composition.switchable(
-        host_toolset, selected.sandbox, { dialogs = dialogs })
+      local toolset, status, _, sandbox_runtime =
+        composition.switchable(host_toolset, selected.sandbox, { dialogs = dialogs })
       local warning
       if selected.sandbox.enabled and not status.active then
         warning = composition.warning(context.label, status)
@@ -321,14 +311,20 @@ local function make_neo(configured, auth, runtimes, runtime)
       assert(agent:set_toolset(toolset))
       if trust then
         trust:attach({
-          close = function() applet:close() end,
+          close = function()
+            applet:close()
+          end,
           on_result = function(result)
-            if applet:is_destroyed() then return end
+            if applet:is_destroyed() then
+              return
+            end
             if applet:pending_message() then
               applet:trust_submission_result(result)
               return
             end
-            if not result.ok then return end
+            if not result.ok then
+              return
+            end
             local prepared, err = agent:prepare()
             if not prepared and err then
               applet:presenter():notify({
@@ -339,13 +335,14 @@ local function make_neo(configured, auth, runtimes, runtime)
           end,
         })
       end
-      return agent, {
-        sandbox = {
-          runtime = sandbox_runtime,
-          status = util.copy(status),
-          trust = trust,
-        },
-      }
+      return agent,
+        {
+          sandbox = {
+            runtime = sandbox_runtime,
+            status = util.copy(status),
+            trust = trust,
+          },
+        }
     end,
   }
 end
@@ -354,12 +351,12 @@ end
 ---@param runtime Neoagent.ProfileRuntimeOptions?
 ---@return Neoagent.Profile[], string, Neoagent.ProfileResources
 function M.bundled(configured, runtime)
-  assert(type(configured) == "table",
-    "Profile configuration is required")
+  assert(type(configured) == "table", "Profile configuration is required")
   runtime = runtime or {}
-  assert(type(runtime) == "table"
-      and (next(runtime) == nil or not util.is_list(runtime)),
-    "Profile runtime must be an object")
+  assert(
+    type(runtime) == "table" and (next(runtime) == nil or not util.is_list(runtime)),
+    "Profile runtime must be an object"
+  )
   ---@type [string, integer?][]
   local pending_reports = {}
   ---@type (fun(message: string, level?: integer): unknown)?
@@ -368,7 +365,9 @@ function M.bundled(configured, runtime)
   ---@param level integer?
   ---@return unknown
   local function provider_report(message, level)
-    if report_target then return report_target(message, level) end
+    if report_target then
+      return report_target(message, level)
+    end
     if #pending_reports < 64 then
       pending_reports[#pending_reports + 1] = { message, level }
     end
@@ -382,9 +381,10 @@ function M.bundled(configured, runtime)
       config = configured.recording,
       report = provider_report,
     })
-    if not recorder then error(recording_err, 0) end
-    transport = recorder:transport(
-      transport or require("neoagent.transport.curl"))
+    if not recorder then
+      error(recording_err, 0)
+    end
+    transport = recorder:transport(transport or require("neoagent.transport.curl"))
   end
   local auth = require("neoagent.auth").configured({ auth = configured.auth }, {
     transport = transport,
@@ -397,7 +397,9 @@ function M.bundled(configured, runtime)
     transport = transport,
   })
   if not runtimes then
-    if recorder then recorder:destroy() end
+    if recorder then
+      recorder:destroy()
+    end
     error(err, 0)
   end
   local shell_ok, shell = pcall(require("neoagent.provider_shell").new, {
@@ -409,7 +411,9 @@ function M.bundled(configured, runtime)
   })
   if not shell_ok then
     provider_runtimes.destroy(runtimes)
-    if recorder then recorder:destroy() end
+    if recorder then
+      recorder:destroy()
+    end
     error(shell, 0)
   end
   report_target = function(message, level)
@@ -433,16 +437,22 @@ function M.bundled(configured, runtime)
     destroyed = false,
   }
   function resources:destroy()
-    if self.destroyed then return end
+    if self.destroyed then
+      return
+    end
     self.destroyed = true
     self.provider_shell:destroy()
     provider_runtimes.destroy(self.runtimes)
-    if self.recorder then self.recorder:destroy() end
+    if self.recorder then
+      self.recorder:destroy()
+    end
   end
   return {
     make_neo(configured, auth, runtimes, runtime),
     make_chat(configured, auth, runtimes, runtime),
-  }, "neo", resources
+  },
+    "neo",
+    resources
 end
 
 return M

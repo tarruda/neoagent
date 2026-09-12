@@ -44,8 +44,7 @@ end
 ---@param value unknown
 ---@return TypeGuard<Neoagent.JsonObject>
 local function object(value)
-  return type(value) == "table"
-    and (next(value) == nil or not util.is_list(value))
+  return type(value) == "table" and (next(value) == nil or not util.is_list(value))
 end
 
 ---@param value Neoagent.ToolResult
@@ -67,7 +66,9 @@ function M.append(value, text, fields)
     table.insert(value.content, 1, { type = "text", text = text })
   end
   -- Tool details may be any JSON value; preserve payloads we cannot merge.
-  if value.details == nil then value.details = {} end
+  if value.details == nil then
+    value.details = {}
+  end
   local details = value.details
   if object(details) then
     local sandbox = details.sandbox

@@ -96,8 +96,12 @@ end
 ---@return string
 local function fit_badge(header, width)
   local available = math.max(1, width - 1)
-  if text.width(header) <= available then return header end
-  if available <= 3 then return suffix_to_width(header, available) end
+  if text.width(header) <= available then
+    return header
+  end
+  if available <= 3 then
+    return suffix_to_width(header, available)
+  end
   return "..." .. suffix_to_width(header, available - 3)
 end
 
@@ -107,8 +111,7 @@ end
 local function focus_decorations(block, opts)
   ---@type Applet.FocusDecoration[]
   local result = {}
-  local card = opts.card
-  if not card then return result end
+  local card = assert(opts.card)
   local first, last = card.first, card.last
   local focus = opts.focus or {}
   local width = math.max(2, opts.width)
@@ -125,7 +128,9 @@ local function focus_decorations(block, opts)
       win_col = win_col,
       priority = 200,
     }
-    if win_col == nil then decoration.position = "overlay" end
+    if win_col == nil then
+      decoration.position = "overlay"
+    end
     result[#result + 1] = decoration
   end
   ---@param row integer
@@ -136,8 +141,7 @@ local function focus_decorations(block, opts)
   ---@param header string
   local function overflow_badge(row, header)
     header = fit_badge(header, width)
-    local start = math.max(0,
-      width - 1 - text.width(header))
+    local start = math.max(0, width - 1 - text.width(header))
     local chunks = {}
     if start >= 3 then
       chunks[#chunks + 1] = { text = "...", group = "NeoagentMuted" }
@@ -152,8 +156,7 @@ local function focus_decorations(block, opts)
   end
 
   if not opts.active then
-    if block.kind == "thinking" and focus.overflow
-        and focus.resting_header then
+    if block.kind == "thinking" and focus.overflow and focus.resting_header then
       overflow_badge(first, focus.resting_header)
     end
     return result
@@ -185,13 +188,14 @@ local function focus_decorations(block, opts)
   ---@param header string
   local function badge(row, header)
     header = fit_badge(header, width)
-    local start = math.max(0,
-      width - 1 - text.width(header))
+    local start = math.max(0, width - 1 - text.width(header))
     local line_width = text.width(line(row))
     add(row, "╭")
     if line_width <= start then
       local fill = start - line_width
-      if fill > 0 then add(row, string.rep("─", fill), line_width) end
+      if fill > 0 then
+        add(row, string.rep("─", fill), line_width)
+      end
     elseif start >= 3 then
       add(row, "...", start - 3)
     end
@@ -206,8 +210,7 @@ local function focus_decorations(block, opts)
   ---@param header string
   local function inline_tool_badge(row, header)
     header = fit_badge(header, width)
-    local start = math.max(0,
-      width - 1 - text.width(header))
+    local start = math.max(0, width - 1 - text.width(header))
     if text.width(line(row)) > start and start >= 4 then
       add(row, " ...", start - 4, "NeoagentMuted")
     end
@@ -220,8 +223,7 @@ local function focus_decorations(block, opts)
   end
   ---@param row integer
   local function inline_tool_top(row)
-    local start = math.min(
-      text.width(line(row)), width - 1)
+    local start = math.min(text.width(line(row)), width - 1)
     add(row, string.rep("─", width - start - 1) .. "╮", start)
   end
   ---@param row integer
@@ -229,8 +231,7 @@ local function focus_decorations(block, opts)
     local line_width = text.width(line(row))
     add(row, "╭")
     if line_width <= width - 1 then
-      add(row, string.rep("─", width - line_width - 1) .. "╮",
-        line_width)
+      add(row, string.rep("─", width - line_width - 1) .. "╮", line_width)
     end
   end
   local function hinted_bottom()
@@ -240,39 +241,42 @@ local function focus_decorations(block, opts)
       local remaining = width - 2 - text.width(hint)
       if remaining >= 2 then
         local left = math.floor(remaining / 2)
-        value = "╰" .. string.rep("─", left) .. hint
-          .. string.rep("─", remaining - left) .. "╯"
+        value = "╰" .. string.rep("─", left) .. hint .. string.rep("─", remaining - left) .. "╯"
       end
     end
     return value
   end
   local function thinking_badge()
-    return string.format("[thinking: 0 words%s]",
-      opts.details_key and ", " .. opts.details_key .. " to expand" or "")
+    return string.format("[thinking: 0 words%s]", opts.details_key and ", " .. opts.details_key .. " to expand" or "")
   end
 
   if block.kind == "thinking" then
     badge(first, focus.header or thinking_badge())
-    if last > first then bottom(last) end
+    if last > first then
+      bottom(last)
+    end
   elseif block.kind == "assistant" then
     assistant_top(first)
     local after = opts.separators and opts.separators.after or card.after
-    if after then add(opts.attachments and "end" or after, hinted_bottom()) end
-  elseif block.kind == "tool" and (last > first or opts.attachments)
-      and focus.inline_multiline_tool_outline then
+    if after then
+      add(opts.attachments and "end" or after, hinted_bottom())
+    end
+  elseif block.kind == "tool" and (last > first or opts.attachments) and focus.inline_multiline_tool_outline then
     inline_tool_top(first)
     local after = opts.separators and opts.separators.after or card.after
-    if after then add(opts.attachments and "end" or after, hinted_bottom()) end
-  elseif block.kind == "tool" and first == last
-      and focus.inline_single_line_tool_hint then
+    if after then
+      add(opts.attachments and "end" or after, hinted_bottom())
+    end
+  elseif block.kind == "tool" and first == last and focus.inline_single_line_tool_hint then
     if opts.details_key and text.width(line(first)) <= width then
       inline_tool_badge(first, "[" .. opts.details_key .. " to expand]")
     end
   else
     add(first, "╭" .. string.rep("─", width - 2) .. "╮")
-    add(opts.attachments and "end" or last,
-      block.kind == "tool" and hinted_bottom()
-      or "╰" .. string.rep("─", width - 2) .. "╯")
+    add(
+      opts.attachments and "end" or last,
+      block.kind == "tool" and hinted_bottom() or "╰" .. string.rep("─", width - 2) .. "╯"
+    )
   end
   return result
 end
@@ -282,7 +286,9 @@ end
 ---@param opts Neoagent.TreeFocusOptions
 ---@return Applet.TargetFocus?
 function M.focus(block, content, opts)
-  if not content.card then return nil end
+  if not content.card then
+    return nil
+  end
   ---@type Neoagent.FocusDecorationOptions
   local decoration_options = vim.tbl_extend("force", opts or {}, {
     lines = content.lines,
@@ -300,8 +306,7 @@ function M.focus(block, content, opts)
         decorations[#decorations + 1] = shifted
       else
         shifted.row = shifted.row - content.card.first
-        if shifted.row >= 0
-            and shifted.row <= content.card.last - content.card.first + 1 then
+        if shifted.row >= 0 and shifted.row <= content.card.last - content.card.first + 1 then
           decorations[#decorations + 1] = shifted
         end
       end
@@ -326,7 +331,9 @@ local function line_runs(line, spans)
   ---@type integer[]
   local unique = {}
   for _, boundary in ipairs(boundaries) do
-    if unique[#unique] ~= boundary then unique[#unique + 1] = boundary end
+    if unique[#unique] ~= boundary then
+      unique[#unique + 1] = boundary
+    end
   end
   ---@type Applet.TextRun[]
   local runs = {}
@@ -335,8 +342,7 @@ local function line_runs(line, spans)
     if last > first then
       local groups = {}
       for _, span in ipairs(spans or {}) do
-        if span.col <= first and span.end_col >= last
-            and span.group then
+        if span.col <= first and span.end_col >= last and span.group then
           groups[#groups + 1] = {
             group = span.group,
             priority = span.priority,
@@ -344,11 +350,12 @@ local function line_runs(line, spans)
         end
       end
       local text = line:sub(first + 1, last)
-      runs[#runs + 1] = #groups > 0
-        and { text = text, groups = groups } or { text = text }
+      runs[#runs + 1] = #groups > 0 and { text = text, groups = groups } or { text = text }
     end
   end
-  if #runs == 0 then runs[1] = { text = "" } end
+  if #runs == 0 then
+    runs[1] = { text = "" }
+  end
   return runs
 end
 
@@ -368,7 +375,9 @@ local function line_node(key, content, row, wrap, spans_by_row)
     wrap = wrap or "native",
     background = content.line_groups and content.line_groups[row] or nil,
   }
-  if value:find("\t", 1, true) then options.tabstop = 8 end
+  if value:find("\t", 1, true) then
+    options.tabstop = 8
+  end
   return ui.text(options)
 end
 
@@ -385,12 +394,10 @@ local function lines_node(key, content, first, last, wrap, spans_by_row)
   local source = content.source
   local row = first
   while row < last do
-    if source and source.path and row == source.first
-        and source.last < last then
+    if source and source.path and row == source.first and source.last < last then
       local source_children = {}
       for source_row = row, source.last do
-        source_children[#source_children + 1] = line_node(
-          key .. ":source", content, source_row, wrap, spans_by_row)
+        source_children[#source_children + 1] = line_node(key .. ":source", content, source_row, wrap, spans_by_row)
       end
       children[#children + 1] = ui.source({
         key = key .. ":source:" .. row,
@@ -402,8 +409,7 @@ local function lines_node(key, content, first, last, wrap, spans_by_row)
       })
       row = source.last + 1
     else
-      children[#children + 1] = line_node(
-        key, content, row, wrap, spans_by_row)
+      children[#children + 1] = line_node(key, content, row, wrap, spans_by_row)
       row = row + 1
     end
   end
@@ -415,7 +421,9 @@ end
 ---@return Neoagent.RenderRange[]?
 local function markdown_ranges(content, target)
   local blocks = content.markdown_blocks
-  if type(blocks) ~= "table" or #blocks == 0 then return nil end
+  if type(blocks) ~= "table" or #blocks == 0 then
+    return nil
+  end
   if type(target) ~= "number" or target < 1 or target % 1 ~= 0 then
     error("partition_rows must be a positive integer", 0)
   end
@@ -426,18 +434,25 @@ local function markdown_ranges(content, target)
   ---@param first integer
   ---@param last integer
   local function emit(first, last)
-    if last <= first then return end
     ranges[#ranges + 1] = { first = first, last = last }
   end
   local function emit_pending()
-    if pending_first then emit(pending_first, assert(pending_last)) end
+    if pending_first then
+      emit(pending_first, assert(pending_last))
+    end
     pending_first, pending_last = nil, nil
   end
   for _, block in ipairs(blocks) do
-    if type(block) ~= "table" or type(block.first) ~= "number"
-        or type(block.last) ~= "number" or block.first % 1 ~= 0
-        or block.last % 1 ~= 0 or block.first ~= covered
-        or block.last <= block.first or block.last > #content.lines then
+    if
+      type(block) ~= "table"
+      or type(block.first) ~= "number"
+      or type(block.last) ~= "number"
+      or block.first % 1 ~= 0
+      or block.last % 1 ~= 0
+      or block.first ~= covered
+      or block.last <= block.first
+      or block.last > #content.lines
+    then
       error("Markdown block ranges must cover rendered lines in order", 0)
     end
     covered = block.last
@@ -461,7 +476,9 @@ local function markdown_ranges(content, target)
       end
       pending_first = pending_first or block.first
       pending_last = block.last
-      if pending_last - pending_first == target then emit_pending() end
+      if pending_last - pending_first == target then
+        emit_pending()
+      end
     end
   end
   if covered ~= #content.lines then
@@ -511,21 +528,20 @@ end
 ---@param spans_by_row Neoagent.RenderSpansByRow
 ---@param has_attachments boolean
 ---@return Applet.ColumnNode?
-local function partitioned_markdown_node(
-    key, content, opts, spans_by_row, has_attachments)
-  if opts.partition_rows == nil or content.card or content.source
-      or has_attachments then
+local function partitioned_markdown_node(key, content, opts, spans_by_row, has_attachments)
+  if opts.partition_rows == nil or content.card or content.source or has_attachments then
     return nil
   end
   local ranges = markdown_ranges(content, opts.partition_rows)
-  if not ranges then return nil end
+  if not ranges then
+    return nil
+  end
   local regions = {}
   for index, range in ipairs(ranges) do
     regions[index] = ui.region({
       key = key .. ":region:" .. index,
       revision = range_revision(content, range, opts.wrap, spans_by_row),
-      child = lines_node(key .. ":region:" .. index, content,
-        range.first, range.last, opts.wrap, spans_by_row),
+      child = lines_node(key .. ":region:" .. index, content, range.first, range.last, opts.wrap, spans_by_row),
     })
   end
   return ui.column({ key = key .. ":regions", children = regions })
@@ -553,8 +569,7 @@ function M.retained_markdown(key, view, opts, retained)
   if type(target) ~= "number" or target < 1 or target % 1 ~= 0 then
     error("partition_rows must be a positive integer", 0)
   end
-  local document = assert(view.markdown_document,
-    "retained Markdown content requires a document")
+  local document = assert(view.markdown_document, "retained Markdown content requires a document")
   local first = math.max(1, view.markdown_first or 1)
   local last = document:finish()
   if view.markdown_last and view.markdown_last < last then
@@ -564,8 +579,12 @@ function M.retained_markdown(key, view, opts, retained)
   if type(attachments) == "table" and #attachments > 0 then
     local slice = document:slice(first, last)
     ---@type Neoagent.RenderContent
-    local content = { lines = slice.lines, highlights = slice.highlights,
-      markdown_blocks = slice.markdown_blocks, line_groups = {} }
+    local content = {
+      lines = slice.lines,
+      highlights = slice.highlights,
+      markdown_blocks = slice.markdown_blocks,
+      line_groups = {},
+    }
     for row, line in ipairs(content.lines) do
       if line ~= "" then
         for _, group in ipairs(view.markdown_groups or {}) do
@@ -601,10 +620,13 @@ function M.retained_markdown(key, view, opts, retained)
     local region_last = math.min(last, region.last)
     if region_last >= region_first then
       local cached = previous[index]
-      if cached and cached.region == region
-          and cached.signature == signature
-          and cached.first == region_first
-          and cached.last == region_last then
+      if
+        cached
+        and cached.region == region
+        and cached.signature == signature
+        and cached.first == region_first
+        and cached.last == region_last
+      then
         next_retained[index] = cached
         children[#children + 1] = cached.node
       else
@@ -656,8 +678,7 @@ function M.retained_markdown(key, view, opts, retained)
       end
     end
   end
-  return ui.column({ key = key .. ":regions", children = children }),
-    next_retained
+  return ui.column({ key = key .. ":regions", children = children }), next_retained
 end
 
 ---@param key string
@@ -680,19 +701,24 @@ function M.content(key, content, opts)
   local spans_by_row = {}
   for _, span in ipairs(normalized.highlights) do
     local spans = spans_by_row[span.row]
-    if not spans then spans = {} spans_by_row[span.row] = spans end
+    if not spans then
+      spans = {}
+      spans_by_row[span.row] = spans
+    end
     spans[#spans + 1] = span
   end
   local card = normalized.card
   local attachments = opts.attachments
   local has_attachments = type(attachments) == "table" and #attachments > 0
-  local partitioned = partitioned_markdown_node(
-    key, normalized, opts, spans_by_row, has_attachments)
-  if partitioned then return partitioned end
+  local partitioned = partitioned_markdown_node(key, normalized, opts, spans_by_row, has_attachments)
+  if partitioned then
+    return partitioned
+  end
   if not card or card.last < card.first then
-    local body = lines_node(
-      key, normalized, 0, #normalized.lines, opts.wrap, spans_by_row)
-    if not has_attachments then return body end
+    local body = lines_node(key, normalized, 0, #normalized.lines, opts.wrap, spans_by_row)
+    if not has_attachments then
+      return body
+    end
     ---@type Applet.Node[]
     local children = { body }
     vim.list_extend(children, assert(attachments))
@@ -704,12 +730,9 @@ function M.content(key, content, opts)
   end
   local children = {}
   if card.first > 0 then
-    children[#children + 1] = lines_node(
-      key .. ":before", normalized, 0, card.first, opts.wrap, spans_by_row)
+    children[#children + 1] = lines_node(key .. ":before", normalized, 0, card.first, opts.wrap, spans_by_row)
   end
-  local body = lines_node(
-    key .. ":card", normalized, card.first, card.last + 1, opts.wrap,
-    spans_by_row)
+  local body = lines_node(key .. ":card", normalized, card.first, card.last + 1, opts.wrap, spans_by_row)
   if has_attachments then
     ---@type Applet.Node[]
     local target_children = { body }
@@ -730,9 +753,8 @@ function M.content(key, content, opts)
     child = body,
   })
   if card.last + 1 < #normalized.lines then
-    children[#children + 1] = lines_node(
-      key .. ":after", normalized, card.last + 1, #normalized.lines,
-      opts.wrap, spans_by_row)
+    children[#children + 1] =
+      lines_node(key .. ":after", normalized, card.last + 1, #normalized.lines, opts.wrap, spans_by_row)
   end
   return ui.column({ key = key .. ":content", children = children })
 end

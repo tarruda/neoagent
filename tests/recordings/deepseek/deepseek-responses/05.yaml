@@ -1,0 +1,39 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: 8f6eb891e8fcde2d21e8786f419f40037250ee5b2fa4c996a3509a4c2054b29b
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.deepseek.com/files/file-api-00000000-0000-4000-8000-000000000000
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 158
+---
+type: response_body
+at_us: 2000
+bytes: 158
+body:
+  error:
+    code: invalid_request_error
+    message: file_id does not exist or is not created under your account
+    param: null
+    type: invalid_request_error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 400
+headers:
+  content-type: application/octet-stream
+---
+type: complete
+at_us: 2000
+ok: true

@@ -54,7 +54,7 @@ describe("OpenCode Go provider service", function()
         resetsAt = "2026-08-20T17:30:00.000Z",
       },
       weekly = {
-        status = "ok", percent = 75,
+        status = "ok", percent = 80,
         resetsAt = "2026-08-24T00:00:00.000Z",
       },
       monthly = {
@@ -88,8 +88,10 @@ describe("OpenCode Go provider service", function()
       assert(block(snapshot, "limit", "5-hour limit")).remaining)
     assert.are.equal("≈ $6.00 of $12 allowance remaining",
       assert(block(snapshot, "limit", "5-hour limit")).detail)
-    assert.are.equal(0.25,
+    assert.are.equal(0.2,
       assert(block(snapshot, "limit", "Weekly limit")).remaining)
+    assert.are.equal("warn",
+      assert(block(snapshot, "limit", "Weekly limit")).level)
     assert.are.equal(0.9,
       assert(block(snapshot, "limit", "Monthly limit")).remaining)
     assert.are.equal(1, #transport.fetch_requests)
@@ -146,6 +148,44 @@ describe("OpenCode Go provider service", function()
     assert.is_table(published)
     unsubscribe()
     assert(service.destroy)(service)
+    assert(service.destroy)(service)
+    assert.are.same({}, service:state().blocks)
+  end)
+
+  it("ignores an in-flight refresh after destruction", function()
+    local pending
+    local transport = fake_transport.new()
+    transport.fetch = function(opts)
+      transport.fetch_requests[#transport.fetch_requests + 1] = opts.request
+      return async.run(function()
+        return async.await(function(done)
+          pending = done
+          return function() end
+        end)
+      end)
+    end
+    local service = opencode_go.new({
+      base_url = "https://example.test/v1",
+    }, { transport = transport })
+    local refresh = operation(service, "refresh")
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    assert(service.destroy)(service)
+    local completion = pending
+    ---@cast completion Neoagent.AwaitCallbacks<Neoagent.ByteFetchResult>
+    completion.resolve({
+      ok = true,
+      status = 200,
+      headers = {},
+      body = vim.json.encode({ usage = {
+        rolling = { status = "ok", percent = 90,
+          resetsAt = "2026-08-20T17:30:00.000Z" },
+        weekly = { status = "ok", percent = 2,
+          resetsAt = "2026-08-24T00:00:00.000Z" },
+        monthly = { status = "ok", percent = 3,
+          resetsAt = "2026-09-03T12:00:00.000Z" },
+      } }),
+    })
+    assert.is_true(wait(refresh).ok)
     assert.are.same({}, service:state().blocks)
   end)
 

@@ -328,6 +328,84 @@ describe("neoagent provider model catalogs", function()
     provider_runtimes.destroy(runtimes)
   end)
 
+  it("contains stale availability callbacks and publishes an empty runtime set", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+    })
+    local publications = 0
+    local unsubscribe = models.subscribe_available(
+      value,
+      test_auth.new(),
+      runtimes,
+      function() publications = publications + 1 end
+    )
+    local publish = next(assert(runtimes.dynamic).catalog._listeners)
+    assert.is_function(publish)
+    assert.are.equal(1, publications)
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+    if publish then
+      publish(assert(runtimes.dynamic).catalog:snapshot())
+    end
+    assert.are.equal(1, publications)
+    provider_runtimes.destroy(runtimes)
+
+    local empty_config = config.setup({
+      default_registry = false,
+      providers = {},
+    })
+    local empty_publications
+    unsubscribe = models.subscribe_available(
+      empty_config,
+      test_auth.new(),
+      {},
+      function(choices) empty_publications = choices end
+    )
+    assert.are.same({}, empty_publications)
+    assert.is_true(unsubscribe())
+  end)
+
+  it("reports selection and API resolution failures", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+    })
+    value.default_model = nil
+    assert.has_error(function()
+      models.resolve(nil, nil, value, nil, runtimes)
+    end, "No default_model is configured")
+
+    value._apis.fake = nil
+    assert.has_error(function()
+      models.resolve("dynamic", "seed", value, nil, runtimes)
+    end, "Unknown API: fake")
+    provider_runtimes.destroy(runtimes)
+
+    value, runtimes = runtime({
+      api = "openai-responses",
+      base_url = "https://example.test/v1",
+      catalog = { seed = { { id = "seed" } } },
+    })
+    assert.are.equal("openai-responses",
+      models.resolve("dynamic", "seed", value, nil, runtimes).api)
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("propagates credential inspection failures from first selection", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      api_key = function() error("private key lookup failed") end,
+      catalog = { seed = { { id = "seed" } } },
+    })
+    local selected, err = models.first_available(value, nil, runtimes)
+    assert.is_nil(selected)
+    assert.are.equal("auth", assert(err).kind)
+    assert.matches("environment credential", assert(err).message)
+    assert.is_not_matches("private key", assert(err).message)
+    provider_runtimes.destroy(runtimes)
+  end)
+
   it("rejects invalid candidates at the catalog boundary", function()
     local value = configured({
       api = "fake",

@@ -18,12 +18,10 @@ local M = {}
 ---@class Neoagent.InstructionDiscoveryOptions: Neoagent.InstructionOptions
 ---@field cwd string
 
-
 ---@param value string
 ---@return string
 local function escape_xml(value)
-  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    :gsub('"', "&quot;"):gsub("'", "&apos;"))
+  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"):gsub("'", "&apos;"))
 end
 
 ---@param opts Neoagent.InstructionDiscoveryOptions
@@ -40,13 +38,17 @@ function M.discover(opts)
     ---@cast expanded string
     path = fs.normalize(expanded)
     local stat = vim.uv.fs_stat(path)
-    if not stat then return end
+    if not stat then
+      return
+    end
     if stat.type ~= "file" then
       diagnostics[#diagnostics + 1] = { path = path, message = "AGENTS.md path is not a file" }
       return
     end
     local canonical = fs.canonical(path)
-    if seen[canonical] then return end
+    if seen[canonical] then
+      return
+    end
     local content, err = fs.read(path)
     if not content then
       diagnostics[#diagnostics + 1] = { path = path, message = "failed to read AGENTS.md: " .. tostring(err) }
@@ -56,7 +58,9 @@ function M.discover(opts)
     files[#files + 1] = { path = canonical, content = content }
   end
 
-  for _, path in ipairs(opts.global_files or {}) do add(path) end
+  for _, path in ipairs(opts.global_files or {}) do
+    add(path)
+  end
   for _, directory in ipairs(fs.ancestors(opts.cwd)) do
     for _, filename in ipairs(opts.project_filenames or {}) do
       add(fs.join(directory, filename))
@@ -69,7 +73,9 @@ end
 ---@return string
 function M.format(files)
   files = files or {}
-  if #files == 0 then return "" end
+  if #files == 0 then
+    return ""
+  end
   local lines = {
     "<project_context>",
     "Contextual instructions, ordered from broadest to most specific:",

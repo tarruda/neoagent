@@ -56,12 +56,14 @@ end
 
 ---@param value unknown
 local function assert_presenter(value)
-  assert(type(value) == "table"
+  assert(
+    type(value) == "table"
       and type(value.select) == "function"
       and type(value.input) == "function"
       and type(value.notify) == "function"
       and type(value.open_uri) == "function",
-    "authentication Presenter is invalid")
+    "authentication Presenter is invalid"
+  )
 end
 
 ---@param opts Neoagent.AuthenticationOptions
@@ -69,24 +71,28 @@ end
 function Authentication.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "authentication config is required")
-  assert(type(opts.auth) == "table"
+  assert(
+    type(opts.auth) == "table"
       and type(opts.auth.login) == "function"
       and type(opts.auth.logout) == "function"
       and type(opts.auth.list_credentials) == "function",
-    "authentication manager is invalid")
+    "authentication manager is invalid"
+  )
   assert_presenter(opts.presenter)
-  assert(opts.runtimes == nil or type(opts.runtimes) == "table",
-    "authentication provider runtimes must be a table")
-  assert(opts.on_activity == nil or type(opts.on_activity) == "function",
-    "authentication on_activity must be a function")
-  assert(opts.report == nil or type(opts.report) == "function",
-    "authentication report must be a function")
-  assert(opts.refresh_after_login == nil
-      or type(opts.refresh_after_login) == "boolean",
-    "authentication refresh_after_login must be a boolean")
-  assert(opts.refresh_after_auth_change == nil
-      or type(opts.refresh_after_auth_change) == "boolean",
-    "authentication refresh_after_auth_change must be a boolean")
+  assert(opts.runtimes == nil or type(opts.runtimes) == "table", "authentication provider runtimes must be a table")
+  assert(
+    opts.on_activity == nil or type(opts.on_activity) == "function",
+    "authentication on_activity must be a function"
+  )
+  assert(opts.report == nil or type(opts.report) == "function", "authentication report must be a function")
+  assert(
+    opts.refresh_after_login == nil or type(opts.refresh_after_login) == "boolean",
+    "authentication refresh_after_login must be a boolean"
+  )
+  assert(
+    opts.refresh_after_auth_change == nil or type(opts.refresh_after_auth_change) == "boolean",
+    "authentication refresh_after_auth_change must be a boolean"
+  )
   local refresh_after_auth_change = opts.refresh_after_auth_change
   if refresh_after_auth_change == nil then
     refresh_after_auth_change = opts.refresh_after_login
@@ -112,7 +118,9 @@ end
 ---@param level? integer
 ---@return unknown
 function Authentication:_notify(message, level)
-  if self.report then return self.report(message, level) end
+  if self.report then
+    return self.report(message, level)
+  end
   return self.presenter:notify({
     message = "neoagent: " .. message,
     level = level or vim.log.levels.INFO,
@@ -120,7 +128,9 @@ function Authentication:_notify(message, level)
 end
 
 function Authentication:_publish()
-  if self.on_activity then self.on_activity(self:is_active()) end
+  if self.on_activity then
+    self.on_activity(self:is_active())
+  end
 end
 
 ---@param run Neoagent.PresentationRun
@@ -128,13 +138,17 @@ end
 ---@return Neoagent.PresentationRun
 function Authentication:_track_presentation(run, callback)
   local token = {}
-  local tracked = async.run(function() return run:await() end, {
+  local tracked = async.run(function()
+    return run:await()
+  end, {
     error_kind = "presentation",
     on_done = function(result)
       local owned = self.presentation_runs[token] ~= nil
       self.presentation_runs[token] = nil
       callback(result)
-      if owned then self:_publish() end
+      if owned then
+        self:_publish()
+      end
     end,
   })
   if not tracked:is_done() then
@@ -151,7 +165,9 @@ function Authentication:_select(request, callback)
   local run = self.presenter:select(request)
   ---@param result Neoagent.PresentationResult
   local function completed(result)
-    if self.destroyed then return end
+    if self.destroyed then
+      return
+    end
     if result.ok then
       callback(result.value)
     else
@@ -174,15 +190,20 @@ end
 function Authentication:_bridge(run, done)
   ---@param result Neoagent.PresentationResult
   local function completed(result)
-    if result.ok then done.resolve(result.value --[[@as string?]])
-    else done.reject(result.error) end
+    if result.ok then
+      done.resolve(result.value --[[@as string?]])
+    else
+      done.reject(result.error)
+    end
   end
   if run:is_done() then
     completed((assert(run:result())))
     return function() end
   end
   local tracked = self:_track_presentation(run, completed)
-  return function() tracked:cancel() end
+  return function()
+    tracked:cancel()
+  end
 end
 
 ---@param prompt Neoagent.LoginPrompt
@@ -192,37 +213,46 @@ function Authentication:_prompt(prompt, done)
   self:_close_login_notice()
   if prompt.type == "select" then
     ---@cast prompt Neoagent.LoginSelectPrompt
-    return self:_bridge(self.presenter:select({
-      prompt = prompt.message,
-      -- Login choices carry only the same id/label selection fields.
-      items = prompt.options --[[@as Neoagent.SelectItem[] ]],
-    }), done)
+    return self:_bridge(
+      self.presenter:select({
+        prompt = prompt.message,
+        -- Login choices carry only the same id/label selection fields.
+        items = prompt.options --[[@as Neoagent.SelectItem[] ]],
+      }),
+      done
+    )
   end
   if prompt.type == "secret" then
-    return self:_bridge(self.presenter:input({
-      prompt = prompt.message,
-      default = "",
-      secret = true,
-    }), done)
+    return self:_bridge(
+      self.presenter:input({
+        prompt = prompt.message,
+        default = "",
+        secret = true,
+      }),
+      done
+    )
   end
   if prompt.type == "text" or prompt.type == "manual_code" then
-    return self:_bridge(self.presenter:input({
-      prompt = prompt.message,
-      default = "",
-      allow_empty = true,
-    }), done)
+    return self:_bridge(
+      self.presenter:input({
+        prompt = prompt.message,
+        default = "",
+        allow_empty = true,
+      }),
+      done
+    )
   end
-  done.reject(util.error("auth",
-    "Unsupported login prompt: " .. tostring(prompt.type)))
+  done.reject(util.error("auth", "Unsupported login prompt: " .. tostring(prompt.type)))
 end
 
 ---@return boolean
 function Authentication:_close_login_notice()
   local run = self.login_notice
   self.login_notice = nil
-  if not run then return false end
-  if type(run.is_done) == "function" and not run:is_done()
-      and type(run.cancel) == "function" then
+  if not run then
+    return false
+  end
+  if type(run.is_done) == "function" and not run:is_done() and type(run.cancel) == "function" then
     run:cancel()
   end
   return true
@@ -234,10 +264,13 @@ function Authentication:_show_login_notice(request)
   self:_close_login_notice()
   if type(self.presenter.notice) == "function" then
     local ok, run = pcall(self.presenter.notice, self.presenter, request)
-    if ok and type(run) == "table"
-        and type(run.is_done) == "function"
-        and type(run.cancel) == "function"
-        and type(run.result) == "function" then
+    if
+      ok
+      and type(run) == "table"
+      and type(run.is_done) == "function"
+      and type(run.cancel) == "function"
+      and type(run.result) == "function"
+    then
       local done = run:is_done()
       local result = done and run:result() or nil
       if not done or type(result) == "table" and result.ok then
@@ -263,9 +296,10 @@ function Authentication:_show_device_code(event)
   if self:_show_login_notice({
     prompt = "OpenAI device login · <C-c> close",
     body = body,
-  }) then return end
-  self:_notify("Open " .. event.verificationUri .. " and enter code "
-    .. event.userCode)
+  }) then
+    return
+  end
+  self:_notify("Open " .. event.verificationUri .. " and enter code " .. event.userCode)
 end
 
 ---@param event Neoagent.AuthUrlEvent
@@ -300,7 +334,9 @@ end
 ---@param id string
 ---@return string?
 function Authentication:_method_id(id)
-  if self.config.auth.methods[id] then return id end
+  if self.config.auth.methods[id] then
+    return id
+  end
   local provider = self.config.providers[id]
   return type(provider) == "table" and provider.auth or id
 end
@@ -321,44 +357,47 @@ function Authentication:refresh_catalogs(method_id)
       if provider and provider.auth == method_id and catalog then
         local usable = true
         if runtime.credentials then
-          local inspected, state = pcall(
-            runtime.credentials.state, runtime.credentials)
+          local inspected, state = pcall(runtime.credentials.state, runtime.credentials)
           if not inspected or type(state) ~= "table" then
             usable = false
-            self:_notify("failed to inspect " .. provider_id
-              .. " credentials after authentication change",
-              vim.log.levels.ERROR)
+            self:_notify(
+              "failed to inspect " .. provider_id .. " credentials after authentication change",
+              vim.log.levels.ERROR
+            )
           elseif state.source == "error" then
             usable = false
-            self:_notify("failed to inspect " .. provider_id
-              .. " credentials after authentication change: "
-              .. (state.error and state.error.message or "unavailable"),
-              vim.log.levels.ERROR)
+            self:_notify(
+              "failed to inspect "
+                .. provider_id
+                .. " credentials after authentication change: "
+                .. (state.error and state.error.message or "unavailable"),
+              vim.log.levels.ERROR
+            )
           else
             usable = state.usable == true
           end
         end
         if usable then
-          local started, run = pcall(
-            catalog.refresh, catalog, { force = true })
+          local started, run = pcall(catalog.refresh, catalog, { force = true })
           if not started or not valid_run(run) then
-            self:_notify("failed to refresh " .. provider_id
-              .. " catalog after authentication change",
-              vim.log.levels.ERROR)
+            self:_notify(
+              "failed to refresh " .. provider_id .. " catalog after authentication change",
+              vim.log.levels.ERROR
+            )
           else
             ---@cast run Neoagent.CatalogRefreshRun
             local result = run:await()
             if type(result) ~= "table" or type(result.ok) ~= "boolean" then
-              self:_notify("failed to refresh " .. provider_id
-                .. " catalog: catalog returned an invalid result",
-                vim.log.levels.ERROR)
+              self:_notify(
+                "failed to refresh " .. provider_id .. " catalog: catalog returned an invalid result",
+                vim.log.levels.ERROR
+              )
             elseif not result.ok then
-              local failure = util.normalize_error(
-                result.error or "catalog refresh failed", "provider")
-              if failure.kind == "cancelled" then error(failure, 0) end
-              self:_notify("failed to refresh " .. provider_id
-                .. " catalog: " .. failure.message,
-                vim.log.levels.ERROR)
+              local failure = util.normalize_error(result.error or "catalog refresh failed", "provider")
+              if failure.kind == "cancelled" then
+                error(failure, 0)
+              end
+              self:_notify("failed to refresh " .. provider_id .. " catalog: " .. failure.message, vim.log.levels.ERROR)
             end
           end
         end
@@ -367,7 +406,9 @@ function Authentication:refresh_catalogs(method_id)
     return { ok = true, method = method_id }
   end, {
     on_done = function()
-      if not tracked then return end
+      if not tracked then
+        return
+      end
       self.catalog_runs[token] = nil
       self:_publish()
     end,
@@ -383,23 +424,32 @@ end
 
 ---@return boolean
 function Authentication:is_active()
-  return self.login_operation ~= nil or self.logout_operation ~= nil
-    or next(self.catalog_runs) ~= nil or next(self.presentation_runs) ~= nil
+  return self.login_operation ~= nil
+    or self.logout_operation ~= nil
+    or next(self.catalog_runs) ~= nil
+    or next(self.presentation_runs) ~= nil
 end
 
 ---@return "login"|"logout"|"catalog"|"presentation"?
 function Authentication:activity_kind()
-  if self.login_operation then return "login" end
-  if self.logout_operation then return "logout" end
-  if next(self.catalog_runs) ~= nil then return "catalog" end
-  if next(self.presentation_runs) ~= nil then return "presentation" end
+  if self.login_operation then
+    return "login"
+  end
+  if self.logout_operation then
+    return "logout"
+  end
+  if next(self.catalog_runs) ~= nil then
+    return "catalog"
+  end
+  if next(self.presentation_runs) ~= nil then
+    return "presentation"
+  end
 end
 
 ---@param callback? fun(active: boolean)
 ---@return (fun(active: boolean))?
 function Authentication:set_activity_callback(callback)
-  assert(callback == nil or type(callback) == "function",
-    "authentication activity callback must be a function")
+  assert(callback == nil or type(callback) == "function", "authentication activity callback must be a function")
   self.on_activity = callback
   return callback
 end
@@ -411,8 +461,7 @@ function Authentication:login(method_id)
     return nil, util.error("auth", "Authentication is destroyed")
   end
   if self.login_operation or self.logout_operation then
-    self:_notify("an authentication operation is already active",
-      vim.log.levels.WARN)
+    self:_notify("an authentication operation is already active", vim.log.levels.WARN)
     return nil
   end
   local methods = self.config.auth.methods
@@ -421,18 +470,24 @@ function Authentication:login(method_id)
     for id, method in pairs(methods) do
       choices[#choices + 1] = { id = id, label = method.name }
     end
-    table.sort(choices, function(a, b) return a.label < b.label end)
-    if #choices == 0 then self:_notify("no login methods configured") return nil end
+    table.sort(choices, function(a, b)
+      return a.label < b.label
+    end)
+    if #choices == 0 then
+      self:_notify("no login methods configured")
+      return nil
+    end
     self:_select({
       prompt = "Select login:",
       items = choices,
-    }, function(id) self:login(id --[[@as string]]) end)
+    }, function(id)
+      self:login(id --[[@as string]])
+    end)
     return true
   end
   method_id = self:_method_id(method_id)
   if not methods[method_id] then
-    self:_notify("unknown login method: " .. tostring(method_id),
-      vim.log.levels.ERROR)
+    self:_notify("unknown login method: " .. tostring(method_id), vim.log.levels.ERROR)
     return nil
   end
   method_id = assert(method_id)
@@ -440,21 +495,26 @@ function Authentication:login(method_id)
   self.login_operation = operation
   self:_publish()
   local ok, run = pcall(self.auth.login, self.auth, method_id, {
-    prompt = function(prompt, done) return self:_prompt(prompt, done) end,
-    notify = function(event) self:_event(event) end,
+    prompt = function(prompt, done)
+      return self:_prompt(prompt, done)
+    end,
+    notify = function(event)
+      self:_event(event)
+    end,
     on_done = function(result)
       self:_close_login_notice()
       if self.login_operation == operation then
         self.login_operation = nil
         self:_publish()
       end
-      if self.destroyed then return end
+      if self.destroyed then
+        return
+      end
       if result.ok then
         if self.refresh_after_auth_change then
           self:refresh_catalogs(method_id)
         end
-        self:_notify("logged in with " .. methods[method_id].name
-          .. "; credentials saved to " .. self.config.auth.path)
+        self:_notify("logged in with " .. methods[method_id].name .. "; credentials saved to " .. self.config.auth.path)
       else
         local err = (result --[[@as Neoagent.AsyncFailure]]).error
         if err.kind ~= "cancelled" then
@@ -467,9 +527,10 @@ function Authentication:login(method_id)
     self:_close_login_notice()
     self.login_operation = nil
     self:_publish()
-    if not ok then error(run, 0) end
-    error(util.error("auth",
-      "Authentication login must return a Run"), 0)
+    if not ok then
+      error(run, 0)
+    end
+    error(util.error("auth", "Authentication login must return a Run"), 0)
   end
   operation.run = run
   if run:is_done() and self.login_operation == operation then
@@ -483,7 +544,9 @@ end
 ---@return boolean
 function Authentication:cancel()
   local cancelled = false
-  if self:_close_login_notice() then cancelled = true end
+  if self:_close_login_notice() then
+    cancelled = true
+  end
   for _, operation in pairs({ login = self.login_operation, logout = self.logout_operation }) do
     if operation and operation.run then
       cancelled = true
@@ -508,8 +571,7 @@ function Authentication:logout(method_id)
     return nil, util.error("auth", "Authentication is destroyed")
   end
   if self.login_operation or self.logout_operation then
-    self:_notify("an authentication operation is already active",
-      vim.log.levels.WARN)
+    self:_notify("an authentication operation is already active", vim.log.levels.WARN)
     return nil
   end
   local credentials, err = self.auth:list_credentials()
@@ -524,8 +586,7 @@ function Authentication:logout(method_id)
     end
     local choices = {}
     for _, item in ipairs(credentials) do
-      local kind = item.type == "api_key" and "API key"
-        or item.type == "oauth" and "OAuth" or "invalid"
+      local kind = item.type == "api_key" and "API key" or item.type == "oauth" and "OAuth" or "invalid"
       choices[#choices + 1] = {
         id = item.id,
         label = item.name .. " (" .. kind .. ")",
@@ -535,17 +596,21 @@ function Authentication:logout(method_id)
     self:_select({
       prompt = "Select credential to remove:",
       items = choices,
-    }, function(id) self:logout(id --[[@as string]]) end)
+    }, function(id)
+      self:logout(id --[[@as string]])
+    end)
     return true
   end
   method_id = self:_method_id(method_id)
   local selected
   for _, credential in ipairs(credentials) do
-    if credential.id == method_id then selected = credential break end
+    if credential.id == method_id then
+      selected = credential
+      break
+    end
   end
   if not selected then
-    self:_notify("no stored credential for " .. tostring(method_id),
-      vim.log.levels.WARN)
+    self:_notify("no stored credential for " .. tostring(method_id), vim.log.levels.WARN)
     return nil
   end
   method_id = selected.id
@@ -558,14 +623,15 @@ function Authentication:logout(method_id)
         self.logout_operation = nil
         self:_publish()
       end
-      if self.destroyed then return end
+      if self.destroyed then
+        return
+      end
       if result.ok then
         if self.refresh_after_auth_change then
           self:refresh_catalogs(method_id)
         end
         if selected.type == "api_key" then
-          self:_notify("removed stored " .. selected.name
-            .. "; environment API keys are unchanged")
+          self:_notify("removed stored " .. selected.name .. "; environment API keys are unchanged")
         else
           self:_notify("logged out of " .. selected.name)
         end
@@ -580,9 +646,10 @@ function Authentication:logout(method_id)
   if not ok or not valid_run(run) then
     self.logout_operation = nil
     self:_publish()
-    if not ok then error(run, 0) end
-    error(util.error("auth",
-      "Authentication logout must return a Run"), 0)
+    if not ok then
+      error(run, 0)
+    end
+    error(util.error("auth", "Authentication logout must return a Run"), 0)
   end
   operation.run = run
   if run:is_done() and self.logout_operation == operation then
@@ -593,7 +660,9 @@ function Authentication:logout(method_id)
 end
 
 function Authentication:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   self:_close_login_notice()
   if self.login_operation and self.login_operation.run then
@@ -602,8 +671,12 @@ function Authentication:destroy()
   if self.logout_operation and self.logout_operation.run then
     self.logout_operation.run:cancel()
   end
-  for _, run in pairs(self.catalog_runs) do run:cancel() end
-  for _, run in pairs(self.presentation_runs) do run:cancel() end
+  for _, run in pairs(self.catalog_runs) do
+    run:cancel()
+  end
+  for _, run in pairs(self.presentation_runs) do
+    run:cancel()
+  end
   self.login_operation = nil
   self.logout_operation = nil
   self.catalog_runs = {}

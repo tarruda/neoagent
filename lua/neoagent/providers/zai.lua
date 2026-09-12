@@ -14,9 +14,10 @@ local DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 ---@return Neoagent.ZaiServiceOptions
 local function validate_service_opts(value)
   value = value or {}
-  assert(type(value) == "table"
-      and (next(value) == nil or not util.is_list(value)),
-    "zai service_opts must be an object")
+  assert(
+    type(value) == "table" and (next(value) == nil or not util.is_list(value)),
+    "zai service_opts must be an object"
+  )
   local allowed = {
     timeout_ms = "number",
     max_response_bytes = "number",
@@ -26,12 +27,15 @@ local function validate_service_opts(value)
     local kind = allowed[name]
     assert(kind, "unknown zai service option: " .. tostring(name))
     if kind == "number" then
-      assert(type(setting) == "number" and setting > 0
-          and setting < math.huge and setting % 1 == 0,
-        "zai service option " .. name .. " must be a positive integer")
+      assert(
+        type(setting) == "number" and setting > 0 and setting < math.huge and setting % 1 == 0,
+        "zai service option " .. name .. " must be a positive integer"
+      )
     else
-      assert(type(setting) == "string" and setting ~= "",
-        "zai service option management_url must be a non-empty string")
+      assert(
+        type(setting) == "string" and setting ~= "",
+        "zai service option management_url must be a non-empty string"
+      )
     end
   end
   ---@cast value Neoagent.ZaiServiceOptions
@@ -47,8 +51,12 @@ end
 ---@param remaining number
 ---@return Neoagent.ProviderLevel
 local function level(remaining)
-  if remaining <= 0 then return "error" end
-  if remaining <= 0.2 then return "warn" end
+  if remaining <= 0 then
+    return "error"
+  end
+  if remaining <= 0.2 then
+    return "warn"
+  end
   return "success"
 end
 
@@ -59,7 +67,9 @@ local function grouped(value)
   while true do
     local next_value, count = digits:gsub("^(%d+)(%d%d%d)", "%1,%2")
     digits = next_value
-    if count == 0 then return digits end
+    if count == 0 then
+      return digits
+    end
   end
 end
 
@@ -67,8 +77,12 @@ end
 ---@param currency? string
 ---@return string
 local function money(value, currency)
-  if currency == "USD" then return string.format("$%.2f", value) end
-  if currency then return string.format("%s %.2f", currency, value) end
+  if currency == "USD" then
+    return string.format("$%.2f", value)
+  end
+  if currency then
+    return string.format("%s %.2f", currency, value)
+  end
   return string.format("%.2f", value)
 end
 
@@ -76,7 +90,9 @@ end
 ---@param err Neoagent.Error
 ---@return string
 local function unavailable(resource, err)
-  return "Z.AI " .. resource .. " reporting is unavailable for this API key: "
+  return "Z.AI "
+    .. resource
+    .. " reporting is unavailable for this API key: "
     .. tostring(err.message or "permission denied")
 end
 
@@ -85,8 +101,7 @@ end
 function M.discover_models(ctx)
   local service_opts = validate_service_opts(ctx.provider.service_opts)
   local selected = client_module.new({
-    management_url = (ctx.provider.base_url or DEFAULT_BASE_URL)
-      :gsub("/+$", ""),
+    management_url = (ctx.provider.base_url or DEFAULT_BASE_URL):gsub("/+$", ""),
     transport = ctx.transport,
     timeout_ms = service_opts.timeout_ms,
     max_response_bytes = service_opts.max_response_bytes,
@@ -94,9 +109,13 @@ function M.discover_models(ctx)
   })
   return async.run(function()
     local result = selected:models({ resolve_auth = ctx.resolve_auth }):await()
-    if result.ok == false then error(result.error, 0) end
+    if result.ok == false then
+      error(result.error, 0)
+    end
     local models = {}
-    for _, id in ipairs(result.models) do models[#models + 1] = { id = id } end
+    for _, id in ipairs(result.models) do
+      models[#models + 1] = { id = id }
+    end
     return { ok = true, models = models }
   end, { error_kind = "provider" })
 end
@@ -112,8 +131,7 @@ function M.new(opts, resources)
   local name = plan and "Z.AI Plan" or "Z.AI API"
   local base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", "")
   local service_opts = validate_service_opts(opts.service_opts)
-  local management_url = (service_opts.management_url or origin(base_url))
-    :gsub("/+$", "")
+  local management_url = (service_opts.management_url or origin(base_url)):gsub("/+$", "")
   local client = client_module.new({
     management_url = management_url,
     transport = resources.transport,
@@ -133,33 +151,41 @@ function M.new(opts, resources)
   local function blocks()
     ---@type Neoagent.ProviderBlock[]
     local result = {}
-    if status then result[#result + 1] = util.copy(status) end
+    if status then
+      result[#result + 1] = util.copy(status)
+    end
     result[#result + 1] = {
-      type = "field", label = "Endpoint", value = base_url,
+      type = "field",
+      label = "Endpoint",
+      value = base_url,
     }
     if balance then
       result[#result + 1] = {
-        type = "field", label = "Available balance",
+        type = "field",
+        label = "Available balance",
         value = money(balance.available, balance.currency),
       }
       result[#result + 1] = {
-        type = "field", label = "Total balance",
+        type = "field",
+        label = "Total balance",
         value = money(balance.total, balance.currency),
       }
     end
     if quota and quota.plan then
       result[#result + 1] = {
-        type = "field", label = "Plan", value = quota.plan,
+        type = "field",
+        label = "Plan",
+        value = quota.plan,
       }
     end
     for _, limit in ipairs(quota and quota.limits or {}) do
-      local resource = limit.type == "TOKENS_LIMIT" and "token"
-        or limit.type == "CREDIT_LIMIT" and "credit" or "MCP"
+      local resource = limit.type == "TOKENS_LIMIT" and "token" or limit.type == "CREDIT_LIMIT" and "credit" or "MCP"
       local detail
       if limit.current ~= nil then
-        detail = grouped(limit.current) .. " of " .. grouped(limit.maximum)
-          .. (resource == "MCP" and " uses consumed"
-            or (" " .. resource .. "s consumed"))
+        detail = grouped(limit.current)
+          .. " of "
+          .. grouped(limit.maximum)
+          .. (resource == "MCP" and " uses consumed" or (" " .. resource .. "s consumed"))
       end
       result[#result + 1] = {
         type = "limit",
@@ -173,11 +199,12 @@ function M.new(opts, resources)
     return result
   end
 
-  local dashboard = provider_state.new(
-    { blocks = blocks() }, { report = resources.report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
 
   local function publish()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     assert(dashboard:push({ blocks = blocks() }))
   end
 
@@ -204,7 +231,9 @@ function M.new(opts, resources)
       run = function(ctx)
         return async.run(function()
           ctx.interact.progress({
-            id = "refresh", label = "Refresh quotas", state = "running",
+            id = "refresh",
+            label = "Refresh quotas",
+            state = "running",
             message = "Loading Z.AI Plan quotas",
           })
           local refreshed = client:quota(ctx):await()
@@ -222,8 +251,7 @@ function M.new(opts, resources)
             end
             status = {
               type = "status",
-              text = "Quota refresh failed: " .. tostring(
-                err and err.message or "unknown error"),
+              text = "Quota refresh failed: " .. tostring(err and err.message or "unknown error"),
               level = "error",
             }
             publish()
@@ -244,15 +272,16 @@ function M.new(opts, resources)
       run = function(ctx)
         return async.run(function()
           ctx.interact.progress({
-            id = "refresh", label = "Refresh balance", state = "running",
+            id = "refresh",
+            label = "Refresh balance",
+            state = "running",
             message = "Loading Z.AI API balance",
           })
           local refreshed = client:balance(ctx):await()
           if refreshed.ok == false then
             local err = refreshed.error
             local status_code = err and rawget(err, "status")
-            if status_code == 401 or status_code == 403
-                or status_code == 404 then
+            if status_code == 401 or status_code == 403 or status_code == 404 then
               status = {
                 type = "status",
                 text = unavailable("balance", err),
@@ -263,8 +292,7 @@ function M.new(opts, resources)
             end
             status = {
               type = "status",
-              text = "Balance refresh failed: " .. tostring(
-                err and err.message or "unknown error"),
+              text = "Balance refresh failed: " .. tostring(err and err.message or "unknown error"),
               level = "error",
             }
             publish()
@@ -288,7 +316,9 @@ function M.new(opts, resources)
   end
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     dashboard:destroy()
   end

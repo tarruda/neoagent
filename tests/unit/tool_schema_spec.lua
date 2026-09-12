@@ -37,6 +37,9 @@ describe("neoagent.api.tool_schema", function()
       { value = { required = { "same", "same" } }, pattern = "unique" },
       { value = { minItems = 2, maxItems = 1 }, pattern = "must not exceed" },
       { value = { additionalProperties = "yes" }, pattern = "must be an object" },
+      { value = { additionalProperties = { type = "invented" } }, pattern = "additionalProperties.type.*invalid" },
+      { value = { type = "array", items = { type = "invented" } },
+        pattern = "items.type.*invalid" },
       { value = { unknown = true }, pattern = "unsupported field" },
     }) do
       if invalid.mutate then invalid.mutate(invalid.value) end
@@ -145,6 +148,14 @@ describe("neoagent.api.tool_schema", function()
     assert.is_false(valid)
     assert.matches("field_20 is required", (assert(message)))
     assert.is_nil((assert(message):find("field_21 is required", 1, true)))
+    assert.matches("Further schema mismatches were omitted", (assert(message)))
+
+    local items = {}
+    for index = 1, 30 do items[index] = "invalid" end
+    valid, message = tool_schema.validate({ type = "array", items = { type = "integer" } }, items)
+    assert.is_false(valid)
+    assert.matches("%[20%] must be an integer", (assert(message)))
+    assert.is_nil((assert(message):find("[21]", 1, true)))
     assert.matches("Further schema mismatches were omitted", (assert(message)))
 
     valid, message = tool_schema.validate({ type = "number" }, math.huge)

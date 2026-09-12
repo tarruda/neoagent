@@ -24,8 +24,8 @@ describe("Alibaba Cloud Token Plan provider service", function()
       assert.is_table(ctx)
       return async.run(function()
         return { ok = true, usage = {
-          five_hour = { used = 0.2, resets_at = 1786000000 },
-          seven_day = { used = 0.75, resets_at = 1786100000 },
+          five_hour = { used = 1, resets_at = 1786000000 },
+          seven_day = { used = 0.9, resets_at = 1786100000 },
         } }
       end)
     end
@@ -46,12 +46,17 @@ describe("Alibaba Cloud Token Plan provider service", function()
     local result = wait((assert(provider_service.run(plan, "refresh"))))
     assert.is_true(result.ok)
     assert.are.equal(1, calls)
-    assert.are.equal(0.8,
+    assert.are.equal(0,
       assert(block(plan:state(), "limit", "5-hour quota")).remaining)
+    assert.are.equal("error",
+      assert(block(plan:state(), "limit", "5-hour quota")).level)
     assert.are.equal(1786000000,
       assert(block(plan:state(), "limit", "5-hour quota")).resets_at)
-    assert.are.equal(0.25,
-      assert(block(plan:state(), "limit", "7-day quota")).remaining)
+    assert.is_true(math.abs(
+      assert(block(plan:state(), "limit", "7-day quota")).remaining - 0.1
+    ) < 1e-12)
+    assert.are.equal("warn",
+      assert(block(plan:state(), "limit", "7-day quota")).level)
     assert.are.equal(1, updates)
     unsubscribe()
     assert(plan.destroy)(plan)

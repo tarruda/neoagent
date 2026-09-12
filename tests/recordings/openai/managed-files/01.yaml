@@ -1,0 +1,48 @@
+# Adapted from authorized synthetic-image validation on 2026-09-08.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: 46d245102504ec3e11ab2c2a998930e83a49e5cfa6f31eb87cf623289df4c8fa
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.openai.com/v1/files
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Length: '540'
+    Content-Type: multipart/form-data; boundary=synthetic-upload-boundary
+  body: LS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9InB1cnBvc2UiDQoNCnZpc2lvbg0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbYW5jaG9yXSINCg0KY3JlYXRlZF9hdA0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbc2Vjb25kc10iDQoNCjg2NDAwDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnkNCkNvbnRlbnQtRGlzcG9zaXRpb246IGZvcm0tZGF0YTsgbmFtZT0iZmlsZSI7IGZpbGVuYW1lPSJpbWFnZS5wbmciDQpDb250ZW50LVR5cGU6IGltYWdlL3BuZw0KDQqJUE5HDQoaCgAAAA1JSERSAAAAIAAAABAIAgAAAPhi6g4AAAAiSURBVHicY/jPwEASIlH5f1KVj1owasGoBaMWjFowIBYAAFCm/hBf6HhFAAAAAElFTkSuQmCCDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnktLQ0K
+  body_encoding: base64
+  body_bytes: 540
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 194
+---
+type: response_body
+at_us: 2000
+bytes: 194
+body:
+  bytes: 91
+  created_at: 1700000000
+  expires_at: 1700086400
+  filename: image.png
+  id: file-managed-openai-fixed
+  object: file
+  purpose: vision
+  status: processed
+  status_details: null
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

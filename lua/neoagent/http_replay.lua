@@ -90,10 +90,14 @@ function M.read(path)
     events[#events + 1] = event --[[@as Neoagent.RecordedEvent]]
   end
   local first = events[1]
-  assert(first and first.type == "exchange"
-    and first.schema == "neoagent-http-recording" and first.version == 1, "Unsupported HTTP recording")
-  assert(type(first.request) == "table" and type(first.request.method) == "string"
-    and type(first.request.url) == "string", "Recording request is missing method or URL")
+  assert(
+    first and first.type == "exchange" and first.schema == "neoagent-http-recording" and first.version == 1,
+    "Unsupported HTTP recording"
+  )
+  assert(
+    type(first.request) == "table" and type(first.request.method) == "string" and type(first.request.url) == "string",
+    "Recording request is missing method or URL"
+  )
   validate_headers(first.request.headers)
   ---@type {bytes: integer, at_us: integer}[]
   local cuts = {}
@@ -108,14 +112,20 @@ function M.read(path)
   local previous = 0
   for index = 2, #events do
     local event = assert(events[index])
-    assert(type(event.at_us) == "number" and event.at_us >= previous
-      and event.at_us < math.huge and event.at_us % 1 == 0,
-      "Recording timestamps must be ordered")
+    assert(
+      type(event.at_us) == "number" and event.at_us >= previous and event.at_us < math.huge and event.at_us % 1 == 0,
+      "Recording timestamps must be ordered"
+    )
     previous = event.at_us
     if event.type == "response_chunk" then
-      assert(not body and event.index == #cuts + 1
-        and type(event.bytes) == "number" and event.bytes >= 0 and event.bytes % 1 == 0,
-        "Invalid recording chunk sequence")
+      assert(
+        not body
+          and event.index == #cuts + 1
+          and type(event.bytes) == "number"
+          and event.bytes >= 0
+          and event.bytes % 1 == 0,
+        "Invalid recording chunk sequence"
+      )
       cuts[#cuts + 1] = { bytes = event.bytes, at_us = event.at_us }
     elseif event.type == "response_body" then
       assert(not body, "Duplicate recording body")
@@ -123,15 +133,19 @@ function M.read(path)
       assert(structural or event.bytes == #body, "Recording body length mismatch")
     elseif event.type == "response" then
       assert(not response, "Duplicate recording response")
-      assert(event.status == nil or type(event.status) == "number"
-        and event.status >= 0 and event.status <= 599 and event.status % 1 == 0,
-        "Invalid recording status")
+      assert(
+        event.status == nil
+          or type(event.status) == "number" and event.status >= 0 and event.status <= 599 and event.status % 1 == 0,
+        "Invalid recording status"
+      )
       validate_headers(event.headers)
       response = { status = event.status, headers = event.headers or {} }
     elseif event.type == "complete" then
       assert(index == #events and type(event.ok) == "boolean", "Invalid recording completion")
-      assert(event.ok or type(event.error) == "table" and type(event.error.kind) == "string",
-        "Failed recording requires an error")
+      assert(
+        event.ok or type(event.error) == "table" and type(event.error.kind) == "string",
+        "Failed recording requires an error"
+      )
       terminal = event
     else
       error("Unknown recording event")
@@ -143,8 +157,8 @@ function M.read(path)
   ---@type Neoagent.ReplayChunk[]
   local chunks = {}
   for _, chunk in ipairs(cuts) do
-    chunks[#chunks + 1] = { bytes = chunk.bytes, at_us = chunk.at_us,
-      data = body:sub(offset, offset + chunk.bytes - 1) }
+    chunks[#chunks + 1] =
+      { bytes = chunk.bytes, at_us = chunk.at_us, data = body:sub(offset, offset + chunk.bytes - 1) }
     offset = offset + chunk.bytes
   end
   if structural then
@@ -157,16 +171,22 @@ function M.read(path)
   request.body = first.request.body ~= nil and bytes(first.request, yaml) or nil
   return {
     request = request --[[@as Neoagent.HttpRequest]],
-    chunks = chunks, context = util.copy(first.context), structural = structural == true,
-    response = response, body = body, terminal = terminal,
+    chunks = chunks,
+    context = util.copy(first.context),
+    structural = structural == true,
+    response = response,
+    body = body,
+    terminal = terminal,
   }
 end
 
----@param value? table<string, unknown>
----@return table<string, unknown>
+---@param value? table<string, string>
+---@return table<string, string>
 local function headers(value)
   local result = {}
-  for key, item in pairs(value or {}) do result[key:lower()] = item end
+  for key, item in pairs(value or {}) do
+    result[key:lower()] = item
+  end
   return result
 end
 
@@ -176,15 +196,62 @@ local function form(value)
   local result = {}
   for pair in (value or ""):gmatch("[^&]+") do
     local key, item = pair:match("^([^=]+)=(.*)$")
-    if not key then return nil end
+    if not key then
+      return nil
+    end
     ---@param text string
     ---@return string
-    local function decode(text) return vim.uri_decode((text:gsub("+", " "))) end
+    local function decode(text)
+      return vim.uri_decode((text:gsub("+", " ")))
+    end
     key, item = decode(key), decode(assert(item))
-    if result[key] ~= nil then return nil end
+    if result[key] ~= nil then
+      return nil
+    end
     result[key] = item
   end
   return result
+end
+
+-- Multipart boundaries are transport framing. Retain every byte between
+-- delimiters, including part order, headers, field values and binary data.
+---@param request Neoagent.HttpRequest
+---@return string[]?
+local function multipart(request)
+  local fields = headers(request.headers)
+  local content_type = fields["content-type"]
+  local boundary = type(content_type) == "string" and content_type:match("^multipart/form%-data;%s*boundary=(.+)$")
+  if not boundary or not request.body then
+    return nil
+  end
+  boundary = boundary:match('^"(.*)"$') or boundary
+  if boundary == "" or boundary:find('[\r\n%z"]') then
+    return nil
+  end
+  if fields["content-length"] and tonumber(fields["content-length"]) ~= #request.body then
+    return nil
+  end
+  local delimiter, body = "--" .. boundary, request.body
+  if body:sub(1, #delimiter + 2) ~= delimiter .. "\r\n" then
+    return nil
+  end
+  local parts, cursor = {}, #delimiter + 3
+  while true do
+    local first, last = body:find("\r\n" .. delimiter, cursor, true)
+    if not first then
+      return nil
+    end
+    last = assert(last)
+    parts[#parts + 1] = body:sub(cursor, first - 1)
+    local suffix = body:sub(last + 1, last + 2)
+    if suffix == "--" then
+      return body:sub(last + 1) == "--\r\n" and parts or nil
+    end
+    if suffix ~= "\r\n" then
+      return nil
+    end
+    cursor = last + 3
+  end
 end
 
 ---@param request Neoagent.HttpRequest
@@ -194,30 +261,48 @@ local function body_value(request)
   if type(content_type) == "string" and content_type:find("application/x-www-form-urlencoded", 1, true) then
     return form(request.body) or request.body
   end
-  if request.body == nil then return nil end
+  if request.body == nil then
+    return nil
+  end
   local ok, value = pcall(vim.json.decode, request.body)
-  if ok then return value end
+  if ok then
+    return value
+  end
   return request.body
 end
 
 ---@param url string
 ---@return string
 local function normalized_url(url)
-  return (url:gsub("%%(%x%x)", function(hex) return "%" .. hex:upper() end))
+  return (url:gsub("%%(%x%x)", function(hex)
+    return "%" .. hex:upper()
+  end))
 end
 
 ---@param left unknown
 ---@param right unknown
 ---@return boolean
 local function equal(left, right)
-  if type(left) ~= type(right) then return false end
-  if type(left) ~= "table" or type(right) ~= "table" then return left == right end
-  -- vim.deep_equal treats empty JSON objects and arrays as equal.
-  if vim.islist(left) ~= vim.islist(right) then return false end
-  for key, value in pairs(left) do
-    if not equal(value, right[key]) then return false end
+  if type(left) ~= type(right) then
+    return false
   end
-  for key in pairs(right) do if left[key] == nil then return false end end
+  if type(left) ~= "table" or type(right) ~= "table" then
+    return left == right
+  end
+  -- vim.deep_equal treats empty JSON objects and arrays as equal.
+  if vim.islist(left) ~= vim.islist(right) then
+    return false
+  end
+  for key, value in pairs(left) do
+    if not equal(value, right[key]) then
+      return false
+    end
+  end
+  for key in pairs(right) do
+    if left[key] == nil then
+      return false
+    end
+  end
   return true
 end
 
@@ -226,25 +311,51 @@ end
 ---@return string?
 local function mismatch(entry, request)
   local expected = entry.exchange.request
-  if (request.method or "POST") ~= expected.method then return "method" end
-  if normalized_url(request.url) ~= normalized_url(expected.url) then return "URL" end
+  if (request.method or "POST") ~= expected.method then
+    return "method"
+  end
+  if normalized_url(request.url) ~= normalized_url(expected.url) then
+    return "URL"
+  end
   local actual_headers, wanted_headers = headers(request.headers), headers(expected.headers)
+  local actual_parts, wanted_parts
+  if not entry.body_exact then
+    actual_parts, wanted_parts = multipart(request), multipart(expected)
+    if actual_parts and wanted_parts then
+      actual_headers["content-type"], wanted_headers["content-type"] = "multipart/form-data", "multipart/form-data"
+      -- Each original length was checked against its own framed body above.
+      if actual_headers["content-length"] then
+        actual_headers["content-length"] = "multipart"
+      end
+      if wanted_headers["content-length"] then
+        wanted_headers["content-length"] = "multipart"
+      end
+    end
+  end
   if entry.headers_subset then
     for key, value in pairs(wanted_headers) do
-      if actual_headers[key] ~= value then return "headers" end
+      if actual_headers[key] ~= value then
+        return "headers"
+      end
     end
   elseif not equal(actual_headers, wanted_headers) then
     return "headers"
   end
   if entry.body_exact then
-    if request.body ~= expected.body then return "body" end
+    if request.body ~= expected.body then
+      return "body"
+    end
     return
   end
-  local actual, wanted = body_value(request), body_value(expected)
+  local actual, wanted = actual_parts or body_value(request), wanted_parts or body_value(expected)
   if entry.body_subset and wanted ~= nil then
-    if type(actual) ~= "table" or type(wanted) ~= "table" then return "body" end
+    if type(actual) ~= "table" or type(wanted) ~= "table" then
+      return "body"
+    end
     for key, value in pairs(wanted) do
-      if not equal(value, actual[key]) then return "body" end
+      if not equal(value, actual[key]) then
+        return "body"
+      end
     end
   elseif not equal(wanted, actual) then
     return "body"
@@ -255,26 +366,37 @@ end
 ---@param milliseconds? number
 local function tick(milliseconds)
   return async.await(
-  ---@param done Neoagent.AwaitCallbacks<boolean>
-  function(done)
-    local active = true
-    local function ready() if active then done.resolve(true) end end
-    ---@type uv.uv_timer_t?
-    local timer
-    if milliseconds and milliseconds > 0 then
-      timer = assert(vim.uv.new_timer())
-      timer:start(math.floor(milliseconds), 0, function()
-        assert(timer):stop(); assert(timer):close(); timer = nil
+    ---@param done Neoagent.AwaitCallbacks<boolean>
+    function(done)
+      local active = true
+      local function ready()
+        if active then
+          done.resolve(true)
+        end
+      end
+      ---@type uv.uv_timer_t?
+      local timer
+      if milliseconds and milliseconds > 0 then
+        timer = assert(vim.uv.new_timer())
+        timer:start(math.floor(milliseconds), 0, function()
+          assert(timer):stop()
+          assert(timer):close()
+          timer = nil
+          vim.schedule(ready)
+        end)
+      else
         vim.schedule(ready)
-      end)
-    else
-      vim.schedule(ready)
+      end
+      return function()
+        active = false
+        if timer then
+          timer:stop()
+          timer:close()
+          timer = nil
+        end
+      end
     end
-    return function()
-      active = false
-      if timer then timer:stop(); timer:close(); timer = nil end
-    end
-  end)
+  )
 end
 
 ---@param opts? Neoagent.ReplayOptions
@@ -292,8 +414,10 @@ function M.new(opts)
   ---@type string[]
   local failures = {}
   local timeout_ms = opts.timeout_ms or 5000
-  assert(type(timeout_ms) == "number" and timeout_ms > 0 and timeout_ms < math.huge,
-    "Replay timeout must be positive and finite")
+  assert(
+    type(timeout_ms) == "number" and timeout_ms > 0 and timeout_ms < math.huge,
+    "Replay timeout must be positive and finite"
+  )
   local ids = {}
   ---@class Neoagent.HttpReplay: Neoagent.ByteBackend
   ---@field requests Neoagent.HttpRequest[]
@@ -312,38 +436,51 @@ function M.new(opts)
   ---@param signal string
   function replay.release(signal)
     signals[signal] = true
-    for wake in pairs(waiters) do wake() end
+    for wake in pairs(waiters) do
+      wake()
+    end
   end
 
   ---@async
   ---@param required? string[]
   local function barrier(required)
-    if not required then return end
+    if not required then
+      return
+    end
     async.await(
-    ---@param done Neoagent.AwaitCallbacks<boolean>
-    function(done)
-      ---@type uv.uv_timer_t?
-      local timer = assert(vim.uv.new_timer())
-      ---@type fun()
-      local wake
-      local function cleanup()
-        waiters[wake] = nil
-        if timer then timer:stop(); timer:close(); timer = nil end
+      ---@param done Neoagent.AwaitCallbacks<boolean>
+      function(done)
+        ---@type uv.uv_timer_t?
+        local timer = assert(vim.uv.new_timer())
+        ---@type fun()
+        local wake
+        local function cleanup()
+          waiters[wake] = nil
+          if timer then
+            timer:stop()
+            timer:close()
+            timer = nil
+          end
+        end
+        wake = function()
+          for _, signal in ipairs(required) do
+            if not signals[signal] then
+              return
+            end
+          end
+          cleanup()
+          done.resolve(true)
+        end
+        assert(timer):start(timeout_ms, 0, function()
+          cleanup()
+          failures[#failures + 1] = "Replay dependency timed out"
+          done.reject(util.error("replay", "Replay dependency timed out"))
+        end)
+        waiters[wake] = true
+        wake()
+        return cleanup
       end
-      wake = function()
-        for _, signal in ipairs(required) do if not signals[signal] then return end end
-        cleanup()
-        done.resolve(true)
-      end
-      assert(timer):start(timeout_ms, 0, function()
-        cleanup()
-        failures[#failures + 1] = "Replay dependency timed out"
-        done.reject(util.error("replay", "Replay dependency timed out"))
-      end)
-      waiters[wake] = true
-      wake()
-      return cleanup
-    end)
+    )
   end
 
   ---@generic T
@@ -357,16 +494,21 @@ function M.new(opts)
     for _, candidate in ipairs(entries) do
       if not candidate.used then
         local field = mismatch(candidate, call.request)
-        if not field then entry = candidate; break end
+        if not field then
+          entry = candidate
+          break
+        end
         differences[#differences + 1] = candidate.id .. ": " .. field
       end
     end
     if not entry then
       -- Do not include request bodies, URLs, or credentials in failure reports.
-      failures[#failures + 1] = "Unexpected HTTP request #" .. (#replay.requests + 1)
+      failures[#failures + 1] = "Unexpected HTTP request #"
+        .. (#replay.requests + 1)
         .. (#differences > 0 and " (" .. table.concat(differences, "; ") .. ")" or " (all exchanges consumed)")
-      return async.run(function() error(util.error("replay", failures[#failures]), 0) end,
-        { on_done = call.on_done, error_kind = "replay" })
+      return async.run(function()
+        error(util.error("replay", failures[#failures]), 0)
+      end, { on_done = call.on_done, error_kind = "replay" })
     end
     entry.used = true -- Reserve before yielding so concurrent requests cannot reuse it.
     replay.requests[#replay.requests + 1] = util.copy(call.request)
@@ -379,11 +521,15 @@ function M.new(opts)
           barrier(entry.gates and entry.gates[tostring(index)])
           tick(opts.timing and math.max(0, (chunk.at_us - previous) / 1000) or nil)
           previous = chunk.at_us
-          if call.on_chunk then call.on_chunk(chunk.data) end
+          if call.on_chunk then
+            call.on_chunk(chunk.data)
+          end
           replay.release(entry.id .. ":chunk:" .. index)
         end
         barrier(entry.finish_after)
-        if entry.open then barrier({ entry.id .. ":close" }) end
+        if entry.open then
+          barrier({ entry.id .. ":close" })
+        end
         tick(opts.timing and math.max(0, (exchange.terminal.at_us - previous) / 1000) or nil)
       end)
       replay.release(entry.id .. ":complete")
@@ -411,28 +557,40 @@ function M.new(opts)
   end
 
   replay.request = function(call)
-    return perform({ request = call.request, on_chunk = call.on_chunk, on_done = call.on_done },
-    ---@param exchange Neoagent.ReplayExchange
-    ---@return Neoagent.ByteStreamResult
-    function(exchange)
-      return { ok = true, response = util.copy(exchange.response) }
-    end)
+    return perform(
+      { request = call.request, on_chunk = call.on_chunk, on_done = call.on_done },
+      ---@param exchange Neoagent.ReplayExchange
+      ---@return Neoagent.ByteStreamResult
+      function(exchange)
+        return { ok = true, response = util.copy(exchange.response) }
+      end
+    )
   end
   replay.fetch = function(call)
-    return perform({ request = call.request, on_done = call.on_done },
-    ---@param exchange Neoagent.ReplayExchange
-    ---@return Neoagent.ByteFetchResult
-    function(exchange)
-      return { ok = true, body = exchange.body, status = exchange.response.status,
-        headers = util.copy(exchange.response.headers) }
-    end)
+    return perform(
+      { request = call.request, on_done = call.on_done },
+      ---@param exchange Neoagent.ReplayExchange
+      ---@return Neoagent.ByteFetchResult
+      function(exchange)
+        return {
+          ok = true,
+          body = exchange.body,
+          status = exchange.response.status,
+          headers = util.copy(exchange.response.headers),
+        }
+      end
+    )
   end
   function replay.assert_consumed()
     assert(#failures == 0, table.concat(failures, "; "))
-    for _, entry in ipairs(entries) do assert(entry.used, "Unused HTTP exchange: " .. entry.id) end
+    for _, entry in ipairs(entries) do
+      assert(entry.used, "Unused HTTP exchange: " .. entry.id)
+    end
   end
   function replay.close()
-    for _, run in ipairs(runs) do run:cancel() end
+    for _, run in ipairs(runs) do
+      run:cancel()
+    end
   end
   return replay
 end

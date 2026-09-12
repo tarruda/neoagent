@@ -35,7 +35,9 @@ end
 
 ---@param generation integer
 local function stop_editing(generation)
-  pcall(function() vim.cmd("stopinsert") end)
+  pcall(function()
+    vim.cmd("stopinsert")
+  end)
   if M.is_editing() then
     -- Direct API focus can expose active editing until Neovim returns to its
     -- input loop. Only the newest transition may complete it there.
@@ -54,7 +56,9 @@ local function transition(policy)
   local current = native_mode()
   local editing = M.is_editing(current)
   if policy == "insert" and current:sub(1, 1) == "n" and not editing then
-    pcall(function() vim.cmd("startinsert!") end)
+    pcall(function()
+      vim.cmd("startinsert!")
+    end)
   elseif policy == "normal" and editing then
     stop_editing(generation)
   end
@@ -63,13 +67,14 @@ end
 ---@param policy Applet.Mode
 ---@return true
 function M.apply(policy)
-  assert(policy == "normal" or policy == "insert",
-    "Applet mode policy must be normal or insert")
+  assert(policy == "normal" or policy == "insert", "Applet mode policy must be normal or insert")
   local mapping = mapping_stack[#mapping_stack]
   if mapping then
     mapping.editing = mapping.editing or M.is_editing()
     mapping.policy = policy
-    if mapping.editing then return true end
+    if mapping.editing then
+      return true
+    end
   end
   transition(policy)
   return true
@@ -86,13 +91,14 @@ function M.with_mapping(binding_mode, callback)
   }
   mapping_stack[#mapping_stack + 1] = mapping
   local results = { xpcall(callback, debug.traceback) }
-  assert(mapping_stack[#mapping_stack] == mapping,
-    "Applet mode mapping stack is inconsistent")
+  assert(mapping_stack[#mapping_stack] == mapping, "Applet mode mapping stack is inconsistent")
   mapping_stack[#mapping_stack] = nil
   if mapping.editing and mapping.policy == "normal" then
     transition("normal")
   end
-  if not results[1] then error(results[2], 0) end
+  if not results[1] then
+    error(results[2], 0)
+  end
   return unpack(results, 2)
 end
 
