@@ -323,9 +323,6 @@ function Run.cancel(self)
   if waiting and waiting.cancel_wait then
     waiting.cancel_wait()
   end
-  if not waiting and (not self._co or coroutine.status(self._co) == "dead") then
-    self:_finish({ ok = false, error = cancelled_error })
-  end
 end
 
 ---@return boolean
@@ -372,6 +369,13 @@ function Run.await(self)
       parent:_record_diagnostic(diagnostic)
     end)
   end
+  if parent._cancelled then
+    self:cancel()
+    if remove_diagnostic_listener then
+      self:_listen(remove_diagnostic_listener)
+    end
+    error(cancelled_error, 0)
+  end
   return M.await(function(done)
     self:_listen(function(result)
       if remove_diagnostic_listener then
@@ -388,9 +392,6 @@ end
 ---@param run Neoagent.Run<unknown, unknown>
 ---@param ... unknown
 local function resume_run(run, ...)
-  if run._completed then
-    return
-  end
   local result = { coroutine.resume(run._co, ...) }
   local ok = table.remove(result, 1)
   if not ok then
@@ -618,5 +619,29 @@ end
 
 M.Run = Run
 M.cancelled_error = cancelled_error
+
+-- Give the editor an event-loop turn, rather than adding more work to the
+-- current scheduled-callback drain. Cancellation owns the pending timer.
+---@async
+function M.yield()
+  M.await(function(done)
+    local timer = assert(vim.uv.new_timer())
+    local function close()
+      if not timer:is_closing() then
+        timer:stop()
+        timer:close()
+      end
+    end
+    timer:start(
+      0,
+      0,
+      vim.schedule_wrap(function()
+        close()
+        done.resolve(true)
+      end)
+    )
+    return close
+  end)
+end
 
 return M
