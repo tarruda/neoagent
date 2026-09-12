@@ -832,12 +832,10 @@ requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
 and response bodies larger than 1 MiB use base64 with an encoding marker,
 preserving their exact bytes and chunk boundaries.
 
-Response buffering is limited to 1 MiB per exchange. Larger ordinary responses
-use private `.body` spool files, removed after successful serialization.
-YAML conversion also streams its output. Sensitive authentication responses
-are never spooled; exceeding the buffering limit stops that recording without
-changing the provider's result. Failed finalization can leave private spool
-files beside the partial recording for recovery.
+Large ordinary responses may use private `.body` temporary files. Sensitive
+authentication responses never do; exceeding their 1 MiB limit stops recording
+without changing the provider result. Failed finalization can leave private
+temporary files beside the partial recording.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive

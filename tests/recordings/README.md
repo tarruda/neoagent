@@ -168,11 +168,11 @@ All credentials, browser inputs and account IDs in fixtures are synthetic.
 | Codex browser PKCE callback, pasted redirect, device code/pending/slow-down, code exchange, refresh rotation and concurrent resolution | `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; real browser, manual and device flows plus refresh needed. Token bodies will remain masked. |
 | Codex Responses, retry, usage headers and OAuth-wrapped inference | `openai_http_spec.lua`, `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua`, `codex_file_uploads_spec.lua` | Uploaded-image inference adapted from a real capture. Retry and usage-header scenarios remain synthetic. |
 | Codex `/codex/models` including conditional 304; wham usage, profiles/me, accounts/check, reset credits and consume | `codex_management_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; local real wham usage exists. Other real endpoints needed; credit consumption must be a user-chosen account action. |
-| llama.cpp anonymous/key probes, `/models`, load/unload, downloads, `/models/sse`, polling, catalog reload and multimodal Completions | `llama_http_spec.lua`, `provider_surfaces_spec.lua`, `recorded_providers_spec.lua` | Minimized real inference; router workflows captured from the former synthetic server. Real load/download/cancel flows needed. |
+| llama.cpp anonymous/key probes, `/models`, load/unload, downloads, `/models/sse`, polling, catalog reload and multimodal Completions | `llama_http_spec.lua`, `provider_surfaces_spec.lua`, `recorded_providers_spec.lua` | Minimized real inference; router workflows are synthetic. Real load/download/cancel flows needed. |
 | Hugging Face model search and repository details with optional token | `provider_surfaces_spec.lua` | Synthetic; real public and authenticated queries needed. |
 
 The fixtures below adapt selected frames or response structures from user
-recordings and authorized implementation validation. Conversation text,
+recordings and authorized validation. Conversation text,
 identities, tool content, credentials, balances,
 and other account metadata were replaced with synthetic values. Relevant field
 types, selected event order, and response shapes were preserved; byte counts
@@ -192,70 +192,12 @@ conversations. Source file hashes identify their provenance:
 | [`providers/management-02.yaml`](providers/management-02.yaml) | `a34c98f253bf912178695881b56bf75c09925b305c8cab222f652496088cdc77` |
 | [`opencode-go/management-01.yaml`](opencode-go/management-01.yaml) | `cbc3b82891cb3392d1cf7f2fa5c64fb2525c88a16058d05b10d8690ac1e02ae2` |
 
-The `managed-files/` directories under `openai-codex`, `deepseek`, and `openai`
-contain authorized synthetic-image validation captures from 2026-09-08.
-Each YAML identifies its source hash. These preserve upload, inference, restart
-reuse, and Codex's upload opt-out paths through the actual HTTP decoder.
-All credential and remote identities are replaced; encrypted reasoning is
-replaced consistently across responses and subsequent requests, and response
-chunks are reserialized. Codex's classified capability bodies are reconstructed
-with nonfunctional URLs. The OpenAI capture covers a successful Files upload
-followed by the account's credit-exhaustion response; it does not establish
-successful inference with the uploaded image. OpenAI success and stale-reference
-repair scenarios in `openai/files/` remain synthetic.
-
-The 2026-09-09 validation adds `openai-codex/codex-lite/` and
-`openai-codex/tool-loop/`, plus `deepseek/deepseek-responses/` and
-`deepseek/deepseek-anthropic/`. These conversations use generated image content
-from the outset. The tool-loop replay runs a headless Agent with durable
-credentials and Session storage. It verifies publication after commit, stores
-and uploads the tool's image, then restarts the Agent and Session to reuse the
-remote image. DeepSeek's missing-file captures preserve its HTTP 400
-`invalid_request_error` response; negative tests change individual fields to
-ensure unrelated inspection failures cannot trigger replacement uploads.
-
-The `validation/` directories contain captured upload authentication failures
-and OpenAI/Anthropic metadata lookups. Invalid credentials were supplied only
-to isolated validation requests. `file_upload_lifecycle_spec.lua` also uses successful real
-upload responses with deterministic cancellation, timeout, producer replacement
-and uncertain local cache publication. Those faults are injected locally;
-they are not claims about observed server failures. The combined suite still
-uses synthetic malformed-response tests. Neither line coverage nor replaying a
-real response establishes live validation of every upload failure path.
-
-Original user files are unchanged. Other fixtures are synthetic scenarios,
-including adaptations of the former HTTP integration servers. The final cleanup
-response in `llama/scenario-3-cleanup.yaml` is a synthetic empty object: its
-original synthetic-server capture ended before that response was retained.
-Repeated identical polling snapshots were trimmed; explicit dependencies in
-the tests preserve the observations each regression requires.
-
-The two DeepSeek file adaptations preserve the multipart fields, file metadata
-envelope, tool-image references, and selected reasoning/text/usage stream
-shapes from a successful upload and its following inference. A synthetic
-one-pixel PNG replaces the attachment; all conversation content and metadata
-are invented. `deepseek/files/inspect-missing.yaml` adapts the later real
-missing-object response. The remaining `deepseek/files/` scenarios extend those shapes with
-synthetic reuse, verification, expiry, deletion, and failure exchanges.
-All `openai/files/` fixtures are synthetic. These scenarios replay durable
-Sessions through the provider runtime and real Authentication/HTTP decoding;
-they do not claim live verification of every lifecycle path. Their object
-lifetimes use a fixed test clock, independent of the capture date. Chunk
-boundaries and timings are synthetic.
-
-The Codex file backend follows the official client's file-creation, blob PUT,
-and finalization protocol. Authorized validation confirmed inference with
-`input_image.file_id`, warm reuse, and reuse after reopening a durable Session.
-`openai-codex/files/conversation.yaml` preserves selected event fields and the
-event order from that generated-image inference, with invented conversation
-content and identifiers. The other inference fixtures extend those frames.
-Creation, finalization, and inspection responses carry signed capabilities and
-are masked by Authentication during recording; their fixtures are synthetic
-envelopes based on the client source and observed field shapes, including the
-null MIME type returned by inspection. Blob upload bytes remain recorded;
-credentials and signed URL parameters are masked. No signed URL enters the
-remote-object cache. Live validation does not establish an object retention
-period or verify the synthetic failure and deletion scenarios.
+Original recordings remain local and unchanged. Fixtures with source hashes
+adapt only the protocol evidence described by the inventory; other fixtures
+are synthetic unless the inventory says otherwise. Captured success does not
+establish unlisted retention periods or failure behavior. Deterministic
+cancellation, timeout, cache, malformed-response, timing, and cleanup cases are
+local test scenarios rather than claims about provider behavior.
 
 To fill the remaining real-capture gaps, use the corresponding provider in a
 short conversation (include a tool turn or cancellation if relevant), refresh
