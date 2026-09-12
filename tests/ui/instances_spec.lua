@@ -180,6 +180,9 @@ describe("neoagent direct Agent Applets", function()
       function view:close() self.opened = false end
       function view:is_open() return self.opened end
       function view:destroy() self:close() self.destroyed = true end
+      function view:pane() return nil end
+      function view:notify() return true end
+      function view:open_uri() return true end
       function view:get_input() return self.input end
       ---@param value string
       function view:set_input(value) self.input = value return value end
@@ -197,6 +200,20 @@ describe("neoagent direct Agent Applets", function()
       ---@param value Neoagent.AgentCompletion
       function view:finish(value) self.result = value end
       function view:focus_input() return self.opened end
+      function view:focus_transcript() return self.opened end
+      function view:submission_accepted(value)
+        if value == nil or self.input == value then
+          self.input = ""
+        end
+        return true
+      end
+      function view:set_dialog() return true end
+      function view:set_presentation() return true end
+      function view:set_position() return true end
+      function view:set_renderer(renderer)
+        self.renderer = renderer
+        return renderer
+      end
       created = view
       return view --[[@as Neoagent.View]]
     end
@@ -209,10 +226,9 @@ describe("neoagent direct Agent Applets", function()
 
     assert(owner:open())
     assert.are.equal(agent:applet(), owner:foreground_applet())
-    local renderer, renderer_err = owner:set_renderer(
-      require("neoagent.ui.renderers").pi)
-    assert.is_nil(renderer)
-    assert.matches("does not support Renderers", assert(renderer_err).message)
+    local renderer = require("neoagent.ui.renderers").pi
+    assert.are.equal(renderer, owner:set_renderer(renderer))
+    assert.are.equal(renderer, assert(created).renderer)
 
     local projected = assert(created)
     local run = assert(assert(projected.on_submit)("question")) --[[@as Neoagent.AgentRun]]

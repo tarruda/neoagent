@@ -419,9 +419,6 @@ function View.new(opts)
         return self:_focus_previous_card(event.count)
       end,
       history = self.callbacks.on_input_history,
-      pane = function()
-        return self:pane("input")
-      end,
     },
     on_error = opts.on_error,
   })
@@ -837,12 +834,6 @@ function View:open_uri(uri)
   return self.applet:open_uri(uri)
 end
 
----@param active Neoagent.PublicPresentation
----@return Applet.Presentation
-function View:_new_presentation_component(active)
-  return presentation_surface.new_component(self, active)
-end
-
 ---@return boolean
 function View:_ensure_presentation_component()
   return presentation_surface.ensure(self)
@@ -1016,9 +1007,6 @@ function View:_applet_focus(current, previous)
 end
 
 function View:_refresh_input_footer()
-  if not self.input then
-    return
-  end
   local pane = self:pane("input")
   local geometry = pane and pane:geometry() or nil
   local width = geometry and geometry.content_width or 80
@@ -1238,12 +1226,11 @@ end
 ---@param direction integer
 ---@return boolean
 function View:_details_move(direction)
-  if not self.details or not self.details.block then
-    return false
-  end
+  local details = assert(self.details)
+  local current = assert(details.block)
   local index
   for candidate, value in ipairs(self.transcript.blocks) do
-    if value.key == self.details.block.key then
+    if value.key == current.key then
       index = candidate
       break
     end
@@ -1257,18 +1244,17 @@ function View:_details_move(direction)
     end
     return false
   end
-  self.details:set(block)
+  details:set(block)
   self.applet:invalidate({ host = true })
   return true
 end
 
 ---@return boolean
 function View:_center_details()
-  if not self.details or not self.details.block then
-    return false
-  end
+  local details = assert(self.details)
+  local block = assert(details.block)
   local pane = self:pane("transcript")
-  if not pane or not pane:reveal_target("card:" .. self.details.block.key) then
+  if not pane or not pane:reveal_target("card:" .. block.key) then
     return false
   end
   return pane:scroll({ align = "center" })
@@ -1297,24 +1283,16 @@ end
 ---@param action string
 ---@return unknown
 function View:_choose_dialog(id, action)
-  local input = self.dialog
-      and self.dialog.active
-      and self.dialog.active.input
-      and self.dialog_component
-      and self.dialog_component:text()
-    or nil
-  return self.callbacks.on_dialog_action(id, action, input)
+  return self.callbacks.on_dialog_action(id, action)
 end
 
 ---@param focus boolean?
 ---@return boolean?, Applet.Error?
 function View:_show_dialog(focus)
-  if not self.dialog then
-    return false
-  end
-  if self.dialog.active.placement == "transcript" then
+  local dialog = assert(self.dialog)
+  if dialog.active.placement == "transcript" then
     self:_close_dialog_surface(false)
-    self.transcript:set_dialog(self.dialog)
+    self.transcript:set_dialog(dialog)
     self:_submit_frame(focus and "transcript" or nil)
     if self:is_open() then
       self:_flush_frame()
@@ -1322,7 +1300,7 @@ function View:_show_dialog(focus)
     return true
   end
   self.transcript:set_dialog(nil)
-  local editable = self.dialog.active.input ~= nil
+  local editable = dialog.active.input ~= nil
   local created = false
   if self.dialog_component and self.dialog_component.pane:is_editable() ~= editable then
     self:_close_dialog_surface(false)
@@ -1346,12 +1324,12 @@ function View:_show_dialog(focus)
       },
     })
   end
-  self.dialog_component:set(self.dialog)
+  self.dialog_component:set(dialog)
   self:_submit_frame(focus and "dialog" or nil)
   if self:is_open() then
     local committed, err = self:_flush_frame()
     if committed and created and editable then
-      self.dialog_component:set_text(self.dialog.active.input.value or "")
+      self.dialog_component:set_text(assert(dialog.active.input).value or "")
     end
     return committed, err
   end
@@ -1488,19 +1466,6 @@ function View:set_position(position)
   return true
 end
 
----@return true?, string?
-function View:_reposition()
-  if not self:is_open() then
-    return true
-  end
-  self:_submit_frame()
-  local positioned, err = self:_flush_frame()
-  if not positioned then
-    return nil, "Neoagent UI does not fit in the available editor area"
-  end
-  return true
-end
-
 ---@param renderer unknown
 ---@return Neoagent.Renderer<unknown>?, Neoagent.Error?
 function View:set_renderer(renderer)
@@ -1542,8 +1507,4 @@ function View:set_renderer(renderer)
   return selected
 end
 
-return setmetatable({ new = View.new, View = View }, {
-  __call = function(_, opts)
-    return View.new(opts)
-  end,
-})
+return { new = View.new, View = View }

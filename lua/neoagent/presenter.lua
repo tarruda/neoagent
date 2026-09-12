@@ -294,7 +294,6 @@ function Presenter:_publish()
 end
 
 ---@param entry Neoagent.PresentationEntry
----@return boolean
 function Presenter:_remove(entry)
   local state = self.state
   if state.active == entry then
@@ -310,7 +309,6 @@ function Presenter:_remove(entry)
       return true
     end
   end
-  return false
 end
 
 ---@return true?, string?

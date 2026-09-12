@@ -40,6 +40,9 @@ local M = {}
 ---@field active? Neoagent.Dialog
 ---@field queue_count integer
 
+---@class Neoagent.ActiveDialogSnapshot: Neoagent.DialogSnapshot
+---@field active Neoagent.Dialog
+
 ---@class Neoagent.DialogEntry
 ---@field dialog Neoagent.Dialog
 ---@field done Neoagent.AwaitCallbacks<Neoagent.DialogResult>
@@ -94,21 +97,19 @@ end
 
 ---@param state Neoagent.DialogState
 ---@param entry Neoagent.DialogEntry
----@return boolean
 local function remove(state, entry)
   if state.active == entry then
     state.active = table.remove(state.queue, 1)
     publish(state)
-    return true
+    return
   end
   for index, queued in ipairs(state.queue) do
     if queued == entry then
       table.remove(state.queue, index)
       publish(state)
-      return true
+      return
     end
   end
-  return false
 end
 
 ---@param value unknown

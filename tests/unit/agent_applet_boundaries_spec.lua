@@ -29,8 +29,6 @@ describe("Agent Applet boundaries", function()
   ---@field notification? [string, integer?]
 
   ---@class Neoagent.TestBoundaryViewFeatures
-  ---@field omit_presentation? boolean
-  ---@field omit_dialog? boolean
   ---@field presentation_error? boolean
   ---@field dialog_error? boolean
   ---@field notify? fun(self: Neoagent.TestBoundaryView, message: string, level?: integer): unknown
@@ -55,8 +53,6 @@ describe("Agent Applet boundaries", function()
       ---@field presentation? Neoagent.PresentationSnapshot
       ---@field dialog? Neoagent.DialogSnapshot
       ---@field result? Neoagent.ActivityOutcome
-      ---@field notify? fun(self: Neoagent.TestBoundaryView, message: string, level?: integer): unknown
-      ---@field open_uri? fun(self: Neoagent.TestBoundaryView, uri: string): unknown
       local view = {
         callbacks = opts,
         input = "",
@@ -64,8 +60,6 @@ describe("Agent Applet boundaries", function()
         context = {},
         events = {},
         opened = false,
-        notify = features.notify,
-        open_uri = features.open_uri,
       }
       function view:open()
         self.opened = true
@@ -78,6 +72,19 @@ describe("Agent Applet boundaries", function()
         self.destroyed = true
       end
       function view:get_input() return self.input end
+      function view:pane() return nil end
+      function view:notify(message, level)
+        if features.notify then
+          return features.notify(self, message, level)
+        end
+        return vim.notify(message, level)
+      end
+      function view:open_uri(uri)
+        if features.open_uri then
+          return features.open_uri(self, uri)
+        end
+        return vim.ui.open(uri)
+      end
       ---@param value string
       function view:set_input(value)
         self.input = value
@@ -97,27 +104,35 @@ describe("Agent Applet boundaries", function()
         self.focused = (self.focused or 0) + 1
         return self.opened
       end
+      function view:focus_transcript() return self.opened end
+      ---@param value string?
+      function view:submission_accepted(value)
+        if value == nil or self.input == value then
+          self.input = ""
+        end
+        return true
+      end
       ---@param value Neoagent.UiPosition
       function view:set_position(value) self.position = value end
-      if not features.omit_presentation then
-        ---@param value Neoagent.PresentationSnapshot
-        function view:set_presentation(value)
-          if features.presentation_error then
-            return nil, util.error("ui", "presentation rejected")
-          end
-          self.presentation = value
-          return true
-        end
+      function view:set_renderer(renderer)
+        self.renderer = renderer
+        return renderer
       end
-      if not features.omit_dialog then
-        ---@param value Neoagent.DialogSnapshot
-        function view:set_dialog(value)
-          if features.dialog_error then
-            return nil, util.error("ui", "dialog rejected")
-          end
-          self.dialog = value
-          return true
+      ---@param value Neoagent.PresentationSnapshot
+      function view:set_presentation(value)
+        if features.presentation_error then
+          return nil, util.error("ui", "presentation rejected")
         end
+        self.presentation = value
+        return true
+      end
+      ---@param value Neoagent.DialogSnapshot
+      function view:set_dialog(value)
+        if features.dialog_error then
+          return nil, util.error("ui", "dialog rejected")
+        end
+        self.dialog = value
+        return true
       end
       record.view = view
       return view --[[@as Neoagent.View]]
@@ -194,12 +209,18 @@ describe("Agent Applet boundaries", function()
     local run, bind_err = value:send("unbound")
     assert.is_nil(run)
     assert.matches("No Agent is bound", assert(bind_err).message)
+    assert.is_false((value:focus_attention()))
     assert(value:open())
     assert.is_true((value:focus_input()))
-    assert.are.equal("thought", assert(assert(record.view).callbacks.on_cycle_thinking)())
-    assert.are.equal("agents", assert(assert(record.view).callbacks.on_agents)())
-    assert.are.equal("model", assert(assert(record.view).callbacks.on_select_model)())
-    assert.are.equal("session", assert(assert(record.view).callbacks.on_resume_session)())
+    local callbacks = assert(record.view).callbacks
+    assert.are.same({}, assert(callbacks.on_input_history)())
+    assert.is_nil((assert(callbacks.on_select_history)()))
+    assert.are.same({}, assert(callbacks.on_dequeue_steering)())
+    assert.is_nil((assert(callbacks.resolve_tool)("missing")))
+    assert.are.equal("thought", assert(callbacks.on_cycle_thinking)())
+    assert.are.equal("agents", assert(callbacks.on_agents)())
+    assert.are.equal("model", assert(callbacks.on_select_model)())
+    assert.are.equal("session", assert(callbacks.on_resume_session)())
     assert(value:presenter():notify({ message = "notice" }))
     assert.are.same({ "notice", nil }, record.notification)
     assert(value:presenter():open_uri("https://example.test/view"))
@@ -210,7 +231,6 @@ describe("Agent Applet boundaries", function()
     assert.are.equal("provider-shell",
       assert(assert(record.view).callbacks.on_provider_shell)())
     assert.is_nil(rawget(value, "ensure_agent"))
-    assert.is_nil((value:select_input_history()))
 
     local unbound = applet({
       view = view_factory({}),
@@ -237,6 +257,18 @@ describe("Agent Applet boundaries", function()
 
     value:destroy()
     assert.is_nil((value:open()))
+  end)
+
+  it("bounds volatile input history within its Workspace", function()
+    local value = applet({ context = { workspace = "root" } })
+    for index = 1, 101 do
+      assert(value:_record_history("prompt " .. index))
+    end
+
+    local history = value:input_history()
+    assert.are.equal(100, #history)
+    assert.are.equal("prompt 101", history[1])
+    assert.are.equal("prompt 2", history[#history])
   end)
 
   it("contains history storage failures and restores a selected entry", function()
@@ -287,12 +319,22 @@ describe("Agent Applet boundaries", function()
       return assert(record.view):get_input() == "second"
         and (assert(record.view).focused or 0) > 0
     end, 5))
+    assert(value:select_input_history())
+    request = assert(value:presenter():snapshot().active)
+    assert(value:presenter():cancel(request.id, "history selection cancelled"))
+    assert(vim.wait(1000, function()
+      return value:presenter():snapshot().active == nil
+    end, 5))
+    assert.are.equal("second", assert(record.view):get_input())
   end)
 
-  it("destroys construction after an initial Agent binding failure", function()
+  it("preserves existing Agent ownership after a construction-time binding conflict", function()
     local owned_agent = agent()
-    local subscribe = owned_agent.subscribe
-    owned_agent.subscribe = function() error("initial binding failed") end
+    local owner = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+    })
+    assert.are.equal(owned_agent, owner:bind(owned_agent))
     local ok, err = pcall(function()
       AgentApplet.new({
         config = require("neoagent.config").resolve({ ui = { style = "codex", position = "center" } }).ui,
@@ -303,14 +345,13 @@ describe("Agent Applet boundaries", function()
         agent = owned_agent,
       })
     end)
-    owned_agent.subscribe = subscribe
 
     assert.is_false(ok)
-    assert.matches("initial binding failed", tostring(err))
-    assert.is_nil((owned_agent:applet()))
+    assert.matches("already owns another Applet", tostring(err))
+    assert.are.equal(owner, owned_agent:applet())
   end)
 
-  it("contains unsupported semantic surfaces and hydration failures", function()
+  it("contains semantic presentation and hydration failures", function()
     ---@type Neoagent.TestBoundaryViewRecord
     local rejected_record = {}
     local rejected = applet({
@@ -328,21 +369,6 @@ describe("Agent Applet boundaries", function()
     local active = assert(rejected:presenter():snapshot().active)
     assert(rejected:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
-
-    ---@type Neoagent.TestBoundaryViewRecord
-    local dialog_record = {}
-    local unsupported = applet({
-      view = view_factory(dialog_record, { omit_dialog = true }),
-    })
-    assert(unsupported:open())
-    local dialog = unsupported:dialogs():show({
-      placement = "float",
-      title = "Unsupported dialog",
-      body = "body",
-      actions = { { id = "close", label = "Close", key = "<CR>" } },
-    })
-    assert(vim.wait(1000, function() return dialog:is_done() end, 5))
-    assert.is_false((assert(dialog:result())).ok)
 
     local rejected_dialog_record = {}
     local rejected_dialog = applet({
@@ -400,7 +426,7 @@ describe("Agent Applet boundaries", function()
     assert(ok, err)
   end)
 
-  it("rolls back attachment failure and preserves retry semantics", function()
+  it("routes bound retry, acceptance, and position behavior", function()
     local owned_agent = agent()
     ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
@@ -409,21 +435,22 @@ describe("Agent Applet boundaries", function()
       dialogs = owned_agent:dialogs(),
       view = view_factory(record),
     })
-    local attach = owned_agent.attach_applet
-    owned_agent.attach_applet = function()
-      error("attachment failed")
-    end
-    assert.has_error(function() value:bind(owned_agent) end,
-      "attachment failed")
-    assert.is_nil((value:agent()))
-
-    owned_agent.attach_applet = attach
     assert.are.equal(owned_agent, value:bind(owned_agent))
     local context, context_err = value:set_draft_context({ model = "other" })
     assert.is_nil(context)
     assert.matches("bound Agent", assert(context_err).message)
     assert(value:open())
-    assert.is_false(assert(assert(record.view).callbacks.on_resume_session)())
+    local callbacks = assert(record.view).callbacks
+    local level = assert(callbacks.on_cycle_thinking)()
+    assert.is_nil(level)
+    assert.is_true((assert(callbacks.on_select_model)()))
+    local active = assert(owned_agent:presenter():snapshot().active)
+    assert(owned_agent:presenter():cancel(active.id, "test complete"))
+    assert(vim.wait(1000, function()
+      return owned_agent:presenter():snapshot().active == nil
+    end, 5))
+    assert.is_nil((assert(callbacks.resolve_tool)("missing")))
+    assert.is_false(assert(callbacks.on_resume_session)())
 
     local original_prepare = owned_agent.prepare
     local original_send = owned_agent.send
@@ -438,12 +465,21 @@ describe("Agent Applet boundaries", function()
     assert.is_nil((value:pending_message()))
 
     value.pending_submission = "retry"
-    assert(record.view):set_input("retry")
+    local retained_view = assert(record.view)
+    retained_view:set_input("retry")
     owned_agent.send = function()
       return { id = "retry-run" }, nil, 1, "turn"
     end
     assert(value:retry_submission())
-    assert.are.equal("retry", assert(record.view):get_input())
+    assert.are.equal("retry", retained_view:get_input())
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    function retained_view:submission_accepted()
+      return nil, util.error("ui", "acceptance publication failed")
+    end
     value:_apply({
       revision = assert(value.agent_snapshot).revision + 1,
       type = "submission_accepted",
@@ -451,13 +487,10 @@ describe("Agent Applet boundaries", function()
       prompt = "retry",
       entry_id = "entry",
     })
-    assert.are.equal("", assert(record.view):get_input())
+    assert.are.equal("retry", retained_view:get_input())
+    assert.matches("acceptance publication failed", notifications[#notifications][1])
+    assert.are.same({ "retry" }, value:input_history())
 
-    local notifications = {}
-    local original_notify = vim.notify
-    vim.notify = function(message, level)
-      notifications[#notifications + 1] = { message, level }
-    end
     owned_agent.set_ui_position = function()
       return nil, util.error("settings", "save failed")
     end
@@ -524,10 +557,20 @@ describe("Agent Applet boundaries", function()
 
   it("rolls back every View hydration failure and preserves input", function()
     for _, method in ipairs({
-      "set_position", "set_messages", "set_context", "apply", "finish",
+      "set_position", "set_files", "set_messages", "set_context", "apply", "finish",
     }) do
       for _, returned in ipairs({ false, true }) do
         local owned_agent = agent()
+        local subscriptions = 0
+        local subscribe = owned_agent.subscribe
+        function owned_agent:subscribe(listener)
+          subscriptions = subscriptions + 1
+          local unsubscribe = subscribe(self, listener)
+          return function()
+            subscriptions = subscriptions - 1
+            unsubscribe()
+          end
+        end
         ---@type Neoagent.TestBoundaryViewRecord
         local record = {}
         local value = applet({
@@ -564,10 +607,14 @@ describe("Agent Applet boundaries", function()
         assert.is_nil((value:view()))
         assert.is_true(assert(failed_view).destroyed)
         assert.are.equal("retained draft", value:get_input())
+        assert.are.equal(0, subscriptions)
 
         assert.are.equal(owned_agent, value:bind(owned_agent))
         assert(value:open())
         assert.are.equal("retained draft", value:get_input())
+        assert.are.equal(1, subscriptions)
+        value:destroy()
+        assert.are.equal(0, subscriptions)
       end
     end
   end)
@@ -634,43 +681,11 @@ describe("Agent Applet boundaries", function()
     end
   end)
 
-  it("rolls back subscription and returned attachment failures", function()
-    local owned_agent = agent()
-    ---@type Neoagent.TestBoundaryViewRecord
-    local record = {}
-    local value = applet({
-      presenter = owned_agent:presenter(),
-      dialogs = owned_agent:dialogs(),
-      view = view_factory(record),
-    })
-    assert(value:open())
-    local first_view = record.view
-    local subscribe = owned_agent.subscribe
-    owned_agent.subscribe = function() error("subscription exploded") end
-    assert.has_error(function() value:bind(owned_agent) end,
-      "subscription exploded")
-    assert.is_nil((value:agent()))
-    assert.are.equal(first_view, value:view())
-    assert.is_false(assert(first_view).destroyed == true)
-
-    owned_agent.subscribe = subscribe
-    local attach = owned_agent.attach_applet
-    local rejected_attachment = function()
-      return nil, util.error("agent", "attachment rejected")
-    end
-    owned_agent.attach_applet = rejected_attachment --[[@as fun(applet: Neoagent.AgentApplet): Neoagent.AgentApplet]]
-    assert.has_error(function() value:bind(owned_agent) end,
-      "attachment rejected")
-    assert.is_nil((value:agent()))
-    assert.is_nil((value:view()))
-    assert.is_true(assert(first_view).destroyed)
-
-    owned_agent.attach_applet = attach
-    assert.are.equal(owned_agent, value:bind(owned_agent))
-    assert(value:open())
-  end)
-
   it("validates Agent Applets and contains activity listeners", function()
+    assert.has_error(function()
+      AgentApplet.new({ config = require("neoagent.config").resolve({}).ui,
+        owns_presenter = "yes" --[[@as boolean]] })
+    end, "Presenter ownership must be a boolean")
     assert.has_error(function()
       agent({ applet = false --[[@as Neoagent.AgentApplet]] })
     end, "agent Applet is invalid")
@@ -722,6 +737,171 @@ describe("Agent Applet boundaries", function()
     assert.are.equal(0, requests)
   end)
 
+  it("cancels pending Agent presentations before stale choices can mutate state", function()
+    local branch_presenter = require("neoagent.presenter").new()
+    branch_presenter:attach({ present = function() end })
+    local branch = agent({ presenter = branch_presenter })
+    assert(branch:prepare())
+    local _, _, entry = branch:get_session():append({ role = "user", content = "question" })
+    local selected_branch
+    assert(branch:select_branch(function(id) selected_branch = id end))
+    assert.is_not_nil(branch:presenter():snapshot().active)
+
+    branch:destroy()
+
+    assert(vim.wait(1000, function()
+      return branch:presenter():snapshot().active == nil
+    end, 5))
+    assert.is_nil(selected_branch)
+    assert.are.equal(assert(entry).id, branch:get_session():leaf_id())
+    branch_presenter:destroy()
+
+    local model_presenter = require("neoagent.presenter").new()
+    model_presenter:attach({ present = function() end })
+    local model = agent({ presenter = model_presenter })
+    assert(model:prepare())
+    local selected_model
+    assert(model:select_model(function(value) selected_model = value end))
+    assert.is_not_nil(model:presenter():snapshot().active)
+
+    model:destroy()
+
+    assert(vim.wait(1000, function()
+      return model:presenter():snapshot().active == nil
+    end, 5))
+    assert.is_nil(selected_model)
+    model_presenter:destroy()
+  end)
+
+  it("destroys the Agent when its host exits and releases the exit subscription", function()
+    local exit
+    local released = 0
+    local value = agent({
+      host_effects = {
+        refresh_file = function()
+          return { refreshed = 0, modified = {}, failures = {} }
+        end,
+        open_document = function() return true end,
+        on_exit = function(callback)
+          exit = callback
+          return function() released = released + 1 end
+        end,
+      },
+    })
+
+    assert.is_function(exit)
+    ---@cast exit fun()
+    exit()
+    assert.is_true(value:is_destroyed())
+    assert.are.equal(1, released)
+  end)
+
+  it("routes owned Dialog diagnostics through the Agent Presenter", function()
+    local value = agent()
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local ok, err = pcall(function()
+      local unsubscribe = value:dialogs():subscribe(function(snapshot)
+        if snapshot.active then error("Agent Dialog subscriber failed") end
+      end)
+      local dialog = value:dialogs():show({
+        placement = "float",
+        title = "Diagnostic",
+        body = "body",
+        actions = { { id = "close", label = "Close", key = "<CR>" } },
+      })
+      assert(vim.wait(1000, function() return notifications[1] ~= nil end, 5))
+      assert.matches("Agent Dialog subscriber failed", notifications[1][1])
+      value:dialogs():cancel_pending("test complete")
+      assert(vim.wait(1000, function() return dialog:is_done() end, 5))
+      unsubscribe()
+    end)
+    vim.notify = original_notify
+    assert(ok, err)
+  end)
+
+  it("reports provider composition through the selected presentation boundary", function()
+    ---@param report_message string
+    local function options(report_message)
+      return {
+        workspace_trust = false,
+        default_registry = false,
+        persistence = { enabled = false },
+        default_model = { provider = "reported", model = "test" },
+        providers = { reported = {
+          api = "fake-api",
+          models = { test = {} },
+          service = function(_, resources)
+            assert(resources.report)(report_message, vim.log.levels.WARN)
+            return {
+              id = "reported",
+              name = "Reported",
+              state = function() return false end,
+              operations = {},
+            }
+          end,
+        } },
+        _apis = { ["fake-api"] = function() return fake_model.new({}) end },
+        tools = {},
+        agent_instructions = false,
+        skills = false,
+      }
+    end
+    local presenter = require("neoagent.presenter").new()
+    ---@type Neoagent.NotificationRequest?
+    local presented
+    function presenter:notify(request)
+      assert(type(request) == "table")
+      presented = request
+      return true
+    end
+    local selected = require("neoagent").new(options("selected report"), {
+      presenter = presenter,
+    })
+    agents[#agents + 1] = selected
+    assert.are.equal("selected report", assert(presented).message)
+
+    local native
+    local original_notify = vim.notify
+    vim.notify = function(message, level) native = { message, level } end
+    local ok, default = pcall(function()
+      return require("neoagent").new(options("default report"))
+    end)
+    vim.notify = original_notify
+    assert(ok, default)
+    ---@cast default Neoagent.Agent
+    agents[#agents + 1] = default
+    assert.are.same({ "default report", vim.log.levels.WARN }, native)
+  end)
+
+  it("preserves provider composition failures when recording is enabled", function()
+    local directory = vim.fn.tempname()
+    local ok, err = pcall(require("neoagent").new, {
+      workspace_trust = false,
+      default_registry = false,
+      persistence = { enabled = false },
+      recording = { enabled = true, format = "json", directory = directory },
+      providers = { broken = {
+        api = "fake-api",
+        models = { test = {} },
+        service = function() error("provider construction failed") end,
+      } },
+      _apis = { ["fake-api"] = function() return fake_model.new({}) end },
+      tools = {},
+      agent_instructions = false,
+      skills = false,
+    })
+
+    assert.is_false(ok)
+    local failure = util.normalize_error(err, "provider")
+    assert.matches("Failed to construct provider service for broken",
+      failure.message)
+    vim.fn.delete(directory, "rf")
+  end)
+
   it("publishes independent semantic updates to each Agent listener", function()
     local value = agent()
     local observed, revisions = nil, {}
@@ -745,7 +925,7 @@ describe("Agent Applet boundaries", function()
     end
   end)
 
-  it("rejects stale Agent publications and hydration snapshots", function()
+  it("rejects stale Agent publications", function()
     ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local owned_agent = agent()
@@ -782,39 +962,6 @@ describe("Agent Applet boundaries", function()
     assert.are.equal("left", value.position)
     assert.are.equal("left", assert(record.view).position)
 
-    assert(value:_hydrate({
-      revision = 0,
-      messages = {},
-      context = { workspace = assert(owned_agent:get_workspace()).root, model = "old" },
-      events = {},
-      result = nil,
-    }))
-    assert.are.equal("new", assert(record.view).context.model)
-  end)
-
-  it("hydrates a retained headless Agent snapshot safely", function()
-    local value = applet({})
-    local broken = agent()
-    function broken:snapshot() error("headless snapshot failed") end
-    value.agent_value = broken
-    local hydrated, err = value:_hydrate()
-    assert.is_nil(hydrated)
-    assert.matches("headless snapshot failed", assert(err).message)
-
-    broken.snapshot = function()
-      return {
-        revision = 3,
-        messages = {},
-        context = { workspace = "headless", position = "right" },
-        events = {},
-        result = nil,
-      }
-    end
-    assert(value:_hydrate())
-    assert.are.equal(3, assert(value.agent_snapshot).revision)
-    assert.are.equal("headless", value.workspace_root)
-    assert.are.equal("right", value.position)
-    value.agent_value = nil
   end)
 
   it("allows submission again after an owner binding callback throws", function()
@@ -870,6 +1017,10 @@ describe("Agent Applet boundaries", function()
       return { "queued" }, { 7 }
     end
     local value = applet({ view = view_factory(record) })
+    value.pending_submission = "orphaned"
+    assert.is_false((value:retry_submission()))
+    assert.is_false((value:trust_submission_result({ ok = true })))
+    value.pending_submission = nil
     value.agent_value = fake_agent
     assert(value:open())
     assert(record.view).input = "queued"
@@ -881,6 +1032,9 @@ describe("Agent Applet boundaries", function()
     local run, err = value:send("queued")
     assert(run, err and err.message)
     assert.are.equal(7, value.input_submission_id)
+    running = true
+    assert.is_true((value:send("queued")))
+    running = false
 
     function retained_view:set_input(text)
       self.input = text
@@ -905,6 +1059,38 @@ describe("Agent Applet boundaries", function()
     })
     assert.is_nil(trusted)
     assert.matches("trust rejected", assert(trust_err).message)
+  end)
+
+  it("rejects a provisional Agent when its first send is refused", function()
+    local owned_agent = agent()
+    local rejected = 0
+    local value = applet({
+      context = { workspace = assert(owned_agent:get_workspace()).root },
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      callbacks = {
+        on_reject = function(surface, selected)
+          rejected = rejected + 1
+          surface:unbind(selected)
+        end,
+      },
+    })
+    value:bind(owned_agent, { provisional = true })
+    local send = owned_agent.send
+    local failure = util.error("session", "first message was refused")
+    owned_agent.send = function()
+      return nil, failure
+    end
+
+    local run, err = value:send("retain this input")
+
+    owned_agent.send = send
+    assert.is_nil(run)
+    assert.are.equal(failure, err)
+    assert.are.equal(1, rejected)
+    assert.is_nil((value:agent()))
+    assert.is_nil((owned_agent:applet()))
+    assert.are.equal("retain this input", value:get_input())
   end)
 
   it("contains presentation and submission boundary failures", function()
@@ -949,115 +1135,240 @@ describe("Agent Applet boundaries", function()
     value.agent_value = nil
   end)
 
-  it("rejects unsupported semantic surfaces during View construction", function()
+  it("rejects incomplete semantic View contracts before publication", function()
     ---@type Neoagent.TestBoundaryViewRecord
     local dialog_record = {}
     local dialog_value = applet({
-      view = view_factory(dialog_record, { omit_dialog = true }),
+      view = function(opts)
+        local view = view_factory(dialog_record)(opts)
+        view.set_dialog = nil --[[@as unknown]]
+        return view
+      end,
     })
-    dialog_value.dialog = {
-      active = { id = "question", title = "Question", body = "", placement = "float", actions = {} },
-      queue_count = 0,
-    }
     local opened, err = dialog_value:open()
     assert.is_nil(opened)
-    assert.matches("does not support dialogs", assert(err).message)
+    assert.matches("View must implement set_dialog", assert(err).message)
     assert.is_true(assert(dialog_record.view).destroyed)
 
     ---@type Neoagent.TestBoundaryViewRecord
     local presentation_record = {}
     local presentation_value = applet({
-      view = view_factory(presentation_record, { omit_presentation = true }),
+      view = function(opts)
+        local view = view_factory(presentation_record)(opts)
+        view.set_presentation = nil --[[@as unknown]]
+        return view
+      end,
     })
-    presentation_value.presentation = {
-      active = { id = "choice", kind = "select", prompt = "Choose", items = {} },
-      queue_count = 0,
-    }
     opened, err = presentation_value:open()
     assert.is_nil(opened)
-    assert.matches("does not support semantic presentations", assert(err).message)
+    assert.matches("View must implement set_presentation", assert(err).message)
     assert.is_true(assert(presentation_record.view).destroyed)
+  end)
+
+  it("preserves publications during first binding and while applying the queued updates", function()
+    local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local base_factory = view_factory(record)
+    local context_calls = 0
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = function(options)
+        local view = base_factory(options)
+        local set_context = view.set_context
+        function view:set_context(context)
+          set_context(self, context)
+          context_calls = context_calls + 1
+          if context_calls == 2 then
+            assert(owned_agent:set_ui_position("left"))
+            assert(owned_agent:set_ui_position("right"))
+          elseif context_calls == 3 then
+            assert(owned_agent:set_ui_position("top"))
+          end
+        end
+        return view
+      end,
+    })
+    assert(value:open())
+    assert.are.equal(owned_agent, value:bind(owned_agent))
+
+    local snapshot = owned_agent:snapshot()
+    assert.are.equal(snapshot.context.position, assert(record.view).context.position)
+    assert.are.equal(snapshot.revision, assert(value.agent_snapshot).revision)
+    assert.are.equal("top", value.position)
+    assert(owned_agent:set_ui_position("bottom"))
+    assert.are.equal("bottom", assert(record.view).context.position)
+  end)
+
+  it("rolls back a first binding when a queued publication fails in the View", function()
+    local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local base_factory = view_factory(record)
+    local context_calls = 0
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = function(options)
+        local view = base_factory(options)
+        local set_context = view.set_context
+        function view:set_context(context)
+          set_context(self, context)
+          context_calls = context_calls + 1
+          if context_calls == 2 then
+            assert(owned_agent:set_ui_position("left"))
+          elseif context_calls == 3 then
+            error("queued context failed", 0)
+          end
+        end
+        return view
+      end,
+    })
+    assert(value:open())
+    value:set_input("Retained draft")
+    local previous_position = value.position
+    local previous_workspace = value.workspace_root
+
+    assert.has_error(function() value:bind(owned_agent) end, "queued context failed")
+
+    assert.is_nil((value:agent()))
+    assert.is_nil((owned_agent:applet()))
+    assert.is_nil((value:view()))
+    assert.is_nil(value.agent_snapshot)
+    assert.is_nil(value.agent_unsubscribe)
+    assert.are.equal(previous_position, value.position)
+    assert.are.equal(previous_workspace, value.workspace_root)
+    assert.are.equal("Retained draft", value:get_input())
+    assert.is_true(assert(record.view).destroyed)
+    assert(owned_agent:set_ui_position("right"))
+    assert.is_nil(value.agent_snapshot)
+    assert(value:open())
+    assert.are.equal(owned_agent, value:bind(owned_agent))
+    assert.are.equal("right", assert(record.view).context.position)
+    assert.are.equal(owned_agent:snapshot().revision, assert(value.agent_snapshot).revision)
+  end)
+
+  it("cancels first binding when its Applet is destroyed during hydration", function()
+    local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = view_factory(record),
+    })
+    assert(value:open())
+    local view = assert(record.view)
+    function view:set_context()
+      value:destroy()
+    end
+
+    assert.has_error(function() value:bind(owned_agent) end, "Agent Applet was destroyed during binding")
+
+    assert.is_nil((value:agent()))
+    assert.is_nil((owned_agent:applet()))
+    assert.is_nil(value.agent_unsubscribe)
+    assert.is_nil(value.agent_snapshot)
+    assert.is_true(assert(record.view).destroyed)
+    assert(owned_agent:set_ui_position("left"))
+    assert.is_nil(value.agent_snapshot)
   end)
 
   it("rehydrates a newer publication that arrives during View construction", function()
     ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
-    ---@type Neoagent.AgentApplet?
-    local value
+    local root = vim.fn.getcwd()
+    local owned_agent = agent({ workspace = root })
+    local context_calls = 0
     local base_factory = view_factory(record)
     local factory = function(options)
       local view = base_factory(options)
       local set_context = view.set_context --[[@as fun(self: Neoagent.View, context: Neoagent.AgentContext?)]]
       function view:set_context(context)
         set_context(self, context)
-        assert(value).agent_snapshot = {
-          revision = 2,
-          messages = {},
-          context = { workspace = "new", model = "new" },
-          events = {},
-          result = nil,
-        }
+        context_calls = context_calls + 1
+        if context_calls == 2 then
+          assert.are.equal("left", owned_agent:set_ui_position("left"))
+        end
         return true
       end
       return view
     end
-    value = applet({ view = factory })
-    value.agent_value = agent()
-    function value.agent_value:label() return "Agent" end
-    function value.agent_value:set_attention() return true end
-    function value.agent_value:prepare() return true end
-    value.agent_snapshot = {
-      revision = 1,
-      messages = {},
-      context = { workspace = "old", model = "old" },
-      events = {},
-      result = nil,
-    }
+    local value = applet({
+      context = { workspace = root },
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = factory,
+    })
+    value:bind(owned_agent)
 
     assert(value:open())
-    assert.are.equal(2, value.agent_snapshot.revision)
-    assert.are.equal("new", assert(record.view).context.model)
-    value.agent_value = nil
+    assert.are.equal(owned_agent:snapshot().revision, assert(value.agent_snapshot).revision)
+    assert.are.equal("left", assert(record.view).context.position)
   end)
 
-  it("orders pre-bind publications after the newest retained snapshot", function()
-    local value = applet({})
-    value.agent_snapshot = {
-      revision = 5,
-      messages = {},
-      context = { workspace = "retained", model = "retained" },
-      events = {},
-      result = nil,
-    }
-    local fake_agent = agent()
-    function fake_agent:presenter() return value:presenter() end
-    function fake_agent:dialogs() return value:dialogs() end
-    function fake_agent:subscribe(callback)
-      callback({
-        type = "context",
-        revision = 6,
-        context = { workspace = "queued", model = "queued" },
-      })
-      return function() end
-    end
-    function fake_agent:snapshot()
-      return {
-        revision = 3,
-        messages = {},
-        context = { workspace = "stale", model = "stale" },
-        events = {},
-        result = nil,
-      }
-    end
-    function fake_agent:attach_applet(selected) return selected end
-    function fake_agent:detach_applet() return true end
-    function fake_agent:set_attention() return true end
-    function fake_agent:label() return "Agent" end
+  it("destroys a fresh View when bound hydration is rejected", function()
+    local root = vim.fn.getcwd()
+    local owned_agent = agent({ workspace = root })
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local base_factory = view_factory(record)
+    local value = applet({
+      context = { workspace = root },
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = function(options)
+        local view = base_factory(options)
+        function view:set_messages()
+          return nil, util.error("ui", "fresh hydration rejected")
+        end
+        return view
+      end,
+    })
+    value:bind(owned_agent)
 
-    assert.are.equal(fake_agent, value:bind(fake_agent))
-    assert.are.equal(6, value.agent_snapshot.revision)
-    assert.are.equal("queued", value.agent_snapshot.context.model)
-    assert.are.equal(fake_agent, value:unbind(fake_agent))
+    local opened, err = value:open()
+
+    assert.is_nil(opened)
+    assert.matches("fresh hydration rejected", assert(err).message)
+    assert.is_true(assert(record.view).destroyed)
+    assert.is_nil((value:view()))
+    assert.are.equal(value, owned_agent:applet())
+  end)
+
+  it("contains mutable View rejection without committing Applet state", function()
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local value = applet({
+      context = { workspace = "root" },
+      view = view_factory(record),
+    })
+    assert(value:open())
+    local view = assert(record.view)
+    function view:set_input()
+      return nil, util.error("ui", "input publication rejected")
+    end
+
+    local input, input_err = value:set_input("unpublished")
+
+    assert.is_nil(input)
+    assert.matches("input publication rejected", assert(input_err).message)
+    assert.are.equal("", value.input_value)
+    local renderer = value.renderer
+    local style = value.transcript_style
+    function view:set_renderer()
+      return nil, util.error("ui", "renderer installation rejected")
+    end
+    local installed, install_err = value:set_renderer(require("neoagent.ui.renderers").pi)
+    assert.is_nil(installed)
+    assert.matches("renderer installation rejected", assert(install_err).message)
+    assert.are.equal(renderer, value.renderer)
+    local selected_style = style == "pi" and "codex" or "pi"
+    local styled, style_err = value:set_transcript_style(selected_style)
+    assert.is_nil(styled)
+    assert.matches("renderer installation rejected", assert(style_err).message)
+    assert.are.equal(style, value.transcript_style)
   end)
 
   it("destroys an invalidated View and reports Agent detach failure", function()

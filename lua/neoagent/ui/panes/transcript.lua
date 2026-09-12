@@ -11,9 +11,6 @@ local widgets = Applet.Pane.widgets
 ---@field revision integer
 ---@field id? string
 
----@class Neoagent.ActiveDialogSnapshot: Neoagent.DialogSnapshot
----@field active Neoagent.Dialog
-
 ---@class Neoagent.TranscriptPaneState
 ---@field image_source? Neoagent.ImageSourceFactory
 ---@field blocks Neoagent.TranscriptBlock[]
@@ -222,19 +219,6 @@ local function slice_width(value, width, from_end)
   })
 end
 
----@param value string
----@param width integer
----@return string
-local function truncate(value, width)
-  if display.width(value) <= width then
-    return value
-  end
-  if width <= 1 then
-    return "…"
-  end
-  return display.truncate(value, width)
-end
-
 ---@param runs Applet.TextRun[]
 ---@param width integer
 ---@param maximum integer
@@ -243,10 +227,7 @@ local function fit_left(runs, width, maximum)
   if width <= maximum then
     return runs, width
   end
-  if maximum <= 0 then
-    return {}, 0
-  end
-  local remaining = maximum - 1
+  local remaining = math.max(0, maximum - 1)
   local fitted = {}
   for index = #runs, 1, -1 do
     if remaining <= 0 then
@@ -265,7 +246,9 @@ local function fit_left(runs, width, maximum)
       end
     end
   end
-  table.insert(fitted, 1, { text = "…", style = "muted" })
+  if maximum > 0 then
+    table.insert(fitted, 1, { text = "…", style = "muted" })
+  end
   local fitted_width = 0
   for _, run in ipairs(fitted) do
     fitted_width = fitted_width + display.width(run.text)
@@ -318,7 +301,7 @@ local function footer(state, width)
   local right = #right_parts > 0 and " " .. table.concat(right_parts, " · ") .. " " or nil
   local border = border_character(state.config.border)
   if not active and not waiting and not right then
-    local idle = truncate(" Idle ", width)
+    local idle = display.truncate(" Idle ", width)
     local idle_width = display.width(idle)
     local before = math.floor((width - idle_width) / 2)
     local after = width - idle_width - before
@@ -331,7 +314,7 @@ local function footer(state, width)
   local midpoint = math.floor(width / 2)
   left, left_width = fit_left(left, left_width, midpoint)
   if right then
-    right = truncate(right, width - midpoint)
+    right = display.truncate(right, width - midpoint)
   end
   local runs, used = {}, 0
   ---@param run Applet.TextRun
@@ -521,17 +504,6 @@ local function cached_block_node(state, env, block, index, width, cache)
       and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"),
   }
   local cached = cache[block.key]
-  local matches = cached ~= nil
-  for key, value in pairs(signature) do
-    if not cached or cached[key] ~= value then
-      matches = false
-      break
-    end
-  end
-  if matches then
-    return cached.node, cached.region_revision
-  end
-
   local tool
   if block.kind == "tool" and state.resolve_tool then
     local name = block.name or block.call and block.call.name
@@ -908,9 +880,6 @@ function Transcript:_message(message, prefix)
     end
   elseif message.role == "toolResult" then
     local block = self.calls[message.toolCallId]
-    if block and block.finished then
-      return block
-    end
     if not block then
       block = self:_add_block({
         kind = "tool",

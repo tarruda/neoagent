@@ -72,15 +72,11 @@ function M.ensure(view)
     return false
   end
   local current = view.presentation_component
-  local editable = current and current:editable_pane() or nil
-  local results = current and current.pane or nil
   if
     current
     and not current:is_destroyed()
-    and editable
-    and not editable:is_destroyed()
-    and results
-    and not results:is_destroyed()
+    and not current:editable_pane():is_destroyed()
+    and not current.pane:is_destroyed()
   then
     return false
   end

@@ -19,7 +19,6 @@ local util = require("neoagent.util")
 
 ---@class Neoagent.SessionLifecycleOptions
 ---@field state Neoagent.SessionLifecycleState
----@field workspace string
 ---@field restore_selection? boolean
 ---@field request_selection Neoagent.RequestSelection
 ---@field preferences fun(): Neoagent.WorkspacePreferences
@@ -27,7 +26,6 @@ local util = require("neoagent.util")
 ---@field bind_provider fun(provider: string): unknown
 ---@field publish_messages fun(messages: Neoagent.TranscriptMessage[])
 ---@field update_context fun()
----@field activate_workspace fun(workspace: string): unknown
 
 ---@class Neoagent.SessionLifecycle
 ---@field initialize fun(): true?, Neoagent.Error?
@@ -124,8 +122,6 @@ function M.new(opts)
 
   ---@return true?, Neoagent.Error?
   function lifecycle.initialize()
-    assert(state.session, "Agent Session is required")
-    opts.activate_workspace(opts.workspace)
     if opts.restore_selection then
       local stored, err = state.session:state()
       if not stored then

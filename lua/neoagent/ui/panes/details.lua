@@ -69,18 +69,7 @@ end
 ---@param block Neoagent.RenderBlock?
 ---@return string?
 local function tool_name(block)
-  if type(block) ~= "table" or block.kind ~= "tool" then
-    return nil
-  end
-  if block.name ~= nil then
-    return block.name
-  end
-  if type(block.call) == "table" and block.call.name ~= nil then
-    return block.call.name
-  end
-  if type(block.message) == "table" then
-    return block.message.toolName
-  end
+  return block and block.kind == "tool" and block.name or nil
 end
 
 ---@param block Neoagent.RenderBlock?
@@ -104,15 +93,14 @@ end
 ---@param action string
 ---@param desc string
 local function add_binding(result, mode, lhs, action, desc)
-  if type(lhs) ~= "string" or lhs == "" then
-    return
+  if type(lhs) == "string" and lhs ~= "" then
+    result[#result + 1] = {
+      mode = mode,
+      lhs = lhs,
+      action = ui.action(action),
+      desc = desc,
+    }
   end
-  result[#result + 1] = {
-    mode = mode,
-    lhs = lhs,
-    action = ui.action(action),
-    desc = desc,
-  }
 end
 
 ---@param component Neoagent.DetailsPane
@@ -139,10 +127,8 @@ local function set_following(component, enabled)
     0,
     FOLLOW_INTERVAL_MS,
     vim.schedule_wrap(function()
-      if component.destroyed or not component.following or component.follow_timer ~= timer then
-        return
-      end
-      if component.pane:is_connected() then
+      if not component.destroyed and component.following
+          and component.follow_timer == timer and component.pane:is_connected() then
         component.pane:scroll({ target = "end", align = "bottom" })
       end
     end)
@@ -300,13 +286,12 @@ function Details.new(opts)
       ["details.next"] = callbacks.next or function() end,
       ["details.center"] = callbacks.center or function() end,
       ["details.follow"] = function()
-        if not follow_available(self.block) then
-          return
-        end
-        set_following(self, not self.following)
-        self:_publish()
-        if callbacks.changed then
-          callbacks.changed()
+        if follow_available(self.block) then
+          set_following(self, not self.following)
+          self:_publish()
+          if callbacks.changed then
+            callbacks.changed()
+          end
         end
       end,
       ["details.raw"] = function()
@@ -376,16 +361,15 @@ function Details:text()
 end
 
 function Details:destroy()
-  if self.destroyed then
-    return
+  if not self.destroyed then
+    self.destroyed = true
+    set_following(self, false)
+    if self.unsubscribe_images then
+      self.unsubscribe_images()
+    end
+    self.unsubscribe_images = nil
+    self.pane:destroy()
   end
-  self.destroyed = true
-  set_following(self, false)
-  if self.unsubscribe_images then
-    self.unsubscribe_images()
-  end
-  self.unsubscribe_images = nil
-  self.pane:destroy()
 end
 
 return Details

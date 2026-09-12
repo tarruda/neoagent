@@ -38,12 +38,13 @@ describe("neoagent semantic Presenter", function()
   end
 
   it("uses the Applet host translation when no View is attached", function()
-    local selected
+    local selected, retired = nil, false
     local value = presenter({
       host = host({
         select = function(request, done)
           selected = request.items[2].fallback
           done.resolve(request.items[2].id)
+          return function() retired = true end
         end,
       }),
     })
@@ -52,6 +53,7 @@ describe("neoagent semantic Presenter", function()
     assert.is_true(assert(run:result()).ok)
     assert.are.equal("beta", assert(run:result()).value)
     assert.are.equal("beta", selected)
+    assert.is_true(retired)
   end)
 
   it("preserves false selection values and host fallbacks", function()
@@ -153,6 +155,21 @@ describe("neoagent semantic Presenter", function()
     value:destroy()
     assert.is_false(update({ { id = "one", label = "Destroyed" } }))
     detach()
+  end)
+
+  it("rejects active fallback updates and stale failures", function()
+    local value = presenter({
+      host = host({
+        select = function() return function() end end,
+      }),
+    })
+    local run, update = value:select({ items = { "one" } })
+    local active = assert(value:snapshot().active)
+
+    assert.is_false(update({ "two" }))
+    assert.is_false(value:reject("stale", "late failure"))
+    assert.is_true(value:cancel(active.id))
+    assert(vim.wait(1000, function() return run:is_done() end))
   end)
 
   it("returns an attached request to its host when the surface detaches", function()
@@ -288,6 +305,7 @@ describe("neoagent semantic Presenter", function()
       "view:inside",
       "view:https://inside.example",
     }, effects)
+    detach()
     detach()
   end)
 

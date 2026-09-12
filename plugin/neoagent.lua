@@ -15,9 +15,6 @@ local function report_error(err)
     return
   end
   local message = type(err) == "table" and err.message or tostring(err)
-  if type(message) ~= "string" then
-    message = tostring(err)
-  end
   if type(err) == "table" and err.detail then
     message = message .. ": " .. tostring(err.detail)
   end

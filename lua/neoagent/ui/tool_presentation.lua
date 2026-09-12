@@ -35,6 +35,12 @@ local compact_activities = {
   search = true,
 }
 
+---@param value string
+---@return boolean
+local function one_line(value)
+  return not value:find("[\r\n]")
+end
+
 ---@param state? string
 ---@return boolean
 local function active(state)
@@ -93,8 +99,11 @@ local function activity(value, opts)
   if
     type(value.operation) ~= "string"
     or type(value.ongoing) ~= "string"
+    or not one_line(value.ongoing)
     or type(value.complete) ~= "string"
+    or not one_line(value.complete)
     or type(value.subject) ~= "string"
+    or not one_line(value.subject)
     or value.command ~= nil and type(value.command) ~= "string"
   then
     return nil
@@ -322,7 +331,7 @@ end
 ---@param opts Neoagent.ToolViewOptions
 ---@return Neoagent.ToolViewPresentation?
 local function edit(value, opts)
-  if type(value.path) ~= "string" or not util.is_list(value.rows) then
+  if type(value.path) ~= "string" or not one_line(value.path) or not util.is_list(value.rows) then
     return nil
   end
   local compact = opts.presentation_surface == "transcript"
@@ -352,6 +361,7 @@ end
 local function text(value)
   if
     value.title ~= nil and type(value.title) ~= "string"
+    or type(value.title) == "string" and not one_line(value.title)
     or value.lines ~= nil and not util.is_list(value.lines)
     or value.include_output ~= nil and type(value.include_output) ~= "boolean"
   then

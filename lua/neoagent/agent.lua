@@ -4,7 +4,7 @@
 ---@field run_id integer
 ---@field destroyed boolean
 ---@field destroy_runtimes? fun()
----@field workspace? Neoagent.Workspace
+---@field workspace Neoagent.Workspace
 ---@field session_id table
 ---@field toolset Neoagent.AgentToolset
 ---@field applet? Neoagent.AgentApplet
@@ -312,18 +312,14 @@ function M.from_config(options, runtime)
   local initial_session = runtime.session
   if not initial_session then
     local Session = require("neoagent.session")
-    local session_err
     if options.persistence.enabled then
       local store = require("neoagent.storage").new({
         directory = options.persistence.directory,
         cwd = workspace_root,
       })
-      initial_session, session_err = Session.new({ store = store })
+      initial_session = assert(Session.new({ store = store }))
     else
-      initial_session, session_err = Session.new()
-    end
-    if not initial_session then
-      error(session_err, 0)
+      initial_session = assert(Session.new())
     end
   end
   next_id = next_id + 1
@@ -390,7 +386,10 @@ function M.from_config(options, runtime)
     session = initial_session,
     session_id = initial_session:identity(),
     request_selection = request_selection,
-    workspace = nil,
+    workspace = require("neoagent.workspace").new({
+      root = workspace_root,
+      cwd = workspace_root,
+    }),
     workspace_settings = nil,
     workspace_model_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
     session_selection_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
@@ -426,7 +425,7 @@ function M.from_config(options, runtime)
   }
   ---@return string
   local function trust_cwd()
-    return state.workspace and state.workspace.root or vim.fn.getcwd()
+    return state.workspace.root
   end
 
   ---@param cwd string?
@@ -542,7 +541,7 @@ function M.from_config(options, runtime)
     return options
   end
 
-  ---@type fun(provider_id?: string)
+  ---@type fun(provider_id: string)
   local bind_provider
   ---@type fun(event: Neoagent.AgentEvent)
   local provider_event
@@ -677,8 +676,7 @@ function M.from_config(options, runtime)
   ---@param patch Neoagent.WorkspacePreferencesInput
   ---@return true?, Neoagent.Error?
   local function save_workspace_settings(patch)
-    local persistence = configured().persistence
-    if not state.workspace_settings or not persistence.workspace_settings then
+    if not state.workspace_settings then
       return true
     end
     local saved, err = state.workspace_settings:update(workspace_patch(patch))
@@ -689,41 +687,25 @@ function M.from_config(options, runtime)
     return true
   end
 
-  ---@param cwd string
-  local function activate_workspace(cwd)
-    local root = require("neoagent.fs").canonical(cwd)
-    if state.workspace then
-      assert(state.workspace.root == root, "Agent Workspace is immutable")
-      return
-    end
-    state.workspace = require("neoagent.workspace").new({ root = root, cwd = root })
-    state.workspace_settings = nil
-    state.request_selection:set_workspace_preferences({})
-    state.request_selection:clear()
-    state.live_usage, state.provider_status, state.inference_stats = nil, nil, nil
-    unbind_provider()
+  local function initialize_workspace_settings()
     local options = configured().persistence
-    if not options.enabled then
+    if not options.enabled or not options.workspace_settings then
       return
     end
     state.workspace_settings = require("neoagent.workspace_settings").new({
       directory = options.directory,
-      root = root,
+      root = state.workspace.root,
     })
-    if not options.workspace_settings then
-      return
-    end
     local settings, settings_err = state.workspace_settings:load()
     if not settings then
       assert(settings_err)
       local path = assert(state.workspace_settings):metadata().settings_path
-      notify(
-        settings_err.message
-          .. (settings_err.detail and ": " .. settings_err.detail or "")
-          .. "; the file may be outdated, update or delete "
-          .. path,
-        vim.log.levels.WARN
-      )
+      local message = settings_err.message
+      if settings_err.detail then
+        message = message .. ": " .. settings_err.detail
+      end
+      message = message .. "; the file may be outdated, update or delete " .. path
+      notify(message, vim.log.levels.WARN)
       return
     end
     state.request_selection:set_workspace_preferences(scoped_workspace_settings(settings, true))
@@ -741,10 +723,7 @@ function M.from_config(options, runtime)
   end
 
   local function sync_tools()
-    if not state.session_id then
-      return
-    end
-    local messages = state.session and state.session:messages() or {}
+    local messages = state.session:messages()
     local hook_context = { session_id = state.session_id, files = state.session:files() }
     for _, tool in ipairs(state.toolset.tools) do
       if type(tool.on_messages) == "function" then
@@ -771,10 +750,10 @@ function M.from_config(options, runtime)
     if not state.workspace_model_pending then
       return true
     end
-    local selected = state.request_selection:model_selection()
-    if not selected then
-      return nil, util.error("model", "No model is selected")
-    end
+    local selected = assert(
+      state.request_selection:model_selection(),
+      "accepted Agent submission has no Model selection"
+    )
     local overrides = state.request_selection:workspace_preferences()
     local level = state.request_selection:thinking_level()
     local same_thinking = overrides.default_thinking_level == level
@@ -809,9 +788,7 @@ function M.from_config(options, runtime)
       return false
     end
     local runtime = state.provider_runtimes[selected.provider]
-    return type(runtime) == "table"
-      and type(runtime.definition) == "table"
-      and type(runtime.definition.catalog) == "table"
+    return runtime ~= nil
       and type(runtime.definition.catalog.discover) == "function"
       and runtime.catalog:snapshot().models[selected.model] == nil
   end
@@ -822,9 +799,6 @@ function M.from_config(options, runtime)
     local current = state.request_selection:model()
     if current then
       return current
-    end
-    if not state.workspace then
-      activate_workspace(workspace_root)
     end
     local selected = state.request_selection:candidate()
     if not selected then
@@ -851,10 +825,7 @@ function M.from_config(options, runtime)
         local fallback_available = fallback_selection ~= nil
           and not RequestSelection.same_model(workspace_default, fallback_selection)
         if fallback_available then
-          local fallback_model, fallback_err = state.request_selection:resolve(fallback_selection)
-          if not fallback_model then
-            error(fallback_err, 0)
-          end
+          local fallback_model = assert(state.request_selection:resolve(fallback_selection))
           selected, model = assert(fallback_selection), fallback_model
         else
           notify(
@@ -954,10 +925,7 @@ function M.from_config(options, runtime)
 
   ---@param path string
   local function refresh_buffer(path)
-    local absolute = state.workspace and state.workspace:resolve(path)
-    if not absolute then
-      return
-    end
+    local absolute = state.workspace:resolve(path)
     local ok, result = pcall(host_effects.refresh_file, absolute)
     if not ok then
       notify("failed to refresh changed file: " .. tostring(result), vim.log.levels.ERROR)
@@ -975,7 +943,7 @@ function M.from_config(options, runtime)
   local function context_usage()
     local session = state.session
     local model = state.request_selection:model()
-    local leaf = session and session:leaf_id() or nil
+    local leaf = session:leaf_id()
     local cache = state.context_usage_cache
     if
       cache
@@ -1005,7 +973,7 @@ function M.from_config(options, runtime)
       name = options.name or false,
       model = model_label(),
       thinking = state.request_selection:thinking_level() or false,
-      workspace = state.workspace and state.workspace.root or nil,
+      workspace = state.workspace.root,
       position = preferences().ui_position,
       state = activity_state(),
       context_usage = context_usage(),
@@ -1019,24 +987,11 @@ function M.from_config(options, runtime)
     publish({ type = "context", context = context() })
   end
 
-  ---@param provider_id string?
+  ---@param provider_id string
   bind_provider = function(provider_id)
-    local runtime = provider_id and state.provider_runtimes[provider_id] or nil
-    local service = runtime and runtime.service or nil
-    local catalog = runtime and runtime.catalog or nil
-    if not service or type(catalog) ~= "table" or type(catalog.subscribe) ~= "function" then
-      unbind_provider()
-      return
-    end
-    local validated, err = provider_service.validate(service)
-    if not validated then
-      notify(
-        "provider service for " .. provider_id .. " is invalid: " .. (err and err.message or "invalid Provider Service"),
-        vim.log.levels.ERROR
-      )
-      unbind_provider()
-      return
-    end
+    local runtime = assert(state.provider_runtimes[provider_id], "selected Model has no Provider runtime")
+    local service = runtime.service
+    local catalog = runtime.catalog
     if state.provider_id == provider_id then
       return
     end
@@ -1047,10 +1002,12 @@ function M.from_config(options, runtime)
         if state.destroyed or state.provider_id ~= provider_id then
           return
         end
-        local selected = state.request_selection:model_selection()
+        local selected = assert(
+          state.request_selection:model_selection(),
+          "bound Provider has no Model selection"
+        )
         if
           not state.request_selection:model()
-          and selected
           and selected.provider == provider_id
           and catalog:snapshot().models[selected.model] ~= nil
         then
@@ -1066,12 +1023,7 @@ function M.from_config(options, runtime)
         update_context()
       end)
     end
-    local catalog_ok, catalog_unsubscribe = pcall(catalog.subscribe, catalog, changed)
-    if not catalog_ok then
-      notify("model catalog subscription failed: " .. tostring(catalog_unsubscribe), vim.log.levels.ERROR)
-    elseif type(catalog_unsubscribe) == "function" then
-      state.provider_unsubscribes[#state.provider_unsubscribes + 1] = catalog_unsubscribe
-    end
+    state.provider_unsubscribes[#state.provider_unsubscribes + 1] = catalog:subscribe(changed)
     if type(service.subscribe) == "function" then
       local ok, unsubscribe = pcall(service.subscribe, service, changed)
       if not ok then
@@ -1091,24 +1043,18 @@ function M.from_config(options, runtime)
     end
   end
 
+  initialize_workspace_settings()
   local sessions = session_lifecycle.new({
     state = state,
-    workspace = workspace_root,
     restore_selection = runtime.restore_session_selection == true,
     notify = notify,
     publish_messages = publish_messages,
     update_context = update_context,
-    require_workspace_trust = require_workspace_trust,
-    activate_workspace = activate_workspace,
-    ensure_model = ensure_model,
     preferences = preferences,
     request_selection = state.request_selection,
     bind_provider = bind_provider,
   })
-  local initialized, initialize_err = sessions.initialize()
-  if not initialized then
-    error(initialize_err, 0)
-  end
+  assert(sessions.initialize())
 
   local runs = require("neoagent.agent.run_lifecycle").new({
     state = state,
@@ -1130,12 +1076,7 @@ function M.from_config(options, runtime)
     interaction = runtime.interaction,
     compaction_run = runtime.compaction_run,
     acquire_provider = function()
-      local service = model_service()
-      if not service then
-        return function()
-          return true
-        end
-      end
+      local service = assert(model_service(), "selected Model has no Provider Service")
       local lease, err = provider_service.acquire_use(service)
       if not lease then
         error(err, 0)
@@ -1154,13 +1095,10 @@ function M.from_config(options, runtime)
         state.pending_warning = nil
         report(warning, vim.log.levels.WARN)
       end
-      if not state.workspace then
-        activate_workspace(workspace_root)
-      end
       if workspace_trust then
-        require_workspace_trust(assert(state.workspace).root)
+        require_workspace_trust(state.workspace.root)
       end
-      local selected = state.request_selection:candidate()
+      local selected = state.request_selection:candidate() or first_available_model()
       if selected then
         if configured_catalog_pending(selected) then
           state.request_selection:stage(selected)
@@ -1168,8 +1106,6 @@ function M.from_config(options, runtime)
         else
           ensure_model()
         end
-      elseif first_available_model() then
-        ensure_model()
       end
       update_context()
     end)
@@ -1225,10 +1161,6 @@ function M.from_config(options, runtime)
   ---@param on_selected? fun(id: string)
   ---@return true?
   function agent:select_branch(on_selected)
-    if not state.session then
-      notify("no active session")
-      return nil
-    end
     local entries = state.session:entries()
     local current = state.session:leaf_id()
     local choices = {}
@@ -1305,9 +1237,6 @@ function M.from_config(options, runtime)
       notify(failure.message, vim.log.levels.ERROR)
       return nil, failure
     end
-    if not state.workspace then
-      activate_workspace(workspace_root)
-    end
     local model, model_err = state.request_selection:select(provider_id, model_id, configured().default_thinking_level)
     if not model then
       assert(model_err)
@@ -1359,8 +1288,9 @@ function M.from_config(options, runtime)
     end
     local ok, model = pcall(ensure_model)
     if not ok then
-      notify(util.normalize_error(model, "model").message, vim.log.levels.ERROR)
-      return nil
+      local failure = util.normalize_error(model, "model")
+      notify(failure.message, vim.log.levels.ERROR)
+      return nil, failure
     end
     local level, err = state.request_selection:cycle_thinking_level()
     if not level then
@@ -1378,9 +1308,6 @@ function M.from_config(options, runtime)
   function agent:set_ui_position(position)
     if not ui_positions[position] then
       return nil, util.error("ui", "invalid window position")
-    end
-    if not state.workspace then
-      activate_workspace(workspace_root)
     end
     local saved, err = save_workspace_settings({ ui_position = position })
     if not saved then
@@ -1465,7 +1392,7 @@ function M.from_config(options, runtime)
       profile_id = profile_id,
       session_id = state.session:id(),
       label = agent_label,
-      workspace = state.workspace and state.workspace.root or nil,
+      workspace = state.workspace.root,
       model = model_label(),
       activity = activity_snapshot(),
     }
@@ -1483,12 +1410,7 @@ function M.from_config(options, runtime)
       state.activity_listeners[id] = nil
       error(err, 0)
     end
-    local subscribed = true
     return function()
-      if not subscribed then
-        return
-      end
-      subscribed = false
       state.activity_listeners[id] = nil
     end
   end
@@ -1500,19 +1422,14 @@ function M.from_config(options, runtime)
     state.next_listener_id = state.next_listener_id + 1
     local id = state.next_listener_id
     state.listeners[id] = listener
-    local subscribed = true
     return function()
-      if not subscribed then
-        return
-      end
-      subscribed = false
       state.listeners[id] = nil
     end
   end
 
   ---@return Neoagent.AgentSnapshot
   function agent:snapshot()
-    local messages = state.session and transcript_messages(state.session) or {}
+    local messages = transcript_messages(state.session)
     sync_tools()
     return {
       revision = state.publication_revision,
@@ -1535,7 +1452,7 @@ function M.from_config(options, runtime)
   function agent:get_model_selection()
     return state.request_selection:model_selection()
   end
-  ---@return Neoagent.Workspace?
+  ---@return Neoagent.Workspace
   function agent:get_workspace()
     return state.workspace
   end
@@ -1560,9 +1477,7 @@ function M.from_config(options, runtime)
     local selected = copy_toolset(value)
     local previous = copy_toolset(state.toolset)
     state.toolset = selected
-    if state.session then
-      publish_messages(transcript_messages(state.session))
-    end
+    publish_messages(transcript_messages(state.session))
     return previous
   end
 
@@ -1653,15 +1568,11 @@ function M.new(opts, runtime)
     end
     local recorder
     local transport = selected.transport
-    if options.recording and options.recording.enabled then
-      local recording_err
-      recorder, recording_err = require("neoagent.http_recording").new({
+    if options.recording.enabled then
+      recorder = assert(require("neoagent.http_recording").new({
         config = options.recording,
         report = report,
-      })
-      if not recorder then
-        error(recording_err, 0)
-      end
+      }))
       transport = recorder:transport(transport or require("neoagent.transport.curl"))
     end
     local auth = selected.auth

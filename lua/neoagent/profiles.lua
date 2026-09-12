@@ -180,6 +180,7 @@ local function applet_factory(configured, profile_id, profile_label, auth, runti
         profile_id = profile_id,
         label = context.label or profile_label,
         presenter = presenter,
+        owns_presenter = true,
         view = configured._view,
       })
       return value, draft

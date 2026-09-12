@@ -8,13 +8,12 @@ local widgets = Applet.Pane.widgets
 ---@field cancel_key? Neoagent.UIMapping
 
 ---@class Neoagent.DialogPaneState
----@field snapshot? Neoagent.DialogSnapshot
+---@field snapshot Neoagent.ActiveDialogSnapshot
 ---@field config Neoagent.DialogPaneConfig
 
 ---@class Neoagent.DialogPaneCallbacks
 ---@field choose fun(id: string, action: string, input?: string): unknown
 ---@field cancel fun(id: string): unknown
----@field changed? fun(value: string): unknown
 ---@field focus_input? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.DialogPaneState>>): unknown
 
 ---@class Neoagent.DialogPaneOptions
@@ -127,20 +126,12 @@ end
 ---@return Applet.Tree
 local function render(state)
   local snapshot = state.snapshot
-  if not snapshot or not snapshot.active then
-    return {
-      root = ui.text({ key = "dialog:empty", text = "", wrap = "none" }),
-      chrome = { options = { wrap = false } },
-    }
-  end
   local dialog = snapshot.active
   if dialog.input then
     local bindings = action_bindings(dialog, state.config)
     if type(state.config.cancel_key) == "string" and state.config.cancel_key ~= "" then
       local cancel_modes = { "n" }
-      if dialog.input then
-        cancel_modes[#cancel_modes + 1] = "i"
-      end
+      cancel_modes[#cancel_modes + 1] = "i"
       for _, mode in ipairs(cancel_modes) do
         bindings[#bindings + 1] = {
           mode = mode,
@@ -272,9 +263,6 @@ function Dialog.new(opts)
       end,
       ["dialog.changed"] = function()
         self.input_value = self:text()
-        if callbacks.changed then
-          callbacks.changed(self.input_value)
-        end
       end,
     },
     on_error = opts.on_error,
@@ -282,10 +270,10 @@ function Dialog.new(opts)
   return self
 end
 
----@param snapshot Neoagent.DialogSnapshot?
+---@param snapshot Neoagent.ActiveDialogSnapshot
 function Dialog:set(snapshot)
-  self.snapshot = snapshot and util.copy(snapshot) or nil
-  local input = self.snapshot and self.snapshot.active and self.snapshot.active.input
+  self.snapshot = util.copy(snapshot)
+  local input = self.snapshot.active.input
   self.input_value = input and input.value or ""
   self.pane:set_state({
     snapshot = self.snapshot,

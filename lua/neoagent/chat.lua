@@ -56,12 +56,9 @@ local active = setmetatable({}, { __mode = "k" })
 ---@param entry? Neoagent.JournalEntry
 ---@return Neoagent.ObservedMessage
 local function persisted_message(message, entry)
-  if not entry or type(entry.id) ~= "string" or entry.id == "" then
-    return message
-  end
   ---@type Neoagent.ObservedMessage
   local copied = util.copy(message)
-  copied._neoagent_entry_id = entry.id
+  copied._neoagent_entry_id = entry and entry.id or nil
   return copied
 end
 
@@ -211,12 +208,14 @@ end
 ---@return table, Neoagent.JournalEntry?
 local function begin(session, prompt, state)
   assert(type(prompt) == "string", "prompt must be a string")
-  local reservation = reserve(session)
-  local called, ok, err, entry = pcall(session.append, session, {
+  ---@type Neoagent.Message
+  local message = {
     role = "user",
     content = prompt,
     timestamp = util.now_ms(),
-  }, state)
+  }
+  local reservation = reserve(session)
+  local called, ok, err, entry = pcall(session.append, session, message, state)
   if not called then
     release(session, reservation)
     error(ok, 0)
@@ -248,9 +247,6 @@ end
 local function install(session, reservation, run)
   assert(active[session] == reservation, "Session reservation was lost")
   active[session] = run
-  if run:is_done() then
-    release(session, run)
-  end
   return run
 end
 
@@ -259,12 +255,12 @@ end
 ---@param fn fun(): Neoagent.ChatRun
 ---@return Neoagent.ChatRun
 local function start_reserved(session, reservation, fn)
-  local ok, result = pcall(fn)
+  local ok, run = pcall(fn)
   if not ok then
     release(session, reservation)
-    error(result, 0)
+    error(run, 0)
   end
-  return install(session, reservation, result)
+  return install(session, reservation, run)
 end
 
 ---@param result Neoagent.ModelSuccess|Neoagent.ModelFailure|Neoagent.AgentLoopSuccess|Neoagent.AgentLoopFailure
@@ -302,9 +298,6 @@ end
 ---@param entry? Neoagent.JournalEntry
 ---@return Neoagent.MessageEndEvent
 local function persisted_event(event, entry)
-  if not entry or type(entry.id) ~= "string" or entry.id == "" then
-    return event
-  end
   local copied = util.copy(event)
   copied.message = persisted_message(copied.message, entry)
   return copied

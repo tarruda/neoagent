@@ -73,6 +73,14 @@ describe("neoagent commands", function()
     assert.is_true(toggle.silent == 1)
     assert.is_true(cycle.silent == 1)
 
+    local custom_calls = 0
+    vim.keymap.set("n", "<Plug>(NeoagentToggle)", function() custom_calls = custom_calls + 1 end)
+    vim.cmd("runtime plugin/neoagent.lua")
+    vim.fn.maparg("<Plug>(NeoagentToggle)", "n", false, true).callback()
+    vim.keymap.set("n", "<Plug>(NeoagentToggle)", toggle.callback, { silent = true, desc = toggle.desc })
+    assert.are.equal(1, custom_calls)
+    assert.is_false(neoagent.applet():is_open())
+
     toggle.callback()
     assert.is_true(neoagent.applet():is_open())
     assert.are.same({}, neoagent.applet():agents())
@@ -92,8 +100,11 @@ describe("neoagent commands", function()
       notify = neoagent.notify,
       resume = neoagent.resume,
       copy_session = neoagent.copy_session,
+      stop = neoagent.stop,
+      select_branch = neoagent.select_branch,
       fork = neoagent.fork,
       select_fork = neoagent.select_fork,
+      applet = neoagent.applet,
     }
     neoagent.show_sandbox_info = function()
       calls[#calls + 1] = { "sandbox" }
@@ -109,14 +120,28 @@ describe("neoagent commands", function()
     neoagent.resume = function()
       return nil, { kind = "test", message = "resume failed", detail = "unavailable" }
     end
+    local copies = 0
     neoagent.copy_session = function()
-      return nil, { kind = "test", message = "copy failed" }
+      copies = copies + 1
+      if copies == 1 then
+        return nil, { kind = "test", message = "copy failed" }
+      end
+      return nil
+    end
+    neoagent.stop = function()
+      calls[#calls + 1] = { "stop" }
+      return true
+    end
+    neoagent.select_branch = function()
+      calls[#calls + 1] = { "select_branch" }
     end
     neoagent.fork = function()
       return nil, { kind = "test", message = "fork failed" }
     end
     neoagent.select_fork = function()
-      return nil, { kind = "test", message = "selection failed" }
+      return nil, setmetatable({ kind = "test", message = false }, {
+        __tostring = function() return "malformed error" end,
+      })
     end
 
     vim.cmd("NeoagentSandboxInfo")
@@ -125,16 +150,29 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentModel malformed")
     vim.cmd("NeoagentResume missing.jsonl")
     vim.cmd("NeoagentCopySession")
+    vim.cmd("NeoagentCopySession")
+    vim.cmd("NeoagentStop")
+    vim.cmd("NeoagentBranch")
     vim.cmd("NeoagentFork entry")
     vim.cmd("NeoagentFork")
+
+    neoagent.applet = function()
+      return { provider_shell = function() return nil end }
+    end
+    assert.are.same({},
+      vim.fn.getcompletion("NeoagentProvider ", "cmdline"))
+    vim.cmd("NeoagentProvider")
 
     neoagent.show_sandbox_info = originals.show_sandbox_info
     neoagent.compact = originals.compact
     neoagent.notify = originals.notify
     neoagent.resume = originals.resume
     neoagent.copy_session = originals.copy_session
+    neoagent.stop = originals.stop
+    neoagent.select_branch = originals.select_branch
     neoagent.fork = originals.fork
     neoagent.select_fork = originals.select_fork
+    neoagent.applet = originals.applet
     assert.are.same({
       { "sandbox" },
       { "compact" },
@@ -142,8 +180,10 @@ describe("neoagent commands", function()
       { "notify", "expected provider/model", vim.log.levels.ERROR },
       { "notify", "resume failed: unavailable", vim.log.levels.ERROR },
       { "notify", "copy failed", vim.log.levels.ERROR },
+      { "stop" },
+      { "select_branch" },
       { "notify", "fork failed", vim.log.levels.ERROR },
-      { "notify", "selection failed", vim.log.levels.ERROR },
+      { "notify", "malformed error", vim.log.levels.ERROR },
     }, calls)
   end)
 
@@ -162,6 +202,11 @@ describe("neoagent commands", function()
     assert.are.equal("left", assert(applet:view()).position)
     assert.are.same({}, applet:agents())
 
+    vim.cmd("NeoagentPosition right")
+    assert.are.equal("right", assert(applet:view()).position)
+    assert.is_true(vim.tbl_contains(vim.fn.getcompletion("NeoagentPosition ", "cmdline"), "center"))
+    assert.is_true(vim.tbl_contains(vim.fn.getcompletion("NeoagentThinking ", "cmdline"), "high"))
+
     vim.cmd("NeoagentTranscriptStyle codex")
     assert.are.equal("codex", assert(applet:view()).config.style)
     assert.are.same({ "pi", "codex" },
@@ -173,6 +218,12 @@ describe("neoagent commands", function()
     assert.are.equal("high", neoagent.get_thinking_level())
     assert.are.equal("fake/test", assert(applet:view()).context.model)
     assert.are.same({}, applet:agents())
+
+    vim.cmd("NeoagentModel")
+    local _, model_request = presentation.active(applet)
+    assert.matches("model", model_request.prompt:lower())
+    presentation.choose(applet, "fake/test")
+    assert(vim.wait(1000, function() return assert(applet:view()).presentation == nil end, 5))
 
     local notifications = {}
     local original_notify = vim.notify
@@ -191,6 +242,32 @@ describe("neoagent commands", function()
     vim.cmd("Neoagent")
     assert.is_true(applet:is_open())
     assert.are.same({}, applet:agents())
+  end)
+
+  it("cancels a draft's pending model picker when its owner is destroyed", function()
+    local applet = setup()
+    vim.cmd("Neoagent")
+    vim.cmd("NeoagentModel")
+    local _, request = presentation.active(applet)
+    assert.matches("model", request.prompt:lower())
+    local presenter = assert(applet.selected):presenter()
+    local queued = presenter:select({ prompt = "Queued selection", items = { "another" } })
+    local original_select = vim.ui.select
+    local fallback_prompts = {}
+    vim.ui.select = function(_, options, callback)
+      fallback_prompts[#fallback_prompts + 1] = options.prompt
+      callback(nil)
+    end
+    local destroyed, err = pcall(applet.destroy, applet)
+    vim.ui.select = original_select
+    assert(destroyed, err)
+    assert.are.same({}, fallback_prompts)
+    assert.is_true(presenter.destroyed)
+    assert(vim.wait(1000, function() return queued:is_done() end, 5))
+    assert.is_false(assert(queued:result()).ok)
+    assert.is_nil(presenter:snapshot().active)
+    assert.are.same({}, applet:agents())
+    assert.is_false(applet:is_open())
   end)
 
   it("constructs and opens an Agent only after a confirmed resume", function()

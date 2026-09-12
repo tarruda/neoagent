@@ -11,7 +11,6 @@ local ui = Applet.Pane.nodes
 ---@field virtual_lines Applet.TextRun[][]
 
 ---@class Neoagent.InputPaneCallbacks
----@field pane? fun(): Applet.Pane?
 ---@field submit fun(text: string): unknown
 ---@field close fun(event?: Neoagent.InputPaneEvent): unknown
 ---@field previous_card? fun(event: Neoagent.InputPaneEvent): unknown
@@ -193,10 +192,10 @@ end
 
 ---@return boolean
 function Input:_complete()
-  local pane = self.callbacks.pane and self.callbacks.pane()
-  if not pane then
+  if not self.pane:is_mounted() then
     return false
   end
+  local pane = self.pane
   if pane:completion_visible() then
     pane:completion_move("next")
     return true
@@ -206,9 +205,8 @@ end
 
 ---@return unknown
 function Input:_submit()
-  local pane = self.callbacks.pane and self.callbacks.pane()
-  if pane and pane:completion_visible() then
-    return pane:completion_accept()
+  if self.pane:is_mounted() and self.pane:completion_visible() then
+    return self.pane:completion_accept()
   end
   return self.callbacks.submit(self:text())
 end
@@ -248,17 +246,13 @@ function Input:_replace_text(text, cursor)
     self.pending_cursor = cursor
     return true
   end
-  local pane = self.callbacks.pane and self.callbacks.pane()
-  if pane then
-    local semantic = cursor
-        and {
-          line = cursor.line or cursor[1],
-          column = cursor.column or cursor[2],
-        }
-      or nil
-    return pane:replace_text(text, semantic, self.revision)
-  end
-  return self.pane:replace_text(text, cursor, self.revision)
+  local semantic = cursor
+      and {
+        line = cursor.line or cursor[1],
+        column = cursor.column or cursor[2],
+      }
+    or nil
+  return self.pane:replace_text(text, semantic, self.revision)
 end
 
 ---@param text string
@@ -330,10 +324,9 @@ function Input:_browse_history(direction)
     return false
   end
   if self.history_index == 0 and next_index > 0 then
-    local pane = self.callbacks.pane and self.callbacks.pane()
     self.history_draft = {
       text = self:text(),
-      cursor = pane and pane:cursor() or nil,
+      cursor = self.pane:is_mounted() and self.pane:cursor() or nil,
     }
   end
   self.history_index = next_index
@@ -351,8 +344,8 @@ end
 ---@param event Neoagent.InputPaneEvent?
 ---@return boolean|Neoagent.InputPaneEvent
 function Input:_move_history(direction, event)
-  local pane = self.callbacks.pane and self.callbacks.pane()
-  if not pane or not pane:is_mounted() then
+  local pane = self.pane
+  if not pane:is_mounted() then
     return false
   end
   if pane:completion_visible() then

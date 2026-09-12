@@ -244,6 +244,10 @@ describe("neoagent native Renderer protocol", function()
     assert.is_nil(missing)
     assert.matches("returned no Pane content node", assert(missing_error).message)
     assert.is_nil((protocol.render_details(renderer(), { kind = "notice" }, {})))
+    assert.is_nil((protocol.render_details(renderers.pi, {
+      kind = "notice",
+      text = "notice",
+    }, {})))
 
     local physical = assert(protocol.render_block(renderer({
       render_block = function() return { lines = { "physical" } } --[[@as Applet.Node]] end,
@@ -291,6 +295,17 @@ describe("neoagent native Renderer protocol", function()
         }))
       end
     end
+
+    assert.are.equal("", rendered(renderers.pi, {
+      key = "empty-notice", kind = "notice", text = "\n",
+    }))
+    assert.are.equal(" notice\n", rendered(renderers.pi, {
+      key = "trimmed-notice", kind = "notice", text = "notice\n\n",
+    }))
+    assert.matches("null", rendered(renderers.pi, {
+      key = "null-argument", kind = "tool", state = "pending",
+      call = { id = "tool-call", name = "custom", arguments = { value = vim.NIL } },
+    }))
   end)
 
   it("renders tool failures with non-object or incompatible optional metadata", function()
@@ -771,6 +786,9 @@ describe("neoagent native Renderer protocol", function()
       kind = "plan",
     }, nil, "running")
     assert.matches("Updating plan", updating_plan)
+    assert.matches("ordinary fallback", tool(renderers.pi, {
+      kind = "plan",
+    }, nil, "running"))
 
     local edit = tool(renderers.codex, {
       kind = "edit",
@@ -783,6 +801,11 @@ describe("neoagent native Renderer protocol", function()
     }, 32)
     assert.matches("narrow.lua", edit)
     assert.matches("new", edit)
+    assert.matches("empty.lua", tool(renderers.codex, {
+      kind = "edit",
+      path = "empty.lua",
+      rows = { { kind = "context", number = 1, text = "" } },
+    }, 32))
 
     local overflowing_rows = { { kind = "separator" }, {
       kind = "add", number = 1, text = string.rep("x", 500),
@@ -813,60 +836,20 @@ describe("neoagent native Renderer protocol", function()
 
     for _, malformed in ipairs({
       { kind = "activity", operation = "read", ongoing = "Reading" },
+      { kind = "activity", operation = "read", ongoing = "Reading\nnow",
+        complete = "Read", subject = "a file" },
       { kind = "plan", explanation = {}, plan = {} },
+      { kind = "plan", plan = false },
       { kind = "edit", path = "bad.lua", rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad\npath.lua", rows = {} },
+      { kind = "text", title = "bad\ntitle" },
+      { kind = "text" },
+      false,
     }) do
       assert.matches("ordinary fallback", tool(renderers.codex, malformed))
     end
-  end)
-
-  it("falls back from malformed policy presentations", function()
-    ---@param presentation unknown
-    local function fallback(presentation)
-      local content = require("neoagent.ui.render").block({
-        theme = renderers.pi.theme,
-        render_markdown = function(_, _, source, opts)
-          return require("neoagent.markdown").new():update(source, opts)
-        end,
-        policy = {
-          name = "test",
-          user_background = function() end,
-          compaction_background = function() end,
-          write_output_group = function() end,
-          read_source_syntax = false, write_source_syntax = false,
-          inline_single_line_tool_hint = false,
-          inline_multiline_tool_outline = false,
-          plain_output_group = function() return "NeoagentToolOutput" end,
-          present_tool = function() return presentation --[[@as Neoagent.ToolViewPresentation]] end,
-          separator = function() end,
-          tool_background = function() end,
-          tool_title = function(parts) return parts end,
-        },
-        config = { mappings = {} },
-        resolve_tool = function()
-          return { name = "semantic", render = function() return {} end }
-        end,
-        spinner_frames = { "*" },
-        spinner_frame = 1,
-        _content_width = function() return 40 end,
-      }, {
-        key = "malformed-presentation",
-        kind = "tool",
-        state = "success",
-        call = { id = "tool-call", name = "semantic", arguments = {} },
-        message = { role = "toolResult", toolCallId = "tool-call",
-          toolName = "semantic",
-          content = { { type = "text", text = "ordinary fallback" } },
-        },
-      }, {})
-      assert.matches("ordinary fallback", table.concat(content.lines, "\n"))
-    end
-
-    fallback({ title = { { text = 1 } } })
-    fallback({ title = { { text = "invalid style", style = false } } })
-    fallback({ title = true, status = "success" })
   end)
 
   it("renders partial write content and complete details", function()
@@ -896,6 +879,18 @@ describe("neoagent native Renderer protocol", function()
         image_source = image_source,
         details_key = "<CR>",
       }))
+    end
+
+    for _, raw in ipairs({ false, '{"content":' }) do
+      local pending, err = protocol.render_block(renderers.codex, {
+        key = "incomplete-write",
+        kind = "tool",
+        name = "write_file",
+        state = "pending",
+        raw = raw or nil,
+      }, { width = 40, spinner = "*" })
+      assert(pending, vim.inspect(err))
+      assert.matches("write", table.concat(layout(assert(pending), renderers.codex.theme).lines, "\n"))
     end
 
     local details = assert(protocol.render_details(renderers.pi, {

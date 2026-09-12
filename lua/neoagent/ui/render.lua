@@ -40,7 +40,7 @@ local util = require("neoagent.util")
 ---@class Neoagent.RenderContext
 ---@field policy Neoagent.RenderPolicy
 ---@field theme Applet.Theme
----@field config { mappings?: {card_details?: string|string[]|false}, wrap_cards?: boolean }
+---@field config { mappings?: {card_details?: string}, wrap_cards?: boolean }
 ---@field resolve_tool fun(name?: string): Neoagent.RenderTool?
 ---@field spinner_frames string[]
 ---@field spinner_frame integer
@@ -312,9 +312,6 @@ local function append_rendered(target, source, gap)
   end
   local row_offset = #target.lines
   vim.list_extend(target.lines, source.lines)
-  for row, group in pairs(source.line_groups or {}) do
-    target.line_groups[row + row_offset] = group
-  end
   for _, span in ipairs(source.highlights or {}) do
     target.highlights[#target.highlights + 1] = {
       row = span.row + row_offset,
@@ -362,9 +359,6 @@ end
 ---@return Neoagent.RenderContent
 local function plain(text, group)
   local result = rendered()
-  if text == nil or text == "" then
-    return result
-  end
   for _, line in ipairs(split_text(text)) do
     local spans = #line > 0 and { { col = 0, end_col = #line, group = group or "NeoagentToolOutput" } } or nil
     add_line(result, line, spans)
@@ -523,13 +517,10 @@ local function prose(content)
   return result
 end
 
----@param raw? string
+---@param raw string
 ---@param key string
 ---@return string?
 local function partial_string(raw, key)
-  if not raw or raw == "" then
-    return nil
-  end
   local key_start = raw:find('"' .. key .. '"', 1, true)
   if not key_start then
     return nil
@@ -563,13 +554,10 @@ local function partial_string(raw, key)
   return encoded
 end
 
----@param raw? string
+---@param raw string
 ---@param key string
 ---@return number?
 local function partial_number(raw, key)
-  if not raw then
-    return nil
-  end
   local key_start = raw:find('"' .. key .. '"', 1, true)
   local colon = key_start and raw:find(":", key_start + #key + 2, true) or nil
   return colon and tonumber(raw:sub(colon + 1):match("^%s*(-?[%d.]+)")) or nil
@@ -608,44 +596,25 @@ local presentation_styles = {
   strike = "NeoagentMarkdownStrike",
 }
 
----@param segments_value unknown
----@return_overload string, Neoagent.TextSpan[]
----@return_overload nil, nil
+---@param segments_value Neoagent.ToolStyledText[]
+---@return string, Neoagent.TextSpan[]
 local function presentation_line(segments_value)
-  if type(segments_value) ~= "table" or not util.is_list(segments_value) then
-    return nil
-  end
   local line, spans = "", {}
   for _, segment in ipairs(segments_value) do
-    if
-      type(segment) ~= "table"
-      or type(segment.text) ~= "string"
-      or segment.text:find("\n", 1, true)
-      or segment.text:find("\r", 1, true)
-    then
-      return nil
-    end
     local start = #line
     line = line .. segment.text
-    local styles
-    if segment.style == nil then
-      styles = {}
-    elseif type(segment.style) == "string" then
+    ---@type string[]
+    local styles = {}
+    if type(segment.style) == "string" then
       styles = { segment.style }
-    elseif type(segment.style) == "table" and util.is_list(segment.style) then
+    elseif segment.style then
       styles = segment.style
-    else
-      return nil
     end
     for index, style in ipairs(styles) do
-      local group = presentation_styles[style]
-      if not group then
-        return nil
-      end
       spans[#spans + 1] = {
         col = start,
         end_col = #line,
-        group = group,
+        group = assert(presentation_styles[style]),
         priority = 100 + index,
       }
     end
@@ -653,18 +622,12 @@ local function presentation_line(segments_value)
   return line, spans
 end
 
----@param lines unknown
----@return Neoagent.RenderContent?
+---@param lines Neoagent.ToolStyledText[][]
+---@return Neoagent.RenderContent
 local function presentation_content(lines)
-  if type(lines) ~= "table" or not util.is_list(lines) then
-    return nil
-  end
   local content = rendered()
   for _, segments_value in ipairs(lines) do
     local line, spans = presentation_line(segments_value)
-    if not line then
-      return nil
-    end
     add_line(content, line, spans)
   end
   return content
@@ -1146,12 +1109,9 @@ local function tool_output(self, block, args, surface)
   return output_lines(self, value, maximum, false, "NeoagentToolOutput")
 end
 
----@param value unknown
+---@param value number
 ---@return string
 local function format_token_count(value)
-  if type(value) ~= "number" then
-    return "unknown token count"
-  end
   local digits = tostring(math.max(0, math.floor(value + 0.5)))
   digits = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
   return digits .. " tokens"
@@ -1160,13 +1120,7 @@ end
 ---@param self Neoagent.RenderContext
 ---@return string?
 local function expand_hint(self)
-  local key = (self.config.mappings or {}).card_details
-  if type(key) == "string" then
-    return key
-  end
-  if type(key) == "table" then
-    return key[1]
-  end
+  return (self.config.mappings or {}).card_details
 end
 
 local COMPACTION_CARD_MAX_LINES = 20
@@ -1204,7 +1158,7 @@ end
 local function compaction_content(self, block, surface, width)
   local content = rendered()
   local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
-  local token_count = format_token_count(block.tokens_before)
+  local token_count = format_token_count(assert(block.tokens_before))
   if surface == "details" then
     add_line(content, label, label_spans)
     add_line(content, "")
@@ -1327,12 +1281,9 @@ end
 ---@param options Neoagent.RenderContentOptions
 ---@return Neoagent.ValidToolPresentation?
 local function custom_tool_presentation(self, block, args, options)
-  if type(self.resolve_tool) ~= "function" then
-    return nil
-  end
   local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
-  local resolved, tool = pcall(self.resolve_tool, name)
-  if not resolved or type(tool) ~= "table" or type(tool.render) ~= "function" then
+  local tool = self.resolve_tool(name)
+  if type(tool) ~= "table" or type(tool.render) ~= "function" then
     return nil
   end
   local ok, semantic = pcall(tool.render, {
@@ -1343,52 +1294,16 @@ local function custom_tool_presentation(self, block, args, options)
   if not ok or type(semantic) ~= "table" then
     return nil
   end
-  local presented, presentation = pcall(self.policy.present_tool, util.copy(semantic), {
+  local presentation = self.policy.present_tool(util.copy(semantic), {
     state = block.state,
     width = options.width or self:_content_width(),
     presentation_surface = options.presentation_surface,
     spinner = self.spinner_frames[self.spinner_frame],
   })
-  if not presented or type(presentation) ~= "table" then
-    return nil
-  end
-  if
-    presentation.default ~= nil and type(presentation.default) ~= "boolean"
-    or presentation.command ~= nil and type(presentation.command) ~= "string"
-    or presentation.status ~= nil and type(presentation.status) ~= "boolean"
-    or presentation.animated ~= nil and type(presentation.animated) ~= "boolean"
-  then
-    return nil
-  end
-  if presentation.default == true and presentation.lines ~= nil then
-    return nil
-  end
-  if presentation.title ~= nil and presentation.title ~= true and not presentation_line(presentation.title) then
+  if not presentation then
     return nil
   end
   local body = presentation.lines ~= nil and presentation_content(presentation.lines) or nil
-  if presentation.lines ~= nil and not body then
-    return nil
-  end
-  if
-    presentation.command ~= nil
-    and (
-      presentation.default == true
-      or presentation.lines ~= nil
-      or presentation.title == nil
-      or presentation.title == true
-    )
-  then
-    return nil
-  end
-  if
-    presentation.default ~= true
-    and presentation.title == nil
-    and presentation.lines == nil
-    and presentation.command == nil
-  then
-    return nil
-  end
   local status = presentation.status and block.state or nil
   ---@type Neoagent.RenderedTitle?
   local title
@@ -1397,10 +1312,7 @@ local function custom_tool_presentation(self, block, args, options)
     title = { text = title_text, spans = spans }
   elseif presentation.title then
     local title_text, spans = presentation_line(self.policy.tool_title(presentation.title, status))
-    if not title_text then
-      return nil
-    end
-    title = { text = title_text, spans = assert(spans) }
+    title = { text = title_text, spans = spans }
   end
   if presentation.command then
     return { kind = "command", command = presentation.command, title = assert(title) }
@@ -1604,9 +1516,6 @@ local function card_content(self, block, options)
   end
 
   local args = block.call and block.call.arguments or partial_arguments(block.raw)
-  if type(args) ~= "table" then
-    args = {}
-  end
   local presentation = custom_tool_presentation(self, block, args, options)
   local content = presented_tool_content(self, block, args, options, presentation)
   local background = self.policy.tool_background(block.state)
@@ -1619,9 +1528,6 @@ end
 ---@param side "before"|"after"
 ---@return Neoagent.RenderContent
 local function insert_group_separator(content, width, index, side)
-  if #content.lines == 0 then
-    return content
-  end
   local row = index - 1
   for _, span in ipairs(content.highlights) do
     if span.row >= row then

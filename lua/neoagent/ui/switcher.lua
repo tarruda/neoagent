@@ -18,7 +18,6 @@ local M = {}
 ---@field frame integer
 ---@field generation integer
 ---@field rows integer
----@field closing boolean
 ---@field destroyed boolean
 local Switcher = {}
 Switcher.__index = Switcher
@@ -67,7 +66,6 @@ function Switcher.new(opts)
     frame = 1,
     generation = 0,
     rows = 0,
-    closing = false,
     destroyed = false,
   }, Switcher)
 end
@@ -334,10 +332,7 @@ end
 
 ---@return boolean
 function Switcher:refresh()
-  if not self.presentation then
-    return false
-  end
-  self.presentation:set_items(self:_items())
+  assert(self.presentation):set_items(self:_items())
   self:_sync_timer()
   return true
 end
@@ -348,10 +343,6 @@ function Switcher:is_open()
 end
 
 function Switcher:close()
-  if self.closing then
-    return
-  end
-  self.closing = true
   self.generation = self.generation + 1
   self:_stop_timer()
   local applet, presentation = self.applet, self.presentation
@@ -362,7 +353,6 @@ function Switcher:close()
   if presentation then
     presentation:destroy()
   end
-  self.closing = false
 end
 
 function Switcher:destroy()

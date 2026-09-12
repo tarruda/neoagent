@@ -364,12 +364,6 @@ function View:set(snapshot, providers)
   return true
 end
 
----@param active Neoagent.PublicPresentation
----@return Applet.Presentation
-function View:_new_presentation_component(active)
-  return presentation_surface.new_component(self, active)
-end
-
 ---@return boolean
 function View:_ensure_presentation_component()
   return presentation_surface.ensure(self)

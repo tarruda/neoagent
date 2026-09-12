@@ -111,10 +111,7 @@ end
 local function focus_decorations(block, opts)
   ---@type Applet.FocusDecoration[]
   local result = {}
-  local card = opts.card
-  if not card then
-    return result
-  end
+  local card = assert(opts.card)
   local first, last = card.first, card.last
   local focus = opts.focus or {}
   local width = math.max(2, opts.width)
@@ -437,9 +434,6 @@ local function markdown_ranges(content, target)
   ---@param first integer
   ---@param last integer
   local function emit(first, last)
-    if last <= first then
-      return
-    end
     ranges[#ranges + 1] = { first = first, last = last }
   end
   local function emit_pending()

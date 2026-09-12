@@ -59,7 +59,7 @@ end
 local function historical_usage_is_current(session)
   local path = session:path()
   if not path then
-    return true
+    return false
   end
   local compaction_index
   for index, entry in ipairs(path) do

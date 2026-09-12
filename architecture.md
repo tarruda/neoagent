@@ -74,6 +74,8 @@ Drafts are keyed by Profile and canonical Workspace. They retain input and
 request choices until a message is accepted. Acceptance binds the new Agent;
 failure before acceptance leaves the draft available for retry. A resumed
 Agent restores request choices from its Session.
+Bundled Profile Applets own their Presenters, which the resulting Agents borrow.
+Destroying an Applet cancels its pending presentations.
 
 | Value | Owner | Lifetime |
 | --- | --- | --- |

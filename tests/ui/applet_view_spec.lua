@@ -153,6 +153,212 @@ describe("neoagent Applet View composition", function()
     return value
   end
 
+  it("keeps optional callbacks and repeated lifecycle transitions inert", function()
+    local value = view({ mappings = { help = false } })
+    assert.are.equal(0, value:_restore_steering())
+    assert.is_false(value.input:_browse_history(-1))
+    assert.is_false(value.input:_move_history(-1))
+    assert.is_false(value.input:_complete())
+    assert.is_false(value:show_card_details("missing"))
+    assert.is_false(value:_focus_dialog_menu())
+
+    value:set_files(attachments.files)
+    value:set_files(attachments.files)
+    assert(value:open())
+    assert.are.equal("", value.input.state.footer)
+    assert.is_true(applet_input.dispatch_action(value.transcript.pane,
+      Applet.Pane.nodes.action("neoagent.close"), nil, 1, "n", 0, 0))
+    assert.is_false(value:is_open())
+
+    value:destroy()
+    assert.is_false(value:_submit_frame())
+    value:close()
+    value:destroy()
+  end)
+
+  it("contains View opening, routing, and Renderer setup failures", function()
+    local uri
+    local resolved = config.setup({
+      ui = { style = "pi", position = "center" },
+    }).ui
+    local value = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      open_uri = function(candidate)
+        uri = candidate
+        return nil, "opening blocked"
+      end,
+    })
+    views[#views + 1] = value
+
+    local opened_uri, uri_error = value:open_uri("https://example.test/help")
+    assert.is_nil(opened_uri)
+    assert.are.equal("opening blocked", uri_error)
+    assert.are.equal("https://example.test/help", uri)
+
+    value.config.margin = 1000
+    local opened, open_error = value:open()
+    assert.is_nil(opened)
+    assert.is_table(open_error)
+    value.config.margin = resolved.margin
+    assert(value:open())
+
+    value:set_messages({
+      { role = "assistant", content = { { type = "text", text = "first" } } },
+      { role = "assistant", content = { { type = "text", text = "second" } } },
+    })
+    value.transcript.pane:flush()
+    local transcript = assert(value:pane("transcript"))
+    local focus, scroll = transcript.focus, transcript.scroll
+    transcript.focus = function() return false end
+    assert.is_false(value:_focus_previous_card())
+    transcript.focus = function() return true end
+    transcript.scroll = function() return false end
+    assert.is_false(value:_focus_previous_card())
+    transcript.focus, transcript.scroll = focus, scroll
+
+    assert(value:set_dialog({
+      active = {
+        id = "routing",
+        placement = "float",
+        title = "Routing",
+        body = "Choose",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_true(value:_focus_dialog_menu())
+    value:set_dialog(nil)
+
+    local block = assert(value.transcript.blocks[1])
+    assert(value:show_card_details(block.key))
+    local reveal = transcript.reveal_target
+    transcript.reveal_target = function() return false end
+    assert.is_false(value:_center_details())
+    transcript.reveal_target = reveal
+
+    local original = value.renderer
+    local invalid, invalid_error = value:set_renderer(false)
+    assert.is_nil(invalid)
+    assert.are.equal("ui", assert(invalid_error).kind)
+    assert.are.equal(original, value.renderer)
+
+    local theme = Applet.Theme.new()
+    theme.define = function() error("injected theme failure") end
+    local undefined, define_error = value:set_renderer({
+      name = "undefined",
+      theme = theme,
+      render_block = function() return Applet.Pane.nodes.text({ key = "block", text = "block" }) end,
+      render_details = function() return nil end,
+    })
+    assert.is_nil(undefined)
+    assert.matches("injected theme failure", assert(define_error).message)
+    assert.are.equal(original, value.renderer)
+  end)
+
+  it("rebuilds a damaged presentation when its Renderer changes", function()
+    local value = view()
+    assert(value:set_presentation({
+      active = {
+        id = "renderer-repair",
+        kind = "select",
+        prompt = "Repair presentation",
+        items = { { id = "one", label = "One" } },
+      },
+      queue_count = 0,
+    }))
+    local damaged = assert(value.presentation_component)
+    assert(damaged.filter):destroy()
+
+    assert.are.equal(renderers.codex, value:set_renderer(renderers.codex))
+    assert.is_true(damaged:is_destroyed())
+    assert.are_not.equal(damaged, value.presentation_component)
+    assert.is_false(assert(value.presentation_component):is_destroyed())
+    assert(value:open())
+  end)
+
+  it("falls back from optional details and contains Renderer failures", function()
+    local fallback = view({ mappings = {
+      card_previous = false,
+      card_next = false,
+      card_center = false,
+      card_raw = false,
+      close = false,
+    } })
+    local optional = {
+      name = "optional-details",
+      theme = renderers.pi.theme,
+      render_block = function(_, block)
+        return Applet.Pane.nodes.text({
+          key = "optional:" .. block.key,
+          text = block.text or block.kind,
+        })
+      end,
+      render_details = function() return nil end,
+    }
+    assert.are.equal(optional, fallback:set_renderer(optional))
+    fallback:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "fallback details" },
+    } } })
+    assert(fallback:open())
+    assert(fallback:show_card_details(assert(fallback.transcript.blocks[1]).key))
+    assert.matches("fallback details", assert(fallback.details):text(), 1, true)
+
+    ---@type (Applet.Error|Applet.PaneError)?
+    local failure
+    local resolved = config.setup({
+      ui = { style = "pi", position = "center" },
+    }).ui
+    local failing = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      on_error = function(err) failure = err end,
+    })
+    views[#views + 1] = failing
+    local broken = {
+      name = "broken-details",
+      theme = renderers.pi.theme,
+      render_block = optional.render_block,
+      render_details = function() error("injected details Renderer failure") end,
+    }
+    assert.are.equal(broken, failing:set_renderer(broken))
+    failing:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "unrenderable details" },
+    } } })
+    assert(failing:open())
+    assert(failing:show_card_details(
+      assert(failing.transcript.blocks[1]).key))
+    assert.matches("injected details Renderer failure",
+      assert(failure).message, 1, true)
+
+    ---@type (Applet.Error|Applet.PaneError)?
+    local transcript_failure
+    local failing_transcript = neoagent_ui.new({
+      config = resolved,
+      renderer = resolved.renderer,
+      on_error = function(err) transcript_failure = err end,
+    })
+    views[#views + 1] = failing_transcript
+    local broken_transcript = {
+      name = "broken-transcript",
+      theme = renderers.pi.theme,
+      render_block = function() error("injected transcript Renderer failure") end,
+      render_details = optional.render_details,
+    }
+    failing_transcript:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "unrenderable transcript" },
+    } } })
+    assert(failing_transcript:open())
+    assert.are.equal(broken_transcript,
+      failing_transcript:set_renderer(broken_transcript))
+    local rendered, render_error = failing_transcript.transcript.pane:flush()
+    assert.is_nil(rendered)
+    assert.matches("injected transcript Renderer failure",
+      assert(render_error).message, 1, true)
+    assert.matches("injected transcript Renderer failure",
+      assert(transcript_failure).message, 1, true)
+  end)
+
   it("retains input text and state before its Pane is connected", function()
     local input = Input.new({
       config = {},
@@ -271,6 +477,9 @@ describe("neoagent Applet View composition", function()
     assert.are.equal("unavailable", assert(images).status)
     assert.are.equal(images, value.transcript.image_system)
     assert.are.equal(images, value.transcript.pane.image_system)
+    local revision = value.transcript.document_revision
+    value.transcript:set_image_source(value.image_source, value.image_reader)
+    assert.are.equal(revision, value.transcript.document_revision)
 
     value:destroy()
     assert.is_true(assert(images).destroyed)
@@ -1286,11 +1495,44 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return value.dialog_component and value.dialog_component.pane.layout ~= nil
     end))
+    assert.are.equal("", assert(value.dialog_component):text())
     vim.wait(50)
     assert.are.same({}, dismissed)
     assert.is_true(applet_input.dispatch_action(assert(value.dialog_component).pane,
       Applet.Pane.nodes.action("dialog.cancel"), nil, 1, "n", 0, 0))
     assert.are.same({ "info" }, dismissed)
+  end)
+
+  it("accepts string and disabled dialog focus mappings", function()
+    local mapped = view({ mappings = { card_next = "L" } })
+    assert(mapped:open())
+    assert(mapped:set_dialog({
+      active = {
+        id = "mapped-dialog",
+        placement = "float",
+        title = "Mapped",
+        body = "Body",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_true(applet_input.dispatch(
+      assert(mapped.dialog_component).pane, "n", "L"))
+
+    local disabled = view({ mappings = { card_next = false } })
+    assert(disabled:open())
+    assert(disabled:set_dialog({
+      active = {
+        id = "unmapped-dialog",
+        placement = "float",
+        title = "Unmapped",
+        body = "Body",
+        actions = { { id = "ok", key = "o", label = "OK" } },
+      },
+      queue_count = 0,
+    }))
+    assert.is_false(applet_input.dispatch(
+      assert(disabled.dialog_component).pane, "n", "<A-j>"))
   end)
 
   it("renders a deferred topology generation from its submitted ViewState", function()
@@ -1515,6 +1757,11 @@ describe("neoagent Applet View composition", function()
     value.input:set_text("draft")
     assert.is_true(value.input:_move_history(-1))
     assert.are.equal("older prompt", value:get_input())
+    assert.is_true(value.input:_move_history(-1))
+    assert.are.equal("oldest prompt", value:get_input())
+    assert.is_false(value.input:_move_history(-1))
+    assert.is_true(value.input:_move_history(1))
+    assert.are.equal("older prompt", value:get_input())
     assert.is_true(value.input:_move_history(1))
     assert.are.equal("draft", value:get_input())
     value.input.callbacks.submit = function(text)
@@ -1666,13 +1913,6 @@ describe("neoagent Applet View composition", function()
     assert(value:_interrupt())
     assert.is_true(stopped)
 
-    local margin = value.config.margin
-    value.config.margin = 1000
-    local positioned, position_error = value:_reposition()
-    assert.is_nil(positioned)
-    assert.matches("does not fit", (assert(position_error)))
-    value.config.margin = margin
-    assert(value:_reposition())
     assert(value:set_position("left"))
 
     value:set_messages({

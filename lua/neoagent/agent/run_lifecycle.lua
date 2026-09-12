@@ -10,10 +10,8 @@
 ---@field submission_id? integer
 ---@field base? Neoagent.AgentInteractionOptions
 
-local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")
-local semantic_message = require("neoagent.semantic_message")
 local util = require("neoagent.util")
 
 ---@alias Neoagent.AgentRunResult Neoagent.ChatResult|Neoagent.CompactionResult
@@ -230,15 +228,9 @@ local function completion_usage(value)
   return next(result) and result or nil
 end
 
----@param done unknown
+---@param done Neoagent.AgentRunResult
 ---@return Neoagent.AgentCompletion
 local function completion_value(done)
-  if type(done) ~= "table" then
-    done = {
-      ok = false,
-      error = util.error("agent", "Activity returned an invalid result"),
-    }
-  end
   local failure = completion_error(done.error)
   local message = type(done.message) == "table" and done.message or nil
   local ok = done.ok == true
@@ -330,10 +322,10 @@ local function has_pattern(text, patterns)
   return false
 end
 
----@param err Neoagent.Error?
+---@param err Neoagent.Error
 ---@return boolean
 local function is_retryable_error(err)
-  if type(err) ~= "table" or err.kind == "cancelled" then
+  if err.kind == "cancelled" then
     return false
   end
   local retryable = rawget(err, "retryable")
@@ -466,46 +458,11 @@ end
 ---@param label string
 ---@return Neoagent.RunResult<R>
 local function operation_result(value, label)
-  if type(value) ~= "table" or type(value.ok) ~= "boolean" then
-    return failed_result(util.error("agent", label .. " returned an invalid result"))
-  end
+  assert(
+    type(value) == "table" and type(value.ok) == "boolean",
+    label .. " returned an invalid result"
+  )
   return value
-end
-
----@generic R, E
----@param run Neoagent.Run<R, E>
----@param label string
----@return {run: Neoagent.Run<R, E>, completed: boolean, result?: Neoagent.RunResult<R>}?, Neoagent.Error?
-local function inspect_run(run, label)
-  if
-    type(run) ~= "table"
-    or type(run.cancel) ~= "function"
-    or type(run.is_done) ~= "function"
-    or type(run.result) ~= "function"
-  then
-    return nil, util.error("agent", label .. " must return a Run")
-  end
-  local checked, done = pcall(run.is_done, run)
-  if not checked then
-    return nil, util.normalize_error(done, "agent")
-  end
-  if not done then
-    if type(run.await) ~= "function" then
-      return nil, util.error("agent", label .. " must return a Run")
-    end
-    return { run = run, completed = false }
-  end
-  local read, result = pcall(function()
-    return run:result()
-  end)
-  if not read then
-    return nil, util.normalize_error(result, "agent")
-  end
-  return {
-    run = run,
-    completed = true,
-    result = operation_result(result --[[@as Neoagent.RunResult<R>]], label),
-  }
 end
 
 ---@param options Neoagent.AgentInteractionOptions
@@ -579,26 +536,17 @@ function M.new(opts)
 
   ---@param activity Neoagent.AgentActivity
   ---@param phase string
-  ---@return boolean
   local function set_phase(activity, phase)
-    if not current(activity) then
-      return false
-    end
     activity.phase = phase
     if not state.destroyed then
       opts.update_context()
     end
-    return true
   end
 
   ---@param activity Neoagent.AgentActivity
-  ---@return boolean
   local function release_provider(activity)
-    local release = activity.provider_lease
+    local release = assert(activity.provider_lease, "Agent activity has no provider lease")
     activity.provider_lease = nil
-    if not release then
-      return false
-    end
     local called, released, release_err = pcall(release)
     if not called or released == nil or released == false then
       local err = called and release_err or released
@@ -608,7 +556,6 @@ function M.new(opts)
         vim.log.levels.ERROR
       )
     end
-    return true
   end
 
   ---@return boolean
@@ -681,12 +628,12 @@ function M.new(opts)
   ---@return boolean
   local function needs_compaction()
     local settings = compaction_settings()
-    if not settings or not settings.auto or not state.session then
+    if not settings or not settings.auto then
       return false
     end
-    local messages = state.session:context_messages()
+    local messages, message_err = state.session:context_messages()
     if not messages then
-      return false
+      error(message_err, 0)
     end
     local estimate = require("neoagent.compaction").estimate_context(messages)
     return require("neoagent.compaction").should_compact(
@@ -699,7 +646,7 @@ function M.new(opts)
   ---@return Neoagent.CompactionPreparation?, Neoagent.Error?
   local function prepare_compaction()
     local settings = compaction_settings()
-    if not settings or not state.session then
+    if not settings then
       return nil
     end
     local closed, close_err = close_unmatched_calls()
@@ -722,33 +669,10 @@ function M.new(opts)
     if not current(activity) or state.destroyed then
       return false
     end
-    if type(submission_id) ~= "number" or submission_id < 1 or submission_id % 1 ~= 0 then
-      return false
-    end
-    local message = semantic_message.normalize({
-      role = "user",
-      content = prompt,
-    })
-    if not message then
-      return false
-    end
-    ---@cast message Neoagent.UserMessage & {content: string}
-    if util.trim(message.content) == "" then
-      return false
-    end
-    if
-      type(entry_id) ~= "string"
-      or entry_id == ""
-      or #entry_id > 512
-      or not util.is_valid_utf8(entry_id)
-      or entry_id:find("[%z\1-\31\127]")
-    then
-      entry_id = nil
-    end
     local record = {
       type = "submission_accepted",
-      submission_id = submission_id,
-      prompt = message.content,
+      submission_id = assert(submission_id),
+      prompt = prompt,
       entry_id = entry_id,
     }
     opts.publish(record)
@@ -837,11 +761,15 @@ function M.new(opts)
       return failed_result(child, "agent")
     end
     ---@cast child Neoagent.Run<R, E>
-    local inspected, inspect_err = inspect_run(child, label)
-    if not inspected then
-      finished = true
-      return failed_result(inspect_err, "agent")
-    end
+    assert(
+      type(child) == "table"
+        and type(child.cancel) == "function"
+        and type(child.is_done) == "function"
+        and type(child.result) == "function"
+        and type(child.await) == "function",
+      label .. " must return a Run"
+    )
+    local completed = child:is_done()
     active = true
     if installed then
       local ok, err = pcall(installed, child)
@@ -863,9 +791,9 @@ function M.new(opts)
       finished = true
       return cancelled_result()
     end
-    if inspected.completed then
+    if completed then
       finished = true
-      return inspected.result
+      return operation_result(child:result(), label)
     end
 
     local awaited, result = pcall( ---@async
@@ -874,19 +802,11 @@ function M.new(opts)
       end
     )
     finished = true
-    if outer:is_cancelled() then
+    if not awaited then
+      assert(outer:is_cancelled(), result)
       return cancelled_result()
     end
-    if not awaited then
-      return failed_result(result, "agent")
-    end
-    local final, final_err = inspect_run(child, label)
-    if not final then
-      return failed_result(final_err, "agent")
-    end
-    if final.completed then
-      result = final.result
-    end
+    ---@cast result Neoagent.RunResult<R>
     return operation_result(result, label)
   end
 
@@ -1031,6 +951,7 @@ function M.new(opts)
     if not path then
       return nil, path_err
     end
+    -- Stores may supply message projections without a journal.
     local last = path[#path]
     if not last or last.type ~= "message" then
       return true
@@ -1057,9 +978,10 @@ function M.new(opts)
   ---@param entry Neoagent.JournalEntry?
   ---@return boolean?, Neoagent.Error?
   local function accepted(activity, prompt, entry)
-    if activity.accepted then
-      return true
+    if not current(activity) or state.destroyed then
+      return false
     end
+    assert(not activity.accepted, "Agent interaction accepted its prompt more than once")
     activity.accepted = true
     if activity.steering_claim then
       activity.steering_claim:commit()
@@ -1068,11 +990,7 @@ function M.new(opts)
     opts.publish_messages(opts.transcript_messages(state.session))
     opts.update_context()
     publish_submission(activity, activity.submission_id, prompt, type(entry) == "table" and entry.id or nil)
-    local called, committed, commit_err = pcall(opts.commit_model_preference)
-    if not called then
-      commit_err = util.normalize_error(committed, "storage")
-      committed = nil
-    end
+    local committed, commit_err = opts.commit_model_preference()
     if not committed then
       opts.notify(
         "the message was accepted but the workspace model preference was not saved: "
@@ -1115,7 +1033,10 @@ function M.new(opts)
           return completion_failure(abandon_err)
         end
         local compacted, _, started = run_compaction(outer, activity, "overflow")
-        if started and not compacted.ok then
+        if not started then
+          return done
+        end
+        if not compacted.ok then
           if compacted.error and compacted.error.kind == "cancelled" then
             return compacted
           end
@@ -1188,10 +1109,7 @@ function M.new(opts)
       if state.destroyed or state.activity ~= nil or not head or head.id ~= message.id then
         return
       end
-      local claim = state.steering:claim(message.id)
-      if not claim then
-        return
-      end
+      local claim = assert(state.steering:claim(message.id))
       opts.update_context()
       submit(message.message.content, claim, message.id)
     end)
@@ -1273,19 +1191,13 @@ function M.new(opts)
     end
     local open_gate
     local outer = async.run(function(run)
-      local opened, gate_err = pcall(async.await, function(done)
+      async.await(function(done)
         open_gate = done.resolve
         return function() end
       end)
-      local result
-      if not opened or run:is_cancelled() then
-        result = run:is_cancelled() and cancelled_result() or failed_result(gate_err, "agent")
-      else
-        local completed
-        completed, result = pcall(pipeline, run, activity)
-        if not completed then
-          result = failed_result(result, "agent")
-        end
+      local completed, result = pcall(pipeline, run, activity)
+      if not completed then
+        result = failed_result(result, "agent")
       end
       finalize(activity, result)
       return result
@@ -1354,10 +1266,8 @@ function M.new(opts)
         end
         local owner = base.activity
         local function acknowledge(committed, observation)
-          local selected = assert(settle)(committed == true)
-          if not selected then
-            return false
-          end
+          local selected = assert(assert(settle)(committed == true))
+          ---@cast selected Neoagent.SteeringRecord
           opts.update_context()
           if committed and owner then
             local entry_id = type(observation) == "table"
@@ -1371,21 +1281,6 @@ function M.new(opts)
         end
         return { util.copy(message.message) }, acknowledge
       end
-      ---@type Neoagent.AgentLoopOptions<Neoagent.AgentToolEnvironment>
-      local prepared = {
-        model = base.model,
-        messages = {},
-        system_prompt = base.system_prompt,
-        tools = base.tools,
-        model_options = base.model_options,
-        context = base.context,
-        execute_tool = base.execute_tool,
-        get_steering_messages = base.get_steering_messages,
-        commit_message = function()
-          return true
-        end,
-      }
-      agent_loop.prepare(prepared)
       local closed, close_err = close_unmatched_calls()
       if not closed then
         error(close_err, 0)
@@ -1416,17 +1311,8 @@ function M.new(opts)
       end
       return restored
     end
-    if state.destroyed then
-      rollback_claim()
-      return nil, util.error("agent", "Agent is destroyed")
-    end
     if type(prompt) ~= "string" or util.trim(prompt) == "" then
       rollback_claim()
-      return nil
-    end
-    if state.activity then
-      rollback_claim()
-      opts.notify("the agent is busy", vim.log.levels.WARN)
       return nil
     end
     local prepared, base, release = pcall(prepare_submission, prompt)
@@ -1436,7 +1322,7 @@ function M.new(opts)
       opts.notify(err.message, vim.log.levels.ERROR)
       return nil, err
     end
-    local installed, outer = pcall(install_activity, "interaction", release, function(run, activity)
+    local outer = install_activity("interaction", release, function(run, activity)
       base.on_accept = function(entry)
         accepted(activity, prompt, entry)
       end
@@ -1446,20 +1332,7 @@ function M.new(opts)
       submission_id = submission_id,
       base = base,
     })
-    if not installed then
-      pcall(release)
-      rollback_claim()
-      local err = util.normalize_error(outer, "agent")
-      opts.notify(err.message, vim.log.levels.ERROR)
-      return nil, err
-    end
-    if state.activity and state.activity.run == outer then
-      owned_claim = nil
-    else
-      rollback_claim()
-      pcall(outer.cancel, outer)
-      return nil, util.error("agent", "Agent activity installation was lost")
-    end
+    owned_claim = nil
     return outer
   end
 
@@ -1541,10 +1414,6 @@ function M.new(opts)
       opts.notify("compaction is disabled")
       return nil
     end
-    if not state.session then
-      opts.notify("no active session")
-      return nil
-    end
     local ensured, ensure_err = pcall(opts.ensure_model)
     if not ensured then
       local err = util.normalize_error(ensure_err, "compaction")
@@ -1564,16 +1433,10 @@ function M.new(opts)
       opts.notify(err.message, vim.log.levels.WARN)
       return nil, err
     end
-    local installed, outer = pcall(install_activity, "manual_compaction", release, function(run, activity)
+    local outer = install_activity("manual_compaction", release, function(run, activity)
       local result = run_compaction(run, activity, "manual", instructions, preparation)
       return assert(result)
     end)
-    if not installed then
-      pcall(release)
-      local err = util.normalize_error(outer, "compaction")
-      opts.notify(err.message, vim.log.levels.ERROR)
-      return nil, err
-    end
     return outer
   end
 
