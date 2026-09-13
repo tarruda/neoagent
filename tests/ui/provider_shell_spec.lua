@@ -773,6 +773,7 @@ describe("neoagent Provider Shell UI", function()
 
   it("aligns shared progress bars and stacks actions below information", function()
     vim.o.columns = 160
+    local same_day_reset = os.time()
     local value = view()
     assert(value:set(snapshot("OpenCode Go", {
       blocks = {
@@ -783,7 +784,7 @@ describe("neoagent Provider Shell UI", function()
         { type = "field", label = "Quota scope",
           value = "Shared across all Go models" },
         { type = "limit", label = "5-hour limit", remaining = 0,
-          resets_at = os.time() + 3600, level = "error" },
+          resets_at = same_day_reset, level = "error" },
         { type = "limit", level = "info", label = "Weekly limit", remaining = 0.36,
           resets_at = os.time() + 3 * 86400 },
         { type = "limit", level = "info", label = "Monthly limit", remaining = 0.68,
@@ -851,6 +852,8 @@ describe("neoagent Provider Shell UI", function()
     local monthly_bar = assert((assert(monthly):find("[█░]")))
     assert.are.equal(five_hour_bar, weekly_bar)
     assert.are.equal(weekly_bar, monthly_bar)
+    assert.is_truthy((assert(five_hour):find(
+      "resets " .. os.date("%H:%M", same_day_reset), 1, true)))
     assert.matches("Waiting", text(value, "provider"))
     assert.matches("42%%", text(value, "provider"))
     assert.matches("Activity", text(value, "provider"))
