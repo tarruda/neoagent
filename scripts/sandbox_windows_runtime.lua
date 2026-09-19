@@ -2472,9 +2472,10 @@ end
 -- Command construction and process containment ------------------------------
 --
 -- CreateProcess receives one mutable command-line string, so arguments follow
--- the documented Windows backslash-and-quote encoding. cmd.exe command tails
--- use a temporary batch file because cmd applies its own command-language
--- parsing after CreateProcess has parsed the executable arguments.
+-- the documented Windows backslash-and-quote encoding. A single quoted ASCII
+-- cmd.exe command tail can use a temporary batch file to preserve cmd's own
+-- parsing. Tails whose argv, expansion, newline, or encoding semantics would
+-- change remain direct command-line input.
 ---@param value string
 ---@return string
 local function quote_argument(value)
@@ -2529,18 +2530,46 @@ end
 
 ---@param argv string[]
 ---@param command_index? integer
+---@return boolean
+local function needs_command_file(argv, command_index)
+  if not command_index or command_index ~= #argv - 1 then return false end
+  local tail = assert(argv[#argv])
+  return tail:find('"', 1, true) ~= nil
+    and tail:find("%", 1, true) == nil
+    and tail:find("\r", 1, true) == nil
+    and tail:find("\n", 1, true) == nil
+    and tail:find("[^\1-\127]") == nil
+end
+
+---@param argv string[]
+---@param command_index? integer
 ---@param command_file? string
 ---@return string
 local function target_command_line(argv, command_index, command_file)
-  if not command_file then return command_line(argv) end
+  if command_index then
+    -- cmd parses its own executable token as command language. Canonical
+    -- paths use forward slashes, which cmd can interpret as switches.
+    argv = vim.list_slice(argv)
+    argv[1] = assert(argv[1]):gsub("/", "\\")
+  end
+  if not command_file then
+    if command_index and command_index == #argv - 1 then
+      local values = {}
+      for index = 1, command_index do
+        values[index] = quote_argument(assert(argv[index]))
+      end
+      values[#values + 1] = '"' .. assert(argv[#argv]) .. '"'
+      return table.concat(values, " ")
+    end
+    return command_line(argv)
+  end
   local values = {}
   -- The batch file supplies the complete command string and owns its quote
   -- parsing. The process prefix carries the remaining cmd options through
   -- /c or /k, and its executable token uses native backslash path syntax.
   for index = 1, assert(command_index) do
     if index == 1 or assert(argv[index]):lower() ~= "/s" then
-      local value = index == 1 and assert(argv[index]):gsub("/", "\\") or assert(argv[index])
-      values[#values + 1] = quote_argument(value)
+      values[#values + 1] = quote_argument(assert(argv[index]))
     end
   end
   -- cmd.exe receives the batch path directly after /c or /k. The shared
@@ -3111,26 +3140,39 @@ local function create_output_pipe()
   return read_end[0], write_end[0]
 end
 
+---@return ffi.cdata*, ffi.cdata*
+local function create_input_pipe()
+  local read_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local write_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local attributes = inheritable_attributes()
+  if K.CreatePipe(read_end, write_end, attributes, 0) == 0 then
+    failure("input-pipe")
+  end
+  local ok, err = pcall(set_inherit, write_end[0], false)
+  if not ok then
+    close_handle(read_end[0])
+    close_handle(write_end[0])
+    error(err, 0)
+  end
+  return read_end[0], write_end[0]
+end
+
 ---@param directory string
 ---@param argv string[]
 ---@param command_index? integer
 ---@return string?
 local function command_file(directory, argv, command_index)
-  if not command_index or command_index == #argv then return nil end
-  local command = {}
-  for index = command_index + 1, #argv do
-    command[#command + 1] = argv[index]
-  end
+  if not needs_command_file(argv, command_index) then return nil end
+  local command = assert(argv[#argv])
   local path = vim.fs.joinpath(
     directory, "neoagent-command-" .. random_hex(12) .. ".cmd")
   local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_WRITE,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_DELETE),
     nil, WIN32.FILE.CREATE_NEW, WIN32.FILE.ATTRIBUTE_TEMPORARY, nil)
   if invalid_handle(handle) then failure("command-file-create") end
-  -- cmd.exe reads its command language from this file, so argv boundaries
-  -- before /c or /k remain process arguments and the complete tail retains
-  -- cmd syntax. Echo stays disabled until the requested command changes it.
-  local data = "@echo off\r\n" .. table.concat(command, " ") .. "\r\n"
+  -- The leading @ suppresses only this command's echo. It does not mutate the
+  -- caller's cmd echo state as an `echo off` prelude would.
+  local data = "@" .. command .. "\r\n"
   local ok, err = write_all(handle, data)
   if ok and K.FlushFileBuffers(handle) == 0 then
     ok, err = nil, last_error()

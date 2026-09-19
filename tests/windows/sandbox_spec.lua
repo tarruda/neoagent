@@ -125,9 +125,50 @@ describe("neoagent Windows sandbox", function()
     assert.is_false(value.timed_out)
   end)
 
+  it("preserves direct cmd tails and command-file echo state", function()
+    local baseline = run({ "cmd.exe", "/d", "/s", "/c", "echo" }, options())
+    assert.are.equal(0, baseline.code, baseline.stderr)
+
+    local positional = run({ "cmd.exe", "/d", "/s", "/c", "echo %0" }, options())
+    assert.are.equal(0, positional.code, positional.stderr)
+    assert.are.equal("%0", vim.trim(positional.stdout))
+
+    local quoted = run({
+      "cmd.exe", "/d", "/s", "/c", 'echo "marker">nul & echo',
+    }, options())
+    assert.are.equal(0, quoted.code, quoted.stderr)
+    assert.are.equal(baseline.stdout, quoted.stdout)
+
+    local unicode = vim.fs.joinpath(root, "olá.txt")
+    local created = run({
+      "cmd.exe", "/d", "/s", "/c", 'echo value>"' .. unicode .. '"',
+    }, options())
+    assert.are.equal(0, created.code, created.stderr)
+    assert.matches("value", assert(fs.read(unicode)))
+  end)
+
+  it("accepts canonical cmd paths with single and split command tails", function()
+    local executable = vim.fn.exepath("cmd.exe"):gsub("\\", "/")
+    assert.is_not.equal("", executable)
+    for _, argv in ipairs({
+      { executable, "/d", "/s", "/c", "echo canonical" },
+      { executable, "/d", "/c", "echo", "canonical" },
+    }) do
+      local value = run(argv, options())
+      assert.are.equal(0, value.code, value.stderr)
+      assert.are.equal("canonical", vim.trim(value.stdout))
+    end
+  end)
+
   it("classifies command failures by sandbox-denial evidence", function()
     local active = profile()
-    active.environment.set = environment
+    local worker_temp = vim.fs.joinpath(root, "worker temporary files")
+    assert(fs.mkdirp(worker_temp))
+    active.environment.set = vim.tbl_extend("force", environment, {
+      TEMP = worker_temp,
+      TMP = worker_temp,
+      TMPDIR = worker_temp,
+    })
     local execute = sandbox.new({
       platform = windows,
       profile = active,
