@@ -14,15 +14,18 @@ describe("local browser authentication callback", function()
   local network
   ---@type Neoagent.CallbackListener<unknown>[]
   local servers = {}
+  local original_new_tcp = vim.uv.new_tcp
 
   before_each(function()
     servers = {}
     network = require("tests.helpers.callback_connections").new()
+    original_new_tcp = vim.uv.new_tcp
   end)
 
   after_each(function()
     for _, server in ipairs(servers) do server.close() end
     network.close()
+    vim.uv.new_tcp = original_new_tcp
   end)
 
   ---@generic T
@@ -34,6 +37,35 @@ describe("local browser authentication callback", function()
     servers[#servers + 1] = server
     return server
   end
+
+  it("constructs public listeners from libuv TCP handles", function()
+    local closed = false
+    vim.uv.new_tcp = function()
+      return {
+        is_closing = function() return closed end,
+        close = function() closed = true end,
+        bind = function(_, host, port)
+          assert.are.equal("127.0.0.1", host)
+          assert.are.equal(0, port)
+          return true
+        end,
+        getsockname = function() return { port = 19000 } end,
+        listen = function(_, backlog)
+          assert.are.equal(16, backlog)
+          return true
+        end,
+      } --[[@as uv.uv_tcp_t]]
+    end
+    local callback = require("neoagent.auth.local_callback")
+    local server, err = callback.listen({
+      handler = function() return { status = 204 } end,
+    })
+    assert(server, err)
+    servers[#servers + 1] = server
+    assert.are.equal(19000, server.port)
+    assert.is_true(server.close())
+    assert.is_true(closed)
+  end)
 
   it("accepts LF-framed requests and writes deterministic safe responses", function()
     local server = listen({

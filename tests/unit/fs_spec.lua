@@ -1231,6 +1231,7 @@ describe("neoagent.fs", function()
       assert.are.same({ true, true }, {
         fs.ensure_private_directory("windows-private", 448),
       })
+      assert.is_true(fs.sync_directory("windows-private"))
     end)
     jit.os = previous_os
     assert(succeeded, failure)
