@@ -47,6 +47,8 @@ The Agent Loop receives the Model, messages, tools, executor, context,
 steering, and commit function as explicit dependencies. The message owner
 commits authoritative state before the loop starts work that depends on it.
 Cancellation propagates through Models, tools, child Runs, and provider use.
+A valid final Tool result commits even if cancellation interrupted cleanup;
+cancellation then stops further work and observation.
 
 ## Agents and the top-level composition
 
@@ -102,103 +104,34 @@ references. A Workspace supplies file and cache capabilities explicitly;
 semantic request state never owns either. Request-scoped preparation uses
 Service leases independent of the calling Agent's lifecycle.
 
-The Provider Shell presents Authentication, catalogs, and Service state. It is
-owned by the top-level Applet and is independent of Agent selection.
-
 ## Tools and Workspace policy
 
-Tools are plain values. The Agent Loop validates calls and delegates them to
-`execute_tool(tool, arguments, ctx)`, which is the composition boundary for
-approval, logging, sandboxing, and other execution policy.
+Tools own their schemas, implementations, message hooks, and presentation.
+The Agent Loop delegates validated calls to `execute_tool(tool, arguments,
+ctx)`, where the composition applies approval, logging, and sandbox policy.
 
-Each bundled Tool module owns its model-facing schema, argument normalization,
-process-local implementation, dependencies, message hooks, and presentation.
-Local `execute` calls that implementation directly. Host execution, approved
-elevation, and parent-only execution therefore use the original Tool without a
-local transport façade.
+The sandbox interceptor substitutes an RPC proxy for a recognized bundled
+implementation and passes it through the configured executor. The worker runs
+the same implementation used locally. Host execution and explicitly granted
+parent Tools run directly. Unsupported restricted Tools fail closed.
 
-Restricted execution is owned by the sandbox interceptor. A fixed internal RPC
-registry recognizes private identities attached to the shipped `read_file`,
-`write_file`, `edit_file`, `shell`, `grep`, and `find` implementations. It
-shallow-copies a recognized Tool and replaces only `execute` with a remote
-call, then passes that proxy through the ordinary executor chain. The proxy
-normalizes and authorizes the concrete operation before lazily opening its
-worker. A decorator that short-circuits execution and a statically denied
-operation therefore create no child process. Names do not grant RPC
-eligibility, and the registry has no dynamic extension surface.
-One private method descriptor table owns the fixed implementation, request
-validator, and worker dispatch mapping.
+The worker receives copied Workspace input and has no Agent, Session,
+provider, or UI state. Results and updates cross as semantic values; artifact
+bytes are verified and imported into parent storage before publication.
+Sandbox denial evidence is consumed by the interceptor, outside Session data.
 
-The worker server accepts only those fixed methods and invokes the same Tool
-module implementation used locally, with explicit worker dependencies. It
-reconstructs copied Workspace input and owns no Agent, Session, provider,
-authentication, Applet, or UI state. Results and updates cross as semantic
-values. Binary artifacts are bounded, verified, and imported into the parent
-file store before an image reference is published. Ordinary operations do not
-require an attachment store; that capability is required only when an image is
-published. Normalized requests have the same aggregate encoded limit for local
-and worker execution. Worker progress has an aggregate transport budget;
-exhausting it suppresses later transient updates without replacing the final
-Tool result, while the parent still rejects a worker that violates the budget.
+`RpcConnection` owns protocol state, requests, events, and cancellation.
+`WorkerLease` owns the process tree, native sandbox resources, and bounded
+termination and reaping. Neither lifetime ends merely because a request
+settles. The interceptor owns both for each current invocation and retains
+unfinished cleanup independently of a cancelled Run.
 
-The interceptor supplies bounded denial classifiers in the private worker
-context. The worker observes the complete shell output stream and returns only
-the matched classifier with a failed result. Raw diagnostic output remains in
-the Tool's ordinary bounded output and spill-file behavior rather than crossing
-an additional policy channel.
-
-Native runtime admission has its own finite deadline and completes before the
-worker protocol startup deadline begins. Platform serialization, including the
-Windows sandbox state mutex, therefore cannot wait indefinitely and does not
-consume the worker's bounded initialization grace.
-
-The interceptor checks typed filesystem intents against both lexical and
-canonical profile paths before remote dispatch. Native isolation remains
-authoritative for child processes and filesystem races.
-Worker bootstrap dependencies remain subject to the resolved filesystem
-profile. A conflicting denial blocks activation instead of creating an
-implicit readable exception.
-
-`RpcConnection` owns framed requests, responses, ordered request and connection
-events, cancellation exchange, and orderly protocol closure. A request can
-settle while its connection remains open. The connection reports terminal
-failure and observes worker exit, but it does not terminate, wait for, or
-dispose the process tree.
-
-The RPC transport and worker lease live outside the sandbox package because
-neither selects or interprets sandbox policy. The sandbox interceptor is their
-only current production owner; host and sandbox launchers can supply the same
-lease contract without changing RPC semantics.
-
-`WorkerLease` owns child input, native admission, process-tree termination,
-waiting, and bounded disposal. The interceptor owns both objects for the
-current one-shot invocation: after request completion it closes the connection
-and waits for the lease; after cancellation or protocol failure it applies a
-bounded cooperative grace and force-reaps when necessary. Connection and lease
-lifetimes remain separate so another owner can retain them independently.
-
-The bundled `read_agent_documentation` and `update_plan` implementations are
-recognized privately by sandbox composition as parent-only. They do not enter
-the interceptor, start a worker, or have Tool RPC methods. They need no
-Workspace operation context. Conversation-derived plan state and all Tool
-presentation remain in the parent.
-
-Sandbox configuration, not a Tool value, grants custom parent execution. A
-custom Tool without that explicit composition grant or a fixed shipped RPC
-identity fails closed when restricted execution is selected; it never falls
-back to parent effects. Direct `io`, `vim.uv`, filesystem, or process effects
-in custom Lua are parent effects and must not be represented as sandboxed
-behavior.
-
-Sandbox-only denial evidence travels in a bounded private RPC response field.
-It is consumed by the interceptor and never enters semantic Tool result data or
-Session storage.
+Native isolation enforces filesystem, process, and network policy. Parent
+preflight checks concrete paths, including worker bootstrap dependencies;
+it never overrides explicit filesystem denials. Profiles are resolved per
+invocation, while activation status reports native platform availability.
 
 Project instructions and skills are Agent inputs governed by Workspace trust.
-Sandbox selection and host escalation add no policy to the Agent Loop.
-
-Tool presentation and message hooks belong to the Agent layer. Render hooks
-produce semantic data and do not depend on the Agent Loop.
 
 ## Sessions and persistence
 

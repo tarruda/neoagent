@@ -1,10 +1,9 @@
 # HTTP regression recordings
 
-These fixtures use the existing `neoagent-http-recording` version 1 format.
-They drive the real HTTP decoder, API adapters, Authentication, catalogs and
-Services without network access. Fixtures are YAML for readability and require
-Mike Farah `yq` v4 on `PATH`. Run them with `make test-integration`.
-Use `make test-http-live` for actual curl and incoming callback socket checks.
+Fixtures replay `neoagent-http-recording` version 1 through the HTTP decoder,
+API adapters, Authentication, catalogs, and Services without network access.
+Run `make test-integration`; YAML fixtures require Mike Farah `yq` v4 on `PATH`.
+Use `make test-http-live` for curl and callback socket checks.
 
 ## Reproducing a reported provider issue
 
@@ -22,15 +21,11 @@ restart Neovim and reproduce the interaction:
 recording = { enabled = true },
 ```
 
-Ask for the provider, approximate time, Session and observed behavior. Let the
-user perform login, refresh and model requests; regression development does
-not authorize live account access. Start with the default rolling retention:
-conversation requests usually contain the full history, so the last exchange
-is normally sufficient. Only ask for `retention = "all"` when the last exchange
-cannot explain the issue and earlier exchanges are needed, such as an earlier
-retry or authentication step. The default `auto` format is suitable; use JSON
-when exact JSON serialization matters or YAML cannot be parsed. Restore
-previous recording settings afterward.
+Ask for the provider, approximate time, Session, and observed behavior. The
+user performs login and model requests; regression development does not
+authorize live account access. Use rolling retention unless earlier exchanges
+are needed to explain the failure. Use JSON when exact serialization matters
+or YAML cannot be parsed. Restore previous recording settings afterward.
 
 1. Inspect metadata and completion first. `neoagent.http_replay.read(path)`
    validates complete JSONL and `.partial.ndjson` files, and imports YAML with
@@ -44,14 +39,11 @@ previous recording settings afterward.
    or paraphrases of the personal conversation, even when relevant to the bug.
    Masking credentials or trimming history alone is insufficient.
 
-   Preserve the behavior through protocol structure: request/response roles,
-   field presence and types, headers/status, event order, stop reasons, and
-   relationships between requests, responses and tool calls. Use consistent
-   synthetic identifiers, paths and nonfunctional credentials throughout.
-   When content triggers the failure, construct unrelated synthetic content
-   with the same relevant syntax, encoding, size or malformed-byte pattern.
-   Verify that it still reproduces the reported failure; do not fall back to
-   the original conversation if the first adaptation fails.
+   Preserve relevant protocol structure, ordering, types, and request/response
+   relationships. Use consistent synthetic IDs, paths, and credentials. For
+   content-triggered failures, invent unrelated content with the same relevant
+   syntax, encoding, size, or malformed bytes. Verify the adaptation reproduces
+   the failure; never substitute the original conversation.
 
    Authentication-classified response bodies are deliberately masked: use
    synthetic token envelopes, unsigned fake JWT claims, and nonfunctional
@@ -144,10 +136,8 @@ response, not a new process failure.
 
 ## Coverage and capture inventory
 
-Every outbound API surface currently called by Neoagent is exercised below.
-This is an endpoint/flow inventory, not a claim to cover every possible server
-payload. Unit tests retain detailed malformed-response and lifecycle cases.
-All credentials, browser inputs and account IDs in fixtures are synthetic.
+The inventory distinguishes adapted captures from synthetic scenarios and
+lists missing captures. All credentials and account IDs are synthetic.
 
 | Surface | Integration coverage | Real capture status |
 | --- | --- | --- |
@@ -171,13 +161,8 @@ All credentials, browser inputs and account IDs in fixtures are synthetic.
 | llama.cpp anonymous/key probes, `/models`, load/unload, downloads, `/models/sse`, polling, catalog reload and multimodal Completions | `llama_http_spec.lua`, `provider_surfaces_spec.lua`, `recorded_providers_spec.lua` | Minimized real inference; router workflows are synthetic. Real load/download/cancel flows needed. |
 | Hugging Face model search and repository details with optional token | `provider_surfaces_spec.lua` | Synthetic; real public and authenticated queries needed. |
 
-The fixtures below adapt selected frames or response structures from user
-recordings and authorized validation. Conversation text,
-identities, tool content, credentials, balances,
-and other account metadata were replaced with synthetic values. Relevant field
-types, selected event order, and response shapes were preserved; byte counts
-were rebuilt. These are minimized protocol examples, not complete real
-conversations. Source file hashes identify their provenance:
+These fixtures preserve protocol evidence with synthetic content and rebuilt
+byte counts. Source hashes identify their provenance:
 
 | Fixture | Original recording SHA-256 |
 | --- | --- |
@@ -191,13 +176,6 @@ conversations. Source file hashes identify their provenance:
 | [`real/zai-coding-plan.yaml`](real/zai-coding-plan.yaml) | `f6db25a27b2a167a2d27b2d5c5cfb5519c2eab520bcaf7fe8c9cf4956750b43c` |
 | [`providers/management-02.yaml`](providers/management-02.yaml) | `a34c98f253bf912178695881b56bf75c09925b305c8cab222f652496088cdc77` |
 | [`opencode-go/management-01.yaml`](opencode-go/management-01.yaml) | `cbc3b82891cb3392d1cf7f2fa5c64fb2525c88a16058d05b10d8690ac1e02ae2` |
-
-Original recordings remain local and unchanged. Fixtures with source hashes
-adapt only the protocol evidence described by the inventory; other fixtures
-are synthetic unless the inventory says otherwise. Captured success does not
-establish unlisted retention periods or failure behavior. Deterministic
-cancellation, timeout, cache, malformed-response, timing, and cleanup cases are
-local test scenarios rather than claims about provider behavior.
 
 To fill the remaining real-capture gaps, use the corresponding provider in a
 short conversation (include a tool turn or cancellation if relevant), refresh
