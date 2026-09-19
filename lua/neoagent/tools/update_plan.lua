@@ -127,6 +127,21 @@ local function presentation(opts)
   }
 end
 
+---@param request Neoagent.Plan
+---@return Neoagent.ToolResult
+local function run(request)
+  return {
+    content = { { type = "text", text = "Plan updated" } },
+    details = util.copy(request) --[[@as Neoagent.JsonObject]],
+  }
+end
+
+---@param arguments unknown
+---@return Neoagent.ToolResult
+local function execute(arguments)
+  return run(util.copy(validate(arguments)))
+end
+
 ---@return Neoagent.Tool<unknown>
 local function new()
   ---@type table<unknown, Neoagent.Plan>
@@ -139,13 +154,7 @@ local function new()
       "At most one step can be in_progress at a time.",
     }, "\n"),
     input_schema = util.copy(input_schema),
-    execute = function(arguments)
-      validate(arguments)
-      return {
-        content = { { type = "text", text = "Plan updated" } },
-        details = util.copy(arguments),
-      }
-    end,
+    execute = execute,
     on_messages = function(messages, ctx)
       local id = session_id(ctx)
       if id then
@@ -160,6 +169,12 @@ local function new()
   }
 end
 
+---@class Neoagent.UpdatePlanTool: Neoagent.Tool<unknown>
+---@field name string
+---@field description string
+---@field input_schema Neoagent.ToolSchema
+---@field execute fun(arguments: unknown): Neoagent.ToolResult
+---@field render fun(options?: Neoagent.ToolPresentationOptions): Neoagent.ToolPlanPresentation?
 local M = new()
 M.new = new
 return M

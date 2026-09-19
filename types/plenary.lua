@@ -8,7 +8,7 @@
 function describe(name, callback) end
 
 ---@param name string
----@param callback fun()
+---@param callback async fun()
 function it(name, callback) end
 
 ---@param name string

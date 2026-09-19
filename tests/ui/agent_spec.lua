@@ -1132,6 +1132,7 @@ describe("neoagent default agent", function()
     }
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
@@ -1148,6 +1149,7 @@ describe("neoagent default agent", function()
     local first_session_id = captured[1].session_id
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)

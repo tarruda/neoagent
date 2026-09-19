@@ -34,6 +34,7 @@ local M = {}
 ---@field _rules Neoagent.SandboxPrefixRule[]
 ---@field _default_session table
 ---@field _session_key? unknown
+---@field _added_options table<string, boolean>
 local Escalation = {}
 Escalation.__index = Escalation
 
@@ -391,7 +392,7 @@ function Escalation:_transform(tool)
     end
     options.properties[name] = schema
   end
-  copied._neoagent_sandbox_options_added = added
+  self._added_options[tool.name] = added
   return copied
 end
 
@@ -425,7 +426,7 @@ function Escalation:_extract(tool, arguments)
   local justification = options.escalation_justification
   options.require_escalation = nil
   options.escalation_justification = nil
-  if tool._neoagent_sandbox_options_added and next(options) == nil then
+  if self._added_options[tool.name] and next(options) == nil then
     copied.options = nil
   end
   if requested == nil and justification == nil then
@@ -862,6 +863,7 @@ function M.new(opts)
     _summarize = opts.summarize or summaries.for_tool,
     _rules = {},
     _default_session = {},
+    _added_options = {},
   }, Escalation)
 end
 

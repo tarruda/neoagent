@@ -1,3 +1,10 @@
+---@class Neoagent.ReadAgentDocumentationTool: Neoagent.Tool<unknown>
+---@field name string
+---@field description string
+---@field input_schema Neoagent.ToolSchema
+---@field execute fun(arguments?: Neoagent.JsonObject, ctx?: Neoagent.ToolContext<unknown>): Neoagent.ToolResult
+local M = {}
+
 ---@return string
 local function plugin_root()
   local source = assert(debug.getinfo(1, "S")).source
@@ -18,10 +25,18 @@ local function init_path()
   return vim.fn.stdpath("config") .. "/init.lua"
 end
 
----@return string
-local function documentation()
-  local root = plugin_root()
-  return table.concat({
+---@type string
+local DESCRIPTION = table.concat({
+  "Read Neoagent's configuration and composition API map.",
+  "Use this only when the user asks about Neoagent, its configuration, or",
+  "its Lua APIs. Do not call it for ordinary project work.",
+}, " ")
+
+---@param root string
+---@param configuration string
+---@return Neoagent.ToolResult
+local function documentation(root, configuration)
+  local text = table.concat({
     "# Neoagent API map",
     "",
     "Choose the smallest composition that owns the task:",
@@ -57,6 +72,8 @@ local function documentation()
       .. 'Bundled presets come from `require("neoagent.tools")`.',
     "`execute_tool(tool, arguments, ctx)` is the policy boundary for "
       .. "approval, logging, sandboxing, and other decorators.",
+    "Bundled Tools execute locally unless the execution policy substitutes a "
+      .. "fixed RPC-backed proxy for restricted execution.",
     "",
     "## Runtime policies and UI",
     "",
@@ -71,15 +88,15 @@ local function documentation()
     "- UI package: " .. root .. "/doc/applet.txt",
     "- Ownership and data flow: " .. root .. "/architecture.md",
     "- Contributor guide: " .. root .. "/AGENTS.md",
-    "- Active Neovim configuration: " .. init_path(),
+    "- Active Neovim configuration: " .. configuration,
   }, "\n")
+  return { content = { { type = "text", text = text } } }
 end
 
-local DESCRIPTION = table.concat({
-  "Read Neoagent's configuration and composition API map.",
-  "Use this only when the user asks about Neoagent, its configuration, or",
-  "its Lua APIs. Do not call it for ordinary project work.",
-}, " ")
+---@return Neoagent.ToolResult
+local function execute()
+  return documentation(plugin_root(), init_path())
+end
 
 ---@return Neoagent.Tool<unknown>
 local function new()
@@ -91,12 +108,13 @@ local function new()
       properties = {},
       additionalProperties = false,
     },
-    execute = function()
-      return { content = { { type = "text", text = documentation() } } }
-    end,
+    execute = execute,
   }
 end
 
-local M = new()
+local tool = new()
+for key, value in pairs(tool) do
+  M[key] = value
+end
 M.new = new
 return M

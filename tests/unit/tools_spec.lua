@@ -52,32 +52,67 @@ local function emit(options, data)
   assert(assert(options).on_output)(data, false, "", "", "")
 end
 
----@class Neoagent.TestToolCapabilities: Neoagent.ToolCapabilities
+---@class Neoagent.TestToolCapabilities
+---@field context? {workspace: Neoagent.Workspace, files: Neoagent.Files}
 ---@field on_update? fun(value: Neoagent.ToolResult)
+---@field dependencies? Neoagent.ToolDependencyOverrides
 
 ---@param workspace Neoagent.Workspace
 ---@param updates? Neoagent.ToolResult[]
----@param capabilities? {fs?: Neoagent.TestToolFilesystemOverrides, process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult)}
+---@param capabilities? {fs?: Neoagent.TestToolFilesystemOverrides, process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult), observe_output?: fun(output: string)}
 ---@return Neoagent.TestToolCapabilities
 local function ctx(workspace, updates, capabilities)
+  local dependencies = capabilities and {
+    fs = capabilities.fs and filesystem(capabilities.fs) or nil,
+    process = capabilities.process,
+    observe_output = capabilities.observe_output,
+  } or nil
   return {
     context = { workspace = workspace, files = attachments.files },
     on_update = function(value) if updates then updates[#updates + 1] = value end end,
-    fs = capabilities and capabilities.fs and filesystem(capabilities.fs) or nil,
-    process = capabilities and capabilities.process or nil,
+    dependencies = dependencies,
   }
 end
 
----@param tool {execute: (fun(arguments: Neoagent.JsonObject, context?: Neoagent.TestToolCapabilities): Neoagent.ToolResult)}
+-- Dependency overrides stay in this test composition; production Tools expose
+-- their process-local operation for the fixed worker dispatcher.
+---@param tool Neoagent.Tool<unknown>
+---@param arguments Neoagent.JsonObject
+---@param context Neoagent.ToolContext<unknown>
+---@param overrides Neoagent.ToolDependencyOverrides
+---@return Neoagent.ToolResult
+---@async
+local function execute_with(tool, arguments, context, overrides)
+  local common = require("neoagent.tools.common")
+  local identity = assert(common.identity(tool))
+  ---@type {run: async fun(request: table, call: Neoagent.ToolOperationCall, dependencies: Neoagent.ToolDependencies): Neoagent.ToolResult}
+  local implementation = require("neoagent.tools." .. tool.name)
+  return implementation.run(identity.prepare(arguments, identity.settings), common.call(context), common.dependencies(overrides))
+end
+
+---@param tool Neoagent.Tool<unknown>
 ---@param arguments Neoagent.JsonObject
 ---@param context Neoagent.TestToolCapabilities?
 ---@return Neoagent.ToolResult
 local function execute(tool, arguments, context)
-  local run = async.run(function() return tool.execute(arguments, context) end)
+  local run = async.run(function()
+    local tool_context = context --[[@as Neoagent.ToolContext<unknown>]]
+    if context and context.dependencies then
+      return execute_with(tool, arguments, tool_context, context.dependencies)
+    end
+    return tool.execute(arguments, tool_context)
+  end)
   assert(vim.wait(3000, function() return run:is_done() end))
   local result = assert(run:result())
   if result.ok == false then error(assert(result.error).message) end
   return result --[[@as Neoagent.ToolResult]]
+end
+
+---@param value Neoagent.ToolResult
+---@return string
+local function result_text(value)
+  local block = value.content[1]
+  return block and block.type == "text" and block.text or ""
 end
 
 -- The fake magick script needs an absolute interpreter: vim.o.shell may
@@ -129,12 +164,16 @@ describe("neoagent bundled tools", function()
     local tool = require("neoagent.tools.update_plan")
     assert.matches("Updates the task plan", tool.description)
     assert.are.same({ "plan" }, tool.input_schema.required)
+    local properties = assert(tool.input_schema.properties)
+    local plan_schema = assert(properties.plan)
+    local item_schema = assert(plan_schema.items)
+    local item_properties = assert(item_schema.properties)
     assert.are.same({ "step", "status" },
-      tool.input_schema.properties.plan.items.required)
+      item_schema.required)
     assert.are.same({ "pending", "in_progress", "completed" },
-      tool.input_schema.properties.plan.items.properties.status.enum)
+      assert(item_properties.status).enum)
     assert.is_false(tool.input_schema.additionalProperties)
-    assert.is_false(tool.input_schema.properties.plan.items.additionalProperties)
+    assert.is_false(item_schema.additionalProperties)
 
     local arguments = {
       explanation = "Implementation is underway.",
@@ -145,13 +184,14 @@ describe("neoagent bundled tools", function()
       },
     }
     local result = tool.execute(arguments)
-    assert.are.equal("Plan updated", result.content[1].text)
-    assert.are.same(arguments, result.details)
-    assert.are_not.equal(arguments, result.details)
+    assert.are.equal("Plan updated", assert(result.content[1]).text)
+    local details = assert(result.details)
+    assert.are.same(arguments, details)
+    assert.are_not.equal(arguments, details)
     arguments.plan[1].step = "mutated"
-    assert.are.equal("Inspect Codex behavior", result.details.plan[1].step)
+    assert.are.equal("Inspect Codex behavior", assert(assert(details.plan)[1]).step)
 
-    assert.are.same({}, tool.execute({ plan = {} }).details.plan)
+    assert.are.same({}, assert(tool.execute({ plan = {} }).details).plan)
     assert.has_no_error(function()
       tool.execute({ plan = {
         { step = "one", status = "in_progress" },
@@ -587,7 +627,20 @@ describe("neoagent bundled tools", function()
     assert.has_error(function()
       execute(write, { path = "missing-context.txt", content = "" })
     end, "Tool requires a workspace in ctx.context.workspace")
-    local result = execute(write, { path = "nested/file.txt", content = "one\ntwo\nthree" }, ctx(workspace))
+    local workspace_only = ctx(workspace)
+    assert(workspace_only.context).files = nil
+    local result = execute(write, {
+      path = "workspace-only.txt",
+      content = "no attachment store",
+    }, workspace_only)
+    assert.matches("Successfully wrote", result_text(result))
+    result = execute(read, { path = "workspace-only.txt", offset = 1 }, workspace_only)
+    assert.are.equal("no attachment store", result_text(result))
+    assert(fs.write_all(root .. "/image.png", "\137PNG\r\n\26\nraw"))
+    assert.has_error(function()
+      execute(read, { path = "image.png", offset = 1 }, workspace_only)
+    end, "Tool image result requires a writable attachment store")
+    result = execute(write, { path = "nested/file.txt", content = "one\ntwo\nthree" }, ctx(workspace))
     assert.matches("Successfully wrote 13 bytes", (assert(assert(result.content[1]).text)))
     result = execute(read, { path = "nested/file.txt", offset = 2, limit = 1 }, ctx(workspace))
     assert.matches("two", (assert(assert(result.content[1]).text)))
@@ -722,11 +775,17 @@ describe("neoagent bundled tools", function()
       local run = require("neoagent.chat").run(session, "Inspect the image.", {
         model = model, tools = { require("neoagent.tools.read_file").new() },
         execute_tool = function(tool, arguments, execution)
-          return tool.execute(arguments, {
+          local tool_context = {
             model = execution.model, run = execution.run, execute_tool = execution.execute_tool,
             call = execution.call, on_update = execution.on_update,
-            context = capabilities.context, fs = capabilities.fs,
-          })
+            context = capabilities.context,
+          }
+          return execute_with(
+            tool,
+            arguments,
+            tool_context,
+            assert(capabilities.dependencies)
+          )
         end,
       })
       if not vim.wait(5000, function() return run:is_done() end) then
@@ -1133,21 +1192,26 @@ describe("neoagent bundled tools", function()
 
   it("rejects duplicate, overlapping, and no-op edits", function()
     local edit = require("neoagent.tools.edit_file")
-    assert.has_error(function() edit._apply("one", { { oldText = "missing", newText = "two" } }, "f") end)
-    assert.has_error(function() edit._apply("one", { { oldText = 1, newText = "two" } }, "f") end)
-    assert.has_error(function() edit._apply("one", { { oldText = "", newText = "two" } }, "f") end)
-    assert.has_error(function() edit._apply("x x", { { oldText = "x", newText = "y" } }, "f") end)
+    assert.has_error(function() edit.apply("one", { { old_text = "missing", new_text = "two" } }, "f") end)
+    assert.has_error(function() edit.apply("one", { { old_text = "", new_text = "two" } }, "f") end)
+    assert.has_error(function() edit.apply("x x", { { old_text = "x", new_text = "y" } }, "f") end)
     assert.has_error(function()
-      edit._apply("abcdef", {
-        { oldText = "abc", newText = "x" }, { oldText = "bc", newText = "y" },
+      edit.apply("abcdef", {
+        { old_text = "abc", new_text = "x" }, { old_text = "bc", new_text = "y" },
       }, "f")
     end)
-    assert.has_error(function() edit._apply("x", { { oldText = "x", newText = "x" } }, "f") end)
+    assert.has_error(function() edit.apply("x", { { old_text = "x", new_text = "x" } }, "f") end)
 
     local root, workspace = fixture()
     roots[#roots + 1] = root
     assert.has_error(function()
       execute(edit, { path = "missing", edits = {} }, ctx(workspace))
+    end)
+    assert.has_error(function()
+      execute(edit, {
+        path = "missing",
+        edits = { { oldText = 1, newText = "replacement" } },
+      }, ctx(workspace))
     end)
   end)
 
@@ -1198,6 +1262,57 @@ describe("neoagent bundled tools", function()
     assert.matches("out", (assert(assert(result.content[1]).text)))
     assert.matches("err", (assert(assert(result.content[1]).text)))
     assert.is_true(#updates >= 1)
+  end)
+
+  it("does not publish leading output outside the truncated shell tail", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local leading = "write failed: permission denied\n"
+    local full_output = leading .. string.rep("x", 128 * 1024)
+    local result = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, nil, {
+      fs = {
+        create_temp = function() return nil, "spill disabled" end,
+      },
+      process = function(_, opts)
+        emit(opts, full_output)
+        return process_result({ code = 1 })
+      end,
+    }))
+
+    local content = result_text(result)
+    assert.are_not.equal("", content)
+    assert.is_nil((content:find("permission denied", 1, true)))
+    assert.is_nil(assert(result.details).diagnostic_output)
+  end)
+
+  it("observes denial evidence across the complete shell output stream", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local observed = {}
+    execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, nil, {
+      fs = {
+        create_temp = function() return nil, "spill disabled" end,
+      },
+      process = function(_, opts)
+        emit(opts, string.rep("a", 16 * 1024))
+        emit(opts, "write failed: permission denied\n")
+        emit(opts, string.rep("z", 64 * 1024))
+        return process_result({ code = 1 })
+      end,
+      observe_output = function(value)
+        observed[#observed + 1] = value
+      end,
+    }))
+
+    local found = false
+    for _, value in ipairs(observed) do
+      found = found or type(value) == "string" and value:find("permission denied", 1, true) ~= nil
+    end
+    assert.is_true(found)
   end)
 
   it("defaults shell commands to five minutes and accepts an override", function()
@@ -1451,8 +1566,9 @@ describe("neoagent bundled tools", function()
     end)
     vim.defer_fn(function() run:cancel() end, 50)
     assert(vim.wait(3000, function() return run:is_done() end))
-    assert.is_false(assert(run:result()).ok)
-    assert.are.equal("cancelled", assert(run:result()).error.kind)
+    local run_result = assert(run:result())
+    assert.is_false(run_result.ok)
+    assert.are.equal("cancelled", assert(run_result.error).kind)
   end)
 
   it("searches with rg and fd and treats no matches as success", function()
@@ -1480,7 +1596,7 @@ describe("neoagent bundled tools", function()
     assert(fs.write_all(root .. "/ignored.txt", "Needle[\n", "w"))
     local grep_tool = require("neoagent.tools.grep")
     local grep = execute(grep_tool, {
-      pattern = "needle[", ignoreCase = true, literal = true, glob = "*.lua", context = 0, limit = 1,
+      pattern = "needle[", ignoreCase = true, literal = true, glob = "*.lua", context = 1, limit = 1,
     }, ctx(workspace))
     assert.matches("%.lua:1:Needle%[", (assert(assert(grep.content[1]).text)))
     assert.matches("Results truncated", (assert(assert(grep.content[1]).text)))
@@ -1493,6 +1609,31 @@ describe("neoagent bundled tools", function()
     assert.has_error(function() execute(find_tool, { pattern = "*", limit = 0 }, ctx(workspace)) end)
     local found = execute(find_tool, { pattern = "*.lua", limit = 1 }, ctx(workspace))
     assert.matches("Results truncated", (assert(assert(found.content[1]).text)))
+  end)
+
+  it("lets explicit zero grep context override ripgrep configuration", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert(fs.write_all(root .. "/one.lua", "before\nneedle\nafter\n", "w"))
+    local config = root .. "/ripgrep.conf"
+    assert(fs.write_all(config, "--context=1\n", "w"))
+    local previous = vim.env.RIPGREP_CONFIG_PATH
+    vim.env.RIPGREP_CONFIG_PATH = config
+    local executed, grep = pcall(execute, require("neoagent.tools.grep"), {
+      pattern = "needle",
+      context = 0,
+      limit = 1,
+    }, ctx(workspace))
+    vim.env.RIPGREP_CONFIG_PATH = previous
+    assert.is_true(executed, tostring(grep))
+    ---@cast grep Neoagent.ToolResult
+    local output = assert(assert(grep.content[1]).text)
+    assert.is_string(output)
+    ---@cast output string
+    assert.matches("one%.lua:2:needle", output)
+    assert.is_nil((output:find("before", 1, true)))
+    assert.is_nil((output:find("after", 1, true)))
+    assert.is_false(assert(assert(grep.details).truncation).truncated)
   end)
 
   it("reports ripgrep process failures with captured diagnostics", function()

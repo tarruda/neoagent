@@ -241,6 +241,43 @@ describe("neoagent.agent_loop", function()
     }, events)
   end)
 
+  it("runs context-free tools without Workspace or attachment capabilities", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        {
+          type = "toolCall",
+          id = "plan",
+          name = "update_plan",
+          arguments = { plan = { { step = "Keep context light", status = "completed" } } },
+        },
+        {
+          type = "toolCall",
+          id = "documentation",
+          name = "read_agent_documentation",
+          arguments = {},
+        },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = {
+        require("neoagent.tools.update_plan").new(),
+        require("neoagent.tools.read_agent_documentation").new(),
+      },
+      context = { session_id = {} },
+    }))
+
+    assert.is_true(result.ok)
+    local plan = result_message(result, 2)
+    local documentation = result_message(result, 3)
+    assert.is_false(plan.isError, util.text_content(plan.content))
+    assert.is_false(documentation.isError, util.text_content(documentation.content))
+    assert.are.equal("Plan updated", util.text_content(plan.content))
+    assert.matches("# Neoagent API map", util.text_content(documentation.content))
+  end)
+
   it("stops dependent work at every failed message commit", function()
     local storage_error = { kind = "storage", message = "journal failed" }
     local executed = false
