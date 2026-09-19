@@ -431,39 +431,4 @@ function M.capture_process(process, command, options)
   return result, stdout.finish(false), stderr.finish(false)
 end
 
----@alias Neoagent.ToolCapabilities {
----  context?: unknown,
----  fs?: Neoagent.ToolFilesystem,
----  process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult),
----}
-
----@param ctx? Neoagent.ToolCapabilities
----@return Neoagent.ToolFilesystem
-function M.fs(ctx)
-  return ctx and ctx.fs or require("neoagent.fs")
-end
-
----@async
----@param ctx? Neoagent.ToolCapabilities
----@param command string[]
----@param opts? Neoagent.ProcessOptions
----@return Neoagent.ProcessResult
-function M.process(ctx, command, opts)
-  local run = ctx and ctx.process or require("neoagent.process").run
-  return run(command, opts)
-end
-
----@param ctx? Neoagent.ToolCapabilities
----@param defaults Neoagent.ToolDependencies
----@return Neoagent.ToolDependencies
-function M.context_dependencies(ctx, defaults)
-  if not ctx or not ctx.fs and not ctx.process then
-    return defaults
-  end
-  return M.dependencies({
-    fs = ctx.fs or defaults.fs,
-    process = ctx.process or defaults.process,
-  })
-end
-
 return M

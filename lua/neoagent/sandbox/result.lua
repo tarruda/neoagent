@@ -48,6 +48,23 @@ local function object(value)
 end
 
 ---@param value Neoagent.ToolResult
+---@param fields? Neoagent.JsonObject
+local function merge_sandbox(value, fields)
+  -- Tool details may be any JSON value; preserve payloads we cannot merge.
+  if value.details == nil then
+    value.details = {}
+  end
+  local details = value.details
+  if object(details) then
+    local sandbox = details.sandbox
+    if sandbox == nil or object(sandbox) then
+      ---@cast sandbox Neoagent.JsonObject?
+      details.sandbox = util.deep_merge(sandbox or {}, fields)
+    end
+  end
+end
+
+---@param value Neoagent.ToolResult
 ---@param text string
 ---@param fields? Neoagent.JsonObject
 ---@return Neoagent.ToolResult
@@ -65,18 +82,25 @@ function M.append(value, text, fields)
     value.content = value.content or {}
     table.insert(value.content, 1, { type = "text", text = text })
   end
-  -- Tool details may be any JSON value; preserve payloads we cannot merge.
-  if value.details == nil then
-    value.details = {}
-  end
-  local details = value.details
-  if object(details) then
-    local sandbox = details.sandbox
-    if sandbox == nil or object(sandbox) then
-      ---@cast sandbox Neoagent.JsonObject?
-      details.sandbox = util.deep_merge(sandbox or {}, fields)
-    end
-  end
+  merge_sandbox(value, fields)
+  return value
+end
+
+---@param value Neoagent.ToolResult
+---@param message string
+---@param fields? Neoagent.JsonObject
+---@return Neoagent.ToolResult
+function M.cleanup_failure(value, message, fields)
+  value = util.copy(value)
+  value.content = value.content or {}
+  value.content[#value.content + 1] = {
+    type = "text",
+    text = table.concat({
+      "Sandbox cleanup failed after the tool operation reported this result: " .. message,
+      "The operation result above remains authoritative; do not retry it automatically.",
+    }, "\n"),
+  }
+  merge_sandbox(value, fields)
   return value
 end
 

@@ -84,7 +84,7 @@ The main options and defaults are: >lua
       reserve_tokens = 16384,
       keep_recent_tokens = 20000,
     },
-    sandbox = { enabled = false, profile = nil },
+    sandbox = { enabled = false, profile = nil, parent_tools = nil },
     workspace_trust = {
       path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
     },
@@ -550,9 +550,9 @@ state for the built-in Neo Profile with: >lua
 `:NeoagentSandboxInfo` reports the selected backend and capabilities. A tool
 call keeps the mode it started with.
 
-If sandbox activation fails, tool execution is blocked. Inspect the reason
-with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly turn
-sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
+If sandbox activation fails, restricted tool execution is blocked. Inspect the
+reason with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly
+turn sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
 
 The default profile grants read-only host access, writes within the Workspace
 and shared temporary directory, read-only access to `.git`, restricted
@@ -579,6 +579,12 @@ absolute. `network` is `restricted` or `enabled`. Lists replace their defaults.
 A profile callback receives a copy of the default profile and tool context and
 returns the complete profile.
 
+The Tool worker, Neoagent Lua modules, and Neovim executable and runtime must
+remain readable under the resolved profile. If the profile's effective access
+denies one of these bootstrap paths, sandbox activation fails; Neoagent does
+not replace it with an implicit read exception. Narrow the denial or move the
+required installation when those paths conflict.
+
 Linux uses namespaces and seccomp. macOS uses `/usr/bin/sandbox-exec`. Windows
 uses restricted accounts, ACLs, Job Objects, and WFP, requires Neovim 0.12+,
 and needs one elevated setup from the plugin checkout: >
@@ -587,9 +593,39 @@ and needs one elevated setup from the plugin checkout: >
 <
 
 Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to select another
-Windows state directory. Custom tools participate when they route file and
-process effects through `ctx.fs` and `ctx.process`; their Lua code itself runs
-inside Neovim. Use `ctx.fs.read_chunks` for bounded reads.
+Windows state directory. Neoagent substitutes an internal RPC proxy for a
+recognized bundled Tool and passes that proxy through the configured
+`execute_tool` chain. The proxy validates and authorizes the concrete operation
+before starting an isolated worker inside the native boundary. A decorator that
+returns without invoking the Tool, or an operation rejected by the sandbox
+profile, starts no worker. Native admission is bounded independently from the
+worker protocol handshake. The worker invokes the same Tool implementation
+used by host execution.
+
+`read_agent_documentation` and `update_plan` are parent-only Tools recognized
+privately by the composition. They execute directly without entering the
+sandbox interceptor or starting a worker. To grant a custom Tool the same host
+authority, include that Tool in `sandbox.parent_tools`: >lua
+
+  local inspect = {
+    name = "inspect",
+    description = "Inspect parent state",
+    input_schema = { type = "object", properties = {} },
+    execute = function()
+      return { content = { { type = "text", text = "parent state" } } }
+    end,
+  }
+
+  require("neoagent").setup({
+    tools = { inspect },
+    sandbox = { enabled = true, parent_tools = { inspect } },
+  })
+<
+The grant matches the configured Tool's name and implementation function. A
+custom Tool has no public RPC registration surface; without a parent grant or
+a fixed shipped RPC implementation, restricted execution fails closed without
+running its parent effects. Direct `io`, `vim.uv`, filesystem, or subprocess
+calls from custom Lua are never sandboxed.
 
 A denied call can request one host execution with: >json
 
@@ -601,9 +637,9 @@ A denied call can request one host execution with: >json
   }
 <
 
-Approval grants host capabilities for that call. Shell approvals may remember
-a literal argument-token prefix for the current Session. Compound or dynamic
-shell syntax always prompts.
+Approval selects the original host Tool before that call begins. Shell
+approvals may remember a literal argument-token prefix for the current Session.
+Compound or dynamic shell syntax always prompts.
 
 Custom compositions can use
 `require("neoagent.sandbox.composition").compose(toolset, config, runtime)`.
@@ -1184,7 +1220,7 @@ an ambient credential.
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
 
 A Tool is `{ name, description, input_schema, execute }`.
-`execute(arguments, ctx)` returns
+`execute(arguments, ctx)` is async and returns its final
 `{ content = { ... }, isError?, details? }`. Content blocks contain UTF-8 text
 or local image references: `{ type = "image", file_id = sha256,
 mime_type = "image/png", bytes = byte_count, filename = "sample.png" }`.
@@ -1198,8 +1234,10 @@ file can then change or disappear without changing the attachment.
 `max_image_output_bytes` bounds the binary attachment, defaulting to 3.375 MiB
 (4.5 MiB after base64 encoding) so retained images also fit inline requests.
 With ImageMagick available, larger processed images are recompressed as JPEG.
-Raising this limit requires checking the image limits of every endpoint that
-will receive the attachment, including inline use when uploads are disabled.
+The configured value cannot exceed the Tool artifact transport ceiling of 8 MiB.
+Raising it within that ceiling requires checking the image limits of every
+endpoint that will receive the attachment, including inline use when uploads
+are disabled.
 Custom producers call the same writer's asynchronous `put(bytes)` and use the
 returned `{ file_id, bytes }` in their image blocks. Failed publication must
 fail the tool result rather than return a reference.
@@ -1227,10 +1265,38 @@ The coding preset provides file read, write, edit, shell, and Neoagent
 documentation tools. The optional plan tool derives its state from successful
 calls on the active Session path.
 
-Bundled tools use `ctx.fs` and `ctx.process(argv, opts)` when supplied. Process
-options cover working directory, environment, input, output capture, timeout,
-and streaming callbacks. The shell timeout defaults to 300 seconds;
-`shell_timeout = false` disables that default.
+Each bundled Tool module owns its schema, model-argument normalization, and
+process-local implementation. Host and approved-elevated execution call the
+original Tool directly. Parent-only Tools, including `read_agent_documentation`
+and `update_plan`, also execute directly and never enter RPC.
+
+Restricted execution recognizes only the shipped `read_file`, `write_file`,
+`edit_file`, `shell`, `grep`, and `find` implementations. Neoagent creates a
+shallow proxy for that invocation and sends its normalized request over a
+private worker connection. A matching Tool name is not sufficient, and the RPC
+registry is not a public extension point.
+
+Normalized requests for these six Tools have a 16 MiB aggregate encoded limit
+in both local and restricted execution. Selecting the sandbox does not change
+which request sizes are accepted. Path arguments are limited to 32 KiB so
+result metadata remains bounded before a file operation begins.
+
+List a custom Tool in `sandbox.parent_tools` only when its implementation is
+intentionally granted authority in the parent Neovim process. Without that
+composition grant, the Tool can run when sandboxing is explicitly disabled,
+but restricted execution rejects it unless Neoagent ships a concrete RPC
+adapter for that implementation. Direct Lua, Neovim, filesystem, and
+subprocess effects remain parent effects.
+
+The bundled shell Tool carries its parent-resolved argument vector and optional
+timeout across the worker boundary. Its working directory comes from copied
+Workspace context; output capture and streaming stay internal to the bundled
+operation. It does not
+expose arbitrary process environment, stdin, capture, or callback options. The
+shell timeout defaults to 300 seconds; `shell_timeout = false` disables that
+default. Streaming progress uses a bounded transport budget. If a long-running
+command exhausts that budget, Neoagent suppresses later transient snapshots
+and still returns the final result.
 
 `write_file` and `edit_file` replace regular files through same-directory
 temporaries, preserve existing modes, reject symbolic links, and request mode

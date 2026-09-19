@@ -510,7 +510,7 @@ local function new(options)
     },
     ---@async
     execute = function(arguments, ctx)
-      return run(prepare(arguments, settings), common.call(ctx), common.context_dependencies(ctx, dependencies))
+      return run(prepare(arguments, settings), common.call(ctx), dependencies)
     end,
     render = presentation.read,
   }

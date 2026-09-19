@@ -18,6 +18,12 @@ Update this guide when the development workflow or a hard invariant changes.
   safe storage validation and separate runtime processes are allowed.
 - Put approval, logging, sandbox delegation, and other execution policy in
   `execute_tool(tool, arguments, ctx)`; the core has no permission policy.
+- Keep bundled effects in their Tool modules with explicit dependencies.
+  Restricted sandbox-eligible tools use fixed internal RPC proxies;
+  documentation and plan tools execute directly in the parent and never enter
+  the sandbox interceptor.
+- Keep Tool worker dependencies free of Agent, Session, provider,
+  authentication, Applet, and UI modules.
 - Support metered and subscription access when the provider documents a
   third-party integration surface for that mode.
 - Runtime code has no Lua plugin dependencies. Resolve executables and test
@@ -48,8 +54,11 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
-- Tool execution blocked when requested sandbox activation fails; host
-  execution requires explicitly disabling sandboxing.
+- Restricted Tool execution blocked when requested sandbox activation
+  fails, without host fallback. Explicitly granted parent Tools remain
+  available independently of sandbox activation.
+- Worker and runtime bootstrap dependencies never weaken explicit filesystem
+  denials; conflicting profiles fail sandbox activation.
 - Private atomic credential storage; credentials excluded from provider state
   and diagnostics; HTTP and conversation bodies excluded from provider
   diagnostics. Persistence uncertainty blocks later Store mutations.

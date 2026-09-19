@@ -1,10 +1,8 @@
 local profile_compiler = require("neoagent.sandbox.macos.profile")
+local access_policy = require("neoagent.sandbox.policy")
 local util = require("neoagent.util")
 
 local M = { name = "macos" }
-local FS_TIMEOUT_MS = 30000
-local FS_MAX_READ_BYTES = 64 * 1024 * 1024
-local FS_CAPTURE_OVERHEAD_BYTES = 4096
 local SUPERVISOR_GRACE_MS = 100
 local SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 local CLEANUP_HELPERS = { "/bin/sh" }
@@ -169,6 +167,7 @@ end
 local function execute(request, services, protected)
   local configured = services.sandbox_exec or SANDBOX_EXEC
   local sandbox_exec = executable(configured) or configured
+  access_policy.require_read(request.profile, protected or {}, nil, "runtime")
   ---@type Neoagent.SandboxFilesystemEntry[]
   local internal = {}
   for _, path in ipairs(protected or {}) do
@@ -225,58 +224,46 @@ function M.exec(request, services)
   return execute(wrapped, services, protected)
 end
 
----@param request Neoagent.SandboxFilesystemRequest
----@param services Neoagent.SandboxServices<string>
----@return string|true|nil, string?
-function M.fs(request, services)
+---@param request Neoagent.SandboxWorkerRequest
+---@param services Neoagent.SandboxExecutionServices<string>
+---@return Neoagent.WorkerLease
+function M.start_worker(request, services)
   local runtime = sandbox_runtime()
   if not runtime then
     error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
   end
-  local env = util.copy(request.profile.environment.set)
-  env.NEOAGENT_SANDBOX_FS = util.json_encode({
-    operation = request.operation,
-    path = request.path,
-    offset = request.offset,
-    size = request.size,
-    flags = request.flags,
-    mode = request.mode,
-    policy = request.policy,
-    suffix = request.suffix,
-  })
   local configured = services.nvim or vim.v.progpath
   local nvim = executable(configured) or configured
-  local process_request = {
-    argv = {
-      nvim,
-      "--headless",
-      "-u",
-      "NONE",
-      "-i",
-      "NONE",
-      "-n",
-      "-l",
-      runtime,
-    },
-    cwd = "/",
+  local internal = { nvim, runtime }
+  vim.list_extend(internal, CLEANUP_HELPERS)
+  vim.list_extend(internal, request.bootstrap_paths or {})
+  access_policy.require_read(request.profile, internal, nil, "bootstrap")
+  ---@type Neoagent.SandboxFilesystemEntry[]
+  local internal_entries = {}
+  for _, path in ipairs(internal) do
+    internal_entries[#internal_entries + 1] = { path = path, access = "read" }
+  end
+  local policy, parameters = profile_compiler.compile(request.profile, internal_entries)
+  local argv = profile_compiler.argv(executable(services.sandbox_exec or SANDBOX_EXEC) or SANDBOX_EXEC, policy, parameters)
+  vim.list_extend(argv, runtime_argv(nvim, runtime, request.argv))
+  local env = util.copy(request.env)
+  env.NEOAGENT_SANDBOX_EXEC = "1"
+  env.NEOAGENT_SANDBOX_STREAM = "1"
+  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+  local started, child = pcall(start, {
+    argv = argv,
+    cwd = request.cwd,
     env = env,
     clear_env = true,
-    stdin = request.data,
-    capture = true,
-    max_capture_bytes = (request.operation == "read_range"
-        and assert(request.size) or FS_MAX_READ_BYTES)
-      + FS_CAPTURE_OVERHEAD_BYTES,
-    timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
-    profile = request.profile,
-  }
-  local value = execute(process_request, services, { nvim, runtime })
-  if value.code ~= 0 then
-    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
+    kill_grace_ms = math.max(request.kill_grace_ms or 0, SUPERVISOR_GRACE_MS),
+    on_stdout = request.on_stdout,
+    on_stderr = request.on_stderr,
+    on_exit = request.on_exit,
+  })
+  if not started then
+    error(util.error("sandbox_unavailable", "Could not start macOS sandbox runtime", child), 0)
   end
-  if request.operation == "read" or request.operation == "read_range" then
-    return value.stdout
-  end
-  return true
+  return child
 end
 
 return M

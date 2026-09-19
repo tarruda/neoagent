@@ -102,7 +102,7 @@ local function new()
     },
     ---@async
     execute = function(arguments, ctx)
-      return run(prepare(arguments), common.call(ctx), common.context_dependencies(ctx, dependencies))
+      return run(prepare(arguments), common.call(ctx), dependencies)
     end,
     render = presentation.find,
   }
