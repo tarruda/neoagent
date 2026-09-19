@@ -550,6 +550,23 @@ describe("neoagent.fs", function()
     assert.matches("must already exist", tostring(err))
   end)
 
+  it("rejects NUL replacement paths without changing existing bytes", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+    local target = vim.fs.joinpath(directory, "victim.txt")
+    assert(fs.write_all(target, "preserve bytes", "w", 420))
+
+    local ok, err = pcall(fs.atomic_replace, target .. "\0suffix", "replacement", {
+      preserve_mode = true,
+      new_mode = 420,
+    })
+
+    assert.is_false(ok)
+    assert.matches("NUL", tostring(err), 1, true)
+    assert.are.equal("preserve bytes", assert(fs.read(target)))
+  end)
+
   it("returns the identity of its atomic replacement candidate", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory

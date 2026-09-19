@@ -897,6 +897,7 @@ end
 ---@return_overload nil, string?, Neoagent.AtomicFailureStage?
 function M.atomic_replace(path, data, policy)
   assert(type(path) == "string" and path ~= "", "atomic replacement path is required")
+  assert(not path:find("\0", 1, true), "atomic replacement path must be NUL-free")
   assert(type(data) == "string", "atomic replacement data must be a string")
   policy = M._normalize_atomic_policy(policy)
 
