@@ -93,4 +93,40 @@ function M.allows(profile, lexical, canonical, required, paths)
   return rank[granted] >= rank[required], granted, lexical_access, canonical_access
 end
 
+---@param profile Neoagent.SandboxProfile
+---@param required_paths string[]
+---@param paths? Neoagent.SandboxPaths
+---@param purpose? string
+---@return string[]
+function M.require_read(profile, required_paths, paths, purpose)
+  paths = paths or path_module.posix
+  purpose = purpose or "runtime"
+  local seen = {}
+  local result = {}
+  for _, value in ipairs(required_paths) do
+    local normalized = paths.normalize(value)
+    if not paths.is_absolute(normalized) then
+      error(util.error(
+        "sandbox_unavailable",
+        "Sandbox required " .. purpose .. " path is not absolute",
+        normalized
+      ), 0)
+    end
+    local canonical = paths.canonical_candidate(normalized)
+    if not M.allows(profile, normalized, canonical, "read", paths) then
+      error(util.error(
+        "sandbox_unavailable",
+        "Sandbox profile denies required " .. purpose .. " path",
+        normalized
+      ), 0)
+    end
+    local key = paths.key(normalized)
+    if not seen[key] then
+      seen[key] = true
+      result[#result + 1] = normalized
+    end
+  end
+  return result
+end
+
 return M

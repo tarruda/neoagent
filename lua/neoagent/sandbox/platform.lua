@@ -27,6 +27,7 @@ local util = require("neoagent.util")
 ---@field sandbox_exec? string
 ---@field probe_timeout_ms? integer
 ---@field capabilities? Neoagent.SandboxCapabilities
+---@field start_worker? fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease
 
 ---@class Neoagent.SandboxServices<N = string|string[]>: Neoagent.SandboxCheckServices<N>
 ---@field process fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
@@ -39,29 +40,16 @@ local util = require("neoagent.util")
 ---@class Neoagent.SandboxProcessRequest: Neoagent.SandboxRequest
 ---@field argv string[]
 
----@class Neoagent.SandboxFilesystemOperation
----@field operation 'read'|'read_range'|'write_all'|'mkdirp'|'atomic_replace'
----@field path string
----@field canonical_path? string
----@field offset? integer
----@field size? integer
----@field data? string
----@field flags? string
----@field mode? integer
----@field policy? Neoagent.AtomicPolicy
----@field suffix? string
----@field timeout_ms? integer
-
----@class Neoagent.SandboxFilesystemRequest: Neoagent.SandboxFilesystemOperation
+---@class Neoagent.SandboxWorkerRequest: Neoagent.WorkerRequest
 ---@field profile Neoagent.SandboxProfile
----@field max_capture_bytes? integer
+---@field bootstrap_paths? string[]
 
 ---@class Neoagent.SandboxPlatform<C = unknown>
 ---@field name string
 ---@field paths? Neoagent.SandboxPaths
 ---@field check fun(services?: Neoagent.SandboxCheckServices<string>): Neoagent.SandboxStatus
 ---@field exec fun(request: Neoagent.SandboxProcessRequest, services: Neoagent.SandboxExecutionServices): Neoagent.ProcessResult
----@field fs fun(request: Neoagent.SandboxFilesystemRequest, services: Neoagent.SandboxExecutionServices): string|true|nil, string?
+---@field start_worker? fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerLease
 ---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
 ---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string
 

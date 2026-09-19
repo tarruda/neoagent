@@ -1,9 +1,64 @@
 local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.activity_presentation")
 
+local IMPLEMENTATION = {}
+
+---@class Neoagent.WriteFileRequest
+---@field path string
+---@field content string
+
+---@param value unknown
+---@return Neoagent.WriteFileRequest
+local function validate_request(value)
+  assert(common.object(value), "write_file request must be an object")
+  ---@cast value table
+  common.fields(value, { path = true, content = true }, "write_file request")
+  return common.request({
+    path = common.path(value.path, "write_file path"),
+    content = common.string(value.content, "write_file content", true),
+  }, "write_file request")
+end
+
+---@param arguments Neoagent.JsonObject
+---@return Neoagent.WriteFileRequest
+local function prepare(arguments)
+  return validate_request({
+    path = common.require_string(arguments, "path"),
+    content = common.require_string(arguments, "content", true),
+  })
+end
+
+---@async
+---@param request Neoagent.WriteFileRequest
+---@param call Neoagent.ToolOperationCall
+---@param dependencies Neoagent.ToolDependencies
+---@return Neoagent.ToolResult
+local function run(request, call, dependencies)
+  local workspace = dependencies.workspace(call.workspace)
+  local absolute = workspace:resolve(request.path)
+  local ok, err = dependencies.fs.mkdirp(vim.fs.dirname(absolute))
+  if not ok then
+    error("Could not create parent directory for " .. request.path .. ": " .. tostring(err))
+  end
+  ok, err = dependencies.fs.atomic_replace(absolute, request.content, {
+    preserve_mode = true,
+    new_mode = 420,
+  })
+  if not ok then
+    error("Could not write file " .. request.path .. ": " .. tostring(err))
+  end
+  return {
+    content = {
+      { type = "text", text = "Successfully wrote " .. #request.content .. " bytes to " .. request.path },
+    },
+    details = { changed_paths = { request.path } },
+  }
+end
+
 ---@return Neoagent.Tool<unknown>
 local function new()
-  return {
+  local dependencies = common.dependencies()
+  local tool = {
     name = "write_file",
     description = "Write content to a file. Creates missing parent directories and completely overwrites the file.",
     input_schema = {
@@ -15,31 +70,26 @@ local function new()
       required = { "path", "content" },
       additionalProperties = false,
     },
+    ---@async
     execute = function(arguments, ctx)
-      local path = common.require_string(arguments, "path")
-      local content = common.require_string(arguments, "content", true)
-      local absolute = common.workspace(ctx):resolve(path)
-      local fs = common.fs(ctx)
-      local ok, err = fs.mkdirp(vim.fs.dirname(absolute))
-      if not ok then
-        error("Could not create parent directory for " .. path .. ": " .. tostring(err))
-      end
-      ok, err = fs.atomic_replace(absolute, content, {
-        preserve_mode = true,
-        new_mode = 420,
-      })
-      if not ok then
-        error("Could not write file " .. path .. ": " .. tostring(err))
-      end
-      return {
-        content = { { type = "text", text = "Successfully wrote " .. #content .. " bytes to " .. path } },
-        details = { changed_paths = { path } },
-      }
+      return run(prepare(arguments), common.call(ctx), dependencies)
     end,
     render = presentation.write,
   }
+  return common.bind(tool, {
+    token = IMPLEMENTATION,
+    settings = {},
+    prepare = prepare,
+  })
 end
 
+---@class Neoagent.WriteFileTool: Neoagent.Tool<unknown>
+---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<unknown>): Neoagent.ToolResult
+---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
 local M = new()
 M.new = new
+M.prepare = prepare
+M.validate_request = validate_request
+M.run = run
+M._implementation = IMPLEMENTATION
 return M

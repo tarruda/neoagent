@@ -1132,6 +1132,7 @@ describe("neoagent default agent", function()
     }
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
@@ -1148,6 +1149,7 @@ describe("neoagent default agent", function()
     local first_session_id = captured[1].session_id
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
@@ -2898,21 +2900,8 @@ describe("neoagent default agent", function()
   it("toggles built-in sandbox execution while Chat or Neo is active", function()
     ---@type Neoagent.TestControlledInteraction[]
     local interactions = {}
-    local tool = {
-      name = "inspect",
-      description = "Inspect the workspace",
-      input_schema = {
-        type = "object",
-        properties = {},
-        additionalProperties = false,
-      },
-      execute = function(_, ctx)
-        return { content = { {
-          type = "text",
-          text = ctx.process and "sandbox" or "host",
-        } } }
-      end,
-    }
+    local child_starts = 0
+    local tool = require("neoagent.tools.read_file").new()
     local host_execute = function(selected, arguments, ctx)
       return selected.execute(arguments, ctx)
     end
@@ -2931,7 +2920,10 @@ describe("neoagent default agent", function()
       return {
         name = "test",
         exec = function() error("must not execute") end,
-        fs = function() error("must not access files") end,
+        start_worker = function(request)
+          child_starts = child_starts + 1
+          return require("neoagent.rpc.worker_lease").start(request)
+        end,
       }, {
         ok = true,
         platform = "test",
@@ -2954,7 +2946,11 @@ describe("neoagent default agent", function()
         local loop = require("neoagent.agent_loop").run({
           model = fake_model.new({
             { result = fake_model.assistant({ {
-              type = "toolCall", id = "inspect", name = "inspect", arguments = {},
+              type = "toolCall", id = "inspect", name = "read_file", arguments = {
+                path = "README.md",
+                offset = 1,
+                limit = 1,
+              },
             } }, "toolUse") },
             { result = fake_model.assistant({}) },
           }),
@@ -2971,15 +2967,18 @@ describe("neoagent default agent", function()
         assert(content.type == "text")
         return content.text
       end
-      assert.are.equal("host", execute())
+      assert.matches("Neoagent", execute())
+      assert.are.equal(0, child_starts)
       local status = assert(neoagent.toggle_sandbox())
       assert.is_true(status.active)
-      assert.are.equal("sandbox", execute())
+      assert.matches("Neoagent", execute())
+      assert.are.equal(1, child_starts)
       local unchanged = assert(neoagent.set_sandbox_enabled(true))
       assert.is_true(unchanged.active)
       status = assert(neoagent.toggle_sandbox())
       assert.is_false(status.enabled)
-      assert.are.equal("host", execute())
+      assert.matches("Neoagent", execute())
+      assert.are.equal(1, child_starts)
       assert.are.same(stable.tools, assert(neo):get_toolset().tools)
       assert.are.equal(stable.execute_tool,
         assert(neo):get_toolset().execute_tool)
@@ -3032,7 +3031,7 @@ describe("neoagent default agent", function()
       return {
         name = "test",
         exec = function() error("must not execute") end,
-        fs = function() error("must not access files") end,
+        start_worker = function() error("must not start") end,
       }, { ok = true, platform = "test", capabilities = {} }
     end
     local ok, err = pcall(function()

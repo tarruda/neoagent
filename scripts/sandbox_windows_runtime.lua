@@ -864,6 +864,7 @@ WIN32.FILE.SANDBOX_DENY_WRITE = bit.bor(
 -- Protocol and lifecycle limits live together so bounded reads, output
 -- polling, cleanup, and state migrations remain easy to audit.
 local RUNTIME = {
+  ADMISSION_TIMEOUT_MS = 60 * 1000,
   MAX_FRAME = 1024 * 1024,
   STATE_VERSION = 1,
   PROTOCOL_VERSION = 1,
@@ -914,6 +915,7 @@ local RUNTIME = {
 ---@field profile Neoagent.WindowsSandboxProfile
 ---@field cwd string
 ---@field temp_root? string
+---@field stream? boolean
 
 ---@class Neoagent.WindowsRunner
 ---@field input? ffi.cdata*
@@ -1845,11 +1847,16 @@ local function mutex_name(directory)
 end
 
 ---@param directory string
+---@param timeout_ms integer
 ---@return ffi.cdata*
-local function acquire_mutex(directory)
+local function acquire_mutex(directory, timeout_ms)
   local handle = K.CreateMutexW(nil, 0, wide(mutex_name(directory)))
   if invalid_handle(handle) then failure("mutex-create") end
-  local result = (tonumber(K.WaitForSingleObject(handle, WIN32.WAIT.INFINITE)) --[[@as integer]])
+  local result = (tonumber(K.WaitForSingleObject(handle, timeout_ms)) --[[@as integer]])
+  if result == WIN32.WAIT.TIMEOUT then
+    close_handle(handle)
+    failure("mutex-wait-timeout", result)
+  end
   if result ~= WIN32.WAIT.OBJECT_0 and result ~= WIN32.WAIT.ABANDONED then
     close_handle(handle)
     failure("mutex-wait", result)
@@ -1995,7 +2002,7 @@ local function validate_spec(spec, directory)
   if type(spec) ~= "table" or spec.v ~= RUNTIME.PROTOCOL_VERSION then
     failure("specification-version", 0)
   end
-  if spec.mode ~= "probe" and spec.mode ~= "exec" and spec.mode ~= "fs" then
+  if spec.mode ~= "probe" and spec.mode ~= "exec" then
     failure("specification-mode", 0)
   end
   if spec.timeout_ms ~= nil
@@ -2005,6 +2012,16 @@ local function validate_spec(spec, directory)
         or spec.timeout_ms < 0
         or spec.timeout_ms > 0x7fffffff) then
     failure("specification-timeout", 0)
+  end
+  if type(spec.admission_timeout_ms) ~= "number"
+      or spec.admission_timeout_ms % 1 ~= 0
+      or spec.admission_timeout_ms <= 0
+      or spec.admission_timeout_ms > 0x7fffffff then
+    failure("specification-admission-timeout", 0)
+  end
+  if spec.stream ~= nil
+      and (spec.mode ~= "exec" or type(spec.stream) ~= "boolean") then
+    failure("specification-stream", 0)
   end
   if type(spec.profile) ~= "table"
       or spec.profile.network ~= "restricted"
@@ -2103,31 +2120,6 @@ local function validate_spec(spec, directory)
   elseif spec.argv ~= nil then
     if type(spec.argv) ~= "table" or next(spec.argv) ~= nil then
       failure("command-argv", 0)
-    end
-  end
-  if spec.mode == "fs" then
-    if type(spec.fs) ~= "table"
-        or type(spec.fs.path) ~= "string"
-        or not ({
-          read = true,
-          read_range = true,
-          write_all = true,
-          mkdirp = true,
-          atomic_replace = true,
-        })[spec.fs.operation] then
-      failure("specification-fs", 0)
-    end
-    spec.fs.path = vim.fs.normalize(spec.fs.path)
-    if spec.fs.path:find("\0", 1, true) then failure("specification-fs", 0) end
-    if spec.fs.operation == "read_range" then
-      if type(spec.fs.offset) ~= "number" or spec.fs.offset < 0
-          or spec.fs.offset % 1 ~= 0
-          or type(spec.fs.size) ~= "number" or spec.fs.size < 1
-          or spec.fs.size > 1024 * 1024 or spec.fs.size % 1 ~= 0 then
-        failure("specification-fs", 0)
-      end
-    elseif spec.fs.offset ~= nil or spec.fs.size ~= nil then
-      failure("specification-fs", 0)
     end
   end
   return spec
@@ -2472,9 +2464,10 @@ end
 -- Command construction and process containment ------------------------------
 --
 -- CreateProcess receives one mutable command-line string, so arguments follow
--- the documented Windows backslash-and-quote encoding. cmd.exe command tails
--- use a temporary batch file because cmd applies its own command-language
--- parsing after CreateProcess has parsed the executable arguments.
+-- the documented Windows backslash-and-quote encoding. A single quoted ASCII
+-- cmd.exe command tail can use a temporary batch file to preserve cmd's own
+-- parsing. Tails whose argv, expansion, newline, or encoding semantics would
+-- change remain direct command-line input.
 ---@param value string
 ---@return string
 local function quote_argument(value)
@@ -2529,18 +2522,46 @@ end
 
 ---@param argv string[]
 ---@param command_index? integer
+---@return boolean
+local function needs_command_file(argv, command_index)
+  if not command_index or command_index ~= #argv - 1 then return false end
+  local tail = assert(argv[#argv])
+  return tail:find('"', 1, true) ~= nil
+    and tail:find("%", 1, true) == nil
+    and tail:find("\r", 1, true) == nil
+    and tail:find("\n", 1, true) == nil
+    and tail:find("[^\1-\127]") == nil
+end
+
+---@param argv string[]
+---@param command_index? integer
 ---@param command_file? string
 ---@return string
 local function target_command_line(argv, command_index, command_file)
-  if not command_file then return command_line(argv) end
+  if command_index then
+    -- cmd parses its own executable token as command language. Canonical
+    -- paths use forward slashes, which cmd can interpret as switches.
+    argv = vim.list_slice(argv)
+    argv[1] = assert(argv[1]):gsub("/", "\\")
+  end
+  if not command_file then
+    if command_index and command_index == #argv - 1 then
+      local values = {}
+      for index = 1, command_index do
+        values[index] = quote_argument(assert(argv[index]))
+      end
+      values[#values + 1] = '"' .. assert(argv[#argv]) .. '"'
+      return table.concat(values, " ")
+    end
+    return command_line(argv)
+  end
   local values = {}
   -- The batch file supplies the complete command string and owns its quote
   -- parsing. The process prefix carries the remaining cmd options through
   -- /c or /k, and its executable token uses native backslash path syntax.
   for index = 1, assert(command_index) do
     if index == 1 or assert(argv[index]):lower() ~= "/s" then
-      local value = index == 1 and assert(argv[index]):gsub("/", "\\") or assert(argv[index])
-      values[#values + 1] = quote_argument(value)
+      values[#values + 1] = quote_argument(assert(argv[index]))
     end
   end
   -- cmd.exe receives the batch path directly after /c or /k. The shared
@@ -3111,26 +3132,39 @@ local function create_output_pipe()
   return read_end[0], write_end[0]
 end
 
+---@return ffi.cdata*, ffi.cdata*
+local function create_input_pipe()
+  local read_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local write_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local attributes = inheritable_attributes()
+  if K.CreatePipe(read_end, write_end, attributes, 0) == 0 then
+    failure("input-pipe")
+  end
+  local ok, err = pcall(set_inherit, write_end[0], false)
+  if not ok then
+    close_handle(read_end[0])
+    close_handle(write_end[0])
+    error(err, 0)
+  end
+  return read_end[0], write_end[0]
+end
+
 ---@param directory string
 ---@param argv string[]
 ---@param command_index? integer
 ---@return string?
 local function command_file(directory, argv, command_index)
-  if not command_index or command_index == #argv then return nil end
-  local command = {}
-  for index = command_index + 1, #argv do
-    command[#command + 1] = argv[index]
-  end
+  if not needs_command_file(argv, command_index) then return nil end
+  local command = assert(argv[#argv])
   local path = vim.fs.joinpath(
     directory, "neoagent-command-" .. random_hex(12) .. ".cmd")
   local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_WRITE,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_DELETE),
     nil, WIN32.FILE.CREATE_NEW, WIN32.FILE.ATTRIBUTE_TEMPORARY, nil)
   if invalid_handle(handle) then failure("command-file-create") end
-  -- cmd.exe reads its command language from this file, so argv boundaries
-  -- before /c or /k remain process arguments and the complete tail retains
-  -- cmd syntax. Echo stays disabled until the requested command changes it.
-  local data = "@echo off\r\n" .. table.concat(command, " ") .. "\r\n"
+  -- The leading @ suppresses only this command's echo. It does not mutate the
+  -- caller's cmd echo state as an `echo off` prelude would.
+  local data = "@" .. command .. "\r\n"
   local ok, err = write_all(handle, data)
   if ok and K.FlushFileBuffers(handle) == 0 then
     ok, err = nil, last_error()
@@ -3169,15 +3203,16 @@ local function stdin_file(directory, data)
 end
 
 ---@param handle ffi.cdata*
+---@param stage? string
 ---@return integer?
-local function pipe_available(handle)
+local function pipe_available(handle, stage)
   local available = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.PeekNamedPipe(handle, nil, 0, nil, available, nil) == 0 then
     local err = last_error()
     if err == WIN32.ERROR.BROKEN_PIPE or err == WIN32.ERROR.NO_DATA then
       return nil
     end
-    failure("output-peek", err)
+    failure(stage or "output-peek", err)
   end
   return available[0]
 end
@@ -3202,6 +3237,36 @@ local function drain_pipe(handle, stream, output)
   return true
 end
 
+---@param input ffi.cdata*
+---@param target_stdin ffi.cdata*
+---@return boolean
+local function forward_target_input(input, target_stdin)
+  local available = pipe_available(input, "protocol-stdin-peek")
+  if available == nil then
+    failure("protocol-stdin-closed", WIN32.ERROR.BROKEN_PIPE)
+  end
+  if available == 0 then
+    return true
+  end
+  local event, event_err = read_frame(input)
+  if not event
+      or event.v ~= RUNTIME.PROTOCOL_VERSION
+      or event.type ~= "stdin" and event.type ~= "stdin-end" then
+    failure("protocol-stdin", event_err or 0)
+  end
+  if event.type == "stdin-end" then
+    return false
+  end
+  if type(event.data) ~= "string" or event.data == "" then
+    failure("protocol-stdin", 0)
+  end
+  local written, write_err = write_all(target_stdin, event.data)
+  if not written then
+    failure("target-stdin-write", write_err)
+  end
+  return true
+end
+
 -- The target starts with the restricted primary token, explicit environment
 -- and cwd, private desktop, standard handles, and target job already attached.
 -- The runner applies the deadline to the whole job, drains both output pipes,
@@ -3211,11 +3276,17 @@ end
 ---@param output_handle ffi.cdata*
 ---@param token ffi.cdata*
 ---@param logon_sid_string string
+---@param input_handle? ffi.cdata*
 local function spawn_target(spec, stdin, output_handle, token,
-    logon_sid_string)
+    logon_sid_string, input_handle)
   local argv = assert(spec.argv)
   local temp_root = assert(spec.temp_root)
-  local stdin_handle = stdin_file(temp_root, stdin)
+  local stdin_handle, stdin_write
+  if input_handle then
+    stdin_handle, stdin_write = create_input_pipe()
+  else
+    stdin_handle = stdin_file(temp_root, stdin)
+  end
   local stdout_read, stdout_write = create_output_pipe()
   local stderr_read, stderr_write = create_output_pipe()
   local command_index = cmd_command_index(argv)
@@ -3252,6 +3323,7 @@ local function spawn_target(spec, stdin, output_handle, token,
   close_handle(stderr_write)
   if ok == 0 then
     close_handle(stdin_handle)
+    close_handle(stdin_write)
     close_handle(stdout_read)
     close_handle(stderr_read)
     if command_path then K.DeleteFileW(wide(command_path)) end
@@ -3267,11 +3339,19 @@ local function spawn_target(spec, stdin, output_handle, token,
   })
   local output = output_sender(output_handle)
   local stdout_open, stderr_open = true, true
+  local input_open = input_handle ~= nil
   local deadline = spec.timeout_ms
       and (tonumber(K.GetTickCount64()) --[[@as integer]]) + spec.timeout_ms or nil
   local timed_out = false
   local process_status = K.WaitForSingleObject(process.hProcess, 0)
   while process_status == WIN32.WAIT.TIMEOUT do
+    if input_open then
+      input_open = forward_target_input(assert(input_handle), assert(stdin_write))
+      if not input_open then
+        close_handle(stdin_write)
+        stdin_write = nil
+      end
+    end
     if stdout_open then
       stdout_open = drain_pipe(stdout_read, "stdout", output)
     end
@@ -3288,6 +3368,7 @@ local function spawn_target(spec, stdin, output_handle, token,
     K.Sleep(RUNTIME.OUTPUT_POLL_MS)
     process_status = K.WaitForSingleObject(process.hProcess, 0)
   end
+  close_handle(stdin_write)
   if process_status ~= WIN32.WAIT.OBJECT_0
       and process_status ~= WIN32.WAIT.TIMEOUT then
     failure("target-wait", process_status)
@@ -3333,9 +3414,8 @@ local function spawn_target(spec, stdin, output_handle, token,
   })
 end
 
--- Built-in filesystem operations run inside the runner while impersonating the
--- same restricted token used for target commands. This keeps their access
--- checks identical without starting a separate command process.
+-- Probe checks run while impersonating the same restricted token used for
+-- target commands.
 ---@generic T, U, V
 ---@param token ffi.cdata*
 ---@param callback fun(): T, U?, V?
@@ -3349,97 +3429,6 @@ local function with_impersonation(token, callback)
   if reverted == 0 then failure("revert-token") end
   if not ok then error(value, 0) end
   return value, extra, detail
-end
-
----@param path string
----@return integer?, integer?
-local function file_attributes(path)
-  local value = (tonumber(K.GetFileAttributesW(wide(path))) --[[@as integer]])
-  if value == WIN32.FILE.INVALID_ATTRIBUTES then return nil, last_error() end
-  return value
-end
-
----@param path string
----@return string?, integer?
-local function direct_read(path)
-  local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_READ,
-    bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE, WIN32.FILE.SHARE_DELETE),
-    nil, WIN32.FILE.OPEN_EXISTING, WIN32.FILE.ATTRIBUTE_NORMAL, nil)
-  if invalid_handle(handle) then return nil, last_error() end
-  if K.GetFileType(handle) ~= WIN32.FILE.TYPE_DISK then
-    close_handle(handle)
-    return nil, WIN32.ERROR.ACCESS_DENIED
-  end
-  local length = (ffi.new("LONGLONG[1]") --[[@as Neoagent.FfiArray<integer|ffi.cdata*>]])
-  if K.GetFileSizeEx(handle, length) == 0 then
-    local err = last_error()
-    close_handle(handle)
-    return nil, err
-  end
-  local size = (tonumber(length[0]) --[[@as integer]])
-  if size > 64 * 1024 * 1024 then
-    close_handle(handle)
-    return nil, 223
-  end
-  local chunks, remaining = {}, size
-  while remaining > 0 do
-    local chunk, err = read_some(handle, math.min(remaining, 65536))
-    if not chunk then
-      close_handle(handle)
-      return nil, err
-    end
-    if chunk == "" then break end
-    chunks[#chunks + 1] = chunk
-    remaining = remaining - #chunk
-  end
-  close_handle(handle)
-  return table.concat(chunks)
-end
-
----@param path string
----@param offset integer
----@param size integer
----@return string?, integer?
-local function direct_read_range(path, offset, size)
-  local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_READ,
-    bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE,
-      WIN32.FILE.SHARE_DELETE),
-    nil, WIN32.FILE.OPEN_EXISTING, WIN32.FILE.ATTRIBUTE_NORMAL, nil)
-  if invalid_handle(handle) then return nil, last_error() end
-  if K.GetFileType(handle) ~= WIN32.FILE.TYPE_DISK then
-    close_handle(handle)
-    return nil, WIN32.ERROR.ACCESS_DENIED
-  end
-  if K.SetFilePointerEx(handle, offset, nil, WIN32.FILE.BEGIN) == 0 then
-    local err = last_error()
-    close_handle(handle)
-    return nil, err
-  end
-  local data, err = read_some(handle, size)
-  close_handle(handle)
-  return data, err
-end
-
----@param data string
----@return string
-local function content_fingerprint(data)
-  local seeds = {
-    0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
-    0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
-  }
-  local parts = {}
-  for index, seed in ipairs(seeds) do
-    local hash = bit.tobit(seed)
-    for offset = 1, #data do
-      hash = bit.bxor(hash, data:byte(offset) + index - 1)
-      hash = bit.tobit(hash + bit.lshift(hash, 1)
-        + bit.lshift(hash, 4) + bit.lshift(hash, 7)
-        + bit.lshift(hash, 8) + bit.lshift(hash, 24))
-      hash = bit.bxor(hash, bit.rshift(hash, 13))
-    end
-    parts[index] = bit.tohex(hash, 8)
-  end
-  return table.concat(parts)
 end
 
 ---@param path string
@@ -3471,187 +3460,6 @@ local function direct_write(path, data, flags)
   end
   close_handle(handle)
   return ok, err
-end
-
----@param path string
----@param data string
----@param policy? Neoagent.AtomicPolicy
----@param suffix? string
----@return true?, integer?
-local function direct_atomic_replace(path, data, policy, suffix)
-  if type(policy) ~= "table" or vim.islist(policy)
-      or policy.mode == nil and policy.preserve_mode ~= true
-      or policy.preserve_mode == true and policy.new_mode == nil
-      or policy.expected_content_fingerprint ~= nil
-        and (type(policy.expected_content_fingerprint) ~= "string"
-          or not policy.expected_content_fingerprint:match("^" .. string.rep("%x", 64) .. "$"))
-      or type(suffix) ~= "string" or #suffix ~= 32
-      or suffix:find("[^%x]") then
-    return nil, WIN32.ERROR.INVALID_PARAMETER
-  end
-  local attributes, attributes_err = file_attributes(path)
-  local target_identity
-  if attributes then
-    if bit.band(attributes, WIN32.FILE.ATTRIBUTE_REPARSE_POINT) ~= 0
-        or bit.band(attributes, WIN32.FILE.ATTRIBUTE_DIRECTORY) ~= 0 then
-      return nil, WIN32.ERROR.ACCESS_DENIED
-    end
-    target_identity, attributes_err = path_identity(path)
-    if not target_identity then return nil, attributes_err end
-  elseif attributes_err ~= WIN32.ERROR.FILE_NOT_FOUND
-      and attributes_err ~= WIN32.ERROR.PATH_NOT_FOUND then
-    return nil, attributes_err
-  elseif policy.require_existing then
-    return nil, WIN32.ERROR.FILE_NOT_FOUND
-  end
-
-  local temporary = path .. "." .. suffix .. ".tmp"
-  local written, write_err = direct_write(temporary, data, "wx")
-  if not written then
-    K.DeleteFileW(wide(temporary))
-    return nil, write_err
-  end
-  local current, current_err = file_attributes(path)
-  local current_identity
-  if current then
-    if bit.band(current, WIN32.FILE.ATTRIBUTE_REPARSE_POINT) ~= 0
-        or bit.band(current, WIN32.FILE.ATTRIBUTE_DIRECTORY) ~= 0 then
-      K.DeleteFileW(wide(temporary))
-      return nil, WIN32.ERROR.ACCESS_DENIED
-    end
-    current_identity, current_err = path_identity(path)
-    if not current_identity then
-      K.DeleteFileW(wide(temporary))
-      return nil, current_err
-    end
-  elseif current_err ~= WIN32.ERROR.FILE_NOT_FOUND
-      and current_err ~= WIN32.ERROR.PATH_NOT_FOUND then
-    K.DeleteFileW(wide(temporary))
-    return nil, current_err
-  elseif policy.require_existing then
-    K.DeleteFileW(wide(temporary))
-    return nil, WIN32.ERROR.FILE_NOT_FOUND
-  end
-  local changed = attributes ~= current
-    or attributes ~= nil and not same_identity(assert(target_identity), current_identity)
-  if changed then
-    K.DeleteFileW(wide(temporary))
-    return nil, WIN32.ERROR.ACCESS_DENIED
-  end
-  if policy.expected_content_fingerprint ~= nil then
-    if not target_identity then
-      K.DeleteFileW(wide(temporary))
-      return nil, WIN32.ERROR.FILE_NOT_FOUND
-    end
-    local contents, read_err = direct_read(path)
-    local latest, identity_err = path_identity(path)
-    if not contents or not same_identity(target_identity, latest) then
-      K.DeleteFileW(wide(temporary))
-      return nil, read_err or identity_err or WIN32.ERROR.ACCESS_DENIED
-    end
-    if content_fingerprint(contents):lower()
-        ~= policy.expected_content_fingerprint:lower() then
-      K.DeleteFileW(wide(temporary))
-      return nil, WIN32.ERROR.ACCESS_DENIED
-    end
-  end
-  if K.MoveFileExW(wide(temporary), wide(path),
-      bit.bor(WIN32.FILE.MOVE_REPLACE_EXISTING,
-        WIN32.FILE.MOVE_WRITE_THROUGH)) == 0 then
-    local err = last_error()
-    K.DeleteFileW(wide(temporary))
-    return nil, err
-  end
-  return true
-end
-
----@param path string
----@return boolean?, integer?
-local function direct_mkdirp(path)
-  local existing, existing_err = file_attributes(path)
-  if existing then
-    return bit.band(existing, WIN32.FILE.ATTRIBUTE_DIRECTORY) ~= 0
-        and true or nil, WIN32.ERROR.ALREADY_EXISTS
-  end
-  if existing_err ~= WIN32.ERROR.FILE_NOT_FOUND
-      and existing_err ~= WIN32.ERROR.PATH_NOT_FOUND then
-    return nil, existing_err
-  end
-  local missing = {}
-  local current = path
-  while true do
-    local attributes, err = file_attributes(current)
-    if attributes then
-      if bit.band(attributes, WIN32.FILE.ATTRIBUTE_DIRECTORY) == 0 then
-        return nil, WIN32.ERROR.ALREADY_EXISTS
-      end
-      break
-    end
-    if err ~= WIN32.ERROR.FILE_NOT_FOUND and err ~= WIN32.ERROR.PATH_NOT_FOUND then
-      return nil, err
-    end
-    missing[#missing + 1] = current
-    local parent = vim.fs.dirname(current)
-    if parent == current or parent == "." or parent == "" then
-      return nil, WIN32.ERROR.PATH_NOT_FOUND
-    end
-    current = parent
-  end
-  for index = #missing, 1, -1 do
-    if K.CreateDirectoryW(wide(missing[index]), nil) == 0 then
-      local err = last_error()
-      if err ~= WIN32.ERROR.ALREADY_EXISTS then return nil, err end
-    end
-  end
-  return true
-end
-
----@param spec Neoagent.WindowsRuntimeSpec
----@param stdin string
----@param output_handle ffi.cdata*
----@param token ffi.cdata*
-local function fs_operation(spec, stdin, output_handle, token)
-  local request = assert(spec.fs)
-  local path = assert(request.path)
-  local operation = request.operation
-  local value, err = with_impersonation(token, function()
-    if operation == "read" then
-      return direct_read(path)
-    elseif operation == "read_range" then
-      return direct_read_range(path, assert(request.offset), assert(request.size))
-    elseif operation == "write_all" then
-      return direct_write(path, stdin, request.flags)
-    elseif operation == "atomic_replace" then
-      return direct_atomic_replace(
-        path, stdin, request.policy, request.suffix)
-    else
-      return direct_mkdirp(path)
-    end
-  end)
-  send_event(output_handle, {
-    v = RUNTIME.PROTOCOL_VERSION,
-    type = "ready",
-  })
-  local output = output_sender(output_handle)
-  if value then
-    if operation == "read" or operation == "read_range" then
-      output("stdout", value --[[@as string]])
-    end
-    send_event(output_handle, {
-      v = RUNTIME.PROTOCOL_VERSION,
-      type = "exit",
-      code = 0,
-      signal = 0,
-    })
-  else
-    output("stderr", "win32=" .. tostring(err or 0))
-    send_event(output_handle, {
-      v = RUNTIME.PROTOCOL_VERSION,
-      type = "exit",
-      code = 1,
-      signal = 0,
-    })
-  end
 end
 
 -- Probe mode checks observable sandbox behavior. Filesystem checks execute
@@ -3757,44 +3565,56 @@ local function runner_main(arguments)
     close_handle(output)
     failure("protocol-request", request_err)
   end
-  local stdin_chunks = {}
-  while true do
-    local event, event_err = read_frame(input)
-    if not event then
-      close_handle(input)
-      close_handle(output)
-      failure("protocol-stdin", event_err)
-    end
-    if event.type == "stdin" and type(event.data) == "string" then
-      stdin_chunks[#stdin_chunks + 1] = event.data
-    elseif event.type == "stdin-end" then
-      break
-    else
-      close_handle(input)
-      close_handle(output)
-      failure("protocol-stdin", 0)
-    end
-  end
-  close_handle(input)
   if request.v ~= RUNTIME.PROTOCOL_VERSION
       or type(request.spec) ~= "table" then
+    close_handle(input)
     close_handle(output)
     failure("protocol-request", 0)
+  end
+  local streaming = request.spec.stream == true
+  local stdin_chunks = {}
+  if not streaming then
+    while true do
+      local event, event_err = read_frame(input)
+      if not event then
+        close_handle(input)
+        close_handle(output)
+        failure("protocol-stdin", event_err)
+      end
+      if event.type == "stdin" and type(event.data) == "string" then
+        stdin_chunks[#stdin_chunks + 1] = event.data
+      elseif event.type == "stdin-end" then
+        break
+      else
+        close_handle(input)
+        close_handle(output)
+        failure("protocol-stdin", 0)
+      end
+    end
+    close_handle(input)
   end
   local token, logon_sid_string =
     restricted_token(account_sid_string, capability_sid_string)
   local stdin = table.concat(stdin_chunks)
   local ok, err = pcall(function()
     if request.spec.mode == "exec" then
-      spawn_target(request.spec, stdin, output, token, logon_sid_string)
-    elseif request.spec.mode == "fs" then
-      fs_operation(request.spec, stdin, output, token)
+      spawn_target(
+        request.spec,
+        stdin,
+        output,
+        token,
+        logon_sid_string,
+        streaming and input or nil
+      )
     elseif request.spec.mode == "probe" then
       run_probe(request.spec, output, token)
     else
       failure("runner-mode", 0)
     end
   end)
+  if streaming then
+    close_handle(input)
+  end
   if not ok then emit_error(output, err) end
   close_handle(token)
   close_handle(output)
@@ -3808,61 +3628,165 @@ end
 -- back unchanged.
 ---@param runner Neoagent.WindowsRunner
 ---@param spec Neoagent.WindowsRuntimeSpec
----@param stdin string
-local function send_request(runner, spec, stdin)
+local function send_request_header(runner, spec)
   local ok, err = write_frame(assert(runner.input), {
     v = RUNTIME.PROTOCOL_VERSION,
     spec = spec,
   })
   if not ok then failure("protocol-request-write", err) end
-  local offset = 1
-  while offset <= #stdin do
-    local chunk = stdin:sub(offset, offset + 65535)
-    ok, err = write_frame(assert(runner.input), {
-      v = RUNTIME.PROTOCOL_VERSION,
-      type = "stdin",
-      data = chunk,
-    })
-    if not ok then failure("protocol-stdin-write", err) end
-    offset = offset + #chunk
-  end
-  ok, err = write_frame(assert(runner.input), {
+end
+
+---@param runner Neoagent.WindowsRunner
+---@param data string
+---@return true?, integer?
+local function send_request_input(runner, data)
+  local ok, err = write_frame(assert(runner.input), {
+    v = RUNTIME.PROTOCOL_VERSION,
+    type = "stdin",
+    data = data,
+  })
+  return ok, err
+end
+
+---@param runner Neoagent.WindowsRunner
+---@return true?, integer?
+local function end_request_input(runner)
+  local ok, err = write_frame(assert(runner.input), {
     v = RUNTIME.PROTOCOL_VERSION,
     type = "stdin-end",
   })
-  if not ok then failure("protocol-stdin-write", err) end
   close_handle(runner.input)
   runner.input = nil
+  return ok, err
+end
+
+---@param runner Neoagent.WindowsRunner
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param stdin string
+local function send_request(runner, spec, stdin)
+  send_request_header(runner, spec)
+  local offset = 1
+  while offset <= #stdin do
+    local chunk = stdin:sub(offset, offset + 65535)
+    local sent, send_err = send_request_input(runner, chunk)
+    if not sent then failure("protocol-stdin-write", send_err) end
+    offset = offset + #chunk
+  end
+  local ended, end_err = end_request_input(runner)
+  if not ended then failure("protocol-stdin-write", end_err) end
+end
+
+---@param runner Neoagent.WindowsRunner
+---@return Neoagent.SandboxTerminalEvent?
+local function receive_event(runner)
+  local event, err = read_frame(runner.output)
+  if not event then failure("protocol-runner-read", err) end
+  if event.v ~= RUNTIME.PROTOCOL_VERSION
+      or event.type ~= "ready" and event.type ~= "output"
+        and event.type ~= "exit" and event.type ~= "error" then
+    failure("protocol-runner-event", 0)
+  end
+  if event.type == "ready" then
+    stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
+  elseif event.type == "output" then
+    if event.stream ~= "stdout" and event.stream ~= "stderr"
+        or type(event.seq) ~= "number"
+        or type(event.data) ~= "string" then
+      failure("protocol-runner-output", 0)
+    end
+    stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
+  else
+    return event --[[@as Neoagent.SandboxTerminalEvent]]
+  end
 end
 
 ---@param runner Neoagent.WindowsRunner
 ---@return Neoagent.SandboxTerminalEvent
 local function receive_events(runner)
-  ---@type Neoagent.SandboxTerminalEvent?
-  local terminal
-  while not terminal do
-    local event, err = read_frame(runner.output)
-    if not event then failure("protocol-runner-read", err) end
-    if event.v ~= RUNTIME.PROTOCOL_VERSION
-        or event.type ~= "ready" and event.type ~= "output"
-          and event.type ~= "exit" and event.type ~= "error" then
-      failure("protocol-runner-event", 0)
-    end
-    if event.type == "ready" then
-      if terminal then failure("protocol-runner-order", 0) end
-      stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
-    elseif event.type == "output" then
-      if event.stream ~= "stdout" and event.stream ~= "stderr"
-          or type(event.seq) ~= "number"
-          or type(event.data) ~= "string" then
-        failure("protocol-runner-output", 0)
-      end
-      stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
-    else
-      terminal = event --[[@as Neoagent.SandboxTerminalEvent]]
+  while true do
+    local terminal = receive_event(runner)
+    if terminal then
+      return terminal
     end
   end
-  return assert(terminal)
+end
+
+---@param runner Neoagent.WindowsRunner
+---@param spec Neoagent.WindowsRuntimeSpec
+---@return Neoagent.SandboxTerminalEvent
+local function bridge_stream(runner, spec)
+  send_request_header(runner, spec)
+  local input = K.GetStdHandle(WIN32.HANDLE.STD_INPUT)
+  if invalid_handle(input) then
+    failure("stdin", 0)
+  end
+  local input_open = true
+  ---@param data? string
+  local function forward_input(data)
+    local sent, send_err
+    if data then
+      sent, send_err = send_request_input(runner, data)
+    else
+      sent, send_err = end_request_input(runner)
+    end
+    if sent then return true end
+    if send_err ~= WIN32.ERROR.BROKEN_PIPE
+        and send_err ~= WIN32.ERROR.NO_DATA then
+      failure("protocol-stdin-write", send_err)
+    end
+    if runner.input then
+      close_handle(runner.input)
+      runner.input = nil
+    end
+    return false
+  end
+  while true do
+    local progressed = false
+    if input_open then
+      local available = pipe_available(input, "stdin-peek")
+      if available == nil then
+        forward_input()
+        input_open = false
+        progressed = true
+      elseif available > 0 then
+        local chunk, input_err = read_some(input, math.min(available, 65536))
+        if not chunk then
+          if input_err == WIN32.ERROR.BROKEN_PIPE
+              or input_err == WIN32.ERROR.NO_DATA then
+            forward_input()
+            input_open = false
+          else
+            failure("stdin", input_err)
+          end
+        elseif chunk == "" then
+          forward_input()
+          input_open = false
+        else
+          input_open = forward_input(chunk)
+        end
+        progressed = true
+      end
+    end
+    local available = pipe_available(runner.output, "protocol-runner-peek")
+    if available == nil then
+      failure("protocol-runner-read", WIN32.ERROR.BROKEN_PIPE)
+    elseif available > 0 then
+      local terminal = receive_event(runner)
+      if terminal then
+        return terminal
+      end
+      progressed = true
+    end
+    if not progressed then
+      local status = K.WaitForSingleObject(runner.process, 0)
+      if status == WIN32.WAIT.OBJECT_0 then
+        failure("runner-exited", 0)
+      elseif status ~= WIN32.WAIT.TIMEOUT then
+        failure("runner-wait", status)
+      end
+      K.Sleep(RUNTIME.OUTPUT_POLL_MS)
+    end
+  end
 end
 
 -- The host holds the state mutex for the entire ACL lease. Its protected call
@@ -3879,8 +3803,21 @@ local function host_main(directory)
   end
   local decoded, spec = pcall(vim.json.decode, encoded)
   if not decoded then failure("specification-json", 0) end
-  local stdin = read_standard_input()
-  local mutex = acquire_mutex(directory)
+  local admission_timeout_ms = type(spec) == "table"
+      and spec.admission_timeout_ms or nil
+  if type(admission_timeout_ms) ~= "number"
+      or admission_timeout_ms % 1 ~= 0
+      or admission_timeout_ms <= 0
+      or admission_timeout_ms > 0x7fffffff then
+    failure("specification-admission-timeout", 0)
+  end
+  ---@cast admission_timeout_ms integer
+  local streaming = type(spec) == "table" and spec.stream == true
+  local stdin
+  if not streaming then
+    stdin = read_standard_input()
+  end
+  local mutex = acquire_mutex(directory, admission_timeout_ms)
   ---@type Neoagent.WindowsRuntimeState?
   local state
   ---@type Neoagent.WindowsRunner?
@@ -3918,8 +3855,12 @@ local function host_main(directory)
     apply_runtime_acls(directory, state, spec, account.sid, capability)
     runner = spawn_runner(
       spec, account, account_password(account), capability)
-    send_request(runner, spec, stdin)
-    terminal = receive_events(runner)
+    if spec.stream then
+      terminal = bridge_stream(runner, spec)
+    else
+      send_request(runner, spec, assert(stdin))
+      terminal = receive_events(runner)
+    end
   end)
   close_runner(runner, true)
   local cleaned, cleanup_err = pcall(function()
@@ -3965,7 +3906,7 @@ local directory = default_state_directory()
 if arguments[1] == "--setup" then
   local mutex
   local ok, err = pcall(function()
-    mutex = acquire_mutex(directory)
+    mutex = acquire_mutex(directory, RUNTIME.ADMISSION_TIMEOUT_MS)
     setup(directory)
   end)
   release_mutex(mutex)

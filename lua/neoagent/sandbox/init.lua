@@ -75,10 +75,10 @@ function M.sandbox_exec(argv, opts)
 end
 
 ---@generic C
----@param opts Neoagent.SandboxEnforcementOptions<C>
----@return Neoagent.SandboxEnforcement<C>
+---@param opts Neoagent.SandboxInterceptorOptions<C>
+---@return Neoagent.SandboxInterceptor<C>
 function M.new(opts)
-  return require("neoagent.sandbox.enforce").new(opts)
+  return require("neoagent.sandbox.interceptor").new(opts)
 end
 
 ---@param agent unknown

@@ -84,7 +84,7 @@ The main options and defaults are: >lua
       reserve_tokens = 16384,
       keep_recent_tokens = 20000,
     },
-    sandbox = { enabled = false, profile = nil },
+    sandbox = { enabled = false, profile = nil, parent_tools = nil },
     workspace_trust = {
       path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
     },
@@ -177,8 +177,7 @@ limits and thinking levels: >lua
 <
 Additions survive catalog refreshes, including responses that omit the ID.
 Their fields override discovered metadata; `models[id]` takes final precedence.
-For a temporary model, remove its addition from your configuration when it is
-no longer available, then restart Neovim. Additions do not expire automatically.
+Remove an addition from your configuration and restart Neovim to remove it.
 
 Built-in adapter names are
 `openai-completions`, `openai-responses`,
@@ -304,17 +303,10 @@ For Anthropic API keys with access to multiple provider workspaces, set
 `request_opts.headers["anthropic-workspace-id"]` to the selected workspace ID.
 Uploads, inspections, and remote mappings follow that selection.
 
-Attachments and remote mappings live in workspace storage. Sessions keep local
-SHA-256 references; switching provider selects an independent remote mapping,
-and compatible models can share mappings within the same workspace. OpenAI
-Platform and DeepSeek uploads request 24-hour expiration. Codex supplies no
-object expiration, so each reuse verifies availability remotely. Codex signed
-storage URLs are never cached. Anthropic uploads persist until deletion.
-OpenAI and Anthropic reuse ready cached IDs optimistically;
-an explicit missing-file rejection permits one repair before streamed output.
-Known expiry triggers replacement before inference. Other failures are returned
-normally. Upload and local-read failures return errors without an inline
-fallback.
+Attachments remain in workspace storage. Compatible models share remote
+uploads within a provider; switching providers keeps independent uploads.
+Neoagent replaces expired or missing remote files when possible. Upload and
+local-read failures return errors without an inline fallback.
 
 Opening or viewing a Session does not upload images. The accepted prompt
 appears in the transcript before preparation starts. You can keep editing the
@@ -377,10 +369,6 @@ Configure or disable the sink under the provider: >lua
     },
   }
 <
-OpenCode Go model requests carry the calling Session ID in
-`x-opencode-session`. Calls without a valid Session identity omit the header.
-Model catalog and usage requests are shared across Agents and carry no Session
-ID.
 
 AGENTS AND APPLETS                                   *neoagent-agents*
 
@@ -550,9 +538,9 @@ state for the built-in Neo Profile with: >lua
 `:NeoagentSandboxInfo` reports the selected backend and capabilities. A tool
 call keeps the mode it started with.
 
-If sandbox activation fails, tool execution is blocked. Inspect the reason
-with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly turn
-sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
+If sandbox activation fails, restricted tool execution is blocked. Inspect the
+reason with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly
+turn sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
 
 The default profile grants read-only host access, writes within the Workspace
 and shared temporary directory, read-only access to `.git`, restricted
@@ -579,6 +567,14 @@ absolute. `network` is `restricted` or `enabled`. Lists replace their defaults.
 A profile callback receives a copy of the default profile and tool context and
 returns the complete profile.
 
+The Tool worker, Neoagent Lua modules, and Neovim executable and runtime must
+remain readable under the resolved profile. If the profile's effective access
+denies one of these bootstrap paths, the Tool call fails before execution and
+reports the conflict in its result. `:NeoagentSandboxInfo` reports platform
+availability; it does not validate every invocation's profile. Neoagent does
+not add implicit read exceptions. Narrow the denial or move the required
+installation when those paths conflict.
+
 Linux uses namespaces and seccomp. macOS uses `/usr/bin/sandbox-exec`. Windows
 uses restricted accounts, ACLs, Job Objects, and WFP, requires Neovim 0.12+,
 and needs one elevated setup from the plugin checkout: >
@@ -587,9 +583,29 @@ and needs one elevated setup from the plugin checkout: >
 <
 
 Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to select another
-Windows state directory. Custom tools participate when they route file and
-process effects through `ctx.fs` and `ctx.process`; their Lua code itself runs
-inside Neovim. Use `ctx.fs.read_chunks` for bounded reads.
+Windows state directory.
+
+`read_agent_documentation` and `update_plan` run in the parent process even
+when sandboxing is unavailable. Grant a custom Tool parent execution with
+`sandbox.parent_tools`: >lua
+
+  local inspect = {
+    name = "inspect",
+    description = "Inspect parent state",
+    input_schema = { type = "object", properties = {} },
+    execute = function()
+      return { content = { { type = "text", text = "parent state" } } }
+    end,
+  }
+
+  require("neoagent").setup({
+    tools = { inspect },
+    sandbox = { enabled = true, parent_tools = { inspect } },
+  })
+<
+The grant matches the configured Tool's name and implementation function and
+gives it full host authority. Other custom Tools are blocked in restricted
+mode.
 
 A denied call can request one host execution with: >json
 
@@ -601,9 +617,9 @@ A denied call can request one host execution with: >json
   }
 <
 
-Approval grants host capabilities for that call. Shell approvals may remember
-a literal argument-token prefix for the current Session. Compound or dynamic
-shell syntax always prompts.
+Approval selects the original host Tool before that call begins. Shell
+approvals may remember a literal argument-token prefix for the current Session.
+Compound or dynamic shell syntax always prompts.
 
 Custom compositions can use
 `require("neoagent.sandbox.composition").compose(toolset, config, runtime)`.
@@ -716,13 +732,9 @@ Snapshots may contain `status`, `field`, `progress`, `limit`, `list`, and
 `activity` blocks. A `field.level` may be `info`, `success`, `warn`, `error`,
 or `muted`.
 
-The Provider Shell presents runtimes independently of Agents. Dynamic catalogs
-offer `Refresh model catalog`. Login and logout actions follow each method's
-credential state; see |neoagent-built-in-providers| and |neoagent-core-api|.
-
-The Shell invokes the Service's non-mutating `refresh` operation on focus,
-with no background polling. Changing provider cancels a pending automatic
-refresh; explicit operations continue when the Shell loses focus.
+The Provider Shell invokes the Service's non-mutating `refresh` operation on
+focus, with no background polling. Changing provider cancels a pending
+automatic refresh; explicit operations continue when the Shell loses focus.
 
 The Provider Shell API is: >lua
 
@@ -827,10 +839,9 @@ Failed finalization preserves the previous recording and the partial file.
   `yaml`   Require compatible `yq` v4 and publish `.yaml`.
   `json`   Publish `.jsonl` without a `yq` dependency.
 
-YAML recordings represent buffered JSON bodies as native values; machine replay
-requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
-and response bodies larger than 1 MiB use base64 with an encoding marker,
-preserving their exact bytes and chunk boundaries.
+YAML recordings represent JSON bodies as native values. Binary and large
+response bodies use marked base64 encoding. Replay preserves recorded bytes
+and chunk boundaries; reading YAML requires `yq`.
 
 Large ordinary responses may use private `.body` temporary files. Sensitive
 authentication responses never do; exceeding their 1 MiB limit stops recording
@@ -1070,9 +1081,7 @@ for one stream. Configured catalog entries use `request_timeout_ms` to supply
 the constructor default.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
-unique `input` list containing `text` and optionally `image`. Optional context,
-timeout, and thinking values are validated when the Model is constructed or
-wrapped.
+unique `input` list containing `text` and optionally `image`.
 
 Adapters preserve native assistant signatures for matching API, provider, and
 model identities; omitted fields default to the destination. For other
@@ -1141,6 +1150,9 @@ steering messages commit before dependent work or final observation.
 Tool schemas and model-produced arguments are validated before execution.
 Malformed calls become error tool results.
 
+Cancellation stops further work. A valid final result returned by the executor
+still commits, including when cancellation interrupted its cleanup.
+
 `get_steering_messages()` may return one message and an acknowledgement
 function. The Agent Loop calls `acknowledge(true, observation)` after commit or
 `acknowledge(false)` when commit fails.
@@ -1184,7 +1196,7 @@ an ambient credential.
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
 
 A Tool is `{ name, description, input_schema, execute }`.
-`execute(arguments, ctx)` returns
+`execute(arguments, ctx)` is async and returns its final
 `{ content = { ... }, isError?, details? }`. Content blocks contain UTF-8 text
 or local image references: `{ type = "image", file_id = sha256,
 mime_type = "image/png", bytes = byte_count, filename = "sample.png" }`.
@@ -1198,8 +1210,7 @@ file can then change or disappear without changing the attachment.
 `max_image_output_bytes` bounds the binary attachment, defaulting to 3.375 MiB
 (4.5 MiB after base64 encoding) so retained images also fit inline requests.
 With ImageMagick available, larger processed images are recompressed as JPEG.
-Raising this limit requires checking the image limits of every endpoint that
-will receive the attachment, including inline use when uploads are disabled.
+The maximum is 8 MiB; individual model endpoints may impose lower limits.
 Custom producers call the same writer's asynchronous `put(bytes)` and use the
 returned `{ file_id, bytes }` in their image blocks. Failed publication must
 fail the tool result rather than return a reference.
@@ -1227,10 +1238,21 @@ The coding preset provides file read, write, edit, shell, and Neoagent
 documentation tools. The optional plan tool derives its state from successful
 calls on the active Session path.
 
-Bundled tools use `ctx.fs` and `ctx.process(argv, opts)` when supplied. Process
-options cover working directory, environment, input, output capture, timeout,
-and streaming callbacks. The shell timeout defaults to 300 seconds;
-`shell_timeout = false` disables that default.
+Restricted execution recognizes only the shipped `read_file`, `write_file`,
+`edit_file`, `shell`, `grep`, and `find` implementations. The executor receives
+a copy with remote `execute`; its other fields are unchanged. Returning without
+invoking it starts no worker. Host execution receives the original Tool. Custom
+Tool grants are described in |neoagent-sandbox|; RPC registration is private.
+
+These Tools limit encoded requests to 16 MiB and paths to 32 KiB in both local
+and restricted execution.
+
+The bundled shell Tool uses the parent Neovim's shell settings and the
+Workspace cwd. It accepts a command and optional timeout, which defaults to
+300 seconds; `shell_timeout = false` disables that default. Streaming progress
+uses a bounded transport budget. If a long-running command exhausts that
+budget, Neoagent suppresses later transient snapshots and still returns the
+final result.
 
 `write_file` and `edit_file` replace regular files through same-directory
 temporaries, preserve existing modes, reject symbolic links, and request mode
@@ -1243,9 +1265,7 @@ fallback. Edits preserve surrounding text, the BOM, and line-ending convention.
 
 `require("neoagent.session").new()` creates an in-memory Session. It accepts an
 optional store, initial messages, or validated tree snapshot. Its `files`
-option can bind an existing writer; otherwise it creates an in-memory store. User, assistant,
-and tool-result messages use the same semantic message format as Models and the
-Agent Loop.
+option supplies an attachment writer; otherwise it uses in-memory storage.
 
 The bundled append-only store is: >lua
 
@@ -1264,11 +1284,8 @@ with `require("neoagent.workspace_storage").resolve(directory, cwd)`.
 
 Workspace storage contains `workspace.json`, `sessions/<session-id>.jsonl`,
 `files/<sha256>/content`, `provider-cache/<namespace>/<sha256>.json`, and a
-rebuildable `session-index.json`. Keep the entire workspace directory when
-backing up or moving conversations. The only accepted markers are
-`neoagent-workspace` and `neoagent-session`; older workspace and pi JSONL formats
-are unsupported. Journal timestamps use Unix milliseconds. There is no garbage
-collection: unused blobs and provider mappings may remain in workspace storage.
+rebuildable `session-index.json`. Back up or move the whole workspace directory.
+There is no garbage collection: unused blobs and provider mappings may remain.
 
 Tree-aware Session methods are: >lua
 

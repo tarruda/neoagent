@@ -23,6 +23,14 @@ local process_tree = require(jit.os == "Windows" and "neoagent.process.windows" 
 
 local M = {}
 
+---@class Neoagent.ProcessChild
+---@field pid integer
+---@field kill fun(self: Neoagent.ProcessChild, signal: integer)
+
+---@class Neoagent.ProcessSpawnOptions: vim.SystemOpts
+---@field stdout fun(err?: string, data?: string)
+---@field stderr fun(err?: string, data?: string)
+
 ---@param env? table<string, string|number>|string[]
 ---@param clear? boolean
 ---@return table<string, string|number>|string[]|nil
@@ -54,7 +62,7 @@ function M.run(command, opts)
   local timed_out = false
   local result = async.await( ---@param done Neoagent.AwaitCallbacks<Neoagent.ProcessResult>
     function(done)
-      ---@type vim.SystemObj?
+      ---@type vim.SystemObj|Neoagent.ProcessChild|nil
       local process
       ---@type Neoagent.PosixProcessTree|Neoagent.WindowsProcessTree|nil
       local tree
@@ -84,7 +92,10 @@ function M.run(command, opts)
       local function signal(value)
         local signalled = tree and tree:terminate(value)
         if not signalled and process then
-          pcall(process.kill, process, value)
+          local child = process
+          pcall(function()
+            child:kill(value)
+          end)
         end
       end
       local function terminate()
@@ -136,7 +147,8 @@ function M.run(command, opts)
         done.reject(util.error("tool", "Failed to create process supervisor", tree_err))
         return
       end
-      local started, started_process = pcall(vim.system, command, {
+      local spawn = process_tree.spawn or vim.system
+      local started, started_process = pcall(spawn, command, {
         cwd = opts.cwd,
         env = spawn_environment(opts.env, opts.clear_env),
         clear_env = opts.clear_env,
@@ -191,10 +203,14 @@ function M.run(command, opts)
         done.reject(util.error("tool", "Failed to start process", started_process))
         return
       end
-      process = started_process
-      local attached, attach_err = tree:attach(process.pid)
+      local child = assert(started_process)
+      ---@cast child vim.SystemObj|Neoagent.ProcessChild
+      process = child
+      local attached, attach_err = tree:attach(child.pid)
       if not attached then
-        pcall(process.kill, process, 9)
+        pcall(function()
+          child:kill(9)
+        end)
         tree:close(true)
         done.reject(util.error("tool", "Failed to supervise process tree", attach_err))
         return

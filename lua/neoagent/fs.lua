@@ -3,6 +3,15 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.ToolFilesystem {
+---  create_temp: (fun(prefix?: string, directory?: string): string?, string?),
+---  read: (fun(path: string): string?, string?),
+---  read_chunks?: (fun(path: string, on_chunk: fun(data: string, offset: integer), chunk_size?: integer): true?, unknown),
+---  mkdirp: (fun(path?: string): true?, unknown),
+---  write_all: (fun(path: string, data: string, flags?: string, mode?: integer): true?, string?),
+---  atomic_replace: (fun(path: string, data: string, policy: Neoagent.AtomicPolicy): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?),
+---}
+
 ---@class Neoagent.FileIdentity
 ---@field device number
 ---@field inode number
@@ -897,6 +906,7 @@ end
 ---@return_overload nil, string?, Neoagent.AtomicFailureStage?
 function M.atomic_replace(path, data, policy)
   assert(type(path) == "string" and path ~= "", "atomic replacement path is required")
+  assert(not path:find("\0", 1, true), "atomic replacement path must be NUL-free")
   assert(type(data) == "string", "atomic replacement data must be a string")
   policy = M._normalize_atomic_policy(policy)
 

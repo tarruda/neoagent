@@ -334,6 +334,13 @@ local function edit(value, opts)
   if type(value.path) ~= "string" or not one_line(value.path) or not util.is_list(value.rows) then
     return nil
   end
+  if value.added ~= nil
+      and (type(value.added) ~= "number" or value.added < 0 or value.added % 1 ~= 0)
+      or value.removed ~= nil
+        and (type(value.removed) ~= "number" or value.removed < 0 or value.removed % 1 ~= 0)
+      or value.truncated ~= nil and type(value.truncated) ~= "boolean" then
+    return nil
+  end
   local compact = opts.presentation_surface == "transcript"
   local maximum = compact and EDIT_PREVIEW_LINES or nil
   local lines, omitted = edit_rows(value.rows, compact and (opts.width or 80) or nil, maximum)
@@ -348,7 +355,14 @@ local function edit(value, opts)
       },
     }
   end
-  local added, removed = row_counts(value.rows)
+  if value.truncated then
+    lines[#lines + 1] = {
+      { text = "   [... patch truncated]", style = "muted" },
+    }
+  end
+  local row_added, row_removed = row_counts(value.rows)
+  local added = value.added or row_added
+  local removed = value.removed or row_removed
   return {
     title = edit_summary(value.path, added, removed),
     lines = lines,

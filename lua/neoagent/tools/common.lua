@@ -1,28 +1,42 @@
-local fs = require("neoagent.fs")
-local process = require("neoagent.process")
+local files = require("neoagent.files")
+local semantic_message = require("neoagent.semantic_message")
 local util = require("neoagent.util")
 
----@alias Neoagent.ToolWorkspace {
----  cwd: string,
----  resolve: (fun(self: Neoagent.ToolWorkspace, path: string): string),
----}
+local M = {}
 
----@alias Neoagent.ToolFilesystem {
----  create_temp: (fun(prefix?: string, directory?: string): string?, string?),
----  read: (fun(path: string): string?, string?),
----  read_chunks?: (fun(path: string, on_chunk: fun(data: string, offset: integer), chunk_size?: integer): true?, unknown),
----  mkdirp: (fun(path?: string): true?, unknown),
----  write_all: (fun(path: string, data: string, flags?: string, mode?: integer): true?, string?),
----  atomic_replace: (fun(path: string, data: string, policy: Neoagent.AtomicPolicy): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?),
----}
+---@class Neoagent.ToolWorkspace
+---@field root string
+---@field cwd string
 
----@alias Neoagent.ToolCapabilities {
----  context?: unknown,
----  fs?: Neoagent.ToolFilesystem,
----  process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult),
----}
+---@class Neoagent.ToolOperationCall
+---@field workspace Neoagent.ToolWorkspace
+---@field artifacts? Neoagent.ToolArtifactPublisher
+---@field on_update fun(update: Neoagent.ToolResult)
 
----@class Neoagent.LineCaptureOptions
+---@class Neoagent.ToolDependencies
+---@field fs Neoagent.ToolFilesystem
+---@field process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field workspace fun(value: Neoagent.ToolWorkspace): Neoagent.Workspace
+---@field executable fun(name: string): boolean
+---@field hrtime fun(): number
+---@field artifact_publisher fun(call: Neoagent.ToolOperationCall): Neoagent.ToolArtifactPublisher
+---@field fingerprint fun(data: string): string
+---@field observe_output? fun(output: string)
+
+---@class Neoagent.ToolDependencyOverrides
+---@field fs? Neoagent.ToolFilesystem
+---@field process? async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field workspace? fun(value: Neoagent.ToolWorkspace): Neoagent.Workspace
+---@field executable? fun(name: string): boolean
+---@field hrtime? fun(): number
+---@field artifact_publisher? fun(call: Neoagent.ToolOperationCall): Neoagent.ToolArtifactPublisher
+---@field fingerprint? fun(data: string): string
+---@field observe_output? fun(output: string)
+
+---@class Neoagent.ToolArtifactPublisher
+---@field put async fun(data: string): Neoagent.LocalFile?, Neoagent.Error?
+
+---@class Neoagent.ToolLineCaptureOptions
 ---@field offset? number
 ---@field select_lines? number
 ---@field max_lines? number
@@ -30,41 +44,88 @@ local util = require("neoagent.util")
 ---@field max_line_bytes? number
 ---@field transform? fun(line: string, overflow: boolean, bytes: integer): string, boolean
 
----@class Neoagent.LineCaptureResult: Neoagent.TruncationResult
+---@class Neoagent.ToolLineCaptureResult: Neoagent.TruncationResult
 ---@field firstLineBytes? integer
 ---@field linesTruncated integer
 ---@field selectionMore boolean
 
----@class Neoagent.LineCapture
+---@class Neoagent.ToolLineCapture
 ---@field append fun(data: string)
----@field finish fun(trailing_empty?: boolean): Neoagent.LineCaptureResult
+---@field finish fun(trailing_empty?: boolean): Neoagent.ToolLineCaptureResult
 
----@class Neoagent.ProcessCaptureOptions
----@field stdout Neoagent.LineCaptureOptions
----@field stderr? Neoagent.LineCaptureOptions
+---@class Neoagent.ToolProcessCaptureOptions
+---@field stdout Neoagent.ToolLineCaptureOptions
+---@field stderr? Neoagent.ToolLineCaptureOptions
 ---@field process? Neoagent.ProcessOptions
 
-local M = {}
+---@class Neoagent.ToolImplementationIdentity
+---@field token table
+---@field settings table
+---@field prepare fun(arguments: Neoagent.JsonObject, settings: table): table
 
----@param ctx Neoagent.ToolCapabilities
----@return Neoagent.Files
-function M.files(ctx)
-  local context = ctx and ctx.context
-  local files = type(context) == "table" and rawget(context, "files") or nil
-  assert(require("neoagent.files").writable(files), "Tool requires an attachment store in ctx.context.files")
-  return files
+---@type table<function, Neoagent.ToolImplementationIdentity>
+local implementations = setmetatable({}, { __mode = "k" })
+
+---@param value unknown
+---@return boolean
+function M.object(value)
+  return type(value) == "table" and (next(value) == nil or not util.is_list(value))
 end
 
----@param ctx? Neoagent.ToolCapabilities
----@return Neoagent.ToolWorkspace
-function M.workspace(ctx)
-  local context = ctx and ctx.context
-  local workspace = type(context) == "table" and rawget(context, "workspace") or context
-  if type(workspace) ~= "table" or type(workspace.resolve) ~= "function" then
-    error(util.error("workspace", "Tool requires a workspace in ctx.context.workspace"), 0)
+---@param value table
+---@param allowed table<string, boolean>
+---@param label string
+function M.fields(value, allowed, label)
+  for key in pairs(value) do
+    assert(type(key) == "string" and allowed[key], label .. " has unsupported field " .. tostring(key))
   end
-  ---@cast workspace Neoagent.ToolWorkspace
-  return workspace
+end
+
+---@generic T: table
+---@param value T
+---@param label string
+---@return T
+function M.request(value, label)
+  local encoded, bytes = pcall(vim.mpack.encode, value)
+  assert(encoded and type(bytes) == "string", label .. " could not be encoded")
+  assert(
+    #bytes <= require("neoagent.tools.limits").MAX_REQUEST_BYTES,
+    label .. " exceeded the aggregate request limit"
+  )
+  return value
+end
+
+---@param value unknown
+---@param label string
+---@param allow_empty? boolean
+---@return string
+function M.string(value, label, allow_empty)
+  assert(type(value) == "string" and (allow_empty or value ~= ""), label .. " must be a string")
+  return value
+end
+
+---@param value unknown
+---@param label string
+---@return string
+function M.path(value, label)
+  local path = M.string(value, label)
+  assert(not path:find("\0", 1, true), label .. " must be NUL-free")
+  local maximum = require("neoagent.tools.limits").MAX_PATH_BYTES
+  assert(#path <= maximum, label .. " must not exceed " .. maximum .. " bytes")
+  return path
+end
+
+---@param value unknown
+---@param label string
+---@param allow_zero? boolean
+---@return integer
+function M.integer(value, label, allow_zero)
+  assert(
+    type(value) == "number" and value % 1 == 0 and (allow_zero and value >= 0 or value > 0),
+    label .. " must be " .. (allow_zero and "a non-negative" or "a positive") .. " integer"
+  )
+  ---@cast value integer
+  return value
 end
 
 ---@param arguments Neoagent.JsonObject
@@ -79,24 +140,135 @@ function M.require_string(arguments, key, allow_empty)
   return value
 end
 
----@param ctx? Neoagent.ToolCapabilities
----@return Neoagent.ToolFilesystem
-function M.fs(ctx)
-  return ctx and ctx.fs or fs
+---@param value unknown
+---@return Neoagent.ToolOperationCall
+function M.validate_call(value)
+  assert(M.object(value), "Tool operation call must be an object")
+  ---@cast value table
+  M.fields(value, { workspace = true, artifacts = true, on_update = true }, "Tool operation call")
+  assert(M.object(value.workspace), "Tool workspace must be an object")
+  M.fields(value.workspace, { root = true, cwd = true }, "Tool workspace")
+  local root = M.path(value.workspace.root, "Tool workspace root")
+  local cwd = M.path(value.workspace.cwd, "Tool workspace cwd")
+  if value.artifacts ~= nil then
+    assert(
+      type(value.artifacts) == "table" and type(value.artifacts.put) == "function",
+      "Tool artifacts must provide put"
+    )
+  end
+  assert(type(value.on_update) == "function", "Tool on_update must be a function")
+  return {
+    workspace = { root = root, cwd = cwd },
+    artifacts = value.artifacts and { put = value.artifacts.put } or nil,
+    on_update = value.on_update,
+  }
 end
 
----@async
----@param ctx? Neoagent.ToolCapabilities
----@param command string[]
----@param opts? Neoagent.ProcessOptions
----@return Neoagent.ProcessResult
-function M.process(ctx, command, opts)
-  local run = ctx and ctx.process or process.run
-  return run(command, opts)
+---@generic C
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.ToolOperationCall
+function M.call(ctx)
+  local composition = ctx and ctx.context
+  local workspace = type(composition) == "table" and rawget(composition, "workspace") or composition
+  if type(workspace) ~= "table" or type(workspace.root) ~= "string" or type(workspace.cwd) ~= "string" then
+    error("Tool requires a workspace in ctx.context.workspace", 0)
+  end
+  local storage = type(composition) == "table" and rawget(composition, "files") or nil
+  return M.validate_call({
+    workspace = { root = workspace.root, cwd = workspace.cwd },
+    artifacts = files.writable(storage) and { put = storage.put } or nil,
+    on_update = ctx and ctx.on_update or function() end,
+  })
 end
 
----@param options? Neoagent.LineCaptureOptions
----@return Neoagent.LineCapture
+---@param value unknown
+---@return Neoagent.ToolResult
+function M.result(value)
+  local normalized, err = semantic_message.normalize_tool_result(value)
+  assert(normalized, err)
+  return normalized
+end
+
+---@param value unknown
+---@return Neoagent.ToolResult
+function M.update(value)
+  local normalized, err = semantic_message.normalize_tool_result(value, { transient = true })
+  assert(normalized, err)
+  return normalized
+end
+
+---@param overrides? Neoagent.ToolDependencyOverrides
+---@return Neoagent.ToolDependencies
+function M.dependencies(overrides)
+  overrides = overrides or {}
+  local dependencies = {
+    fs = overrides.fs or require("neoagent.fs"),
+    process = overrides.process or require("neoagent.process").run,
+    workspace = overrides.workspace or function(value)
+      return require("neoagent.workspace").new(value)
+    end,
+    executable = overrides.executable or function(name)
+      return vim.fn.executable(name) == 1
+    end,
+    hrtime = overrides.hrtime or vim.uv.hrtime,
+    artifact_publisher = overrides.artifact_publisher or function(call)
+      local publisher = call.artifacts
+      if not publisher then
+        error("Tool image result requires a writable attachment store", 0)
+      end
+      return publisher
+    end,
+    fingerprint = overrides.fingerprint or require("neoagent.fs").content_fingerprint,
+    observe_output = overrides.observe_output,
+  }
+  assert(type(dependencies.fs) == "table", "Tool filesystem is required")
+  assert(type(dependencies.process) == "function", "Tool process runner is required")
+  assert(type(dependencies.workspace) == "function", "Tool workspace constructor is required")
+  assert(type(dependencies.executable) == "function", "Tool executable lookup is required")
+  assert(type(dependencies.hrtime) == "function", "Tool clock is required")
+  assert(type(dependencies.artifact_publisher) == "function", "Tool artifact publisher is required")
+  assert(type(dependencies.fingerprint) == "function", "Tool content fingerprint is required")
+  assert(
+    dependencies.observe_output == nil or type(dependencies.observe_output) == "function",
+    "Tool output observer must be a function"
+  )
+  return dependencies
+end
+
+---@generic C
+---@param tool Neoagent.Tool<C>
+---@param identity Neoagent.ToolImplementationIdentity
+---@return Neoagent.Tool<C>
+function M.bind(tool, identity)
+  assert(type(tool.execute) == "function", "Tool implementation requires execute")
+  assert(type(identity) == "table" and type(identity.token) == "table", "Tool implementation token is required")
+  assert(type(identity.settings) == "table", "Tool implementation settings are required")
+  assert(type(identity.prepare) == "function", "Tool implementation prepare is required")
+  implementations[tool.execute] = {
+    token = identity.token,
+    settings = util.copy(identity.settings),
+    prepare = identity.prepare,
+  }
+  return tool
+end
+
+---@generic C
+---@param tool Neoagent.Tool<C>
+---@return Neoagent.ToolImplementationIdentity?
+function M.identity(tool)
+  local identity = type(tool) == "table" and implementations[tool.execute] or nil
+  if not identity then
+    return nil
+  end
+  return {
+    token = identity.token,
+    settings = util.copy(identity.settings),
+    prepare = identity.prepare,
+  }
+end
+
+---@param options? Neoagent.ToolLineCaptureOptions
+---@return Neoagent.ToolLineCapture
 function M.line_capture(options)
   options = options or {}
   local offset = options.offset or 1
@@ -205,7 +377,7 @@ function M.line_capture(options)
   end
 
   ---@param trailing_empty? boolean
-  ---@return Neoagent.LineCaptureResult
+  ---@return Neoagent.ToolLineCaptureResult
   function capture.finish(trailing_empty)
     assert(not finished, "line capture is finished")
     finished = true
@@ -235,12 +407,11 @@ function M.line_capture(options)
 end
 
 ---@async
----@param ctx? Neoagent.ToolCapabilities
+---@param process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 ---@param command string[]
----@param options Neoagent.ProcessCaptureOptions
----@return Neoagent.ProcessResult, Neoagent.LineCaptureResult, Neoagent.LineCaptureResult
-function M.capture_process(ctx, command, options)
-  options = options or {}
+---@param options Neoagent.ToolProcessCaptureOptions
+---@return Neoagent.ProcessResult, Neoagent.ToolLineCaptureResult, Neoagent.ToolLineCaptureResult
+function M.capture_process(process, command, options)
   local stdout = M.line_capture(assert(options.stdout, "stdout capture options are required"))
   local stderr = M.line_capture(options.stderr or {
     max_lines = 100,
@@ -256,7 +427,7 @@ function M.capture_process(ctx, command, options)
       stdout.append(data)
     end
   end
-  local result = M.process(ctx, command, process_options)
+  local result = process(command, process_options)
   return result, stdout.finish(false), stderr.finish(false)
 end
 

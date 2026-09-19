@@ -18,6 +18,11 @@ Update this guide when the development workflow or a hard invariant changes.
   safe storage validation and separate runtime processes are allowed.
 - Put approval, logging, sandbox delegation, and other execution policy in
   `execute_tool(tool, arguments, ctx)`; the core has no permission policy.
+- Keep bundled effects in their Tool modules with explicit dependencies.
+  Tools do not select their execution location. Parent-only Tools stay out
+  of RPC.
+- Keep Tool worker dependencies free of Agent, Session, provider,
+  authentication, Applet, and UI modules.
 - Support metered and subscription access when the provider documents a
   third-party integration surface for that mode.
 - Runtime code has no Lua plugin dependencies. Resolve executables and test
@@ -32,7 +37,8 @@ Architecture is the canonical ownership reference. Changes must preserve:
   commits precede dependent work.
 - Cancellation through Models, tools, child Runs, provider leases, and
   deferred destruction; completion and disposal once; stale callbacks unable
-  to mutate newer state.
+  to mutate newer state. Valid final Tool results survive cancellation during
+  cleanup and commit before the loop stops.
 - Tool-free Sessions and fixed Profile, Workspace, and Session identity per
   Agent, with one independent activity lifecycle.
 - Top-level Applet ownership of drafts, Agent registration and selection,
@@ -48,8 +54,11 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
-- Tool execution blocked when requested sandbox activation fails; host
-  execution requires explicitly disabling sandboxing.
+- Restricted Tool execution blocked when requested sandbox activation
+  fails, without host fallback. Explicitly granted parent Tools remain
+  available independently of sandbox activation.
+- Worker and runtime bootstrap dependencies never weaken explicit filesystem
+  denials; conflicting profiles block the invocation before Tool execution.
 - Private atomic credential storage; credentials excluded from provider state
   and diagnostics; HTTP and conversation bodies excluded from provider
   diagnostics. Persistence uncertainty blocks later Store mutations.
@@ -76,17 +85,11 @@ Each document has one job:
 | `architecture.md` | Stable ownership, lifecycle, and data flow needed to reason about system boundaries |
 | `AGENTS.md` | Contributor constraints and development workflow |
 
-Change documentation when existing guidance becomes incorrect or a reader
-needs missing information to perform the document's stated task. A code change
-alone does not require a documentation change. Routine fixes and refactors
-that preserve documented contracts usually need no documentation edits.
-
-Keep implementation mechanics in code and regression scenarios in tests.
-Architecture should explain responsibilities, boundaries, and interactions
-that guide future changes; omit local call ordering, guards, and bookkeeping
-unless they are necessary to understand a system-wide contract. User and API
-docs should explain what readers can do and rely on. Describe development
-workflow and enforceable contributor constraints in this guide.
+Update docs when guidance is wrong or readers need missing information.
+Code changes alone do not require documentation changes. Keep implementation
+mechanics in code and regression scenarios in tests. Architecture documents
+ownership and system-wide contracts; user and API docs explain what readers
+can do and rely on. This guide covers workflow and contributor constraints.
 
 Revise the canonical explanation rather than appending a note for each fix.
 Remove obsolete or duplicate guidance. Keep copyable examples and use real
@@ -257,15 +260,11 @@ If evidence is missing, ask them to enable recording, restart and
 reproduce the interaction. Start with default rolling retention; use
 `retention = "all"` only when the last exchange cannot explain the issue.
 Inspect metadata first and read only the content needed to understand the
-failure. Originals are local evidence only: never use personal conversation
-data in reproduction inputs, regression fixtures, test assertions, or docs.
-Create a synthetic adaptation that preserves the relevant protocol structure
-and failure. Replace all conversation content, including prompts, responses,
-thinking, tool arguments/results, code and attachments, plus private metadata
-and credentials. Trimming a conversation or masking secrets is not sufficient.
-Keep user recordings unchanged; see the adaptation workflow below.
-Keep real Authentication and HTTP decoding in the regression. Do not invoke a
-live API merely to create test data.
+failure. Originals remain unchanged local evidence. Reproduction inputs,
+fixtures, assertions, and docs must use synthetic conversation content,
+attachments, metadata, and credentials; trimming or masking alone is
+insufficient. Keep real Authentication and HTTP decoding in the regression.
+Do not invoke a live API merely to create test data.
 
 See [HTTP regression recordings](tests/recordings/README.md) for the capture,
 validation and promotion workflow, scenario matching/dependencies, and the

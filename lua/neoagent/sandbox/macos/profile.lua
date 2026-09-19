@@ -145,9 +145,21 @@ function M.compile(profile, internal)
     end
   end
   for _, entry in ipairs(internal or {}) do
-    grant("file-read*", entry.path)
+    grant(
+      "file-read*",
+      entry.path,
+      exclusions(entry.path, function(access)
+        return access == "deny"
+      end)
+    )
     if entry.access == "write" then
-      grant("file-write*", entry.path)
+      grant(
+        "file-write*",
+        entry.path,
+        exclusions(entry.path, function(access)
+          return access ~= "write"
+        end)
+      )
     end
   end
   if profile.network == "enabled" then

@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local framing = require("neoagent.ipc.framing")
 
 local M = {}
 ---@class Neoagent.SandboxProtocolInput
@@ -40,42 +41,30 @@ local M = {}
 ---@alias Neoagent.SandboxProtocolEvent Neoagent.SandboxReadyEvent|Neoagent.SandboxOutputEvent|Neoagent.SandboxTerminalEvent
 
 ---@class Neoagent.SandboxProtocolDecoder
----@field buffer string
----@field length? integer
 ---@field sequence integer
 ---@field ready boolean
 ---@field terminal? Neoagent.SandboxTerminalEvent
----@field max_frame integer
 ---@field on_event fun(event: Neoagent.SandboxProtocolEvent)
+---@field framing Neoagent.FrameDecoder
 local Decoder = {}
 Decoder.__index = Decoder
 
 local MAX_FRAME = 1024 * 1024
 
----@param value integer
+---@param message unknown
 ---@return string
-local function u32(value)
-  return string.char(
-    math.floor(value / 16777216) % 256,
-    math.floor(value / 65536) % 256,
-    math.floor(value / 256) % 256,
-    value % 256
-  )
-end
-
----@param buffer string
----@return integer
-local function decode_length(buffer)
-  local a, b, c, d = buffer:byte(1, 4)
-  return ((a * 256 + b) * 256 + c) * 256 + d
+local function framing_error(message)
+  local value = tostring(message)
+  value = value:gsub("invalid IPC frame length", "invalid sandbox protocol frame length")
+  value = value:gsub("invalid IPC MessagePack payload", "invalid sandbox protocol MessagePack payload")
+  value = value:gsub("truncated IPC frame", "truncated sandbox protocol frame")
+  return value
 end
 
 ---@param value unknown
 ---@return string
 function M.encode(value)
-  local payload = vim.mpack.encode(value)
-  assert(#payload <= MAX_FRAME, "sandbox protocol frame is too large")
-  return u32(#payload) .. payload
+  return framing.encode(value, MAX_FRAME)
 end
 
 ---@param value unknown
@@ -148,30 +137,9 @@ end
 ---@param chunk string
 function Decoder:feed(chunk)
   assert(type(chunk) == "string", "sandbox protocol chunk must be a string")
-  self.buffer = self.buffer .. chunk
-  while true do
-    if not self.length then
-      if #self.buffer < 4 then
-        return
-      end
-      self.length = decode_length(self.buffer)
-      self.buffer = self.buffer:sub(5)
-      if self.length <= 0 or self.length > self.max_frame then
-        error("invalid sandbox protocol frame length")
-      end
-    end
-    if #self.buffer < self.length then
-      return
-    end
-    local payload = self.buffer:sub(1, self.length)
-    self.buffer = self.buffer:sub(self.length + 1)
-    self.length = nil
-    local ok, value = pcall(vim.mpack.decode, payload)
-    if not ok then
-      error("invalid sandbox MessagePack payload: " .. tostring(value))
-    end
-    local event = validate(value, self)
-    self.on_event(util.copy(event))
+  local ok, err = pcall(self.framing.feed, self.framing, chunk)
+  if not ok then
+    error(framing_error(err), 0)
   end
 end
 
@@ -179,8 +147,9 @@ end
 ---@return_overload Neoagent.SandboxTerminalEvent
 ---@return_overload nil, string
 function Decoder:finish()
-  if self.length or self.buffer ~= "" then
-    return nil, "truncated sandbox protocol stream"
+  local complete, framing_err = self.framing:finish()
+  if not complete then
+    return nil, framing_error(framing_err)
   end
   if not self.terminal then
     return nil, "sandbox protocol has no terminal event"
@@ -192,15 +161,21 @@ end
 ---@return Neoagent.SandboxProtocolDecoder
 function M.new(opts)
   opts = opts or {}
-  return setmetatable({
-    buffer = "",
-    length = nil,
+  ---@type Neoagent.SandboxProtocolDecoder
+  local decoder = setmetatable({
     sequence = 0,
     ready = false,
     terminal = nil,
-    max_frame = opts.max_frame or MAX_FRAME,
     on_event = opts.on_event or function() end,
   }, Decoder)
+  decoder.framing = framing.new({
+    max_frame = opts.max_frame or MAX_FRAME,
+    on_value = function(value)
+      local event = validate(value, decoder)
+      decoder.on_event(util.copy(event))
+    end,
+  })
+  return decoder
 end
 
 ---@param data string

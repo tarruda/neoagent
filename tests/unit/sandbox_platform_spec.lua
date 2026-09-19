@@ -77,9 +77,13 @@ local function caught(fn)
   return value
 end
 
+---@class Neoagent.TestSandboxRequest: Neoagent.SandboxProcessRequest
+---@field cwd string
+---@field env table<string, string>
+
 ---@param root string
 ---@param active_profile? Neoagent.SandboxProfile
----@return Neoagent.SandboxProcessRequest
+---@return Neoagent.TestSandboxRequest
 local function request(root, active_profile)
   return {
     argv = { "/bin/sh", "-c", "true" },
@@ -123,38 +127,6 @@ local function framed_process(events, host)
       timed_out = false,
     }
   end
-end
-
----@param path string
----@param name string
----@param boundary string
----@param environment table<string, unknown>
----@return function
-local function runtime_function(path, name, boundary, environment)
-  local source = assert(fs.read(path))
-  local marker = "local function " .. name .. "("
-  local first = source:find(marker, 1, true)
-  local selected
-  if first then
-    local last = assert((source:find(boundary, first, true)))
-    selected = source:sub(first, last - 1)
-      .. "\nreturn " .. name
-  else
-    assert.are.equal("atomic_replace", name)
-    local inline = '      elseif request.operation == "atomic_replace" then'
-    first = assert((source:find(inline, 1, true)))
-    first = assert((source:find("\n", first, true))) + 1
-    local last = assert((source:find(
-      "\n      end\n      finish(64)", first, true)))
-    selected = "return function(request)\n"
-      .. source:sub(first, last - 1) .. "\nend"
-  end
-  local chunk, load_err = loadstring(selected, "@" .. path .. ":" .. name)
-  assert(chunk, load_err)
-  setfenv(assert(chunk), setmetatable(environment, { __index = _G }))
-  local value = assert(chunk)()
-  assert(type(value) == "function")
-  return value
 end
 
 describe("neoagent sandbox platform adapters", function()
@@ -325,206 +297,6 @@ describe("neoagent sandbox platform adapters", function()
       assert.are.equal("error", terminal.type)
       assert.are.equal("specification-json", terminal.stage)
     end)
-
-  it("rejects Linux atomic replacement second-inspection errors", function()
-    local path = "/workspace/file"
-    local suffix = string.rep("a", 32)
-    local temporary = path .. "." .. suffix .. ".tmp"
-
-    local linux_lstats, linux_unlinks, linux_renames = 0, {}, 0
-    local linux_exit
-    local linux = runtime_function(
-      "scripts/sandbox_linux_runtime.lua", "atomic_replace",
-      "\n-- Validate every value", {
-        vim = {
-          islist = vim.islist,
-          uv = {
-            fs_lstat = function()
-              linux_lstats = linux_lstats + 1
-              if linux_lstats == 1 then
-                return { type = "file", mode = 420 }
-              end
-              return nil, "inspection denied", "EACCES"
-            end,
-          },
-        },
-        bit = bit,
-        ffi = {
-          cast = function(_, value) return value end,
-          new = function() return {} end,
-          string = function(buffer, count)
-            return buffer.data:sub(1, count)
-          end,
-          errno = function() return 0 end,
-        },
-        C = {
-          open = function() return 10 end,
-          read = function(_, buffer)
-            if buffer.data then return 0 end
-            buffer.data = "payload"
-            return #buffer.data
-          end,
-          close = function() return 0 end,
-          chmod = function() return 0 end,
-          unlinkat = function(_, value)
-            linux_unlinks[#linux_unlinks + 1] = value
-            return 0
-          end,
-          renameat = function()
-            linux_renames = linux_renames + 1
-            return 0
-          end,
-        },
-        O = { WRONLY = 1, CREAT = 64, EXCL = 128, CLOEXEC = 524288 },
-        E = { EINTR = 4 },
-        AT_FDCWD = -100,
-        write_all = function() return true end,
-        missing = function(err, code)
-          return code == "ENOENT"
-            or type(err) == "string" and err:find("ENOENT", 1, true)
-              ~= nil
-        end,
-        finish = function(code)
-          linux_exit = code
-          error("exit", 0)
-        end,
-      })
-    local linux_ok = pcall(linux, {
-      path = path,
-      suffix = suffix,
-      policy = { mode = 420 },
-    })
-    assert.is_false(linux_ok)
-    assert.are.equal(74, linux_exit)
-    assert.are.same({ temporary }, linux_unlinks)
-    assert.are.equal(0, linux_renames)
-  end)
-
-  it("rejects macOS atomic replacement second-inspection errors", function()
-    local path = "/workspace/file"
-    local suffix = string.rep("a", 32)
-    local temporary = path .. "." .. suffix .. ".tmp"
-    local mac_lstats, mac_unlinks, mac_renames = 0, {}, 0
-    local mac_failure
-    local macos = runtime_function(
-      "scripts/sandbox_macos_runtime.lua", "atomic_replace",
-      "\nlocal function filesystem_request", {
-        vim = {
-          islist = vim.islist,
-          uv = {
-            fs_lstat = function()
-              mac_lstats = mac_lstats + 1
-              if mac_lstats == 1 then
-                return { type = "file", mode = 420 }
-              end
-              return nil, "inspection denied", "EACCES"
-            end,
-            fs_open = function() return 10 end,
-            fs_write = function(_, data) return #data end,
-            fs_close = function() return true end,
-            fs_chmod = function() return true end,
-            fs_unlink = function(value)
-              mac_unlinks[#mac_unlinks + 1] = value
-              return true
-            end,
-            fs_rename = function()
-              mac_renames = mac_renames + 1
-              return true
-            end,
-          },
-        },
-        bit = bit,
-        target_observation = function(stat)
-          return {
-            exists = stat ~= nil,
-            type = stat and stat.type or nil,
-            device = stat and stat.dev or nil,
-            inode = stat and stat.ino or nil,
-            mode = stat and stat.mode or nil,
-          }
-        end,
-        same_target = function(left, right)
-          return left.exists == right.exists and left.type == right.type
-            and left.device == right.device and left.inode == right.inode
-            and left.mode == right.mode
-        end,
-        missing = function(err, code)
-          return code == "ENOENT"
-            or type(err) == "string" and err:find("ENOENT", 1, true)
-              ~= nil
-        end,
-        fail = function(message)
-          mac_failure = message
-          error("exit", 0)
-        end,
-      })
-    local mac_ok = pcall(macos, {
-      path = path,
-      suffix = suffix,
-      policy = { mode = 420 },
-    }, "payload")
-    assert.is_false(mac_ok)
-    assert.are.equal("inspection denied", mac_failure)
-    assert.are.same({ temporary }, mac_unlinks)
-    assert.are.equal(0, mac_renames)
-  end)
-
-  it("keeps Windows atomic replacement second inspection fail-closed", function()
-    local path = "/workspace/file"
-    local suffix = string.rep("a", 32)
-    local temporary = path .. "." .. suffix .. ".tmp"
-    local windows_lstats, windows_deletes, windows_moves = 0, {}, 0
-    local windows = runtime_function(
-      "scripts/sandbox_windows_runtime.lua", "direct_atomic_replace",
-      "\nlocal function direct_mkdirp", {
-        vim = { islist = vim.islist },
-        bit = bit,
-        WIN32 = {
-          ERROR = {
-            INVALID_PARAMETER = 87,
-            FILE_NOT_FOUND = 2,
-            PATH_NOT_FOUND = 3,
-            ACCESS_DENIED = 5,
-          },
-          FILE = {
-            ATTRIBUTE_REPARSE_POINT = 1024,
-            ATTRIBUTE_DIRECTORY = 16,
-            MOVE_REPLACE_EXISTING = 1,
-            MOVE_WRITE_THROUGH = 8,
-          },
-        },
-        file_attributes = function()
-          windows_lstats = windows_lstats + 1
-          if windows_lstats == 1 then return 0 end
-          return nil, 5
-        end,
-        path_identity = function()
-          return { volume = 1, high = 0, low = 1 }
-        end,
-        same_identity = function(left, right)
-          return left and right and left.volume == right.volume
-            and left.high == right.high and left.low == right.low
-        end,
-        direct_write = function() return true end,
-        wide = function(value) return value end,
-        K = {
-          DeleteFileW = function(value)
-            windows_deletes[#windows_deletes + 1] = value
-            return 1
-          end,
-          MoveFileExW = function()
-            windows_moves = windows_moves + 1
-            return 1
-          end,
-        },
-      })
-    local windows_ok, windows_err = windows(
-      path, "payload", { mode = 420 }, suffix)
-    assert.is_nil(windows_ok)
-    assert.are.equal(5, windows_err)
-    assert.are.same({ temporary }, windows_deletes)
-    assert.are.equal(0, windows_moves)
-  end)
 
   it("resolves a configured Linux Neovim command through PATH", function()
     local command = vim.fs.basename(vim.fn.exepath("nvim"))
@@ -704,7 +476,7 @@ describe("neoagent sandbox platform adapters", function()
           type = "output",
           stream = "stdout",
           seq = 1,
-          data = spec.mode == "fs" and "file\0data" or "out\0",
+          data = "out\0",
         }), false)
         emit_output(opts, protocol.encode({
           v = 1,
@@ -768,50 +540,6 @@ describe("neoagent sandbox platform adapters", function()
     assert.is_nil(requests[1].spec.env.GIT_DISCOVERY_ACROSS_FILESYSTEM)
     assert.is_nil(vim.uv.fs_stat(reserved))
 
-    local data = assert(platform.fs({
-      operation = "read",
-      path = vim.fs.joinpath(root, "file"),
-      profile = profile(root),
-    }, services))
-    assert.are.equal("file\0data", data)
-    assert.are.equal("fs", requests[2].spec.mode)
-    assert.are.equal(30000, requests[2].opts.timeout_ms)
-
-    data = assert(platform.fs({
-      operation = "read_range",
-      path = vim.fs.joinpath(root, "file"),
-      offset = 17,
-      size = 4096,
-      profile = profile(root),
-    }, services))
-    assert.are.equal("file\0data", data)
-    assert.are.equal("read_range", requests[3].spec.fs.operation)
-    assert.are.equal(17, requests[3].spec.fs.offset)
-    assert.are.equal(4096, requests[3].spec.fs.size)
-
-    assert.is_true(platform.fs({
-      operation = "write_all",
-      path = vim.fs.joinpath(root, "file"),
-      data = "new contents",
-      profile = profile(root),
-    }, services))
-
-    local failed, reason = platform.fs({
-      operation = "write_all",
-      path = vim.fs.joinpath(root, "file"),
-      data = "new contents",
-      profile = profile(root),
-    }, {
-      fs = fs,
-      nvim = vim.env.NEOAGENT_NVIM,
-      process = framed_process({
-        { v = 1, type = "ready" },
-        { v = 1, type = "exit", code = 73, signal = 0 },
-      }),
-    })
-    assert.is_nil(failed)
-    assert.are.equal("sandbox filesystem operation failed", reason)
-
     local overflow = caught(function()
       platform.exec({
         argv = { "/bin/sh", "-c", "printf output" },
@@ -859,6 +587,369 @@ describe("neoagent sandbox platform adapters", function()
     end)
     assert.is_false(created)
     assert.matches("filesystem profile exposes", tostring(err.detail))
+  end)
+
+  linux_it("rejects Linux worker bootstrap paths denied exactly or by an ancestor", function()
+    local root = temp()
+    local bootstrap = assert(vim.uv.fs_realpath(assert(vim.api.nvim_get_runtime_file(
+      "scripts/tool_worker.lua", false)[1])))
+    local parent = vim.fs.dirname(bootstrap)
+    assert.is_string(parent)
+    ---@cast parent string
+    ---@type string[]
+    local denied_paths = { bootstrap, parent }
+    for _, denied in ipairs(denied_paths) do
+      ---@type Neoagent.SandboxFilesystemEntry[]
+      local denied_entry = { { path = denied, access = "deny" } }
+      local started = false
+      local err = caught(function()
+        require("neoagent.sandbox.linux").start_worker({
+          argv = { "/bin/sh", "-c", "true" },
+          cwd = root,
+          env = { PATH = "/bin:/usr/bin" },
+          profile = profile(root, denied_entry),
+          bootstrap_paths = { bootstrap },
+        }, {
+          fs = fs,
+          nvim = vim.env.NEOAGENT_NVIM,
+          capabilities = { procfs = "host" },
+          process = function()
+            error("completion-oriented process must not run")
+          end,
+          start_worker = function()
+            started = true
+            error("must not start")
+          end,
+        })
+      end)
+      assert.is_false(started)
+      assert.are.equal("sandbox_unavailable", err.kind)
+      assert.matches("denies required bootstrap path", err.message)
+    end
+
+    local relative = caught(function()
+      require("neoagent.sandbox.linux").start_worker({
+        argv = { "/bin/sh", "-c", "true" },
+        cwd = root,
+        env = { PATH = "/bin:/usr/bin" },
+        profile = profile(root),
+        bootstrap_paths = { "relative" },
+      }, {
+        fs = fs,
+        nvim = vim.env.NEOAGENT_NVIM,
+        capabilities = { procfs = "host" },
+        process = function() error("completion-oriented process must not run") end,
+        start_worker = function() error("must not start") end,
+      })
+    end)
+    assert.are.equal("sandbox_unavailable", relative.kind)
+    assert.matches("bootstrap path is not absolute", relative.message)
+  end)
+
+  linux_it("honors explicit Linux bootstrap exceptions beneath denied ancestors", function()
+    local root = temp()
+    local bootstrap = assert(vim.uv.fs_realpath(assert(vim.api.nvim_get_runtime_file(
+      "scripts/tool_worker.lua", false)[1])))
+    local active_profile = profile(root, {
+      { path = assert(vim.fs.dirname(bootstrap)), access = "deny" },
+      { path = bootstrap, access = "read" },
+    })
+    local started = false
+    local child = require("neoagent.sandbox.linux").start_worker({
+      argv = { "/bin/sh", "-c", "true" },
+      cwd = root,
+      env = { PATH = "/bin:/usr/bin" },
+      profile = active_profile,
+      bootstrap_paths = { bootstrap },
+    }, {
+      fs = fs,
+      nvim = vim.env.NEOAGENT_NVIM,
+      capabilities = { procfs = "host" },
+      process = function()
+        error("completion-oriented process must not run")
+      end,
+      start_worker = function(request_value)
+        started = true
+        assert(request_value.on_stdout)(protocol.encode({ v = 1, type = "ready" })
+          .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0 }))
+        assert(request_value.on_exit)({ code = 0, signal = 0, stderr = "" })
+        return {
+          write = function() return true end,
+          close_stdin = function() return true end,
+          terminate = function() end,
+          wait = function() return { code = 0, signal = 0, stderr = "" } end,
+          dispose = function() end,
+        }
+      end,
+    })
+    assert.is_true(started)
+    assert.are.equal(0, child:wait().code)
+    child:dispose("test complete")
+  end)
+
+  linux_it("preserves exact and inherited writes for Linux worker bootstrap paths", function()
+    local root = temp()
+    local nested = vim.fs.joinpath(root, "bootstrap")
+    assert(fs.mkdirp(nested))
+    local active_profile = profile(root)
+
+    for _, bootstrap in ipairs({ root, nested }) do
+      ---@type Neoagent.WorkerRequest?
+      local started_request
+      local child = require("neoagent.sandbox.linux").start_worker({
+        argv = { "/bin/sh", "-c", "true" },
+        cwd = root,
+        env = { PATH = "/bin:/usr/bin" },
+        profile = active_profile,
+        bootstrap_paths = { bootstrap },
+      }, {
+        fs = fs,
+        nvim = vim.env.NEOAGENT_NVIM,
+        capabilities = { procfs = "host" },
+        process = function()
+          error("completion-oriented process must not run")
+        end,
+        start_worker = function(request_value)
+          started_request = request_value
+          assert(request_value.on_stdout)(protocol.encode({ v = 1, type = "ready" })
+            .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0 }))
+          assert(request_value.on_exit)({ code = 0, signal = 0, stderr = "" })
+          return {
+            write = function()
+              return true
+            end,
+            close_stdin = function()
+              return true
+            end,
+            terminate = function() end,
+            wait = function()
+              return { code = 0, signal = 0, stderr = "" }
+            end,
+            dispose = function() end,
+          }
+        end,
+      })
+      local spec = vim.json.decode(encoded_spec(assert(started_request).env))
+      local access = spec.profile.filesystem.default
+      local specificity = -1
+      for _, entry in ipairs(spec.profile.filesystem.entries) do
+        if
+          (entry.path == bootstrap or bootstrap:sub(1, #entry.path + 1) == entry.path .. "/")
+          and #entry.path > specificity
+        then
+          access = entry.access
+          specificity = #entry.path
+        end
+      end
+      assert.are.equal("write", access, bootstrap)
+      assert.are.equal(0, child:wait().code)
+      child:dispose("test complete")
+    end
+  end)
+
+  it("starts macOS streaming workers with explicit bootstrap grants", function()
+    local root = temp()
+    local macos = require("neoagent.sandbox.macos")
+    local active_profile = profile(root)
+    local captured
+    local returned = {
+      write = function() return true end,
+      close_stdin = function() return true end,
+      terminate = function() end,
+      wait = function() return { code = 0, signal = 0, stderr = "" } end,
+      dispose = function() end,
+    }
+    local child = macos.start_worker({
+      argv = { "/bin/sh", "-c", "true" },
+      cwd = root,
+      env = { PATH = "/bin:/usr/bin" },
+      profile = active_profile,
+      bootstrap_paths = { root .. "/bootstrap" },
+      kill_grace_ms = 1,
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = vim.env.NEOAGENT_NVIM,
+      sandbox_exec = "/bin/true",
+      start_worker = function(value)
+        captured = value
+        return returned
+      end,
+    })
+    assert.are.equal(returned, child)
+    local captured_request = captured or error("macOS child request was not captured")
+    assert.are.equal(root, captured_request.cwd)
+    assert.are.equal(100, captured_request.kill_grace_ms)
+    assert.are.equal("1", captured_request.env.NEOAGENT_SANDBOX_EXEC)
+    assert.are.equal("1", captured_request.env.NEOAGENT_SANDBOX_STREAM)
+    local found_bootstrap = false
+    for _, value in ipairs(captured_request.argv) do
+      found_bootstrap = found_bootstrap or value:find(root .. "/bootstrap", 1, true) ~= nil
+    end
+    assert.is_true(found_bootstrap)
+
+    local denied_profile = profile(root, {
+      { path = root .. "/bootstrap", access = "deny" },
+    })
+    local denied_started = false
+    local denied, denied_err = pcall(macos.start_worker, {
+      argv = { "/bin/sh", "-c", "true" },
+      cwd = root,
+      env = { PATH = "/bin:/usr/bin" },
+      profile = denied_profile,
+      bootstrap_paths = { root .. "/bootstrap" },
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = vim.env.NEOAGENT_NVIM,
+      sandbox_exec = "/bin/true",
+      start_worker = function()
+        denied_started = true
+        error("must not start")
+      end,
+    })
+    assert.is_false(denied)
+    assert.is_false(denied_started)
+    assert.matches(
+      "denies required bootstrap path",
+      structured_error(denied_err).message
+    )
+
+    local original_runtime = vim.api.nvim_get_runtime_file
+    vim.api.nvim_get_runtime_file = function(path, all)
+      if path == "scripts/sandbox_macos_runtime.lua" then
+        return {}
+      end
+      return original_runtime(path, all)
+    end
+    local found, missing = pcall(macos.start_worker, {
+      argv = { "/bin/true" }, cwd = root, env = {}, profile = active_profile,
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = vim.env.NEOAGENT_NVIM,
+    })
+    vim.api.nvim_get_runtime_file = original_runtime
+    assert.is_false(found)
+    assert.matches("runtime was not found", structured_error(missing).message)
+
+    local started, start_err = pcall(macos.start_worker, {
+      argv = { "/bin/true" }, cwd = root, env = {}, profile = active_profile,
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = vim.env.NEOAGENT_NVIM,
+      sandbox_exec = "/bin/true",
+      start_worker = function() error("macOS spawn failed") end,
+    })
+    assert.is_false(started)
+    assert.matches("Could not start macOS", structured_error(start_err).message)
+  end)
+
+  linux_it("fails Linux streaming worker setup without leaking staging roots", function()
+    local root = temp()
+    local linux = require("neoagent.sandbox.linux")
+    local active_profile = profile(root)
+    ---@param request_value Neoagent.TestSandboxRequest
+    ---@param overrides? {fs?: Neoagent.SandboxFilesystemService, start_worker?: fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease}
+    local function launch(request_value, overrides)
+      ---@type Neoagent.SandboxExecutionServices<string>
+      local services = {
+        fs = fs,
+        nvim = vim.env.NEOAGENT_NVIM,
+        capabilities = { procfs = "host" },
+        process = function() error("completion-oriented process must not run") end,
+      }
+      if overrides and overrides.fs then services.fs = overrides.fs end
+      if overrides and overrides.start_worker then services.start_worker = overrides.start_worker end
+      ---@type Neoagent.SandboxWorkerRequest
+      local child_request = {
+        argv = request_value.argv,
+        cwd = request_value.cwd,
+        env = request_value.env,
+        profile = request_value.profile,
+      }
+      return linux.start_worker(child_request, services)
+    end
+    local original_runtime = vim.api.nvim_get_runtime_file
+    vim.api.nvim_get_runtime_file = function(path, all)
+      if path == "scripts/sandbox_linux_runtime.lua" then
+        return {}
+      end
+      return original_runtime(path, all)
+    end
+    local ok, err = pcall(launch, request(root, active_profile))
+    vim.api.nvim_get_runtime_file = original_runtime
+    assert.is_false(ok)
+    assert.matches("runtime was not found", structured_error(err).message)
+
+    ok, err = pcall(launch, request(root, active_profile), {
+      fs = filesystem({ create_temp_directory = function()
+        return nil, "staging unavailable"
+      end }),
+    })
+    assert.is_false(ok)
+    assert.matches("Could not create Linux sandbox root", structured_error(err).message)
+
+    local missing = request(root, active_profile)
+    missing.argv = { "not-a-real-program" }
+    ok, err = pcall(launch, missing)
+    assert.is_false(ok)
+    assert.matches("executable was not found", structured_error(err).message)
+
+    ok, err = pcall(launch, request(root, active_profile), {
+      start_worker = function() error("Linux spawn failed") end,
+    })
+    assert.is_false(ok)
+    assert.matches("Could not start Linux", structured_error(err).message)
+
+    for _, failure in ipairs({ "specification", "spawn" }) do
+      local original_rmdir = vim.uv.fs_rmdir
+      local failed_root
+      vim.uv.fs_rmdir = function(path)
+        failed_root = path
+        return nil, "cleanup denied"
+      end
+      if failure == "specification" then
+        ok, err = pcall(launch, missing)
+      else
+        ok, err = pcall(launch, request(root, active_profile), {
+          start_worker = function() error("Linux spawn failed") end,
+        })
+      end
+      vim.uv.fs_rmdir = original_rmdir
+      if failed_root then vim.fn.delete(failed_root, "rf") end
+      assert.is_false(ok)
+      assert.matches("Could not remove Linux sandbox root",
+        structured_error(err).message)
+    end
+
+    local original_lstat = vim.uv.fs_lstat
+    local selected_root
+    local inspections = 0
+    local changed_fs = filesystem({ create_temp_directory = function(prefix, directory)
+      local path = assert(fs.create_temp_directory(prefix, directory))
+      selected_root = path
+      return path
+    end })
+    vim.uv.fs_lstat = function(path)
+      local stat, stat_err, stat_name = original_lstat(path)
+      if selected_root and path == selected_root then
+        inspections = inspections + 1
+        if inspections > 1 and stat then
+          stat = vim.deepcopy(stat)
+          stat.ino = stat.ino + 1
+        end
+      end
+      return stat, stat_err, stat_name
+    end
+    ok, err = pcall(launch, request(root, active_profile), { fs = changed_fs })
+    vim.uv.fs_lstat = original_lstat
+    if selected_root then
+      vim.fn.delete(selected_root, "rf")
+    end
+    assert.is_false(ok)
+    assert.matches("identity changed", structured_error(err).message)
   end)
 
   it("fails Linux launches closed across setup, process, and protocol errors",
@@ -1242,6 +1333,9 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.are.equal("nvim", missing_nvim.stage)
     assert.are.equal("nvim", linux.check({
+      nvim = "neoagent-unavailable-nvim-for-platform-regression",
+    }).stage)
+    assert.are.equal("nvim", linux.check({
       nvim = { true --[[@as string]] },
     }).stage)
 
@@ -1450,31 +1544,6 @@ describe("neoagent sandbox platform adapters", function()
       "--", "/bin/sh", "-c", "true",
     }, vim.list_slice(calls[1].argv, #calls[1].argv - 3))
 
-    local data = assert(macos.fs({
-      operation = "read",
-      path = vim.fs.joinpath(root, "file"),
-      profile = profile(root),
-    }, services))
-    assert.are.equal("runtime-data", data)
-    assert.are.equal(30000, calls[2].opts.timeout_ms)
-    assert.matches("NEOAGENT_SANDBOX_FS",
-      table.concat(vim.tbl_keys(calls[2].opts.env), " "))
-
-    data = assert(macos.fs({
-      operation = "read_range",
-      path = vim.fs.joinpath(root, "file"),
-      offset = 19,
-      size = 8192,
-      profile = profile(root),
-    }, services))
-    assert.are.equal("runtime-data", data)
-    local process_environment = calls[3].opts.env --[[@as table<string, string>]]
-    local encoded_request = process_environment.NEOAGENT_SANDBOX_FS
-    assert.is_string(encoded_request)
-    local filesystem_request = vim.json.decode(encoded_request)
-    assert.are.equal("read_range", filesystem_request.operation)
-    assert.are.equal(19, filesystem_request.offset)
-    assert.are.equal(8192, filesystem_request.size)
   end)
 
   it("fails macOS requirements and execution closed", function()
@@ -1503,18 +1572,6 @@ describe("neoagent sandbox platform adapters", function()
       sandbox_exec = executable,
       nvim = vim.env.NEOAGENT_NVIM,
     })
-    local fs_ok, fs_err = pcall(function()
-      macos.fs({
-        operation = "read",
-        path = vim.fs.joinpath(root, "file"),
-        profile = profile(root),
-      }, {
-        sandbox_exec = executable,
-        nvim = vim.env.NEOAGENT_NVIM,
-        fs = fs,
-        process = function() error("must not run") end,
-      })
-    end)
     local exec_ok, exec_err = pcall(function()
       macos.exec(request(root), {
         sandbox_exec = executable,
@@ -1526,8 +1583,6 @@ describe("neoagent sandbox platform adapters", function()
     vim.api.nvim_get_runtime_file = get_runtime_file
     assert.is_true(checked)
     assert.are.equal("runtime", missing_runtime.stage)
-    assert.is_false(fs_ok)
-    assert.matches("sandbox runtime was not found", structured_error(fs_err).message)
     assert.is_false(exec_ok)
     assert.matches("sandbox runtime was not found", structured_error(exec_err).message)
     local failed_probe = macos.check({
@@ -1583,31 +1638,6 @@ describe("neoagent sandbox platform adapters", function()
     end)
     assert.matches("invalid process result", structured_error(err).message)
 
-    local failed, reason = macos.fs({
-      operation = "write_all",
-      path = vim.fs.joinpath(root, "file"),
-      data = "data",
-      profile = active_profile,
-    }, services(function()
-      return {
-        code = 73,
-        signal = 0,
-        stdout = "",
-        stderr = "write denied",
-      }
-    end))
-    assert.is_nil(failed)
-    assert.are.equal("write denied", reason)
-
-    local written = macos.fs({
-      operation = "write_all",
-      path = vim.fs.joinpath(root, "file"),
-      data = "data",
-      profile = active_profile,
-    }, services(function()
-      return { code = 0, signal = 0, stdout = "", stderr = "" }
-    end))
-    assert.is_true(written)
   end)
 
   it("resolves a configured macOS Neovim command through PATH", function()
@@ -1836,9 +1866,142 @@ describe("neoagent sandbox platform adapters", function()
     end
   end
 
+  it("starts Windows streaming workers through the native protocol relay", function()
+    windows_test_host()
+    local windows = require("neoagent.sandbox.windows")
+    local supported_version = vim.version
+    rawset(vim, "version", function()
+      return { major = 0, minor = 11, patch = 0 }
+    end)
+    local unsupported, unsupported_err = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = {},
+      profile = windows_profile(),
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "C:\\Neovim\\bin\\nvim.exe",
+    })
+    vim.version = supported_version
+    assert.is_false(unsupported)
+    assert.matches("0.12 or newer", structured_error(unsupported_err).message)
+
+    local original_runtime = vim.api.nvim_get_runtime_file
+    cleanup(function() vim.api.nvim_get_runtime_file = original_runtime end)
+    vim.api.nvim_get_runtime_file = function(path, all)
+      if path == "scripts/sandbox_windows_runtime.lua" then
+        return {}
+      end
+      return original_runtime(path, all)
+    end
+    local found, missing = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = {},
+      profile = windows_profile(),
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "C:\\Neovim\\bin\\nvim.exe",
+    })
+    vim.api.nvim_get_runtime_file = original_runtime
+    assert.is_false(found)
+    assert.matches("runtime was not found", structured_error(missing).message)
+
+    local resolved, resolve_err = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = {},
+      profile = windows_profile(),
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "missing-nvim",
+    })
+    assert.is_false(resolved)
+    assert.matches("cannot be resolved", structured_error(resolve_err).message)
+
+    ---@type Neoagent.WorkerRequest?
+    local captured
+    local base = {
+      write = function() return true end,
+      close_stdin = function() return true end,
+      terminate = function() end,
+      wait = function() return { code = 0, signal = 0, stderr = "" } end,
+      dispose = function() end,
+    }
+    local relay = windows.start_worker({
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = { PATH = "C:\\Windows\\System32" },
+      profile = windows_profile(),
+      bootstrap_paths = { "C:\\Repo", "C:\\Repo" },
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "C:\\Neovim\\bin\\nvim.exe",
+      start_worker = function(value)
+        captured = value
+        assert(value.on_stdout)(protocol.encode({ v = 1, type = "ready" })
+          .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0 }))
+        assert(value.on_exit)({ code = 0, signal = 0, stderr = "" })
+        return base
+      end,
+    })
+    assert.are.equal(0, relay:wait().code)
+    local spec = vim.json.decode(assert(captured).env.NEOAGENT_SANDBOX_SPEC)
+    assert.is_true(spec.stream)
+    assert.are.equal(60000, spec.admission_timeout_ms)
+    assert.is_true(vim.list_contains(spec.runner.read_roots, "C:\\Repo"))
+
+    local denied_profile = windows_profile()
+    denied_profile.filesystem.entries[#denied_profile.filesystem.entries + 1] = {
+      path = "C:\\Repo\\bootstrap",
+      access = "deny",
+    }
+    local denied_started = false
+    local denied, denied_err = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = {},
+      profile = denied_profile,
+      bootstrap_paths = { "C:\\Repo\\bootstrap" },
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "C:\\Neovim\\bin\\nvim.exe",
+      start_worker = function()
+        denied_started = true
+        error("must not start")
+      end,
+    })
+    assert.is_false(denied)
+    assert.is_false(denied_started)
+    assert.matches(
+      "denies required bootstrap path",
+      structured_error(denied_err).message
+    )
+
+    local started, start_err = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" },
+      cwd = "C:\\Repo",
+      env = {},
+      profile = windows_profile(),
+    }, {
+      fs = fs,
+      process = function() error("completion-oriented process must not run") end,
+      nvim = "C:\\Neovim\\bin\\nvim.exe",
+      start_worker = function() error("Windows spawn failed") end,
+    })
+    assert.is_false(started)
+    assert.matches("Could not start Windows", structured_error(start_err).message)
+  end)
+
   it("adapts Windows operations to the standalone Lua runtime", function()
     windows_test_host()
     local windows = require("neoagent.sandbox.windows")
+    assert.are.equal("windows", windows.paths.name)
     local framed = require("neoagent.sandbox.protocol")
     local seen = {}
     local services = {
@@ -1898,6 +2061,7 @@ describe("neoagent sandbox platform adapters", function()
     }, seen[1].spec.argv)
     assert.are.equal("exec", seen[1].spec.mode)
     assert.are.equal(500, seen[1].spec.timeout_ms)
+    assert.are.equal(60000, seen[1].spec.admission_timeout_ms)
     assert.are.equal(10500, seen[1].opts.timeout_ms)
     assert.are.equal("C:\\state",
       seen[1].opts.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
@@ -1909,35 +2073,6 @@ describe("neoagent sandbox platform adapters", function()
       "C:\\Neovim\\share\\nvim\\runtime",
     }, seen[1].spec.runner.read_roots)
     assert.are.equal("C:\\state\\shared-tmp", windows.temporary_root())
-
-    local read = windows.fs({
-      operation = "read",
-      path = "C:\\Repo\\file",
-      profile = windows_profile(),
-    }, services)
-    assert.are.equal("out\0", read)
-    assert.are.equal("fs", seen[2].spec.mode)
-    assert.are.equal("read", seen[2].spec.fs.operation)
-    assert.are.equal("C:\\state\\shared-tmp", seen[2].spec.cwd)
-
-    read = windows.fs({
-      operation = "read_range",
-      path = "C:\\Repo\\file",
-      offset = 23,
-      size = 16384,
-      profile = windows_profile(),
-    }, services)
-    assert.are.equal("out\0", read)
-    assert.are.equal("read_range", seen[3].spec.fs.operation)
-    assert.are.equal(23, seen[3].spec.fs.offset)
-    assert.are.equal(16384, seen[3].spec.fs.size)
-
-    assert.is_true(windows.fs({
-      operation = "write_all",
-      path = "C:\\Repo\\file",
-      data = "written",
-      profile = windows_profile(),
-    }, services))
 
     local previous_runtime = vim.env.VIMRUNTIME
     vim.env.VIMRUNTIME = "C:\\Portable\\runtime"
@@ -2017,6 +2152,7 @@ describe("neoagent sandbox platform adapters", function()
   it("probes the live Windows runtime and fails closed", function()
     windows_test_host()
     local windows = require("neoagent.sandbox.windows")
+    assert.are.equal("windows", windows.paths.name)
     local framed = require("neoagent.sandbox.protocol")
     local fake_fs = filesystem({
       create_temp_directory = function()
@@ -2025,7 +2161,7 @@ describe("neoagent sandbox platform adapters", function()
       write_all = function() return true end,
       mkdirp = function() return true end,
     })
-    ---@type {argv: string[], timeout: integer, spec: {mode: string, probe: {deny_write: string}}}?
+    ---@type {argv: string[], timeout: integer, spec: {mode: string, admission_timeout_ms: integer, probe: {deny_write: string}}}?
     local captured
     local status = windows.check({
       fs = fake_fs,
@@ -2049,11 +2185,12 @@ describe("neoagent sandbox platform adapters", function()
         }
       end,
     })
-    assert.is_true(status.ok)
+    assert.is_true(status.ok, vim.inspect(status))
     assert.is_true(assert(status.capabilities).restricted_token)
     assert.is_true(assert(status.capabilities).windows_filtering_platform)
     assert.is_true(assert(status.capabilities).private_desktop)
     assert.are.equal("probe", assert(assert(captured).spec).mode)
+    assert.are.equal(60000, assert(assert(captured).spec).admission_timeout_ms)
     assert.are.equal("C:\\probe\\read-only.txt",
       assert(assert(captured).spec).probe.deny_write)
     assert.are.equal(321, assert(captured).timeout)
@@ -2192,6 +2329,9 @@ describe("neoagent sandbox platform adapters", function()
 
     assert.are.equal("nvim", windows.check({
       nvim = "/definitely/missing/nvim",
+    }).stage)
+    assert.are.equal("nvim", windows.check({
+      nvim = { "", "--clean" },
     }).stage)
     local missing_nvim = caught(function()
       windows.exec({
@@ -2350,24 +2490,6 @@ describe("neoagent sandbox platform adapters", function()
     assert.matches("failed at acl", structured_error(err).message)
     assert.are.equal("win32=5", err.detail)
 
-    local failed, reason = windows.fs({
-      operation = "write_all",
-      path = "C:\\Repo\\file",
-      data = "data",
-      profile = windows_profile(),
-    }, {
-      nvim = vim.env.NEOAGENT_NVIM,
-      process = windows_events({
-        { v = 1, type = "ready" },
-        {
-          v = 1, type = "output", stream = "stderr",
-          seq = 1, data = "write denied",
-        },
-        { v = 1, type = "exit", code = 7, signal = 0 },
-      }),
-    })
-    assert.is_nil(failed)
-    assert.are.equal("write denied", reason)
   end)
 
   it("rejects malformed Windows runtime event streams", function()
@@ -2532,7 +2654,7 @@ describe("neoagent sandbox platform adapters", function()
         name = "test",
         check = function() return { ok = true, platform = "test" } end,
         exec = function() error("unexpected process") end,
-        fs = function() error("unexpected filesystem operation") end,
+        start_worker = function() error("unexpected child") end,
       },
       profile = profile(root),
     }))

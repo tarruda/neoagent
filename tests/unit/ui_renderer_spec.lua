@@ -793,14 +793,32 @@ describe("neoagent native Renderer protocol", function()
     local edit = tool(renderers.codex, {
       kind = "edit",
       path = "narrow.lua",
+      added = 1500,
+      removed = 1500,
+      truncated = true,
       rows = {
         { kind = "context", number = 1, text = "one" },
         { kind = "delete", number = 2, text = "old" },
         { kind = "add", number = 2, text = "new" },
       },
-    }, 32)
+    }, 64)
     assert.matches("narrow.lua", edit)
+    assert.matches("%+1500", edit)
+    assert.matches("%-1500", edit)
+    assert.matches("patch truncated", edit)
     assert.matches("new", edit)
+    local truncated = require("neoagent.tools.edit_file").render({
+      state = "success", arguments = { path = "minified.js" },
+      result = { content = {}, details = {
+        patch = "@@ -1 +1 @@", patch_truncated = true,
+        added_lines = 1, removed_lines = 1,
+      } },
+    })
+    local preview = tool(renderers.codex, truncated, 64)
+    assert.matches("minified.js", preview, 1, true)
+    assert.matches("%+1", preview)
+    assert.matches("%-1", preview)
+    assert.matches("patch truncated", preview, 1, true)
     assert.matches("empty.lua", tool(renderers.codex, {
       kind = "edit",
       path = "empty.lua",
@@ -843,6 +861,7 @@ describe("neoagent native Renderer protocol", function()
       { kind = "edit", path = "bad.lua", rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad.lua", added = -1, rows = {} },
       { kind = "edit", path = "bad\npath.lua", rows = {} },
       { kind = "text", title = "bad\ntitle" },
       { kind = "text" },

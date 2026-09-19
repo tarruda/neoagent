@@ -279,27 +279,6 @@ local O = {
   CLOEXEC = 524288,
   TMPFILE = 0x410000,
 }
----@param data string
----@return string
-local function content_fingerprint(data)
-  local seeds = {
-    0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
-    0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
-  }
-  local parts = {}
-  for index, seed in ipairs(seeds) do
-    local hash = bit.tobit(seed)
-    for offset = 1, #data do
-      hash = bit.bxor(hash, data:byte(offset) + index - 1)
-      hash = bit.tobit(hash + bit.lshift(hash, 1)
-        + bit.lshift(hash, 4) + bit.lshift(hash, 7)
-        + bit.lshift(hash, 8) + bit.lshift(hash, 24))
-      hash = bit.bxor(hash, bit.rshift(hash, 13))
-    end
-    parts[index] = bit.tohex(hash, 8)
-  end
-  return table.concat(parts)
-end
 local SIG = {
   HUP = 1,
   INT = 2,
@@ -627,7 +606,7 @@ local decoded, spec = pcall(vim.json.decode, encoded)
 if not decoded then terminal_error("specification-json", 0) end
 if type(spec) ~= "table" then terminal_error("specification-type", 0) end
 if spec.v ~= 1 then terminal_error("specification-version", 0) end
-if spec.mode ~= "probe" and spec.mode ~= "exec" and spec.mode ~= "fs" then
+if spec.mode ~= "probe" and spec.mode ~= "exec" then
   terminal_error("specification-mode", 0)
 end
 if type(spec.root) ~= "string" or spec.root:sub(1, 1) ~= "/"
@@ -680,34 +659,6 @@ if type(spec.profile.filesystem) ~= "table"
     or type(spec.profile.filesystem.entries) ~= "table"
     or not vim.islist(spec.profile.filesystem.entries) then
   terminal_error("specification-profile", 0)
-end
-if spec.mode == "fs" then
-  local operation = type(spec.fs) == "table" and spec.fs.operation or nil
-  if type(spec.fs) ~= "table"
-      or type(spec.fs.path) ~= "string"
-      or spec.fs.path:sub(1, 1) ~= "/"
-      or spec.fs.path:find("\0", 1, true)
-      or not ({
-        read = true,
-        read_range = true,
-        write_all = true,
-        mkdirp = true,
-        atomic_replace = true,
-      })[operation] then
-    terminal_error("specification-fs", 0)
-  end
-  if operation == "read_range" then
-    if type(spec.fs.offset) ~= "number" or spec.fs.offset < 0
-        or spec.fs.offset % 1 ~= 0
-        or type(spec.fs.size) ~= "number" or spec.fs.size < 1
-        or spec.fs.size > 1024 * 1024 or spec.fs.size % 1 ~= 0 then
-      terminal_error("specification-fs", 0)
-    end
-  elseif spec.fs.offset ~= nil or spec.fs.size ~= nil then
-    terminal_error("specification-fs", 0)
-  end
-elseif spec.fs ~= nil then
-  terminal_error("specification-fs", 0)
 end
 if type(spec.protected_create) ~= "table"
     or not vim.islist(spec.protected_create) then
@@ -930,7 +881,10 @@ end
 if not readonly(newroot, true) then terminal_error("readonly-root") end
 
 local blocked_file = root .. "/blocked"
-if not create_file(blocked_file) then terminal_error("blocked-file") end
+if not create_file(blocked_file)
+    or C.chmod(blocked_file, 0) ~= 0 then
+  terminal_error("blocked-file")
+end
 
 ---@param path string
 ---@return string
@@ -1013,8 +967,8 @@ end
 
 -- Profile entries are applied from broad paths to specific paths. A writable
 -- or readable child can therefore be granted inside a denied parent. Denied
--- directories become empty tmpfs mounts, and denied files become a harmless
--- read-only file mount.
+-- directories become empty tmpfs mounts, and denied files become an
+-- inaccessible read-only file mount.
 local entries = {}
 for _, entry in ipairs(spec.profile.filesystem.entries or {}) do
   entries[#entries + 1] = entry
@@ -2014,7 +1968,7 @@ if init == 0 then
   drop_capabilities(control_w)
 
   -- The target branch wires standard streams, selects the requested cwd,
-  -- installs seccomp, and then runs a probe, a filesystem operation, or execve.
+  -- installs seccomp, and then runs a probe or execve.
   -- The init branch retains only the descriptors required for supervision.
   local target_pid = C.fork()
   if target_pid < 0 then child_error(confirm_w, "fork-target") end
@@ -2052,243 +2006,6 @@ if init == 0 then
       C.close(probe_fd)
       C.close(confirm_w)
       finish(0)
-    elseif spec.mode == "fs" then
-      C.close(confirm_w)
-      local request = spec.fs or {}
-      ---@cast request Neoagent.SandboxFilesystemOperation & {path: string}
-      if request.operation == "read" or request.operation == "read_range" then
-        local fd = C.open(request.path,
-          bit.bor(O.RDONLY, O.CLOEXEC, O.NONBLOCK))
-        if fd < 0 then
-          write_all(2, string.format("open failed (errno=%d)\n", ffi.errno()))
-          finish(66)
-        end
-        local stat = vim.uv.fs_fstat(fd)
-        if not stat or stat.type ~= "file" then
-          C.close(fd)
-          write_all(2, "not a regular file\n")
-          finish(66)
-        end
-        if request.operation == "read_range"
-            and C.lseek(fd, request.offset, 0) < 0 then
-          C.close(fd)
-          write_all(2, string.format("seek failed (errno=%d)\n", ffi.errno()))
-          finish(74)
-        end
-        local buffer = ffi.new("char[65536]")
-        local remaining = request.operation == "read_range"
-            and request.size or math.huge
-        while remaining > 0 do
-          local count = C.read(fd, buffer, math.min(65536, remaining))
-          if count == 0 then break end
-          if count < 0 then
-            if ffi.errno() ~= E.EINTR then
-              write_all(2,
-                string.format("read failed (errno=%d)\n", ffi.errno()))
-              finish(74)
-            end
-          elseif not write_all(1, ffi.string(buffer, count)) then
-            write_all(2, "stdout write failed\n")
-            finish(74)
-          elseif request.operation == "read_range" then
-            remaining = remaining - assert(tonumber(count))
-          end
-        end
-        C.close(fd)
-        finish(0)
-      elseif request.operation == "mkdirp" then
-        local current = ""
-        for part in request.path:gmatch("[^/]+") do
-          current = current .. "/" .. part
-          if not mkdir(current, request.mode or 493) then finish(73) end
-        end
-        finish(0)
-      elseif request.operation == "write_all" then
-        local flags = bit.bor(O.WRONLY, O.CREAT, O.CLOEXEC,
-          request.flags == "a" and O.APPEND or O.TRUNC)
-        local fd = C.open(request.path, flags,
-          ffi.cast("unsigned int", request.mode or 420))
-        if fd < 0 then finish(73) end
-        local buffer = ffi.new("char[65536]")
-        while true do
-          local count = C.read(0, buffer, 65536)
-          if count == 0 then break end
-          if count < 0 then
-            if ffi.errno() ~= E.EINTR then finish(74) end
-          elseif not write_all(fd, ffi.string(buffer, count)) then
-            finish(74)
-          end
-        end
-        C.close(fd)
-        finish(0)
-      elseif request.operation == "atomic_replace" then
-        local policy = request.policy
-        if type(policy) ~= "table" or vim.islist(policy)
-            or policy.mode == nil and policy.preserve_mode ~= true
-            or policy.preserve_mode == true and policy.new_mode == nil
-            or policy.expected_content_fingerprint ~= nil
-              and (type(policy.expected_content_fingerprint) ~= "string"
-                or not policy.expected_content_fingerprint:match(
-                  "^" .. string.rep("%x", 64) .. "$"))
-            or type(request.suffix) ~= "string" or #request.suffix ~= 32
-            or request.suffix:find("[^%x]") then
-          write_all(2, "invalid atomic replacement request\n")
-          finish(64)
-        end
-        ---@param value? uv.fs_stat.result
-        ---@return Neoagent.FileObservation
-        local function observe(value)
-          return {
-            exists = value ~= nil,
-            type = value and value.type or nil,
-            device = value and value.dev or nil,
-            inode = value and value.ino or nil,
-            mode = value and type(value.mode) == "number"
-                and bit.band(value.mode, 511) or nil,
-          }
-        end
-        ---@param left Neoagent.FileObservation
-        ---@param right Neoagent.FileObservation
-        ---@return boolean
-        local function same_target(left, right)
-          return left.exists == right.exists and left.type == right.type
-            and left.device == right.device and left.inode == right.inode
-            and left.mode == right.mode
-        end
-        local stat, stat_err, stat_code = vim.uv.fs_lstat(request.path)
-        local target = observe(stat)
-        if not stat and stat_code ~= "ENOENT"
-            and not tostring(stat_err):find("ENOENT", 1, true) then
-          write_all(2, tostring(stat_err) .. "\n")
-          finish(74)
-        end
-        if stat and stat.type == "link" then
-          write_all(2, "target is a symbolic link\n")
-          finish(73)
-        end
-        if stat and stat.type ~= "file" then
-          write_all(2, "target is not a regular file\n")
-          finish(73)
-        end
-        if not stat and policy.require_existing then
-          write_all(2, "target must already exist\n")
-          finish(73)
-        end
-        local selected_mode = policy.mode
-          or stat and bit.band(stat.mode, 511) or policy.new_mode
-        if type(selected_mode) ~= "number" or selected_mode < 0
-            or selected_mode > 511 or selected_mode % 1 ~= 0 then
-          write_all(2, "invalid atomic replacement mode\n")
-          finish(64)
-        end
-        local temporary = request.path .. "." .. request.suffix .. ".tmp"
-        local fd = C.open(temporary,
-          bit.bor(O.WRONLY, O.CREAT, O.EXCL, O.CLOEXEC),
-          ffi.cast("unsigned int", selected_mode))
-        if fd < 0 then finish(73) end
-        local function cleanup()
-          C.close(fd)
-          C.unlinkat(AT_FDCWD, temporary, 0)
-        end
-        local buffer = ffi.new("char[65536]")
-        while true do
-          local count = C.read(0, buffer, 65536)
-          if count == 0 then break end
-          if count < 0 then
-            if ffi.errno() ~= E.EINTR then
-              cleanup()
-              finish(74)
-            end
-          elseif not write_all(fd, ffi.string(buffer, count)) then
-            cleanup()
-            finish(74)
-          end
-        end
-        if C.close(fd) ~= 0 then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          finish(74)
-        end
-        fd = -1
-        if (policy.mode ~= nil or stat and policy.preserve_mode == true)
-            and C.chmod(temporary, selected_mode) ~= 0 then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          finish(74)
-        end
-        local current, current_err, current_code =
-          vim.uv.fs_lstat(request.path)
-        if not current and current_code ~= "ENOENT"
-            and not tostring(current_err):find("ENOENT", 1, true) then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          write_all(2, tostring(current_err) .. "\n")
-          finish(74)
-        end
-        if current and current.type == "link" then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          write_all(2, "target became a symbolic link\n")
-          finish(73)
-        end
-        if current and current.type ~= "file" then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          write_all(2, "target is not a regular file\n")
-          finish(73)
-        end
-        if not current and policy.require_existing then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          write_all(2, "target must already exist\n")
-          finish(73)
-        end
-        if not same_target(target, observe(current)) then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          write_all(2, "target changed during preparation\n")
-          finish(73)
-        end
-        if policy.expected_content_fingerprint ~= nil then
-          if not target.exists then
-            C.unlinkat(AT_FDCWD, temporary, 0)
-            write_all(2, "expected target content is missing\n")
-            finish(73)
-          end
-          local held = C.open(request.path,
-            bit.bor(O.RDONLY, O.NOFOLLOW, O.CLOEXEC))
-          if held < 0 then
-            C.unlinkat(AT_FDCWD, temporary, 0)
-            finish(74)
-          end
-          local held_stat = vim.uv.fs_fstat(held)
-          local chunks = {}
-          while held_stat and true do
-            local count = C.read(held, buffer, 65536)
-            if count == 0 then break end
-            if count < 0 then
-              if ffi.errno() ~= E.EINTR then held_stat = nil break end
-            else
-              chunks[#chunks + 1] = ffi.string(buffer, count)
-            end
-          end
-          local after = held_stat and vim.uv.fs_fstat(held) or nil
-          C.close(held)
-          local latest = vim.uv.fs_lstat(request.path)
-          if not held_stat or not same_target(target, observe(held_stat))
-              or not same_target(target, observe(after))
-              or not same_target(target, observe(latest)) then
-            C.unlinkat(AT_FDCWD, temporary, 0)
-            write_all(2, "target changed during content verification\n")
-            finish(73)
-          end
-          if content_fingerprint(table.concat(chunks)):lower()
-              ~= policy.expected_content_fingerprint:lower() then
-            C.unlinkat(AT_FDCWD, temporary, 0)
-            write_all(2, "target content changed concurrently\n")
-            finish(73)
-          end
-        end
-        if C.renameat(AT_FDCWD, temporary, AT_FDCWD, request.path) ~= 0 then
-          C.unlinkat(AT_FDCWD, temporary, 0)
-          finish(74)
-        end
-        finish(0)
-      end
-      finish(64)
     end
 
     local argv = ffi.new("char *[?]", #command + 1) --[[@as Neoagent.FfiArray<ffi.cdata*>]]
