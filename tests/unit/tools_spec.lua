@@ -271,9 +271,17 @@ describe("neoagent bundled tools", function()
     }, "\n")
     local semantic = assert(tool.render({
       state = "success", arguments = { path = "wrapped.lua" },
-      result = { details = { patch = patch } },
+      result = { details = {
+        patch = patch,
+        patch_truncated = true,
+        added_lines = 50,
+        removed_lines = 40,
+      } },
     }))
     assert.are.equal("edit", semantic.kind)
+    assert.are.equal(50, semantic.added)
+    assert.are.equal(40, semantic.removed)
+    assert.is_true(semantic.truncated)
     assert.are.equal("separator", semantic.rows[10].kind)
     assert.are.equal("delete", semantic.rows[11].kind)
     assert.are.equal(20, semantic.rows[11].number)
@@ -921,6 +929,16 @@ describe("neoagent bundled tools", function()
     assert.matches("image output exceeds 16 bytes", tostring(err))
   end)
 
+  it("rejects image output budgets above the artifact transport limit", function()
+    local maximum = require("neoagent.tools.limits").MAX_ARTIFACT_BYTES
+    assert.has_no_error(function()
+      require("neoagent.tools.read_file").new({ max_image_output_bytes = maximum })
+    end)
+    assert.error_matches(function()
+      require("neoagent.tools.read_file").new({ max_image_output_bytes = maximum + 1 })
+    end, "max_image_output_bytes must not exceed")
+  end)
+
   it("rejects excessive image dimensions and converted payloads", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
@@ -1061,6 +1079,63 @@ describe("neoagent bundled tools", function()
     assert.is_true(#assert(result.details).patch > 0)
   end)
 
+  it("bounds edit patches before replacing very long lines", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/large.txt"
+    local original = string.rep("a", 265000)
+      .. "OLD_MARKER"
+      .. string.rep("b", 265000)
+      .. "\n"
+    assert(fs.write_all(path, original, "w"))
+
+    local result = execute(require("neoagent.tools.edit_file"), {
+      path = "large.txt",
+      edits = { { oldText = "OLD_MARKER", newText = "NEW_MARKER" } },
+    }, ctx(workspace))
+
+    local details = assert(result.details)
+    assert.is_true(details.patch_truncated)
+    assert.is_true(details.patch_bytes > 1024 * 1024)
+    assert.is_true(#details.patch <= 256 * 1024)
+    assert.matches("NEW_MARKER", assert(fs.read(path)), 1, true)
+  end)
+
+  it("keeps complete edit counts when a many-line patch fits the byte limit", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/many-lines.txt"
+    local old, new = {}, {}
+    for index = 1, 1500 do
+      old[index] = "old line " .. index
+      new[index] = "new line " .. index
+    end
+    local original = table.concat(old, "\n") .. "\n"
+    local replacement = table.concat(new, "\n") .. "\n"
+    assert(fs.write_all(path, original, "w"))
+
+    local result = execute(require("neoagent.tools.edit_file"), {
+      path = "many-lines.txt",
+      edits = { { oldText = original, newText = replacement } },
+    }, ctx(workspace))
+
+    local details = assert(result.details)
+    assert.is_nil(details.patch_truncated)
+    assert.are.equal(1500, details.added_lines)
+    assert.are.equal(1500, details.removed_lines)
+    local presentation = assert(require("neoagent.tools.edit_file").render({
+      state = "success",
+      arguments = { path = "many-lines.txt" },
+      result = result,
+    }))
+    assert.are.equal("edit", presentation.kind)
+    ---@cast presentation Neoagent.ToolEditPresentation
+    assert.are.equal(1500, presentation.added)
+    assert.are.equal(1500, presentation.removed)
+    assert.is_false(presentation.truncated)
+    assert.are.equal(replacement, assert(fs.read(path)))
+  end)
+
   it("preserves original bytes outside fuzzy edit spans", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
@@ -1188,6 +1263,88 @@ describe("neoagent bundled tools", function()
     assert.matches("rename failed", tostring(replace_err))
     assert.are.equal("new", assert(fs.read(existing)))
     assert.are.same({}, vim.fn.glob(existing .. ".*.tmp", false, true))
+  end)
+
+  it("rejects write paths containing NUL without changing existing bytes", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/victim.txt"
+    assert(fs.write_all(path, "preserve write bytes", "w"))
+
+    local ok, err = pcall(execute, require("neoagent.tools.write_file"), {
+      path = "victim.txt\0suffix",
+      content = "replacement",
+    }, ctx(workspace))
+
+    assert.is_false(ok)
+    assert.matches("NUL", tostring(err), 1, true)
+    assert.are.equal("preserve write bytes", assert(fs.read(path)))
+  end)
+
+  it("rejects oversized paths before local file mutations", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/existing.txt"
+    assert(fs.write_all(path, "original bytes"))
+    local oversized = string.rep("./", 600000) .. "existing.txt"
+    for _, invocation in ipairs({
+      { tool = require("neoagent.tools.write_file"), arguments = { path = oversized, content = "changed" } },
+      { tool = require("neoagent.tools.edit_file"), arguments = {
+        path = oversized, edits = { { oldText = "original", newText = "changed" } },
+      } },
+    }) do
+      local ok, err = pcall(execute, invocation.tool, invocation.arguments, ctx(workspace))
+      assert.is_false(ok, "oversized path must fail before changing the target")
+      assert.matches("path must not exceed", tostring(err), 1, true)
+      assert.are.equal("original bytes", assert(fs.read(path)))
+    end
+  end)
+
+  it("applies the aggregate RPC request budget to local file mutations", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local oversized = string.rep("x", require("neoagent.rpc.limits").MAX_REQUEST_BYTES + 1)
+    local dependencies = ctx(workspace, nil, {
+      fs = {
+        mkdirp = function() return true end,
+        atomic_replace = function() return true end,
+        read = function() return oversized end,
+      },
+    })
+
+    for _, invocation in ipairs({
+      {
+        tool = require("neoagent.tools.write_file"),
+        arguments = { path = "large.txt", content = oversized },
+      },
+      {
+        tool = require("neoagent.tools.edit_file"),
+        arguments = {
+          path = "large.txt",
+          edits = { { oldText = oversized, newText = "replacement" } },
+        },
+      },
+    }) do
+      local ok, err = pcall(execute, invocation.tool, invocation.arguments, dependencies)
+      assert.is_false(ok)
+      assert.matches("aggregate request limit", tostring(err), 1, true)
+    end
+  end)
+
+  it("rejects edit paths containing NUL without changing existing bytes", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/victim.txt"
+    assert(fs.write_all(path, "preserve edit bytes", "w"))
+
+    local ok, err = pcall(execute, require("neoagent.tools.edit_file"), {
+      path = "victim.txt\0suffix",
+      edits = { { oldText = "preserve", newText = "replace" } },
+    }, ctx(workspace))
+
+    assert.is_false(ok)
+    assert.matches("NUL", tostring(err), 1, true)
+    assert.are.equal("preserve edit bytes", assert(fs.read(path)))
   end)
 
   it("rejects duplicate, overlapping, and no-op edits", function()
@@ -1329,6 +1486,7 @@ describe("neoagent bundled tools", function()
 
     execute(shell, { command = "default" }, context)
     execute(shell, { command = "override", timeout = 2.5 }, context)
+    execute(shell, { command = "immediate", timeout = 0.0001 }, context)
 
     ---@type integer?
     local unbounded = -1
@@ -1340,7 +1498,7 @@ describe("neoagent bundled tools", function()
         end,
       }))
 
-    assert.are.same({ 300000, 2500 }, timeouts)
+    assert.are.same({ 300000, 2500, 1 }, timeouts)
     assert.is_nil(unbounded)
   end)
 

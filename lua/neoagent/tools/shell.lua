@@ -55,9 +55,9 @@ local function validate_request(value)
   end
   local result = { argv = argv }
   if value.timeout_ms ~= nil then
-    result.timeout_ms = common.integer(value.timeout_ms, "shell timeout_ms", true)
+    result.timeout_ms = common.integer(value.timeout_ms, "shell timeout_ms")
   end
-  return result
+  return common.request(result, "shell request")
 end
 
 ---@param arguments Neoagent.JsonObject
@@ -74,7 +74,7 @@ local function prepare(arguments, settings)
   end
   return validate_request({
     argv = shell_argv(command),
-    timeout_ms = timeout and math.floor(timeout * 1000) or nil,
+    timeout_ms = timeout and math.max(1, math.floor(timeout * 1000)) or nil,
   })
 end
 

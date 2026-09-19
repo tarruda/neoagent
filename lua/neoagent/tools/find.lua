@@ -22,7 +22,7 @@ local function validate_request(value)
   if value.path ~= nil then
     result.path = common.path(value.path, "find path")
   end
-  return result
+  return common.request(result, "find request")
 end
 
 ---@param arguments Neoagent.JsonObject

@@ -793,13 +793,19 @@ describe("neoagent native Renderer protocol", function()
     local edit = tool(renderers.codex, {
       kind = "edit",
       path = "narrow.lua",
+      added = 1500,
+      removed = 1500,
+      truncated = true,
       rows = {
         { kind = "context", number = 1, text = "one" },
         { kind = "delete", number = 2, text = "old" },
         { kind = "add", number = 2, text = "new" },
       },
-    }, 32)
+    }, 64)
     assert.matches("narrow.lua", edit)
+    assert.matches("%+1500", edit)
+    assert.matches("%-1500", edit)
+    assert.matches("patch truncated", edit)
     assert.matches("new", edit)
     assert.matches("empty.lua", tool(renderers.codex, {
       kind = "edit",
@@ -843,6 +849,7 @@ describe("neoagent native Renderer protocol", function()
       { kind = "edit", path = "bad.lua", rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad.lua", added = -1, rows = {} },
       { kind = "edit", path = "bad\npath.lua", rows = {} },
       { kind = "text", title = "bad\ntitle" },
       { kind = "text" },

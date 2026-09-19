@@ -81,6 +81,20 @@ function M.fields(value, allowed, label)
   end
 end
 
+---@generic T: table
+---@param value T
+---@param label string
+---@return T
+function M.request(value, label)
+  local encoded, bytes = pcall(vim.mpack.encode, value)
+  assert(encoded and type(bytes) == "string", label .. " could not be encoded")
+  assert(
+    #bytes <= require("neoagent.tools.limits").MAX_REQUEST_BYTES,
+    label .. " exceeded the aggregate request limit"
+  )
+  return value
+end
+
 ---@param value unknown
 ---@param label string
 ---@param allow_empty? boolean
@@ -95,6 +109,9 @@ end
 ---@return string
 function M.path(value, label)
   local path = M.string(value, label)
+  assert(not path:find("\0", 1, true), label .. " must be NUL-free")
+  local maximum = require("neoagent.tools.limits").MAX_PATH_BYTES
+  assert(#path <= maximum, label .. " must not exceed " .. maximum .. " bytes")
   return path
 end
 

@@ -12,6 +12,10 @@
 ---@class Neoagent.FileEditDetails
 ---@field patch string
 ---@field changed_paths string[]
+---@field patch_truncated? boolean
+---@field patch_bytes? integer
+---@field added_lines integer
+---@field removed_lines integer
 
 ---@class Neoagent.EditFileReplacement
 ---@field old_text string
@@ -23,6 +27,7 @@
 
 local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.edit_presentation")
+local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
 ---@class Neoagent.EditFileTool: Neoagent.Tool<unknown>
@@ -30,6 +35,11 @@ local util = require("neoagent.util")
 ---@field render fun(options?: Neoagent.ToolPresentationOptions): Neoagent.ToolActivityPresentation|Neoagent.ToolEditPresentation|nil
 local M = {}
 local IMPLEMENTATION = {}
+local MAX_PATCH_BYTES = 256 * 1024
+-- A byte-bounded string has at most one more logical line than bytes, so this
+-- explicit line limit cannot truncate a patch before the byte limit does.
+local MAX_PATCH_LINES = MAX_PATCH_BYTES + 1
+
 ---@param value unknown
 ---@return Neoagent.EditFileRequest
 local function validate_request(value)
@@ -48,10 +58,10 @@ local function validate_request(value)
       new_text = common.string(edit.new_text, "edit_file edits[" .. index .. "].new_text", true),
     }
   end
-  return {
+  return common.request({
     path = common.path(value.path, "edit_file path"),
     edits = edits,
-  }
+  }, "edit_file request")
 end
 
 ---@param arguments Neoagent.JsonObject
@@ -242,10 +252,36 @@ local function diff_details(path, old, new)
   if not ok or type(patch) ~= "string" then
     patch = "--- " .. path .. "\n+++ " .. path
   end
-  return {
-    patch = patch,
+  local added, removed = 0, 0
+  local have_hunk = false
+  for line in (patch .. "\n"):gmatch("(.-)\n") do
+    if line:find("^@@ ") then
+      have_hunk = true
+    elseif have_hunk then
+      local marker = line:sub(1, 1)
+      if marker == "+" then
+        added = added + 1
+      elseif marker == "-" then
+        removed = removed + 1
+      end
+    end
+  end
+  local shortened = truncate.head(patch, {
+    max_lines = MAX_PATCH_LINES,
+    max_bytes = MAX_PATCH_BYTES,
+  })
+  ---@type Neoagent.FileEditDetails
+  local details = {
+    patch = shortened.content,
     changed_paths = { path },
+    added_lines = added,
+    removed_lines = removed,
   }
+  if shortened.truncated then
+    details.patch_truncated = true
+    details.patch_bytes = shortened.totalBytes
+  end
+  return details
 end
 
 ---@async

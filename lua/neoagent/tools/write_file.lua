@@ -13,10 +13,10 @@ local function validate_request(value)
   assert(common.object(value), "write_file request must be an object")
   ---@cast value table
   common.fields(value, { path = true, content = true }, "write_file request")
-  return {
+  return common.request({
     path = common.path(value.path, "write_file path"),
     content = common.string(value.content, "write_file content", true),
-  }
+  }, "write_file request")
 end
 
 ---@param arguments Neoagent.JsonObject

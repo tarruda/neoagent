@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local common = require("neoagent.tools.common")
+local limits = require("neoagent.tools.limits")
 local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
@@ -68,10 +69,14 @@ local function validate_request(value)
     max_image_pixels = common.integer(value.max_image_pixels, "read_file max_image_pixels"),
     max_image_output_bytes = common.integer(value.max_image_output_bytes, "read_file max_image_output_bytes"),
   }
+  assert(
+    result.max_image_output_bytes <= limits.MAX_ARTIFACT_BYTES,
+    "read_file max_image_output_bytes must not exceed " .. limits.MAX_ARTIFACT_BYTES
+  )
   if value.limit ~= nil then
     result.limit = common.integer(value.limit, "read_file limit")
   end
-  return result
+  return common.request(result, "read_file request")
 end
 
 ---@param arguments Neoagent.JsonObject
@@ -484,6 +489,10 @@ local function new(options)
       "max_image_output_bytes"
     ),
   }
+  assert(
+    settings.max_image_output_bytes <= limits.MAX_ARTIFACT_BYTES,
+    "max_image_output_bytes must not exceed " .. limits.MAX_ARTIFACT_BYTES
+  )
   local dependencies = common.dependencies()
   local tool = {
     name = "read_file",

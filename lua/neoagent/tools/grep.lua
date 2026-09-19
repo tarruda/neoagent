@@ -44,7 +44,7 @@ local function validate_request(value)
   if value.context ~= nil then
     result.context = common.integer(value.context, "grep context", true)
   end
-  return result
+  return common.request(result, "grep request")
 end
 
 ---@param arguments Neoagent.JsonObject
