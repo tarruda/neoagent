@@ -3,6 +3,7 @@ local path_module = require("neoagent.sandbox.path")
 local protocol = require("neoagent.sandbox.protocol")
 local relay_lease = require("neoagent.sandbox.relay_lease")
 local util = require("neoagent.util")
+local nvim_launch = require("neoagent.process.nvim")
 
 ---@class Neoagent.WindowsSandboxProfile: Neoagent.SandboxProfile
 ---@field windows Neoagent.WindowsSandboxPolicy
@@ -101,26 +102,10 @@ local function executable(path)
   end
 end
 
----@param command string[]
----@return string[]
-local function resolved_command(command)
-  if not M.paths.is_absolute(command[1]) then
-    command[1] = vim.fn.exepath((assert(command[1])))
-  end
-  command[1] = executable(command[1]) or command[1]
-  return command
-end
-
 ---@param configured? string|string[]
 ---@return string[]
 local function nvim_command(configured)
-  if type(configured) == "string" and configured ~= "" then
-    return resolved_command({ configured })
-  elseif type(configured) == "table" and util.is_list(configured) and #configured > 0 then
-    ---@cast configured string[]
-    return resolved_command(util.copy(configured))
-  end
-  return resolved_command({ vim.v.progpath })
+  return nvim_launch.command(configured or vim.v.progpath)
 end
 
 ---@param required [integer, integer, integer]

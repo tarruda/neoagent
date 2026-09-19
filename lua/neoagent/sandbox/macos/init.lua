@@ -1,6 +1,7 @@
 local profile_compiler = require("neoagent.sandbox.macos.profile")
 local access_policy = require("neoagent.sandbox.policy")
 local util = require("neoagent.util")
+local nvim_launch = require("neoagent.process.nvim")
 
 local M = { name = "macos" }
 local SUPERVISOR_GRACE_MS = 100
@@ -210,8 +211,7 @@ function M.exec(request, services)
   if not runtime then
     error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
   end
-  local configured = services.nvim or vim.v.progpath
-  local nvim = executable(configured) or configured
+  local nvim = assert(nvim_launch.command(services.nvim or vim.v.progpath)[1])
   local wrapped = util.copy(request)
   wrapped.argv = runtime_argv(nvim, runtime, request.argv)
   wrapped.env = util.copy(request.env or {})
@@ -232,8 +232,7 @@ function M.start_worker(request, services)
   if not runtime then
     error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
   end
-  local configured = services.nvim or vim.v.progpath
-  local nvim = executable(configured) or configured
+  local nvim = assert(nvim_launch.command(services.nvim or vim.v.progpath)[1])
   local internal = { nvim, runtime }
   vim.list_extend(internal, CLEANUP_HELPERS)
   vim.list_extend(internal, request.bootstrap_paths or {})

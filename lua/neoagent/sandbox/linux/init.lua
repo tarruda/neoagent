@@ -1,5 +1,6 @@
 local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
+local nvim_command = require("neoagent.process.nvim").command
 
 ---@class Neoagent.LinuxSandboxRoot
 ---@field path string
@@ -67,57 +68,6 @@ local function executable(path)
   if resolved and stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
     return vim.fs.normalize(resolved)
   end
-end
-
----@return string[]?
-local function process_commandline()
-  local fd = vim.uv.fs_open("/proc/self/cmdline", "r", 0)
-  if not fd then
-    return nil
-  end
-  local data = vim.uv.fs_read(fd, 64 * 1024, 0)
-  vim.uv.fs_close(fd)
-  if not data then
-    return nil
-  end
-  local values = {}
-  for value in data:gmatch("([^%z]+)") do
-    values[#values + 1] = value
-  end
-  return values
-end
-
----@param command string[]
----@return string[]
-local function resolved_command(command)
-  command[1] = executable(command[1]) or command[1]
-  return command
-end
-
----@param configured? string|string[]
----@return string[]
-local function nvim_command(configured)
-  if type(configured) == "string" then
-    return resolved_command({ configured })
-  end
-  if type(configured) == "table" and util.is_list(configured) and #configured > 0 then
-    ---@cast configured string[]
-    return resolved_command(util.copy(configured))
-  end
-  local actual = vim.v.argv[1]
-  local commandline = process_commandline()
-  if type(actual) == "string" and commandline then
-    for index, value in ipairs(commandline) do
-      if value == actual then
-        local command = {}
-        for part = 1, index do
-          command[part] = commandline[part]
-        end
-        return resolved_command(command)
-      end
-    end
-  end
-  return resolved_command({ vim.v.progpath })
 end
 
 ---@param left? {sec: integer, nsec: integer}

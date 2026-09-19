@@ -1007,6 +1007,38 @@ describe("neoagent.agent_loop", function()
     assert.are.equal(1, #model.requests)
   end)
 
+  it("does not commit invalid or thrown tool results after cancellation", function()
+    for _, throws in ipairs({ false, true }) do
+      local committed = {}
+      local model = fake_model.new({ {
+        result = fake_model.assistant({
+          { type = "toolCall", id = "invalid", name = "cancel", arguments = {} },
+        }, "toolUse"),
+      } })
+      local run = agent_loop.run({
+        model = model, messages = {},
+        tools = { {
+          name = "cancel", description = "", input_schema = { type = "object", properties = {} },
+          execute = function(_, ctx)
+            ctx.run:cancel()
+            if throws then error("failed during cancellation") end
+            return {} --[[@as Neoagent.ToolResult]]
+          end,
+        } },
+        commit_message = function(message)
+          committed[#committed + 1] = message
+          return true
+        end,
+      })
+      local result = wait(run)
+      assert.is_false(result.ok)
+      assert.are.equal("cancelled", assert(result.error).kind, vim.inspect(result))
+      assert.are.equal(1, #committed)
+      assert.are.equal("assistant", committed[1].role)
+      assert.are.equal(1, #model.requests)
+    end
+  end)
+
   it("suppresses late image frames after active tool cancellation", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ {

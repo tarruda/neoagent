@@ -422,6 +422,33 @@ describe("neoagent shared sandbox contract", function()
       end
     end)
 
+  sandbox_test("starts file Tools with a bare launcher and an empty restricted PATH", function()
+    local selected = assert(composition.compose({
+      tools = { require("neoagent.tools.write_file").new() },
+    }, {
+      enabled = true,
+      profile = function(default)
+        default.environment.set.PATH = ""
+        return default
+      end,
+    }, { platform = platform, status = status, nvim = "nvim" }))
+    local model = fake_model.new({
+      { result = fake_model.assistant({ tool_call("write", "write_file", {
+        path = "without-path.txt", content = "resolved in parent\n",
+      }) }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local completed = wait(agent_loop.run({
+      model = model, messages = {}, tools = selected.tools,
+      execute_tool = selected.execute_tool,
+      context = context, commit_message = function() return true end,
+    }))
+    assert.is_true(completed.ok, vim.inspect(completed.error))
+    local written = assert(messages_by_id(assert(completed.new_messages)).write)
+    assert.is_false(written.isError, text(written))
+    assert.are.equal("resolved in parent\n", fs.read(vim.fs.joinpath(workspace, "without-path.txt")))
+  end)
+
   sandbox_test("cancels a Tool worker and its foreground descendants",
     function()
       local started = vim.fs.joinpath(workspace, "worker-started")

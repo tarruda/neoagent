@@ -1099,6 +1099,15 @@ describe("neoagent bundled tools", function()
     assert.is_true(details.patch_bytes > 1024 * 1024)
     assert.is_true(#details.patch <= 256 * 1024)
     assert.matches("NEW_MARKER", assert(fs.read(path)), 1, true)
+    local presentation = assert(require("neoagent.tools.edit_file").render({
+      state = "success", arguments = { path = "large.txt" }, result = result,
+    }))
+    assert.are.equal("edit", presentation.kind)
+    ---@cast presentation Neoagent.ToolEditPresentation
+    assert.are.same({}, presentation.rows)
+    assert.are.equal(1, presentation.added)
+    assert.are.equal(1, presentation.removed)
+    assert.is_true(presentation.truncated)
   end)
 
   it("keeps complete edit counts when a many-line patch fits the byte limit", function()

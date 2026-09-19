@@ -1333,6 +1333,9 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.are.equal("nvim", missing_nvim.stage)
     assert.are.equal("nvim", linux.check({
+      nvim = "neoagent-unavailable-nvim-for-platform-regression",
+    }).stage)
+    assert.are.equal("nvim", linux.check({
       nvim = { true --[[@as string]] },
     }).stage)
 
@@ -2326,6 +2329,9 @@ describe("neoagent sandbox platform adapters", function()
 
     assert.are.equal("nvim", windows.check({
       nvim = "/definitely/missing/nvim",
+    }).stage)
+    assert.are.equal("nvim", windows.check({
+      nvim = { "", "--clean" },
     }).stage)
     local missing_nvim = caught(function()
       windows.exec({

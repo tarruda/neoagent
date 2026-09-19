@@ -103,7 +103,8 @@ function M.render(opts)
   end
   local details = type(opts.result) == "table" and type(opts.result.details) == "table" and opts.result.details or {}
   local rows = patch_rows(rawget(details, "patch"))
-  if #rows == 0 then
+  local truncated = rawget(details, "patch_truncated") == true
+  if #rows == 0 and not truncated then
     return fallback
   end
   local row_added, row_removed = row_counts(rows)
@@ -113,7 +114,7 @@ function M.render(opts)
     rows = rows,
     added = count(rawget(details, "added_lines")) or row_added,
     removed = count(rawget(details, "removed_lines")) or row_removed,
-    truncated = rawget(details, "patch_truncated") == true,
+    truncated = truncated,
   }
 end
 

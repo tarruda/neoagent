@@ -1104,6 +1104,107 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal("write completed\n", assert(fs.read(root .. "/completed.txt")))
   end)
 
+  for _, phase in ipairs({ "close", "wait" }) do
+    it("commits acknowledged mutations when worker " .. phase .. " cleanup is cancelled", function()
+      package.loaded["neoagent.rpc.connection"] = original_remote
+      local root = temporary_root()
+      local session = assert(require("neoagent.session").new())
+      local fake_model = require("tests.helpers.fake_model")
+      local model = fake_model.new({ {
+        result = fake_model.assistant({
+          { type = "toolCall", id = "written", name = "write_file",
+            arguments = { path = "completed.txt", content = "committed bytes\n" } },
+          { type = "toolCall", id = "later", name = "write_file",
+            arguments = { path = "must-not-exist.txt", content = "unexpected" } },
+        }, "toolUse"),
+      } })
+      local cleanup_started = false
+      local disposed = 0
+      local reaped = false
+      ---@type (fun())?
+      local finish_worker
+      ---@type Neoagent.SandboxPlatform<unknown>
+      local platform = {
+        name = "test",
+        start_worker = function(request)
+          local protocol = require("neoagent.rpc.protocol")
+          ---@type Neoagent.AwaitCallbacks<Neoagent.WorkerResult>[]
+          local waiters = {}
+          finish_worker = function()
+            if reaped then return end
+            reaped = true
+            local completed = { code = 0, signal = 0, stderr = "" }
+            assert(request.on_exit)(completed)
+            for _, done in ipairs(waiters) do done.resolve(completed) end
+            waiters = {}
+          end
+          local server = require("neoagent.rpc.server").new({
+            send = function(message)
+              if phase == "close" and message.type == "closed" then
+                cleanup_started = true
+                return
+              end
+              assert(request.on_stdout)(protocol.encode(message))
+            end,
+          })
+          local decoder = protocol.decoder(function(message) server:receive(message) end)
+          return {
+            write = function(_, bytes) decoder:feed(bytes); return true end,
+            close_stdin = function() return true end,
+            terminate = function() end,
+            ---@async
+            wait = function()
+              if reaped then return { code = 0, signal = 0, stderr = "" } end
+              cleanup_started = true
+              return async.await(function(done)
+                waiters[#waiters + 1] = done
+                return function()
+                  for index, waiter in ipairs(waiters) do
+                    if waiter == done then table.remove(waiters, index); break end
+                  end
+                end
+              end)
+            end,
+            dispose = function()
+              disposed = disposed + 1
+              assert(finish_worker)()
+            end,
+          }
+        end,
+      }
+      local run = require("neoagent.chat").run(session, "write once", {
+        model = model,
+        tools = { restricted_tool() },
+        execute_tool = interceptor(root, platform):wrap(),
+        context = { workspace = Workspace.new({ root = root }), files = session:files() },
+      })
+      owner_runs[#owner_runs + 1] = run
+      local checked, check_err = pcall(function()
+        assert(vim.wait(3000, function() return cleanup_started end))
+        assert.are.equal("committed bytes\n", assert(fs.read(root .. "/completed.txt")))
+        run:cancel()
+        assert(vim.wait(3000, function() return run:is_done() end))
+        local completed = assert(run:result())
+        assert.is_false(completed.ok)
+        assert.are.equal("cancelled", assert(completed.error).kind)
+        local messages = session:messages()
+        assert.are.equal(3, #messages, "acknowledged write result was not committed")
+        local result = assert(messages[3])
+        assert.are.equal("toolResult", result.role)
+        assert.are.equal("written", result.toolCallId)
+        assert.is_false(result.isError)
+        assert.are.same({ "completed.txt" }, assert(result.details).changed_paths)
+        assert.is_nil(fs.read(root .. "/must-not-exist.txt"))
+        assert.are.equal(1, #model.requests)
+      end)
+      run:cancel()
+      assert(finish_worker)()
+      assert(vim.wait(3000, function() return run:is_done() and reaped end))
+      assert.is_true(disposed <= 1)
+      assert.is_true(checked, tostring(check_err))
+    end)
+  end
+
   it("preserves successful results across every worker reap failure", function()
     local function execute_with_wait(wait_worker)
       local root = temporary_root()
@@ -1331,8 +1432,9 @@ describe("neoagent sandbox Tool RPC selection", function()
       return cancelled:is_done()
     end))
     local cancelled_value = assert(cancelled:result())
-    assert.is_false(cancelled_value.ok)
-    assert.are.equal("cancelled", assert(cancelled_value.error).kind)
+    assert.are.equal("done", assert(cancelled_value.content)[1].text)
+    assert.is_true(assert(assert(cancelled_value.details).sandbox).cleanup_failed)
+    assert.are.equal("cancelled", assert(assert(cancelled_value.details).sandbox).kind)
 
     active_child = child()
     remote({ open = function()

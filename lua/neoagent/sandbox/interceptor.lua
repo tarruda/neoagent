@@ -10,17 +10,9 @@ local M = {}
 local CANCEL_LEASE_GRACE_MS = 1250
 local WORKER_EXIT_GRACE_MS = 10000
 
----@class Neoagent.CancelledSandboxLease
----@field lease Neoagent.WorkerLease
----@field connection Neoagent.RpcConnection
----@field run? Neoagent.Run<Neoagent.WorkerResult, unknown>
----@field timer uv.uv_timer_t
-
----@type table<Neoagent.CancelledSandboxLease, boolean>
-local cancelled_leases = {}
-
 ---@class Neoagent.DeferredSandboxLease
 ---@field lease Neoagent.WorkerLease
+---@field connection? Neoagent.RpcConnection
 ---@field timer uv.uv_timer_t
 ---@field reason string
 ---@field disposed boolean
@@ -236,6 +228,15 @@ local function retain_worker_wait(deferred)
     deferred_leases[deferred] = nil
   end
   deferred.run = async.run(function()
+    local connection = deferred.connection
+    if connection then
+      local cancelled = pcall(connection.wait_cancelled, connection)
+      local closed = cancelled and pcall(connection.close, connection)
+      if not cancelled or not closed then
+        connection:abort()
+        dispose_deferred(deferred)
+      end
+    end
     return deferred.lease:wait()
   end, {
     error_kind = "sandbox_unavailable",
@@ -253,33 +254,18 @@ end
 ---@param reason string
 local function retain_cancelled_lease(connection, worker, reason)
   local timer = assert(vim.uv.new_timer())
-  ---@type Neoagent.CancelledSandboxLease
-  local lease = { lease = worker, connection = connection, timer = timer }
-  cancelled_leases[lease] = true
-  local function release()
-    close_timer(timer)
-    cancelled_leases[lease] = nil
-  end
-  lease.run = async.run(function()
-    local cancelled = pcall(connection.wait_cancelled, connection)
-    local closed = cancelled and pcall(connection.close, connection)
-    if not cancelled or not closed then
-      connection:abort()
-      worker:dispose(reason)
-    end
-    return worker:wait()
-  end, {
-    error_kind = "sandbox_unavailable",
-    on_done = function(value)
-      if value.ok == false then
-        pcall(worker.dispose, worker, reason)
-      end
-      release()
-    end,
-  })
+  ---@type Neoagent.DeferredSandboxLease
+  local deferred = {
+    lease = worker,
+    connection = connection,
+    timer = timer,
+    reason = reason,
+    disposed = false,
+  }
   timer:start(CANCEL_LEASE_GRACE_MS, 0, function()
-    pcall(worker.dispose, worker, reason)
+    dispose_deferred(deferred)
   end)
+  retain_worker_wait(deferred)
 end
 
 ---@param connection Neoagent.RpcConnection
@@ -558,13 +544,15 @@ function Interceptor:wrap(next_execute)
       error(execution_err, 0)
     end
     local closed, close_err = pcall(connection.close, connection)
+    local cleanup_cancelled = false
     if not closed then
       local err = util.normalize_error(close_err, "protocol")
       if err.kind == "cancelled" then
+        cleanup_cancelled = true
         cancel_and_reap(connection, lease, "restricted Tool worker shutdown cancellation did not settle")
-        error(err, 0)
+      else
+        connection:abort()
       end
-      connection:abort()
     end
     local waited, worker_result
     if closed then
@@ -573,7 +561,7 @@ function Interceptor:wrap(next_execute)
         lease,
         "restricted Tool worker did not exit after orderly shutdown"
       )
-    else
+    elseif not cleanup_cancelled then
       dispose_and_reap(lease, "restricted Tool worker failed to close")
     end
     if execution_err then

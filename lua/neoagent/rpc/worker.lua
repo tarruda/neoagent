@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local nvim_command = require("neoagent.process.nvim").command
 
 local M = {}
 
@@ -20,40 +21,6 @@ local function worker_file()
     error(util.error("worker_start", "Tool worker source was not found"), 0)
   end
   return assert(path)
-end
-
----@param configured? string|string[]
----@return string[]
-local function nvim_command(configured)
-  if type(configured) == "string" and configured ~= "" then
-    return { configured }
-  elseif type(configured) == "table" and util.is_list(configured) and #configured > 0 then
-    return util.copy(configured)
-  end
-  -- Packaged Neovim launchers can make v:progpath point at the ELF loader
-  -- while v:argv points at the executable later in the real command line.
-  -- Preserve that prefix so a worker starts through the same usable launcher.
-  local fd = vim.uv.fs_open("/proc/self/cmdline", "r", 0)
-  if fd then
-    local data = vim.uv.fs_read(fd, 64 * 1024, 0)
-    vim.uv.fs_close(fd)
-    if data and type(vim.v.argv[1]) == "string" then
-      local commandline = {}
-      for value in data:gmatch("([^%z]+)") do
-        commandline[#commandline + 1] = value
-      end
-      for index, value in ipairs(commandline) do
-        if value == vim.v.argv[1] then
-          local command = {}
-          for part = 1, index do
-            command[part] = commandline[part]
-          end
-          return command
-        end
-      end
-    end
-  end
-  return { vim.v.progpath }
 end
 
 ---@param nvim string[]

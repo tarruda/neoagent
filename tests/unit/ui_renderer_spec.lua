@@ -807,6 +807,18 @@ describe("neoagent native Renderer protocol", function()
     assert.matches("%-1500", edit)
     assert.matches("patch truncated", edit)
     assert.matches("new", edit)
+    local truncated = require("neoagent.tools.edit_file").render({
+      state = "success", arguments = { path = "minified.js" },
+      result = { content = {}, details = {
+        patch = "@@ -1 +1 @@", patch_truncated = true,
+        added_lines = 1, removed_lines = 1,
+      } },
+    })
+    local preview = tool(renderers.codex, truncated, 64)
+    assert.matches("minified.js", preview, 1, true)
+    assert.matches("%+1", preview)
+    assert.matches("%-1", preview)
+    assert.matches("patch truncated", preview, 1, true)
     assert.matches("empty.lua", tool(renderers.codex, {
       kind = "edit",
       path = "empty.lua",
