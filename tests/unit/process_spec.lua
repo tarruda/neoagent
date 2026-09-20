@@ -325,6 +325,13 @@ describe("neoagent process runner", function()
       end
       assert.are.same({ "input\0bytes\n", "one\ntwo\n", "" }, inputs)
       assert.are.equal(3, #closed)
+      spawn_options.stdin = true
+      local retained = windows.spawn(command, spawn_options, function() end)
+      retained:write("later\0bytes\n")
+      retained:write({ "last", "lines" })
+      retained:write(nil)
+      assert.are.same({ "input\0bytes\n", "one\ntwo\n", "", "later\0bytes\n", "last\nlines\n" }, inputs)
+      assert.are.equal(4, #closed)
       spawn_options.stdin = nil
       spawn_options.env = nil
       windows.spawn(command, spawn_options, function() end)

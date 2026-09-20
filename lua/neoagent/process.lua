@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local util = require("neoagent.util")
+local launch = require("neoagent.process.launch")
 local process_tree = require(jit.os == "Windows" and "neoagent.process.windows" or "neoagent.process.posix")
 
 ---@class Neoagent.ProcessOptions
@@ -29,27 +30,6 @@ local M = {}
 ---@field _closed boolean
 local Scope = {}
 Scope.__index = Scope
-
----@class Neoagent.ProcessChild
----@field pid integer
----@field kill fun(self: Neoagent.ProcessChild, signal: integer)
-
----@class Neoagent.ProcessSpawnOptions: vim.SystemOpts
----@field stdout fun(err?: string, data?: string)
----@field stderr fun(err?: string, data?: string)
-
----@param env? table<string, string|number>|string[]
----@param clear? boolean
----@return table<string, string|number>|string[]|nil
-local function spawn_environment(env, clear)
-  if clear and env ~= nil and vim.fn.has("nvim-0.12") == 0 and not vim.islist(env) then
-    ---@cast env table<string, string|number>
-    return vim.tbl_map(function(name)
-      return name .. "=" .. tostring(env[name])
-    end, vim.tbl_keys(env))
-  end
-  return env
-end
 
 ---@async
 ---@param command string[]
@@ -185,14 +165,11 @@ local function run(command, opts, scope)
         done.reject(util.error("tool", "Failed to create process supervisor", tree_err))
         return
       end
-      local spawn = process_tree.spawn or vim.system
-      local started, started_process = pcall(spawn, command, {
+      local started, started_process = pcall(launch.start, command, {
         cwd = opts.cwd,
-        env = spawn_environment(opts.env, opts.clear_env),
+        env = opts.env,
         clear_env = opts.clear_env,
         stdin = opts.stdin,
-        text = false,
-        detach = process_tree.detach,
         stdout = function(err, data)
           if err then
             accepting_output = false

@@ -96,14 +96,21 @@ function M.spawn(command, opts, on_exit)
   })
   assert(job > 0, "Could not start cmd.exe job")
   local pid = vim.fn.jobpid(job)
-  if opts.stdin and opts.stdin ~= true then
-    local input = opts.stdin
+  ---@param input? string|string[]
+  local function write(input)
+    if input == nil then
+      vim.fn.chanclose(job, "stdin")
+      return
+    end
     if type(input) == "table" then
       input = table.concat(input, "\n") .. (#input > 0 and "\n" or "")
     end
+    vim.api.nvim_chan_send(job, input)
+  end
+  if opts.stdin and opts.stdin ~= true then
     local sent, err = pcall(function()
-      vim.api.nvim_chan_send(job, input)
-      vim.fn.chanclose(job, "stdin")
+      write(opts.stdin)
+      write(nil)
     end)
     if not sent then
       pcall(vim.fn.jobstop, job)
@@ -112,6 +119,9 @@ function M.spawn(command, opts, on_exit)
   end
   return {
     pid = pid,
+    write = function(_, input)
+      write(input)
+    end,
     kill = function()
       -- The job retains the process handle, avoiding a signal to a reused PID.
       vim.fn.jobstop(job)

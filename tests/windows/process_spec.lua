@@ -1,3 +1,5 @@
+local tool_client = require("neoagent.rpc.tool_client")
+local codec = require("neoagent.rpc.codec")
 local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
@@ -89,6 +91,68 @@ describe("neoagent Windows process runner", function()
     assert.are.equal(0, result.code, vim.inspect(result))
     assert.are.equal(bytes, result.stdout)
     assert.are.equal(bytes, result.stderr)
+  end)
+
+  it("streams binary input through a retained cmd worker lease", function()
+    local python = vim.fn.exepath("python")
+    assert.is_not.equal("", python)
+    local command = '"' .. python .. '" -c "import sys; '
+      .. 'data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); '
+      .. 'sys.stderr.buffer.write(data)"'
+    local output, errors = {}, {}
+    local child = require("neoagent.rpc.worker_lease").start({
+      argv = { "cmd.exe", "/d", "/s", "/c", command },
+      cwd = assert(vim.uv.cwd()), env = vim.fn.environ(),
+      on_stdout = function(data) output[#output + 1] = data end,
+      on_stderr = function(data) errors[#errors + 1] = data end,
+    })
+    local bytes = "\0one\r\ntwo\n\255\0"
+    local completed, failure = pcall(function()
+      assert(child:write(bytes:sub(1, 4)))
+      assert(child:write(bytes:sub(5)))
+      assert(child:close_stdin())
+      local value = wait(async.run(function() return child:wait() end))
+      assert.are.equal(0, value.code, vim.inspect(value))
+      assert.are.equal(bytes, table.concat(output))
+      assert.are.equal(bytes, table.concat(errors))
+    end)
+    child:dispose("Windows streaming lease cleanup")
+    wait(async.run(function() return child:wait() end))
+    assert.is_true(completed, tostring(failure))
+  end)
+
+  it("preserves quoted cmd tails inside the Tool worker", function()
+    root = vim.fn.tempname() .. "-worker-quoting"
+    assert(fs.mkdirp(root))
+    local path = vim.fs.joinpath(root, "quoted output.txt")
+    local tool_worker = require("tests.helpers.tool_worker")
+    local connection = require("neoagent.rpc.connection").new()
+    local child = tool_worker.start_worker({
+      cwd = root,
+      nvim = vim.env.NEOAGENT_NVIM,
+      on_stdout = function(data) connection:feed(data) end,
+      on_exit = function(value) connection:eof(value) end,
+    })
+    connection:attach(child)
+    local call = { workspace = { root = root, cwd = root }, on_update = function() end }
+    local completed, failure = pcall(function()
+      local value = wait(async.run(function()
+        connection:open(codec.encode_context(call))
+        local result = tool_client.invoke(connection, "shell", {
+          argv = { "cmd.exe", "/d", "/s", "/c", 'echo value>"' .. path .. '"' },
+          timeout_ms = 5000,
+        }, call)
+        connection:close()
+        child:wait()
+        return result
+      end))
+      assert.is_not_false(value.ok, vim.inspect(value))
+      assert.is_false(value.isError)
+      assert.matches("value", assert(fs.read(path)))
+    end)
+    child:dispose("Windows worker quoting cleanup")
+    wait(async.run(function() return child:wait() end))
+    assert.is_true(completed, tostring(failure))
   end)
 
   it("reuses native declarations and terminates descendants", function()
