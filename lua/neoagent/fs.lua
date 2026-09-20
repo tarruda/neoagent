@@ -81,7 +81,7 @@ function M.is_absolute(path, os_name)
   end
   os_name = os_name or jit.os
   if os_name == "Windows" then
-    return path:match("^[A-Za-z]:[/\\]") ~= nil or path:sub(1, 2) == "\\\\"
+    return path:match("^[A-Za-z]:[/\\]") ~= nil or path:match("^[/\\][/\\]") ~= nil
   end
   return path:sub(1, 1) == "/"
 end
@@ -874,12 +874,7 @@ local function remove_atomic_candidate(path, identity, expected)
     local right = current[key]
     if
       left ~= nil
-      and (
-        type(right) ~= "table"
-        or type(left) ~= "table"
-        or left.sec ~= right.sec
-        or left.nsec ~= right.nsec
-      )
+      and (type(right) ~= "table" or type(left) ~= "table" or left.sec ~= right.sec or left.nsec ~= right.nsec)
     then
       return
     end
@@ -897,6 +892,7 @@ end
 ---@return_overload nil, string?, Neoagent.AtomicFailureStage?
 function M.atomic_replace(path, data, policy)
   assert(type(path) == "string" and path ~= "", "atomic replacement path is required")
+  assert(not path:find("\0", 1, true), "atomic replacement path must be NUL-free")
   assert(type(data) == "string", "atomic replacement data must be a string")
   policy = M._normalize_atomic_policy(policy)
 

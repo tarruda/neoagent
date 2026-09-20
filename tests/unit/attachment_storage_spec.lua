@@ -21,6 +21,7 @@ describe("workspace attachment storage", function()
   local original_fsync = vim.uv.fs_fsync
   local original_read = vim.uv.fs_read
   local original_lstat = vim.uv.fs_lstat
+  local original_fstat = vim.uv.fs_fstat
   local original_close = vim.uv.fs_close
   local original_scandir = vim.uv.fs_scandir
   local original_sync_directory = fs.sync_directory
@@ -31,6 +32,7 @@ describe("workspace attachment storage", function()
     digest.sha256, vim.uv.fs_fsync = original_digest, original_fsync
     vim.uv.fs_read, fs.sync_directory, locks.new = original_read, original_sync_directory, original_lock
     vim.uv.fs_lstat = original_lstat
+    vim.uv.fs_fstat = original_fstat
     vim.uv.fs_close = original_close
     vim.uv.fs_scandir = original_scandir
     for _, reader in ipairs(readers) do reader.close() end
@@ -51,6 +53,24 @@ describe("workspace attachment storage", function()
   ---@return string
   local function path(store, id)
     return fs.join(store.directory, "files", id, "content")
+  end
+
+  ---@param target string
+  local function wide_identity(target)
+    -- Native Windows file IDs can exceed the exact integer range of a double.
+    local original = assert(original_lstat(target))
+    vim.uv.fs_lstat = function(selected)
+      local stat, err, code = original_lstat(selected)
+      if selected == target and stat then stat.ino = 2 ^ 60 end
+      return stat, err, code
+    end
+    vim.uv.fs_fstat = function(fd)
+      local stat, err, code = original_fstat(fd)
+      if stat and stat.dev == original.dev and stat.ino == original.ino then
+        stat.ino = 2 ^ 60
+      end
+      return stat, err, code
+    end
   end
 
   ---@return Neoagent.SessionStore
@@ -269,21 +289,23 @@ describe("workspace attachment storage", function()
     end
   end)
 
-  for _, change in ipairs({ "growth", "replacement" }) do
+  for _, change in ipairs({ "growth", "replacement", "replacement with wide identity" }) do
     async_test("rejects attachment " .. change .. " after opening its reader", function()
       local store = workspace()
       local contents = "retained attachment"
       local file = assert(store.files.put(contents))
+      local target = path(store, file.file_id)
+      if change == "replacement with wide identity" then wide_identity(target) end
       local reader = assert(store.files.open(file.file_id, file.bytes))
       readers[#readers + 1] = reader
       if change == "growth" then
         assert(fs.write_all(path(store, file.file_id), contents .. "extra"))
-      elseif jit.os == "Windows" then
-        local target = path(store, file.file_id)
+      elseif jit.os == "Windows" or change == "replacement with wide identity" then
+        local inspect_path = vim.uv.fs_lstat
         vim.uv.fs_lstat = function(selected)
-          local stat, err, code = original_lstat(selected)
+          local stat, err, code = inspect_path(selected)
           if selected == target and stat then
-            stat.ino = stat.ino + 1
+            stat.ino = stat.ino == 1 and 2 or 1
           end
           return stat, err, code
         end
@@ -300,34 +322,39 @@ describe("workspace attachment storage", function()
     end)
   end
 
-  async_test("rejects metadata whose file is replaced after its descriptor opens", function()
-    local store = workspace()
-    local file = assert(store.files.put("attachment"))
-    local target = path(store, file.file_id)
-    fs.open_regular = function(selected, options)
-      local opened, err = original_open(selected, options)
-      if selected == target and opened then
-        if jit.os == "Windows" then
-          vim.uv.fs_lstat = function(pathname)
-            local stat, stat_err, code = original_lstat(pathname)
-            if pathname == target and stat then
-              stat.ino = stat.ino + 1
+  for _, wide in ipairs({ false, true }) do
+    async_test("rejects metadata whose file is replaced after its descriptor opens"
+      .. (wide and " with wide identity" or ""), function()
+      local store = workspace()
+      local file = assert(store.files.put("attachment"))
+      local target = path(store, file.file_id)
+      if wide then wide_identity(target) end
+      fs.open_regular = function(selected, options)
+        local opened, err = original_open(selected, options)
+        if selected == target and opened then
+          if jit.os == "Windows" or wide then
+            local inspect_path = vim.uv.fs_lstat
+            vim.uv.fs_lstat = function(pathname)
+              local stat, stat_err, code = inspect_path(pathname)
+              if pathname == target and stat then
+                stat.ino = stat.ino == 1 and 2 or 1
+              end
+              return stat, stat_err, code
             end
-            return stat, stat_err, code
+          else
+            assert(original_replace(target, "replacement", { mode = 384 }))
           end
-        else
-          assert(original_replace(target, "replacement", { mode = 384 }))
         end
+        return opened, err
       end
-      return opened, err
-    end
-    local metadata, err = store.files.inspect(file.file_id)
-    fs.open_regular = original_open
-    vim.uv.fs_lstat = original_lstat
-    assert.is_nil(metadata)
-    assert.matches("Could not inspect attachment", assert(err).message)
-    assert.are.equal(jit.os == "Windows" and "attachment" or "replacement", assert(fs.read(target)))
-  end)
+      local metadata, err = store.files.inspect(file.file_id)
+      fs.open_regular = original_open
+      vim.uv.fs_lstat = original_lstat
+      assert.is_nil(metadata)
+      assert.matches("Could not inspect attachment", assert(err).message)
+      assert.are.equal((jit.os == "Windows" or wide) and "attachment" or "replacement", assert(fs.read(target)))
+    end)
+  end
 
   async_test("rejects a file removed between metadata inspection and content opening", function()
     local store = workspace()

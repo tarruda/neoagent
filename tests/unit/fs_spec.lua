@@ -37,6 +37,9 @@ describe("neoagent.fs", function()
     assert.is_false(fs.is_absolute("tmp/file", "Linux"))
     assert.is_true(fs.is_absolute("C:\\repo\\file", "Windows"))
     assert.is_true(fs.is_absolute("\\\\server\\share\\file", "Windows"))
+    assert.is_true(fs.is_absolute("//server/share/file", "Windows"))
+    assert.is_true(fs.is_absolute("//?/UNC/server/share/file", "Windows"))
+    assert.is_true(fs.is_absolute("//?/C:/repo/file", "Windows"))
     assert.is_false(fs.is_absolute("C:relative", "Windows"))
     assert.is_false(fs.is_absolute("\\rooted", "Windows"))
   end)
@@ -550,6 +553,23 @@ describe("neoagent.fs", function()
     assert.matches("must already exist", tostring(err))
   end)
 
+  it("rejects NUL replacement paths without changing existing bytes", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+    local target = vim.fs.joinpath(directory, "victim.txt")
+    assert(fs.write_all(target, "preserve bytes", "w", 420))
+
+    local ok, err = pcall(fs.atomic_replace, target .. "\0suffix", "replacement", {
+      preserve_mode = true,
+      new_mode = 420,
+    })
+
+    assert.is_false(ok)
+    assert.matches("NUL", tostring(err), 1, true)
+    assert.are.equal("preserve bytes", assert(fs.read(target)))
+  end)
+
   it("returns the identity of its atomic replacement candidate", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -708,7 +728,7 @@ describe("neoagent.fs", function()
             assert(fs.write_all(temporary, "successor", "wx", 384))
             replacement_stat = assert(original.lstat(temporary))
             mutate(replacement_stat, candidate_stat)
-            assert(stat).ino = assert(stat).ino + 1
+            assert(stat).ino = assert(stat).ino == 1 and 2 or 1
           end
         end
         return stat, err, code
@@ -726,7 +746,7 @@ describe("neoagent.fs", function()
 
     exercise(function(replacement, candidate)
       replacement.dev = candidate.dev
-      replacement.ino = candidate.ino + 1
+      replacement.ino = candidate.ino == 1 and 2 or 1
     end)
     exercise(function(replacement, candidate)
       replacement.dev = candidate.dev
@@ -933,7 +953,7 @@ describe("neoagent.fs", function()
           verification_stats = verification_stats + 1
           if stage == "initial identity" and verification_stats == 1
               or stage == "confirmed identity" and verification_stats == 2 then
-            assert(stat).ino = assert(stat).ino + 1
+            assert(stat).ino = assert(stat).ino == 1 and 2 or 1
           end
         end
         return stat, err
@@ -947,7 +967,7 @@ describe("neoagent.fs", function()
             if stage == "final inspection" then
               return nil, "final inspection denied", "EACCES"
             elseif stage == "final identity" then
-              assert(stat).ino = assert(stat).ino + 1
+              assert(stat).ino = assert(stat).ino == 1 and 2 or 1
             end
           end
         end
@@ -1231,6 +1251,7 @@ describe("neoagent.fs", function()
       assert.are.same({ true, true }, {
         fs.ensure_private_directory("windows-private", 448),
       })
+      assert.is_true(fs.sync_directory("windows-private"))
     end)
     jit.os = previous_os
     assert(succeeded, failure)
