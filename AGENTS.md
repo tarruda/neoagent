@@ -162,7 +162,7 @@ native platform suite.
 `make benchmark-transcript` measures streaming latency and memory use.
 `make benchmark-submission` measures Session resume and prompt submission.
 Run benchmarks separately from other suites for useful timings. Linux stable
-CI runs all three targets.
+CI runs all three targets once; any failed budget check fails CI.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.
