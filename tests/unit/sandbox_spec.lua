@@ -786,7 +786,7 @@ describe("neoagent sandbox composition", function()
       return execute_stable(assert(stable.tools[1]), {}, context(root))
     end)
     assert.is_true(blocked.isError)
-    assert.is_true(assert(assert(blocked.details).sandbox).unavailable)
+    assert.is_true(assert(assert(blocked.execution).sandbox).unavailable)
     assert.are.equal(0, executions)
 
     assert(runtime:set_enabled(false))
@@ -1382,7 +1382,7 @@ describe("neoagent sandbox execution", function()
         options = { require_escalation = true },
       }, context(root))
     end)
-    assert.is_true(assert(assert(malformed.details).sandbox).invalid_escalation)
+    assert.is_true(assert(assert(malformed.execution).sandbox).invalid_escalation)
 
     local denied = complete(function()
       return require("neoagent.sandbox.escalation").new():wrap({
@@ -1391,13 +1391,13 @@ describe("neoagent sandbox execution", function()
       })(assert(transformed[1]), original_arguments,
         dialog_context(root, function() return "deny" end))
     end)
-    assert.is_true(assert(assert(denied.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(denied.execution).sandbox).denied_by_user)
 
     local invalid = complete(function()
       return escalation:bypass(function() error("must not execute") end)(
         assert(transformed[1]), "invalid" --[[@as Neoagent.JsonObject]], context(root))
     end)
-    assert.is_true(assert(assert(invalid.details).sandbox).invalid_escalation)
+    assert.is_true(assert(assert(invalid.execution).sandbox).invalid_escalation)
   end)
 
   it("renders shell approval commands separately from agent justification",
@@ -1425,7 +1425,7 @@ describe("neoagent sandbox execution", function()
         request = candidate
         return "deny"
       end))
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.are.equal(table.concat({
         "Run this tool once outside the sandbox?",
         "",
@@ -1519,7 +1519,7 @@ describe("neoagent sandbox execution", function()
       local prompted = {}
       value = execute(assert(shell), arguments("git status-danger"),
         with_dialog("session-one", { "deny" }, prompted))
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.are.equal(1, #prompted)
 
       prompted = {}
@@ -1535,7 +1535,7 @@ describe("neoagent sandbox execution", function()
       }) do
         value = execute(assert(shell), arguments(command),
           with_dialog("session-one", { "deny" }, prompted))
-        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+        assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
         assert.is_true(vim.tbl_contains(
           vim.tbl_map(function(action) return action.id end,
             prompted[#prompted].actions), "approve_prefix"), command)
@@ -1544,7 +1544,7 @@ describe("neoagent sandbox execution", function()
       prompted = {}
       value = execute(assert(shell), arguments("$(whoami) --version"),
         with_dialog("session-one", { "deny" }, prompted))
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.is_false(vim.tbl_contains(
         vim.tbl_map(function(action) return action.id end,
           prompted[#prompted].actions), "approve_prefix"))
@@ -1555,7 +1555,7 @@ describe("neoagent sandbox execution", function()
 
       value = execute(assert(shell), arguments("git status --porcelain"),
         with_dialog("session-two", { "deny" }, {}))
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
       value = execute(assert(shell), arguments("git status --short", false),
         with_dialog("session-one", {}, {}))
@@ -1634,7 +1634,7 @@ describe("neoagent sandbox execution", function()
           escalation_justification = "test unsafe prefix",
         },
       }, ctx)
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.is_false(elevated)
       assert.are.equal(4, #requests)
       assert.matches("cannot be remembered", requests[3].body)
@@ -1714,7 +1714,7 @@ describe("neoagent sandbox execution", function()
           request = candidate
           return "deny"
         end))
-        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+        assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
         return vim.tbl_map(function(action) return action.id end,
           assert(request).actions)
       end
@@ -1898,7 +1898,7 @@ describe("neoagent sandbox execution", function()
       seen = {}
       value = run("python3 tools/cleanup.py && rm -rf /tmp/owned",
         { "deny" }, seen)
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.is_true(offered(seen[1]))
 
       seen = {}
@@ -1917,7 +1917,7 @@ describe("neoagent sandbox execution", function()
       assert.are.equal("elevated", assert(value.content[1]).text)
 
       value = run("git status; rm -rf /tmp/owned", { "deny" })
-      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+      assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
       assert.are.same({
         "python3 scripts/report.py --json",
@@ -1988,7 +1988,7 @@ describe("neoagent sandbox execution", function()
           "cancel_prefix",
           "deny",
         }, requests)
-        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+        assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
         assert.matches("cannot be remembered", requests[3].body)
         run("git status --short", {
           "approve_prefix",
@@ -1997,7 +1997,7 @@ describe("neoagent sandbox execution", function()
         run("git status --porcelain", {})
         for _, command in ipairs(compound) do
           value = run(command, { "deny" })
-          assert.is_true(assert(assert(value.details).sandbox).denied_by_user, command)
+          assert.is_true(assert(assert(value.execution).sandbox).denied_by_user, command)
         end
         assert.are.same({
           "git status --short",
@@ -2055,7 +2055,7 @@ describe("neoagent sandbox execution", function()
           escalation_justification = "test failed editor",
         },
       }, ctx)
-      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
+      assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
       assert.are.equal(0, #replies)
     end
 
@@ -2183,7 +2183,7 @@ describe("neoagent sandbox execution", function()
       },
     }) do
       value = execute(assert(transformed), arguments --[[@as Neoagent.JsonObject]], context(root))
-      assert.is_true(assert(assert(value.details).sandbox).invalid_escalation)
+      assert.is_true(assert(assert(value.execution).sandbox).invalid_escalation)
     end
 
     local pending = async.run(function()
@@ -2198,7 +2198,7 @@ describe("neoagent sandbox execution", function()
         escalation_justification = "reason",
       },
     }, dialog_context(root, function() return pending end))
-    assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
+    assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
     assert.is_true(pending:is_cancelled())
 
     for _, decision in ipairs({
@@ -2229,7 +2229,7 @@ describe("neoagent sandbox execution", function()
           escalation_justification = "reason",
         },
       }, dialog_context(root, decision))
-      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
+      assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
     end
 
     value = module.new():wrap({
@@ -2243,7 +2243,7 @@ describe("neoagent sandbox execution", function()
     }, dialog_context(root, function()
       return { ok = true, action = "deny" }
     end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
     local approval_arguments = {
       options = {
@@ -2256,7 +2256,7 @@ describe("neoagent sandbox execution", function()
     assert.are.equal("elevated", assert(value.content[1]).text)
     value = execute(assert(transformed), approval_arguments,
       dialog_context(root, function() return false end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
     local failed_shell = module.new({
       shell = function() error("shell lookup failed") end,
@@ -2272,7 +2272,7 @@ describe("neoagent sandbox execution", function()
       options = approval_arguments.options,
     },
       dialog_context(root, function() return "deny" end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
     local failing_execute = module.new():wrap({
       restricted = function() error("restricted") end,
@@ -2305,7 +2305,7 @@ describe("neoagent sandbox execution", function()
       summarized = request
       return "deny"
     end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
     assert.matches("current arguments", assert(summarized).body)
     assert.matches("\\x00", assert(summarized).body, 1, true)
 
@@ -2321,7 +2321,7 @@ describe("neoagent sandbox execution", function()
         summarized = request
         return "deny"
       end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
     assert.is_true(assert(summarized).body:find(
       string.rep("s", 1997) .. "...", 1, true
     ) ~= nil)
@@ -2337,7 +2337,7 @@ describe("neoagent sandbox execution", function()
       show = function() return "approve" end,
     })
     value = execute(assert(transformed), escalation_arguments, incomplete)
-    assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
+    assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
 
     for _, choose_pending in ipairs({
       function() error("bulk action failed") end,
@@ -2348,7 +2348,7 @@ describe("neoagent sandbox execution", function()
       value = execute(assert(transformed), escalation_arguments,
         dialog_context(root, function() return "deny_all" end,
           choose_pending))
-      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
+      assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
     end
     value = execute(assert(transformed), escalation_arguments,
       dialog_context(root, function() return "deny_all" end,
@@ -2357,7 +2357,7 @@ describe("neoagent sandbox execution", function()
           assert.matches("another sandbox request", (assert(reason)))
           return 2
         end))
-    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
     local source = require("neoagent.dialog").new()
     local detach = source:subscribe(function() end)
@@ -2383,9 +2383,9 @@ describe("neoagent sandbox execution", function()
     detach()
     assert(vim.wait(1000, function() return run:is_done() end, 5))
     assert.is_true(
-      assert(assert(assert(run:result()).details).sandbox).approval_unavailable)
+      assert(assert(assert(run:result()).execution).sandbox).approval_unavailable)
     assert.is_false(
-      assert(assert(assert(run:result()).details).sandbox).denied_by_user == true)
+      assert(assert(assert(run:result()).execution).sandbox).denied_by_user == true)
     assert.are.equal(3, calls)
   end)
 

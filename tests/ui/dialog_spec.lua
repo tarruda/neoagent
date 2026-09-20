@@ -306,7 +306,7 @@ describe("neoagent generic dialog UI", function()
     assert(result.ok)
     local denied = assert(result.new_messages[2])
     assert(denied.role == "toolResult")
-    assert.is_true(assert(assert(denied.details).sandbox).denied_by_user)
+    assert.is_true(assert(assert(denied.execution).sandbox).denied_by_user)
     detach()
   end)
 

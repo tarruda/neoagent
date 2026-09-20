@@ -38,7 +38,9 @@ end
 ---@param fields? Neoagent.JsonObject
 ---@return Neoagent.ToolResult
 function M.sandbox(message, fields)
-  return M.error(message, { sandbox = util.copy(fields or {}) })
+  local value = M.error(message)
+  value.execution = { sandbox = util.copy(fields or {}) }
+  return value
 end
 
 ---@param value unknown
@@ -50,18 +52,16 @@ end
 ---@param value Neoagent.ToolResult
 ---@param fields? Neoagent.JsonObject
 local function merge_sandbox(value, fields)
-  -- Tool details may be any JSON value; preserve payloads we cannot merge.
-  if value.details == nil then
-    value.details = {}
+  local execution = value.execution
+  if execution == nil then
+    execution = {}
   end
-  local details = value.details
-  if object(details) then
-    local sandbox = details.sandbox
-    if sandbox == nil or object(sandbox) then
-      ---@cast sandbox Neoagent.JsonObject?
-      details.sandbox = util.deep_merge(sandbox or {}, fields)
-    end
-  end
+  assert(object(execution), "Tool execution metadata must be an object")
+  local sandbox = execution.sandbox
+  assert(sandbox == nil or object(sandbox), "Sandbox execution metadata must be an object")
+  ---@cast sandbox Neoagent.JsonObject?
+  execution.sandbox = util.deep_merge(sandbox or {}, fields)
+  value.execution = execution
 end
 
 ---@param value Neoagent.ToolResult
@@ -93,7 +93,8 @@ end
 function M.cleanup(value, message, fields)
   value = util.copy(value)
   value.content = value.content or {}
-  local notice = fields and fields.cleanup_unobserved
+  local notice = fields
+      and fields.cleanup_unobserved
       and "Stopped waiting for sandbox cleanup; cleanup continues independently and its outcome was not observed."
     or "Sandbox cleanup failed after the tool operation reported this result: " .. message
   local text = table.concat({

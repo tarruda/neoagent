@@ -224,14 +224,14 @@ describe("neoagent Windows sandbox", function()
     ---@param value Neoagent.ToolResult
     local function assert_ordinary(value)
       assert.is_true(value.isError)
-      assert.is_nil(details(value).sandbox, content(value))
+      assert.is_nil(value.execution, content(value))
       assert.is_nil((content(value):find(
         "blocked by the sandbox", 1, true)))
     end
     ---@param value Neoagent.ToolResult
     local function assert_restricted(value)
       assert.is_true(value.isError)
-      assert.is_true(details(value).sandbox.ran_restricted)
+      assert.is_true(assert(value.execution).sandbox.ran_restricted)
       assert.matches("blocked by the sandbox",
         content(value), 1, true)
     end

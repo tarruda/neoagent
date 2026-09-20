@@ -309,15 +309,22 @@ describe("neoagent native Renderer protocol", function()
   end)
 
   it("renders tool failures with non-object or incompatible optional metadata", function()
+    local executions = {
+      { sandbox = { cleanup_notice = 2 } },
+      { sandbox = { cleanup_notice = 0 } },
+      { sandbox = { cleanup_notice = 1.5 } },
+      { sandbox = { cleanup_notice = "invalid reference" } },
+    }
     for _, selected in ipairs({ renderers.pi, renderers.codex }) do
       for _, name in ipairs({ "shell", "read_file", "edit_file" }) do
-        for _, details in ipairs({ true, 42, vim.NIL,
+        for index, details in ipairs({ true, 42, vim.NIL,
           { patch = true, ansi = 42, truncation = true },
         }) do
           local block = {
             key = "metadata", kind = "tool", state = "error",
             call = { id = "tool-call", name = name, arguments = { path = "sample.lua", command = "sample" } },
             message = { role = "toolResult", toolCallId = "tool-call", toolName = name, isError = true, details = details,
+              execution = executions[index],
               content = { { type = "text", text = "tool failed safely" } } },
           }
           local transcript, err = protocol.render_block(selected, block, { width = 60 })
@@ -941,7 +948,7 @@ describe("neoagent native Renderer protocol", function()
           cleanup_failed = not unobserved or nil,
           cleanup_unobserved = unobserved or nil,
         })
-        local metadata = assert(assert(value.details).sandbox)
+        local metadata = assert(assert(value.execution).sandbox)
         assert.are.equal(2, metadata.cleanup_notice)
         if unobserved then
           value.content[1], value.content[2] = value.content[2], value.content[1]
@@ -957,7 +964,7 @@ describe("neoagent native Renderer protocol", function()
               } },
               message = {
                 role = "toolResult", toolCallId = "completed", toolName = name,
-                content = value.content, details = value.details,
+                content = value.content, details = value.details, execution = value.execution,
               },
             }
             local node = render(selected, block, { width = 120, spinner = "*" })

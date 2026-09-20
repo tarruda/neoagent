@@ -119,6 +119,8 @@ The worker receives copied Workspace input and has no Agent, Session,
 provider, or UI state. Results and updates cross as semantic values; artifact
 bytes are verified and imported into parent storage before publication.
 Sandbox denial evidence is consumed by the interceptor, outside Session data.
+Tool-owned `details` and executor-owned `execution` metadata remain separate
+in results and committed messages. Sandbox policy owns `execution.sandbox`.
 
 `RpcConnection` owns communication with the worker. `WorkerLease` owns the
 worker process and native sandbox resources. Their lifetimes are independent

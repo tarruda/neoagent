@@ -130,7 +130,7 @@ describe("sandbox channel failure ordering", function()
       local value = assert(assert(completed.new_messages)[2])
       if value.role ~= "toolResult" then error("missing committed Tool result") end
       assert.are.equal("changed once", fs.read(root .. "/changed.txt"))
-      local metadata = assert(assert(value.details).sandbox)
+      local metadata = assert(assert(value.execution).sandbox)
       if failure == "native protocol" then
         assert.is_true(value.isError)
         assert.is_true(metadata.outcome_uncertain)

@@ -1,7 +1,6 @@
 local artifacts = require("neoagent.rpc.artifacts")
 local async = require("neoagent.async")
 local codec = require("neoagent.rpc.codec")
-local common = require("neoagent.tools.common")
 local limits = require("neoagent.rpc.tool_limits")
 local util = require("neoagent.util")
 
@@ -59,7 +58,7 @@ function M.invoke(connection, method, request, call, on_policy)
       update_count <= limits.MAX_UPDATE_COUNT and update_bytes <= limits.MAX_UPDATE_BYTES,
       "Tool worker updates exceeded the aggregate protocol limit"
     )
-    local update = common.update(message.value)
+    local update = codec.update(message.value)
     local checked, check_err = pcall(importer.check_result, importer, update)
     if not checked then
       error(util.error("artifact", "Tool update referenced an invalid artifact", check_err), 0)

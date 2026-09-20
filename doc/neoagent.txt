@@ -1230,6 +1230,14 @@ fail the tool result rather than return a reference.
 logging, sandboxing, and other decorators. Model-produced arguments satisfy the
 supported `input_schema` vocabulary before this function runs.
 
+`details` is Tool-owned JSON data. Executors may add an `execution` JSON object;
+both are retained in Session messages. Sandbox policy owns `execution.sandbox`.
+`cleanup_failed` reports a cleanup error; `cleanup_unobserved` means cancellation
+stopped the wait while cleanup continued independently. Neither changes a
+completed Tool's success or failure. `cleanup_notice` is the one-based index
+of the explanation in `content`, displayed alongside the Tool's ordinary
+preview and sent to the Model. The content block owns the notice text.
+
 Optional Tool fields are:
 
   capabilities.read_files   Enable skill discovery for this toolset.

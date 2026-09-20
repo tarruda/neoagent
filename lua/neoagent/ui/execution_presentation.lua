@@ -8,8 +8,8 @@ local M = {}
 ---@return Neoagent.RenderBlock, string?
 function M.split(block)
   local message = block.message
-  local details = message and message.details
-  local sandbox = type(details) == "table" and details.sandbox or nil
+  local execution = message and message.execution
+  local sandbox = type(execution) == "table" and execution.sandbox or nil
   local index = type(sandbox) == "table" and sandbox.cleanup_notice or nil
   if type(index) ~= "number" or index < 1 or index % 1 ~= 0 then
     return block

@@ -4,7 +4,6 @@ local codec = require("neoagent.rpc.codec")
 local limits = require("neoagent.rpc.tool_limits")
 local methods = require("neoagent.rpc.methods")
 local protocol = require("neoagent.rpc.protocol")
-local common = require("neoagent.tools.common")
 local util = require("neoagent.util")
 
 ---@class Neoagent.RpcServerOptions
@@ -178,7 +177,7 @@ local function start_request(self, message)
       if self._active ~= active or active.cancelling then
         return
       end
-      local valid = common.update(value)
+      local valid = codec.update(value)
       local encoded, bytes = pcall(vim.mpack.encode, valid)
       if not encoded or type(bytes) ~= "string" then
         error("Tool update could not be encoded", 0)

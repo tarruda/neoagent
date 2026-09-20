@@ -135,7 +135,17 @@ end
 ---@param value unknown
 ---@return Neoagent.ToolResult
 function M.result(value)
-  return common.result(value)
+  local result = common.result(value)
+  assert(result.execution == nil, "Tool RPC results cannot supply parent execution metadata")
+  return result
+end
+
+---@param value unknown
+---@return Neoagent.ToolResult
+function M.update(value)
+  local update = common.update(value)
+  assert(update.execution == nil, "Tool RPC updates cannot supply parent execution metadata")
+  return update
 end
 
 return M

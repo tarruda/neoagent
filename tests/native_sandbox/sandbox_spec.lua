@@ -284,6 +284,7 @@ describe("neoagent shared sandbox contract", function()
         content = message.content,
         isError = message.isError,
         details = message.details,
+        execution = message.execution,
       }
     end
     return (assert(result))
@@ -811,12 +812,12 @@ describe("neoagent shared sandbox contract", function()
       end
       local function assert_ordinary(value)
         assert.is_true(value.isError)
-        assert.is_nil(value.details.sandbox)
+        assert.is_nil(value.execution)
         assert.is_nil((text(value):find("blocked by the sandbox", 1, true)))
       end
       local function assert_restricted(value)
         assert.is_true(value.isError)
-        assert.is_true(value.details.sandbox.ran_restricted)
+        assert.is_true(value.execution.sandbox.ran_restricted)
         assert.matches("blocked by the sandbox", text(value), 1, true)
       end
 
@@ -944,7 +945,7 @@ describe("neoagent shared sandbox contract", function()
       })
     end))
     assert.is_true(value.isError, text(value))
-    assert.is_true(assert(assert(value.details).sandbox).unavailable)
+    assert.is_true(assert(assert(value.execution).sandbox).unavailable)
     assert.matches(require("neoagent.rpc.worker").worker_file(), text(value), 1, true)
     assert.is_not_matches("outside checkout", text(value))
   end)
@@ -972,7 +973,7 @@ describe("neoagent shared sandbox contract", function()
         })
       end))
       assert.is_true(value.isError, text(value))
-      local sandbox = assert(assert(value.details).sandbox)
+      local sandbox = assert(assert(value.execution).sandbox)
       assert.is_true(sandbox.ran_restricted)
       assert.is_nil(sandbox.unavailable)
       assert.matches("require_escalation", text(value), 1, true)
@@ -1110,7 +1111,7 @@ describe("neoagent shared sandbox contract", function()
       for _, id in ipairs({
         "grep-denied", "grep-link",
       }) do
-        local sandbox = assert(assert(results[id].details).sandbox)
+        local sandbox = assert(assert(results[id].execution).sandbox)
         assert.is_true(sandbox.denied)
         assert.is_nil(sandbox.ran_restricted)
       end

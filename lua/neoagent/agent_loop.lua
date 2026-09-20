@@ -572,6 +572,9 @@ function M.run(opts)
           if result.details ~= nil then
             message.details = util.copy(result.details)
           end
+          if result.execution ~= nil then
+            message.execution = util.copy(result.execution)
+          end
           if result.usage ~= nil then
             message.usage = util.copy(result.usage)
           end
