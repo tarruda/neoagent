@@ -41,6 +41,8 @@ The Agent Loop receives the Model, messages, tools, executor, context,
 steering, and commit function as explicit dependencies. The message owner
 commits authoritative state before the loop starts work that depends on it.
 Cancellation propagates through Models, tools, child Runs, and provider use.
+Before a cancelled activity finishes, the Agent reconciles committed Tool
+results with its Views, message hooks, and file-buffer refreshes.
 
 ## Agents and the top-level composition
 

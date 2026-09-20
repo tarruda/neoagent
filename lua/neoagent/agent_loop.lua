@@ -537,12 +537,19 @@ function M.run(opts)
                 return execute(tool, util.copy(arguments), ctx)
               end)
               active = false
-              if run:is_cancelled() then
-                error(async.cancelled_error, 0)
-              end
               if executed then
                 local valid, normalized = pcall(validate_tool_result, value)
-                result = valid and normalized or error_result(normalized)
+                if valid then
+                  -- Returning a final result acknowledges completed work.
+                  -- Commit it before cancellation stops further observation.
+                  result = normalized
+                elseif run:is_cancelled() then
+                  error(async.cancelled_error, 0)
+                else
+                  result = error_result(normalized)
+                end
+              elseif run:is_cancelled() then
+                error(async.cancelled_error, 0)
               else
                 local err = util.normalize_error(value, "tool")
                 if err.kind == "cancelled" then

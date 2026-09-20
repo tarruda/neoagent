@@ -4271,6 +4271,136 @@ describe("neoagent default agent", function()
     end
   end
 
+  for _, cancellation in ipairs({ "agent", "tool" }) do
+    it("reconciles acknowledged writes when " .. cancellation .. " cancellation stops cleanup", function()
+      local async = require("neoagent.async")
+      local fs = require("neoagent.fs")
+      local root = vim.fn.tempname()
+      paths[#paths + 1] = root
+      assert(fs.mkdirp(root))
+      local path = root .. "/acknowledged.txt"
+      assert(fs.write_all(path, "old\n"))
+      vim.cmd("edit " .. vim.fn.fnameescape(path))
+      local buffer = vim.api.nvim_get_current_buf()
+      local cleanup_started = false
+      local later_calls = 0
+      local observed = false
+      ---@type Neoagent.Run<unknown, unknown>?
+      local tool_run
+      local tool = {
+        name = "acknowledged_write", description = "Write and wait for cleanup",
+        input_schema = { type = "object", properties = {} },
+        ---@async
+        execute = function(_, ctx)
+          if cleanup_started then
+            later_calls = later_calls + 1
+            error("must not start another Tool after cancellation")
+          end
+          assert(fs.write_all(path, "acknowledged\n"))
+          tool_run = ctx.run
+          pcall(async.await, function()
+            cleanup_started = true
+            return function() end
+          end)
+          return {
+            content = { { type = "text", text = "write acknowledged" } },
+            details = { changed_paths = { path } },
+          }
+        end,
+        on_messages = function(messages)
+          for _, message in ipairs(messages) do
+            if message.role == "toolResult" and message.toolCallId == "written" then
+              observed = true
+            end
+          end
+        end,
+      }
+      local model = fake_model.new({ {
+        result = fake_model.assistant({
+          { type = "toolCall", id = "written", name = tool.name, arguments = {} },
+          { type = "toolCall", id = "later", name = tool.name, arguments = {} },
+        }, "toolUse"),
+      } })
+      setup_model(model, { tools = { tool } })
+      assert(neoagent.open())
+      local run = assert(neoagent.send("write the file"))
+      assert(type(run) == "table")
+      assert(vim.wait(3000, function() return cleanup_started end))
+      if cancellation == "agent" then run:cancel() else assert(tool_run):cancel() end
+      assert(vim.wait(3000, function() return run:is_done() end))
+      assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
+      local messages = current_session():messages()
+      assert.are.equal("written", assert(messages[#messages]).toolCallId)
+      assert.are.equal("acknowledged\n", fs.read(path))
+      assert.are.equal(0, later_calls)
+      assert.are.equal(1, #model.requests)
+      assert(vim.wait(1000, function()
+        return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "acknowledged"
+      end), "acknowledged mutation did not refresh its buffer")
+      assert.is_true(observed, "Tool message hooks did not observe the committed result")
+      local displayed = current_view().messages
+      assert.are.equal("written", assert(displayed[#displayed]).toolCallId)
+      vim.api.nvim_buf_delete(buffer, { force = true })
+    end)
+  end
+
+  it("releases cancelled activity ownership when committed results cannot be reloaded", function()
+    local async = require("neoagent.async")
+    local cleanup_started = false
+    local tool = {
+      name = "complete", description = "Complete before cleanup",
+      input_schema = { type = "object", properties = {} },
+      ---@async
+      execute = function()
+        pcall(async.await, function()
+          cleanup_started = true
+          return function() end
+        end)
+        return { content = { { type = "text", text = "completed" } } }
+      end,
+    }
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "completed", name = tool.name, arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local agent = setup_model(model, { tools = { tool } })
+    local run = assert(agent:send("complete the work"))
+    assert(type(run) == "table")
+    assert(vim.wait(3000, function() return cleanup_started end))
+    local session = agent:get_session()
+    local path = session.path
+    local presenter = agent:presenter()
+    local notify = presenter.notify
+    local notifications = {}
+    presenter.notify = function(_, value)
+      notifications[#notifications + 1] = value.message
+    end
+    session.path = function()
+      return nil, require("neoagent.util").error("storage", "cancelled Session read failed")
+    end
+    local checked, failure = pcall(function()
+      run:cancel()
+      assert(vim.wait(3000, function() return run:is_done() and not agent:is_running() end))
+      assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
+      local result = assert(session:messages()[3])
+      assert.are.equal("completed", result.toolCallId)
+      assert.is_false(result.isError)
+      assert.matches("failed to publish Agent completion: cancelled Session read failed",
+        table.concat(notifications, "\n"), 1, true)
+    end)
+    session.path = path
+    presenter.notify = notify
+    run:cancel()
+    assert.is_true(checked, tostring(failure))
+    local resumed = assert(agent:send("continue after the read recovers"))
+    assert(type(resumed) == "table")
+    assert(vim.wait(3000, function() return resumed:is_done() and not agent:is_running() end))
+    assert.is_true(assert(resumed:result()).ok)
+    assert.are.equal(2, #model.requests)
+  end)
+
   it("refreshes buffers from semantic custom tool results", function()
     local root = vim.fn.tempname()
     paths[#paths + 1] = root
