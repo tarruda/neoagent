@@ -1,7 +1,9 @@
 local util = require("neoagent.util")
 local framing = require("neoagent.ipc.framing")
+local validation = require("neoagent.validation")
 
 local M = {}
+M.MAX_INPUT_CHUNK = 64 * 1024
 ---@class Neoagent.SandboxProtocolInput
 ---@field v? unknown
 ---@field type? unknown
@@ -65,6 +67,33 @@ end
 ---@return string
 function M.encode(value)
   return framing.encode(value, MAX_FRAME)
+end
+
+---@param on_data fun(data: string)
+---@param on_end fun()
+---@return Neoagent.FrameDecoder
+function M.input_decoder(on_data, on_end)
+  local ended = false
+  return framing.new({
+    max_frame = MAX_FRAME,
+    on_value = function(value)
+      assert(validation.object(value), "invalid sandbox input message")
+      ---@cast value table
+      validation.exact(value, { v = true, type = true, data = false }, "sandbox input")
+      assert(not ended and value.v == 1, "invalid sandbox input state")
+      if value.type == "stdin" then
+        assert(
+          type(value.data) == "string" and value.data ~= "" and #value.data <= M.MAX_INPUT_CHUNK,
+          "invalid sandbox input bytes"
+        )
+        on_data(value.data)
+      else
+        assert(value.type == "stdin-end" and value.data == nil, "invalid sandbox input end")
+        ended = true
+        on_end()
+      end
+    end,
+  })
 end
 
 ---@param value unknown

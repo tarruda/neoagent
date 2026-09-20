@@ -1515,9 +1515,14 @@ local function card_content(self, block, options)
     return nil
   end
 
+  local notice
+  block, notice = require("neoagent.ui.execution_presentation").split(block)
   local args = block.call and block.call.arguments or partial_arguments(block.raw)
   local presentation = custom_tool_presentation(self, block, args, options)
   local content = presented_tool_content(self, block, args, options, presentation)
+  if notice then
+    append_tool_body(content, output_lines(self, notice, nil, false, "NeoagentWarning"))
+  end
   local background = self.policy.tool_background(block.state)
   return content, background
 end

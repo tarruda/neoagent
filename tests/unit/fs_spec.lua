@@ -85,6 +85,30 @@ describe("neoagent.fs", function()
     paths = {}
   end)
 
+  it("bounds buffered reads even when a file grows after inspection", function()
+    local path = vim.fn.tempname()
+    paths[#paths + 1] = path
+    assert(fs.write_all(path, "abcd"))
+    assert.are.equal("abcd", fs.read(path, 4))
+    local read = vim.uv.fs_read
+    local grew = false
+    vim.uv.fs_read = function(fd, size, offset)
+      local data, err, code = read(fd, size, offset)
+      if not grew then
+        grew = true
+        assert(fs.write_all(path, "e", "a"))
+      end
+      return data, err, code
+    end
+    local data, err = fs.read(path, 4)
+    assert.is_nil(data)
+    assert.are.equal("file exceeds 4 bytes", err)
+    vim.uv.fs_read = read
+    assert(fs.write_all(path, ""))
+    assert.are.equal("", fs.read(path, 0))
+    assert.has_error(function() fs.read(path, -1) end, "maximum read size must be a non-negative integer")
+  end)
+
   it("reports temporary file creation and close failures", function()
     ---@param template string
     vim.uv.fs_mkstemp = function(template)

@@ -324,7 +324,7 @@ end
 ---@return Neoagent.ToolResult
 local function run(request, _call, deps)
   local absolute = request.resolved_path
-  local raw, err = deps.fs.read(absolute)
+  local raw, err = deps.fs.read(absolute, require("neoagent.tools.limits").MAX_EDIT_INPUT_BYTES)
   if not raw then
     common.filesystem_error("Could not edit file " .. request.path, err)
   end
@@ -386,7 +386,7 @@ local function new()
     ---@async
     execute = function(arguments, ctx)
       local call = common.call(ctx)
-      return run(prepare(arguments, {}, call), call, common.context_dependencies(ctx, deps))
+      return run(prepare(arguments, {}, call), call, deps)
     end,
     render = presentation.render,
   }

@@ -291,8 +291,7 @@ function M.from_config(options, runtime)
   local session_metadata = runtime.session and runtime.session:metadata() or nil
   assert(
     session_metadata == nil
-      or type(session_metadata) == "table"
-        and (next(session_metadata) == nil or not util.is_list(session_metadata)),
+      or type(session_metadata) == "table" and (next(session_metadata) == nil or not util.is_list(session_metadata)),
     "agent Session metadata is invalid"
   )
   local session_workspace = session_metadata and session_metadata.cwd or nil
@@ -420,7 +419,6 @@ function M.from_config(options, runtime)
     toolset = {
       tools = tools,
       execute_tool = options.execute_tool,
-      system_prompt = options._sandbox_system_prompt,
     },
   }
   ---@return string
@@ -750,10 +748,8 @@ function M.from_config(options, runtime)
     if not state.workspace_model_pending then
       return true
     end
-    local selected = assert(
-      state.request_selection:model_selection(),
-      "accepted Agent submission has no Model selection"
-    )
+    local selected =
+      assert(state.request_selection:model_selection(), "accepted Agent submission has no Model selection")
     local overrides = state.request_selection:workspace_preferences()
     local level = state.request_selection:thinking_level()
     local same_thinking = overrides.default_thinking_level == level
@@ -1005,10 +1001,7 @@ function M.from_config(options, runtime)
         if state.destroyed or state.provider_id ~= provider_id then
           return
         end
-        local selected = assert(
-          state.request_selection:model_selection(),
-          "bound Provider has no Model selection"
-        )
+        local selected = assert(state.request_selection:model_selection(), "bound Provider has no Model selection")
         if
           not state.request_selection:model()
           and selected.provider == provider_id

@@ -1,364 +1,371 @@
 local exit = os.exit --[[@as fun(status?: integer): never]]
 
----@param message unknown
+---@param message string
 ---@return never
 local function fail(message)
-  io.stderr:write("neoagent macOS sandbox runtime: ",
-    tostring(message), "\n")
+  io.stderr:write("neoagent macOS sandbox runtime: ", message, "\n")
   return exit(70)
 end
 
-if jit.os ~= "OSX" then fail("macOS is required") end
+if jit.os ~= "OSX" then
+  fail("macOS is required")
+end
 
----@param err string?
----@param code string?
+local source = assert(debug.getinfo(1, "S")).source:sub(2)
+local root = assert(vim.fs.dirname(assert(vim.fs.dirname(source))))
+package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
+local protocol = require("neoagent.sandbox.protocol")
+local ffi = require("ffi")
+
+ffi.cdef([[
+typedef struct { uint32_t val[8]; } neoagent_audit_token;
+typedef struct {
+  uint8_t uuid[16];
+  uint64_t uniqueid, parent_uniqueid;
+  uint32_t idversion, parent_idversion;
+  uint64_t reserved[2];
+} neoagent_proc_identity;
+typedef struct {
+  uint32_t pid, ppid, pgid, status;
+  char command[16];
+  uint32_t flags, uid, gid, ruid, rgid, svuid, svgid, reserved;
+} neoagent_proc_status;
+int proc_listallpids(void *, int);
+int proc_pidinfo(int, int, uint64_t, void *, int);
+int proc_signal_with_audittoken(neoagent_audit_token *, int);
+int sandbox_check_by_audit_token(neoagent_audit_token, const char *, int, ...);
+extern int SANDBOX_CHECK_NO_REPORT;
+]])
+
+local proc = ffi.load("/usr/lib/libproc.dylib")
+local sandbox = ffi.load("/usr/lib/libsandbox.dylib")
+local available = pcall(function()
+  assert(proc.proc_signal_with_audittoken)
+  assert(sandbox.sandbox_check_by_audit_token)
+end)
+if not available then
+  fail("stable process identity APIs are unavailable")
+end
+
+local encoded = vim.env.NEOAGENT_MACOS_SANDBOX_SPEC
+vim.env.NEOAGENT_MACOS_SANDBOX_SPEC = nil
+if type(encoded) ~= "string" or #encoded > 1024 * 1024 then
+  fail("invalid specification")
+end
+local decoded, spec = pcall(vim.json.decode, encoded)
+if not decoded or type(spec) ~= "table" then
+  fail("invalid specification")
+end
+if spec.mode ~= "run" and spec.mode ~= "cleanup" and spec.mode ~= "probe" then
+  fail("invalid mode")
+end
+if
+  spec.mode ~= "probe"
+  and (type(spec.scope) ~= "string" or not spec.scope:match("^neoagent%.sandbox%.%x+$") or #spec.scope ~= 49)
+then
+  fail("invalid scope")
+end
+
+local MAX_PROCESSES = 65536
+local CLEANUP_MS = 5000
+local MAX_QUEUED_BYTES = 24 * 1024 * 1024
+local pids = ffi.new("int[?]", MAX_PROCESSES) --[[@as Neoagent.FfiArray<integer>]]
+local identity = ffi.new("neoagent_proc_identity") --[[@as {idversion: integer}]]
+local status = ffi.new("neoagent_proc_status") --[[@as {status: integer}]]
+local token = ffi.new("neoagent_audit_token") --[[@as {val: Neoagent.FfiArray<integer>}]]
+local lookup_filter = bit.bor(2, assert(tonumber(sandbox.SANDBOX_CHECK_NO_REPORT)) --[[@as integer]])
+
+local self_pid = vim.fn.getpid()
+local usable = pcall(function()
+  assert(proc.proc_pidinfo(self_pid, 17, 0, identity, 56) == 56)
+  token.val[5], token.val[7] = self_pid, identity.idversion
+  assert(sandbox.sandbox_check_by_audit_token(token, nil, 0) == 0)
+  assert(proc.proc_signal_with_audittoken(token, 0) == 22) -- EINVAL; no signal is sent.
+end)
+if not usable then
+  fail("protected process supervision is unavailable")
+end
+if spec.mode == "probe" then
+  exit(0)
+end
+
+-- The scope is an inert, unique Mach lookup grant in the worker's immutable
+-- policy. Audit tokens bind both the policy query and signal to one process
+-- incarnation, including descendants that changed session or parent.
+---@param pid integer
+---@return boolean? Nil requests another scan after an exit or exec race.
+local function in_scope(pid)
+  if pid <= 0 then
+    return false
+  end
+  if proc.proc_pidinfo(pid, 13, 1, status, 64) == 64 and status.status == 5 then
+    return false -- SZOMB has no remaining effects.
+  end
+  if proc.proc_pidinfo(pid, 17, 0, identity, 56) ~= 56 then
+    if ffi.errno() == 3 then
+      return nil
+    end
+    return false
+  end
+  local version = identity.idversion
+  token.val[5], token.val[7] = pid, identity.idversion
+  -- A definitive policy mismatch already excludes this incarnation. Its
+  -- subsequent exec or exit must not keep this invocation's cleanup pending.
+  -- Unclassified disappearances still require another scan: their children
+  -- may have been created after the process list was captured.
+  local sandboxed = sandbox.sandbox_check_by_audit_token(token, nil, 0)
+  if sandboxed == 0 then
+    return false
+  end
+  local permitted = sandboxed == 1
+      and sandbox.sandbox_check_by_audit_token(
+        token,
+        "mach-lookup",
+        lookup_filter,
+        ffi.cast("const char *", spec.scope)
+      )
+    or nil
+  if permitted == 1 then
+    return false
+  end
+  local absent = permitted == 0
+      and sandbox.sandbox_check_by_audit_token(
+        token,
+        "mach-lookup",
+        lookup_filter,
+        ffi.cast("const char *", spec.scope .. ".absent")
+      )
+    or nil
+  if absent == 0 then
+    return false
+  end
+  if proc.proc_pidinfo(pid, 17, 0, identity, 56) ~= 56 or identity.idversion ~= version then
+    return nil
+  end
+  return absent == 1
+end
+
 ---@return boolean
-local function missing(err, code)
-  return code == "ENOENT"
-    or type(err) == "string" and err:find("ENOENT", 1, true) ~= nil
-end
-
----@param data string
----@return string
-local function content_fingerprint(data)
-  local seeds = {
-    0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
-    0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
-  }
-  local parts = {}
-  for index, seed in ipairs(seeds) do
-    local hash = bit.tobit(seed)
-    for offset = 1, #data do
-      hash = bit.bxor(hash, data:byte(offset) + index - 1)
-      hash = bit.tobit(hash + bit.lshift(hash, 1)
-        + bit.lshift(hash, 4) + bit.lshift(hash, 7)
-        + bit.lshift(hash, 8) + bit.lshift(hash, 24))
-      hash = bit.bxor(hash, bit.rshift(hash, 13))
-    end
-    parts[index] = bit.tohex(hash, 8)
+local function terminate_scope()
+  local count = tonumber(proc.proc_listallpids(pids, ffi.sizeof(pids)))
+  if not count or count <= 0 or count >= MAX_PROCESSES then
+    fail("could not enumerate processes")
   end
-  return table.concat(parts)
+  local remaining = false
+  for index = 0, count - 1 do
+    local pid = pids[index]
+    local selected = in_scope(pid)
+    if selected == nil then
+      remaining = true
+    elseif selected then
+      remaining = true
+      local err = tonumber(proc.proc_signal_with_audittoken(token, 9))
+      if err ~= 0 and err ~= 3 then
+        fail("could not terminate sandbox process")
+      end -- ESRCH
+    end
+  end
+  return not remaining
 end
 
----@param stat uv.fs_stat.result?
----@return Neoagent.FileObservation
-local function target_observation(stat)
-  return {
-    exists = stat ~= nil,
-    type = stat and stat.type or nil,
-    device = stat and stat.dev or nil,
-    inode = stat and stat.ino or nil,
-    mode = stat and type(stat.mode) == "number"
-        and bit.band(stat.mode, 511) or nil,
-  }
-end
-
----@param left Neoagent.FileObservation
----@param right Neoagent.FileObservation
 ---@return boolean
-local function same_target(left, right)
-  return left.exists == right.exists and left.type == right.type
-    and left.device == right.device and left.inode == right.inode
-    and left.mode == right.mode
+local function cleanup()
+  return (vim.wait(CLEANUP_MS, terminate_scope, 10))
 end
 
----@param request Neoagent.SandboxFilesystemOperation
----@param data string
-local function atomic_replace(request, data)
-  local policy = request.policy
-  if type(policy) ~= "table" or vim.islist(policy)
-      or policy.mode == nil and policy.preserve_mode ~= true
-      or policy.preserve_mode == true and policy.new_mode == nil
-      or policy.expected_content_fingerprint ~= nil
-        and (type(policy.expected_content_fingerprint) ~= "string"
-          or not policy.expected_content_fingerprint:match(
-            "^" .. string.rep("%x", 64) .. "$")) then
-    fail("invalid atomic replacement policy")
+if spec.mode == "cleanup" then
+  if not cleanup() then
+    fail("sandbox process cleanup timed out")
   end
-  local stat, stat_err, stat_code = vim.uv.fs_lstat(request.path)
-  local target = target_observation(stat)
-  if not stat and not missing(stat_err, stat_code) then fail(stat_err) end
-  if stat and stat.type == "link" then fail("target is a symbolic link") end
-  if stat and stat.type ~= "file" then fail("target is not a regular file") end
-  if not stat and policy.require_existing then fail("target must already exist") end
-  local selected_mode = policy.mode
-    or stat and bit.band(stat.mode, 511) or policy.new_mode
-  if type(selected_mode) ~= "number" or selected_mode < 0
-      or selected_mode > 511 or selected_mode % 1 ~= 0 then
-    fail("invalid atomic replacement mode")
-  end
-  if type(request.suffix) ~= "string" or #request.suffix ~= 32
-      or request.suffix:find("[^%x]") then
-    fail("invalid atomic replacement suffix")
-  end
-  local temporary = request.path .. "." .. request.suffix .. ".tmp"
-  local fd, open_err = vim.uv.fs_open(temporary, "wx", selected_mode)
-  if not fd then fail(open_err) end
-  local written = 0
-  while written < #data do
-    local count, write_err = vim.uv.fs_write(
-      fd, data:sub(written + 1), written)
-    if type(count) ~= "number" or count <= 0
-        or count > #data - written then
-      vim.uv.fs_close(fd)
-      vim.uv.fs_unlink(temporary)
-      fail(write_err or "invalid write length")
-    end
-    written = written + count
-  end
-  local closed, close_err = vim.uv.fs_close(fd)
-  if not closed then
-    vim.uv.fs_unlink(temporary)
-    fail(close_err)
-  end
-  if policy.mode ~= nil or stat and policy.preserve_mode == true then
-    local secured, secure_err = vim.uv.fs_chmod(temporary, selected_mode)
-    if not secured then
-      vim.uv.fs_unlink(temporary)
-      fail(secure_err)
-    end
-  end
-  local current, current_err, current_code = vim.uv.fs_lstat(request.path)
-  if not current and not missing(current_err, current_code) then
-    vim.uv.fs_unlink(temporary)
-    fail(current_err)
-  end
-  if current and current.type == "link" then
-    vim.uv.fs_unlink(temporary)
-    fail("target became a symbolic link")
-  end
-  if current and current.type ~= "file" then
-    vim.uv.fs_unlink(temporary)
-    fail("target is not a regular file")
-  end
-  if not current and policy.require_existing then
-    vim.uv.fs_unlink(temporary)
-    fail("target must already exist")
-  end
-  if not same_target(target, target_observation(current)) then
-    vim.uv.fs_unlink(temporary)
-    fail("target changed during preparation")
-  end
-  if policy.expected_content_fingerprint ~= nil then
-    if not target.exists then
-      vim.uv.fs_unlink(temporary)
-      fail("expected target content is missing")
-    end
-    local contents, read_err = (function()
-      local held, open_err = vim.uv.fs_open(request.path, "r", 438)
-      if not held then return nil, open_err end
-      local observed = vim.uv.fs_fstat(held)
-      if not same_target(target, target_observation(observed)) then
-        vim.uv.fs_close(held)
-        return nil, "target changed during content verification"
-      end
-      local chunks, offset = {}, 0
-      while true do
-        local chunk, chunk_err = vim.uv.fs_read(held, 65536, offset)
-        if chunk == nil then vim.uv.fs_close(held) return nil, chunk_err end
-        if chunk == "" then break end
-        chunks[#chunks + 1] = chunk
-        offset = offset + #chunk
-      end
-      local after = vim.uv.fs_fstat(held)
-      vim.uv.fs_close(held)
-      if not same_target(target, target_observation(after)) then
-        return nil, "target changed during content verification"
-      end
-      return table.concat(chunks)
-    end)()
-    local latest = vim.uv.fs_lstat(request.path)
-    if not contents or not same_target(target, target_observation(latest)) then
-      vim.uv.fs_unlink(temporary)
-      fail(read_err or "target changed during content verification")
-    end
-    if content_fingerprint(contents):lower()
-        ~= policy.expected_content_fingerprint:lower() then
-      vim.uv.fs_unlink(temporary)
-      fail("target content changed concurrently")
-    end
-  end
-  local replaced, replace_err = vim.uv.fs_rename(temporary, request.path)
-  if not replaced then
-    vim.uv.fs_unlink(temporary)
-    fail(replace_err)
-  end
+  exit(0)
+end
+if type(spec.argv) ~= "table" or #spec.argv == 0 or type(spec.env) ~= "table" or type(spec.cwd) ~= "string" then
+  fail("invalid worker specification")
 end
 
----@param encoded string
-local function filesystem_request(encoded)
-  if #encoded > 16 * 1024 then fail("invalid request") end
-  local ok, request = pcall(vim.json.decode, encoded)
-  if not ok or type(request) ~= "table"
-      or type(request.operation) ~= "string"
-      or type(request.path) ~= "string" then
-    fail("invalid request")
+local failed = false
+local stop_signal
+local pending_bytes = 0
+local stdout = assert(vim.uv.new_pipe(false))
+stdout:open(1)
+local sequence = 0
+---@param event table
+local function send(event)
+  if failed then
+    return
   end
-
-  ---@cast request Neoagent.SandboxFilesystemOperation
-  local range = request.operation == "read_range"
-  if range and (type(request.offset) ~= "number" or request.offset < 0
-      or request.offset % 1 ~= 0
-      or type(request.size) ~= "number" or request.size < 1
-      or request.size > 1024 * 1024 or request.size % 1 ~= 0) then
-    fail("invalid request")
-  elseif not range and (request.offset ~= nil or request.size ~= nil) then
-    fail("invalid request")
+  event.v = 1
+  local bytes = protocol.encode(event)
+  if pending_bytes + #bytes > MAX_QUEUED_BYTES then
+    failed = true
+    return
   end
-
-  if request.operation == "read" or range then
-    local stat, stat_err = vim.uv.fs_stat(request.path)
-    if not stat or stat.type ~= "file" then
-      fail(stat_err or "not a regular file")
+  pending_bytes = pending_bytes + #bytes
+  stdout:write(bytes, function(err)
+    pending_bytes = pending_bytes - #bytes
+    if err then
+      failed = true
     end
-    local fd, open_err = vim.uv.fs_open(request.path, "r", 438)
-    if not fd then fail(open_err) end
-    local size = range and request.size or stat.size
-    local offset = range and request.offset or 0
-    local data, read_err = vim.uv.fs_read(fd, size, offset)
-    vim.uv.fs_close(fd)
-    if not data then fail(read_err) end
-    io.stdout:write(data)
-  elseif request.operation == "mkdirp" then
-    local mkdir_ok, created = pcall(vim.fn.mkdir, request.path, "p")
-    if not mkdir_ok
-        or created == 0 and not vim.uv.fs_stat(request.path) then
-      fail("could not create directory")
-    end
-  elseif request.operation == "write_all" then
-    local data = io.stdin:read("*a")
-    local fd, open_err = vim.uv.fs_open(
-      request.path, request.flags or "w", request.mode or 420)
-    if not fd then fail(open_err) end
-    local offset, written = request.flags == "a" and -1 or 0, 0
-    while written < #data do
-      local count, write_err = vim.uv.fs_write(
-        fd, data:sub(written + 1), offset < 0 and -1 or offset + written)
-      if not count then
-        vim.uv.fs_close(fd)
-        fail(write_err)
-      end
-      written = written + count
-    end
-    local closed, close_err = vim.uv.fs_close(fd)
-    if not closed then fail(close_err) end
-  elseif request.operation == "atomic_replace" then
-    atomic_replace(request, io.stdin:read("*a"))
-  else
-    fail("unsupported operation")
-  end
-end
-
-local encoded = vim.env.NEOAGENT_SANDBOX_FS
-vim.env.NEOAGENT_SANDBOX_FS = nil
-if encoded ~= nil then
-  if type(encoded) ~= "string" then fail("invalid request") end
-  filesystem_request(encoded)
-  return
-end
-
-if vim.env.NEOAGENT_SANDBOX_EXEC ~= "1" then fail("invalid request") end
-vim.env.NEOAGENT_SANDBOX_EXEC = nil
-
-local command = vim.list_slice(arg)
-if command[1] == "--" then table.remove(command, 1) end
-if #command == 0 then fail("command is required") end
-
----@type uv.uv_signal_t[]
-local signal_watchers = {}
-local stopping = false
-local cleanup_started = false
-local function close_signal_watchers()
-  for _, watcher in ipairs(signal_watchers) do
-    if not watcher:is_closing() then
-      watcher:stop()
-      watcher:close()
-    end
-  end
-  signal_watchers = {}
-end
-
----@return true?, string?
-local function schedule_descendant_cleanup()
-  if cleanup_started then return true end
-  -- The detached peer waits for this supervisor to exit before terminating
-  -- every process that remains in the Seatbelt sandbox.
-  local spawn_options = {
-    args = {
-      "-c",
-      "parent=$PPID; while kill -0 \"$parent\" 2>/dev/null; "
-        .. "do :; done; kill -KILL -1",
-    },
-    detached = true,
-    stdio = { nil, nil, nil },
-  }
-  local handle, err = vim.uv.spawn("/bin/sh",
-    spawn_options --[[@as uv.spawn.options]], function() end)
-  if not handle then return nil, err --[[@as string?]] end
-  cleanup_started = true
-  handle:unref()
-  return true
-end
-
----@param signal integer
-local function stop(signal)
-  if stopping then return end
-  stopping = true
-  local cleanup_ok, cleanup_err = schedule_descendant_cleanup()
-  close_signal_watchers()
-  vim.schedule(function()
-    if not cleanup_ok then
-      fail("could not start descendant cleanup: " .. tostring(cleanup_err))
-    end
-    exit(128 + signal)
   end)
 end
 
+---@type uv.uv_signal_t[]
+local signals = {}
 for _, signal in ipairs({ 1, 2, 15 }) do
-  local selected = signal
   local watcher = assert(vim.uv.new_signal())
-  watcher:start(selected, function() stop(selected) end)
-  signal_watchers[#signal_watchers + 1] = watcher
+  watcher:start(signal, function()
+    stop_signal = stop_signal or signal
+  end)
+  signals[#signals + 1] = watcher
 end
 
-local input = io.stdin:read("*a")
----@type vim.SystemCompleted?
+local input = assert(vim.uv.new_pipe(false))
+local child_input = assert(vim.uv.new_pipe(false))
+local child_stdout = assert(vim.uv.new_pipe(false))
+local child_stderr = assert(vim.uv.new_pipe(false))
+local admission = assert(vim.uv.new_pipe(false))
+local environment = {}
+for name, value in pairs(spec.env) do
+  environment[#environment + 1] = name .. "=" .. value
+end
+---@type {code: integer, signal: integer}?
 local completed
-local started, process = pcall(vim.system, command, {
-  clear_env = true,
-  env = vim.fn.environ(),
-  stdin = input,
-  stdout = function(err, data)
-    if err then stop(15) end
-    if data then io.stdout:write(data) io.stdout:flush() end
-  end,
-  stderr = function(err, data)
-    if err then stop(15) end
-    if data then io.stderr:write(data) io.stderr:flush() end
-  end,
-}, function(value)
-  completed = value
+local child_options = {
+  args = vim.list_slice(spec.argv, 2),
+  cwd = spec.cwd,
+  env = environment,
+  detached = false,
+  stdio = { child_input, child_stdout, child_stderr, admission },
+}
+local child = vim.uv.spawn(spec.argv[1], child_options --[[@as uv.spawn.options]], function(code, signal)
+  completed = { code = code, signal = signal }
 end)
-if not started then
-  close_signal_watchers()
-  fail(process)
+if not child then
+  send({ type = "error", stage = "worker-start", errno = 0 })
+  failed = true
+else
+  local ready = ""
+  local admission_closed = false
+  admission:read_start(function(err, data)
+    if err or not data then
+      admission_closed = true
+    else
+      ready = (ready .. data):sub(1, 7)
+    end
+  end)
+  local admitted = vim.wait(5000, function()
+    return ready == "ready\n" or #ready > 6 or admission_closed or stop_signal ~= nil
+  end, 10)
+  admission:read_stop()
+  if not admitted or ready ~= "ready\n" or stop_signal then
+    failed = true
+  else
+    send({ type = "ready" })
+  end
+end
+admission:close()
+
+local streams = 2
+---@param pipe uv.uv_pipe_t
+---@param stream string
+local function read_output(pipe, stream)
+  pipe:read_start(function(err, data)
+    if err then
+      failed = true
+    end
+    if data then
+      sequence = sequence + 1
+      send({ type = "output", stream = stream, seq = sequence, data = data })
+    else
+      streams = streams - 1
+      pipe:read_stop()
+      pipe:close()
+    end
+  end)
+end
+if child then
+  read_output(child_stdout, "stdout")
+  read_output(child_stderr, "stderr")
+  local input_decoder = protocol.input_decoder(function(data)
+    child_input:write(data, function(err)
+      if err then
+        failed = true
+      end
+    end)
+  end, function()
+    child_input:shutdown(function()
+      if not child_input:is_closing() then
+        child_input:close()
+      end
+    end)
+  end)
+  input:open(0)
+  input:read_start(function(err, data)
+    if failed then
+      return
+    end
+    if err then
+      failed = true
+    end
+    if data then
+      local accepted = pcall(input_decoder.feed, input_decoder, data)
+      if not accepted then
+        failed = true
+      end
+    else
+      input:read_stop()
+      input:close()
+      -- The owner keeps this control pipe open after logical stdin closure.
+      -- Its physical EOF revokes the lease independently of the RPC session.
+      if not input_decoder:finish() then
+        failed = true
+      end
+      stop_signal = stop_signal or 15
+    end
+  end)
 end
 
-while not completed and not stopping do
-  vim.wait(100, function() return completed ~= nil or stopping end, 10)
+while child and not completed and not failed and not stop_signal do
+  vim.wait(100, function()
+    return completed ~= nil or failed or stop_signal ~= nil
+  end, 10)
 end
-if stopping then
-  while true do vim.wait(100, function() return false end, 10) end
+if child and not completed then
+  child:kill(9)
 end
-
-local cleanup_ok, cleanup_err = schedule_descendant_cleanup()
-close_signal_watchers()
-if not cleanup_ok then
-  fail("could not start descendant cleanup: " .. tostring(cleanup_err))
+local cleaned = cleanup()
+if child then
+  local drained = vim.wait(CLEANUP_MS, function()
+    return completed ~= nil and streams == 0
+  end, 10)
+  if not drained then
+    failed = true
+  end
 end
-assert(completed)
-if completed.signal ~= 0 then
-  pcall(vim.uv.kill, vim.fn.getpid(), completed.signal --[[@as integer]])
-  exit(128 + completed.signal --[[@as integer]])
+if not cleaned then
+  failed = true
 end
-exit(completed.code --[[@as integer]])
+for _, watcher in ipairs(signals) do
+  watcher:stop()
+  watcher:close()
+end
+for _, pipe in ipairs({ input, child_input, child_stdout, child_stderr }) do
+  if not pipe:is_closing() then
+    pipe:close()
+  end
+end
+if child and not child:is_closing() then
+  child:close()
+end
+if not failed then
+  local result = assert(completed)
+  send({ type = "exit", code = result.signal ~= 0 and 128 + result.signal or result.code, signal = result.signal })
+end
+local flushed = vim.wait(CLEANUP_MS, function()
+  return pending_bytes == 0
+end, 10)
+stdout:close()
+if failed or not flushed then
+  fail("worker or cleanup failed")
+end
+exit(0)

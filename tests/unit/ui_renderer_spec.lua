@@ -929,6 +929,53 @@ describe("neoagent native Renderer protocol", function()
     assert.matches("complete output", text)
   end)
 
+  for _, name in ipairs({ "write_file", "edit_file", "shell", "read_file" }) do
+    it("renders execution cleanup notices independently of " .. name .. " previews", function()
+      local tool = require("neoagent.tools." .. name).new()
+      for _, unobserved in ipairs({ false, true }) do
+        local value = require("neoagent.sandbox.result").cleanup({
+          content = { { type = "text", text = "operation completed" } },
+          details = { patch = "@@ -1 +1 @@\n-old\n+new", added_lines = 1, removed_lines = 1,
+            ansi = "\27[32mcommand output\27[0m" },
+        }, "worker could not be reaped", {
+          cleanup_failed = not unobserved or nil,
+          cleanup_unobserved = unobserved or nil,
+        })
+        local metadata = assert(assert(value.details).sandbox)
+        assert.are.equal(2, metadata.cleanup_notice)
+        if unobserved then
+          value.content[1], value.content[2] = value.content[2], value.content[1]
+          metadata.cleanup_notice = 1
+        end
+        for _, selected in ipairs({ renderers.pi, renderers.codex }) do
+          for _, surface in ipairs({ "transcript", "details" }) do
+            local render = surface == "transcript" and protocol.render_block or protocol.render_details
+            local block = {
+              key = "cleanup", kind = "tool", state = "success", tool = tool,
+              call = { id = "completed", name = name, arguments = {
+                path = "file.txt", content = "written contents", command = "printf output",
+              } },
+              message = {
+                role = "toolResult", toolCallId = "completed", toolName = name,
+                content = value.content, details = value.details,
+              },
+            }
+            local node = render(selected, block, { width = 120, spinner = "*" })
+            if not node then error("cleanup result did not render") end
+            local text = table.concat(layout(node, selected.theme, 120).lines, "\n")
+            local notice = unobserved and "Stopped waiting for sandbox cleanup" or "Sandbox cleanup failed"
+            assert.matches(notice, text, 1, true)
+            local _, copies = text:gsub(notice, "")
+            assert.are.equal(1, copies, "cleanup notice must appear exactly once")
+            assert.matches("do not retry it automatically", text, 1, true)
+            if not unobserved then assert.matches("worker could not be reaped", text, 1, true) end
+            assert.is_nil(value.isError)
+          end
+        end
+      end
+    end)
+  end
+
   it("renders physical shell command newlines in card details", function()
     local details = assert(protocol.render_details(renderers.codex, {
       key = "multiline-shell-details",
@@ -1031,13 +1078,14 @@ describe("neoagent native Renderer protocol", function()
       for _, surface in ipairs({ "transcript", "details" }) do
         local render = surface == "transcript"
             and protocol.render_block or protocol.render_details
-        local node = assert(render(renderers.codex, case.block, {
+        local node = render(renderers.codex, case.block, {
           width = 80,
           spinner = "*",
         image_source = image_source,
           tool = case.tool,
-        }))
-        local lines = layout(assert(node), renderers.codex.theme, 80).lines
+        })
+        if not node then error("tool presentation did not render") end
+        local lines = layout(node, renderers.codex.theme, 80).lines
         local header = assert(row_containing(lines, case.header_end))
         local body = assert(row_containing(lines, case.body))
         assert.are.equal(header + 2, body,

@@ -393,46 +393,4 @@ function M.capture_process(process, command, options)
   return result, stdout.finish(false), stderr.finish(false)
 end
 
----@alias Neoagent.ToolCapabilities {
----  context?: unknown,
----  fs?: Neoagent.ToolFilesystem,
----  process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult),
----}
-
----@param ctx? Neoagent.ToolCapabilities
----@return Neoagent.ToolFilesystem
-function M.fs(ctx)
-  return ctx and ctx.fs or require("neoagent.fs")
-end
-
----@async
----@param ctx? Neoagent.ToolCapabilities
----@param command string[]
----@param opts? Neoagent.ProcessOptions
----@return Neoagent.ProcessResult
-function M.process(ctx, command, opts)
-  local run = ctx and ctx.process or require("neoagent.process").run
-  return run(command, opts)
-end
-
--- Preserve the current sandbox capability boundary until worker routing
--- replaces it. Local operation bodies already receive concrete dependencies.
----@generic T: table
----@param ctx? Neoagent.ToolCapabilities
----@param defaults T
----@return T
-function M.context_dependencies(ctx, defaults)
-  if not ctx or not ctx.fs and not ctx.process then
-    return defaults
-  end
-  local selected = util.copy(defaults)
-  if ctx.fs then
-    rawset(selected, "fs", ctx.fs)
-  end
-  if ctx.process then
-    rawset(selected, "process", ctx.process)
-  end
-  return selected
-end
-
 return M

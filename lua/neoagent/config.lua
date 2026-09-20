@@ -136,13 +136,12 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field _tools_supplied boolean
 ---@field _sandbox_status? Neoagent.SandboxActivation
 ---@field _sandbox_warning? string
----@field _sandbox_system_prompt? string
 
 ---@class Neoagent.ConfigInput<C = unknown>
 ---@field name? string
 ---@field default_registry? boolean
 ---@field shell_timeout? number|false
----@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>}
+---@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>, parent_tools?: Neoagent.Tool<C>[]}
 ---@field workspace_trust? {path?: string}|false
 ---@field default_thinking_level? Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection
@@ -403,11 +402,19 @@ local function validate(opts)
   assert(type(opts.sandbox) == "table" and not util.is_list(opts.sandbox), "sandbox must be a table")
   assert(type(opts.sandbox.enabled) == "boolean", "sandbox.enabled must be boolean")
   for key in pairs(opts.sandbox) do
-    assert(key == "enabled" or key == "profile", "unsupported sandbox setting: " .. tostring(key))
+    assert(
+      key == "enabled" or key == "profile" or key == "parent_tools",
+      "unsupported sandbox setting: " .. tostring(key)
+    )
   end
   assert(
     opts.sandbox.profile == nil or type(opts.sandbox.profile) == "table" or type(opts.sandbox.profile) == "function",
     "sandbox.profile must be a table or function"
+  )
+  assert(
+    opts.sandbox.parent_tools == nil
+      or type(opts.sandbox.parent_tools) == "table" and util.is_list(opts.sandbox.parent_tools),
+    "sandbox.parent_tools must be a list"
   )
   assert(
     opts.workspace_trust == false or (type(opts.workspace_trust) == "table" and not util.is_list(opts.workspace_trust)),

@@ -1,14 +1,18 @@
 local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
+local nvim_command = require("neoagent.process.nvim").command
 
 ---@class Neoagent.LinuxSandboxRoot
 ---@field path string
 ---@field stat uv.fs_stat.result
 
----@alias Neoagent.LinuxSandboxMode 'exec'|'fs'|'probe'
+---@alias Neoagent.LinuxSandboxMode 'exec'|'probe'
 
----@class Neoagent.LinuxSandboxRequest: Neoagent.SandboxProcessRequest
----@field fs? Neoagent.SandboxFilesystemOperation
+---@class Neoagent.LinuxSandboxRequest
+---@field argv? string[]
+---@field cwd string
+---@field env table<string, string>
+---@field profile Neoagent.SandboxProfile
 
 ---@class Neoagent.LinuxSandboxSpec
 ---@field v 1
@@ -18,14 +22,10 @@ local util = require("neoagent.util")
 ---@field profile Neoagent.SandboxProfile
 ---@field cwd string
 ---@field env table<string, string>
----@field fs? Neoagent.SandboxFilesystemOperation
 ---@field procfs 'fresh'|'host'
 ---@field protected_create Neoagent.SandboxFilesystemEntry[]
 
 local M = { name = "linux" }
-local FS_TIMEOUT_MS = 30000
-local FS_MAX_READ_BYTES = 64 * 1024 * 1024
-local FS_CAPTURE_OVERHEAD_BYTES = 4096
 local STAGING_DIRECTORIES = vim.uv.os_uname().sysname == "Linux"
     and {
       "/run/user/" .. tostring(vim.uv.getuid()),
@@ -72,57 +72,6 @@ local function executable(path)
   if resolved and stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
     return vim.fs.normalize(resolved)
   end
-end
-
----@return string[]?
-local function process_commandline()
-  local fd = vim.uv.fs_open("/proc/self/cmdline", "r", 0)
-  if not fd then
-    return nil
-  end
-  local data = vim.uv.fs_read(fd, 64 * 1024, 0)
-  vim.uv.fs_close(fd)
-  if not data then
-    return nil
-  end
-  local values = {}
-  for value in data:gmatch("([^%z]+)") do
-    values[#values + 1] = value
-  end
-  return values
-end
-
----@param command string[]
----@return string[]
-local function resolved_command(command)
-  command[1] = executable(command[1]) or command[1]
-  return command
-end
-
----@param configured? string|string[]
----@return string[]
-local function nvim_command(configured)
-  if type(configured) == "string" then
-    return resolved_command({ configured })
-  end
-  if type(configured) == "table" and util.is_list(configured) and #configured > 0 then
-    ---@cast configured string[]
-    return resolved_command(util.copy(configured))
-  end
-  local actual = vim.v.argv[1]
-  local commandline = process_commandline()
-  if type(actual) == "string" and commandline then
-    for index, value in ipairs(commandline) do
-      if value == actual then
-        local command = {}
-        for part = 1, index do
-          command[part] = commandline[part]
-        end
-        return resolved_command(command)
-      end
-    end
-  end
-  return resolved_command({ vim.v.progpath })
 end
 
 ---@param left? {sec: integer, nsec: integer}
@@ -278,7 +227,6 @@ local function specification(request, root, capabilities, mode)
     profile = profile,
     cwd = request.cwd or "/",
     env = request.env or {},
-    fs = request.fs,
     procfs = capabilities and capabilities.procfs or "fresh",
     protected_create = {},
   },
@@ -394,21 +342,21 @@ local function protected_create_paths(profile)
   return result
 end
 
----@param request Neoagent.LinuxSandboxRequest
+---@param request Neoagent.SandboxWorkerRequest
 ---@param services Neoagent.SandboxExecutionServices<string|string[]>
----@param mode Neoagent.LinuxSandboxMode
----@return Neoagent.ProcessResult
-local function process_request(request, services, mode)
+---@return Neoagent.WorkerLease
+function M.start_worker(request, services)
   local runtime = runtime_file()
   if not runtime then
     error(util.error("sandbox_unavailable", "Linux sandbox runtime was not found"), 0)
   end
-  local root, root_err = temporary_root((assert(services.fs)), request.profile)
+  require("neoagent.sandbox.policy").require_read(request.profile, request.bootstrap_paths or {}, nil, "bootstrap")
+  local root, root_err = temporary_root(assert(services.fs), request.profile)
   if not root then
     error(util.error("sandbox_unavailable", "Could not create Linux sandbox root", root_err), 0)
   end
-  local nvim = nvim_command(services.nvim)
-  local prepared, spec, command = pcall(specification, request, root, services.capabilities, mode)
+  local prepared, spec, command =
+    pcall(specification, request --[[@as Neoagent.LinuxSandboxRequest]], root, services.capabilities, "exec")
   if not prepared then
     local cleaned, cleanup_err = cleanup(root)
     if not cleaned then
@@ -418,151 +366,42 @@ local function process_request(request, services, mode)
   end
   spec.protected_create = protected_create_paths(spec.profile)
   if not valid_root(root) then
+    cleanup(root)
     error(util.error("sandbox_unavailable", "Linux sandbox root identity changed before use"), 0)
   end
-  local stdout, stderr, output = "", "", ""
-  local capture = request.capture ~= false
-  local decoder_error
-  local decoder = protocol.new({
-    on_event = function(event)
-      if event.type ~= "output" then
-        return
-      end
-      ---@cast event Neoagent.SandboxOutputEvent
-      local is_stderr = event.stream == "stderr"
-      if capture then
-        if request.max_capture_bytes
-            and #output + #event.data > request.max_capture_bytes then
-          decoder_error = "sandbox output exceeded capture limit"
-          return
-        end
-        if is_stderr then
-          stderr = stderr .. event.data
-        else
-          stdout = stdout .. event.data
-        end
-        output = output .. event.data
-      end
-      if request.on_output then
-        request.on_output(event.data, is_stderr, stdout, stderr, output)
-      end
+  local relay = require("neoagent.sandbox.relay_lease").new({
+    on_failure = request.on_failure,
+    on_stdout = request.on_stdout,
+    on_stderr = request.on_stderr,
+    on_exit = request.on_exit,
+    cleanup = function()
+      local cleaned, cleanup_err = cleanup(root)
+      return cleaned and true or nil, cleanup_err
     end,
   })
-  local runtime_stderr = ""
-  local ok, host = pcall(services.process, runtime_argv(nvim, runtime, command), {
+  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+  local started, child = pcall(start, {
+    argv = runtime_argv(nvim_command(services.nvim), runtime, command),
     cwd = "/",
     env = environment(spec),
     clear_env = true,
-    stdin = request.stdin,
-    capture = false,
-    timeout_ms = request.timeout_ms,
     kill_grace_ms = request.kill_grace_ms,
-    on_output = function(data, is_stderr)
-      if is_stderr then
-        if #runtime_stderr < 1000 then
-          runtime_stderr = (runtime_stderr .. data):sub(1, 1000)
-        end
-      elseif not decoder_error then
-        local decoded, err = pcall(decoder.feed, decoder, data)
-        if not decoded then
-          decoder_error = tostring(err)
-        end
-      end
+    on_stdout = function(data)
+      relay:feed(data)
+    end,
+    on_exit = function(result)
+      relay:host_exited(result)
     end,
   })
-  local cleaned, cleanup_err = cleanup(root)
-  if not cleaned then
-    error(util.error("sandbox_unavailable", "Could not remove Linux sandbox root", cleanup_err), 0)
-  end
-  if not ok then
-    local err = util.normalize_error(host, "sandbox_unavailable")
-    if err.kind == "cancelled" then
-      error(host, 0)
+  if not started then
+    local cleaned, cleanup_err = cleanup(root)
+    if not cleaned then
+      error(util.error("sandbox_unavailable", "Could not remove Linux sandbox root", cleanup_err), 0)
     end
-    error(util.error("sandbox_unavailable", "Linux sandbox runtime failed", bounded(err.message)), 0)
+    error(util.error("sandbox_unavailable", "Could not start Linux sandbox runtime", child), 0)
   end
-  if type(host) ~= "table" or type(host.code) ~= "number" or type(host.signal) ~= "number" then
-    error(util.error("sandbox_unavailable", "Linux sandbox runtime returned an invalid process result"), 0)
-  end
-  if host.timed_out then
-    return {
-      code = host.code,
-      signal = host.signal,
-      stdout = stdout,
-      stderr = stderr,
-      output = output,
-      timed_out = true,
-    }
-  end
-  if decoder_error then
-    error(util.error("sandbox_unavailable", "Invalid Linux sandbox protocol", decoder_error), 0)
-  end
-  local terminal, terminal_err = decoder:finish()
-  if not terminal then
-    local diagnostic = bounded(runtime_stderr)
-    error(util.error("sandbox_unavailable", terminal_err, diagnostic ~= "" and diagnostic or nil), 0)
-  end
-  if terminal.type == "error" then
-    error(
-      util.error(
-        "sandbox_unavailable",
-        "Linux sandbox setup failed at " .. terminal.stage,
-        "errno=" .. tostring(terminal.errno)
-      ),
-      0
-    )
-  end
-  ---@cast terminal Neoagent.SandboxExitEvent
-  return {
-    code = terminal.code,
-    signal = terminal.signal,
-    stdout = stdout,
-    stderr = stderr,
-    output = output,
-    timed_out = false,
-  }
-end
-
----@param request Neoagent.SandboxProcessRequest
----@param services Neoagent.SandboxExecutionServices<string|string[]>
----@return Neoagent.ProcessResult
-function M.exec(request, services)
-  return process_request(request, services, "exec")
-end
-
----@param request Neoagent.SandboxFilesystemRequest
----@param services Neoagent.SandboxExecutionServices<string|string[]>
----@return string|true|nil, string?
-function M.fs(request, services)
-  local value = process_request({
-    profile = request.profile,
-    cwd = "/",
-    env = {},
-    argv = {},
-    fs = {
-      operation = request.operation,
-      path = request.path,
-      offset = request.offset,
-      size = request.size,
-      flags = request.flags,
-      mode = request.mode,
-      policy = request.policy,
-      suffix = request.suffix,
-    },
-    stdin = request.data,
-    capture = true,
-    max_capture_bytes = (request.operation == "read_range"
-        and assert(request.size) or FS_MAX_READ_BYTES)
-      + FS_CAPTURE_OVERHEAD_BYTES,
-    timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
-  }, services, "fs")
-  if value.code ~= 0 then
-    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
-  end
-  if request.operation == "read" or request.operation == "read_range" then
-    return value.stdout
-  end
-  return true
+  relay:attach(child)
+  return relay
 end
 
 ---@param services? Neoagent.SandboxCheckServices

@@ -68,6 +68,8 @@ local function documentation(root, configuration)
       .. 'Bundled presets come from `require("neoagent.tools")`.',
     "`execute_tool(tool, arguments, ctx)` is the policy boundary for "
       .. "approval, logging, sandboxing, and other decorators.",
+    "Bundled Tools execute locally unless the execution policy substitutes a "
+      .. "fixed RPC-backed proxy for restricted execution.",
     "",
     "## Runtime policies and UI",
     "",

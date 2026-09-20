@@ -84,7 +84,7 @@ The main options and defaults are: >lua
       reserve_tokens = 16384,
       keep_recent_tokens = 20000,
     },
-    sandbox = { enabled = false, profile = nil },
+    sandbox = { enabled = false, profile = nil, parent_tools = nil },
     workspace_trust = {
       path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
     },
@@ -550,9 +550,9 @@ state for the built-in Neo Profile with: >lua
 `:NeoagentSandboxInfo` reports the selected backend and capabilities. A tool
 call keeps the mode it started with.
 
-If sandbox activation fails, tool execution is blocked. Inspect the reason
-with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly turn
-sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
+If sandbox activation fails, restricted tool execution is blocked. Inspect the
+reason with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly
+turn sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
 
 The default profile grants read-only host access, writes within the Workspace
 and shared temporary directory, read-only access to `.git`, restricted
@@ -579,6 +579,19 @@ absolute. `network` is `restricted` or `enabled`. Lists replace their defaults.
 A profile callback receives a copy of the default profile and tool context and
 returns the complete profile.
 
+`environment.clear = true` starts with an empty environment; `inherit` selects
+parent variables and `set` supplies explicit values. With `clear = false`,
+ambient variables are copied except editor connection variables and known or
+credential-like names (including key, token, secret, password, and credential
+segments). Explicit `inherit` or `set` entries opt these variables back in.
+The worker always removes `NVIM`, `NVIM_LISTEN_ADDRESS`, and its private
+bootstrap variable before running Tools.
+
+Neovim and Neoagent's installation files must remain readable under the
+profile. A conflicting denial blocks execution; narrow it or move the
+installation. `:NeoagentSandboxInfo` checks platform availability, not custom
+profiles.
+
 Linux uses namespaces and seccomp. macOS uses `/usr/bin/sandbox-exec`. Windows
 uses restricted accounts, ACLs, Job Objects, and WFP, requires Neovim 0.12+,
 and needs one elevated setup from the plugin checkout: >
@@ -587,9 +600,33 @@ and needs one elevated setup from the plugin checkout: >
 <
 
 Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to select another
-Windows state directory. Custom tools participate when they route file and
-process effects through `ctx.fs` and `ctx.process`; their Lua code itself runs
-inside Neovim. Use `ctx.fs.read_chunks` for bounded reads.
+Windows state directory.
+
+Windows serializes restricted invocations across Agents while temporary ACLs
+are active. Admission waits up to 60 seconds, separately from the Tool's
+execution timeout.
+
+`read_agent_documentation` and `update_plan` run in the parent process even
+when sandboxing is unavailable. Grant a custom Tool parent execution with
+`sandbox.parent_tools`: >lua
+
+  local inspect = {
+    name = "inspect",
+    description = "Inspect parent state",
+    input_schema = { type = "object", properties = {} },
+    execute = function()
+      return { content = { { type = "text", text = "parent state" } } }
+    end,
+  }
+
+  require("neoagent").setup({
+    tools = { inspect },
+    sandbox = { enabled = true, parent_tools = { inspect } },
+  })
+<
+The grant matches the configured Tool's name and implementation function and
+gives it full host authority. Other custom Tools are blocked in restricted
+mode.
 
 A denied call can request one host execution with: >json
 
@@ -601,13 +638,16 @@ A denied call can request one host execution with: >json
   }
 <
 
-Approval grants host capabilities for that call. Shell approvals may remember
-a literal argument-token prefix for the current Session. Compound or dynamic
-shell syntax always prompts.
+Approval selects the original host Tool before that call begins. Shell
+approvals may remember a literal argument-token prefix for the current Session.
+Compound or dynamic shell syntax always prompts.
 
 Custom compositions can use
-`require("neoagent.sandbox.composition").compose(toolset, config, runtime)`.
-Use `.switchable()` when the caller needs runtime changes.
+`require("neoagent.sandbox.composition").compose(toolset, settings, opts)`.
+It returns a toolset, activation status, and dialog broker. Unavailable
+isolation blocks restricted calls while parent Tools remain available.
+Use `.switchable()` for runtime changes; its fourth return value controls the
+sandbox state.
 
 AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
@@ -1228,19 +1268,33 @@ The coding preset provides file read, write, edit, shell, and Neoagent
 documentation tools. The optional plan tool derives its state from successful
 calls on the active Session path.
 
-Bundled tools use `ctx.fs` and `ctx.process(argv, opts)` when supplied. Process
-options cover working directory, environment, input, output capture, timeout,
-and streaming callbacks. The shell timeout defaults to 300 seconds;
-`shell_timeout = false` disables that default.
+Restricted execution recognizes only the shipped `read_file`, `write_file`,
+`edit_file`, `shell`, `grep`, and `find` implementations. The executor receives
+a copy with restricted `execute`; its other fields are unchanged. Custom Tool
+grants are described in |neoagent-sandbox|.
 
-`write_file` and `edit_file` replace regular files through same-directory
-temporaries, preserve existing modes, reject symbolic links, and request mode
-`0644` for new files. `details.changed_paths` tells the interactive Neo Agent
-which unmodified buffers may be refreshed after success. These are literal
-filesystem paths; relative paths use the Workspace cwd without environment
-expansion. Bundled file Tools report their prepared absolute targets.
+These Tools limit prepared input strings to 16 MiB and paths to 32 KiB in both
+local and restricted execution. File arguments use the editor's environment and
+Workspace cwd in either mode.
+Restricted file reads, writes, and edits have a 30-second execution deadline
+after worker startup, including parent-side image import. A timed-out write or
+edit can have incomplete effects; inspect the file before retrying.
 
-`edit_file` requires unique, non-overlapping matches in the original content.
+The bundled shell Tool uses the parent Neovim's shell settings and the
+Workspace cwd. It accepts a command and optional timeout, which defaults to
+300 seconds; `shell_timeout = false` disables that default. Restricted shell
+calls also enforce finite timeouts in the parent, with a short allowance for
+command termination and response delivery if the worker becomes unresponsive.
+
+`write_file` and `edit_file` replace regular files, preserve existing modes,
+reject symbolic links, and request mode `0644` for new files.
+`details.changed_paths` tells the interactive Neo Agent which unmodified
+buffers may be refreshed after success. These are literal filesystem paths;
+relative paths use the Workspace cwd without environment expansion. Bundled
+file Tools report their prepared absolute targets.
+
+`edit_file` accepts files up to 64 MiB and requires unique, non-overlapping
+matches in the original content.
 Exact matches take precedence over a punctuation- and whitespace-tolerant
 fallback. Edits preserve surrounding text, the BOM, and line-ending convention.
 

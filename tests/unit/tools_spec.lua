@@ -1094,6 +1094,24 @@ describe("neoagent bundled tools", function()
     assert.is_true(#assert(result.details).patch > 0)
   end)
 
+  it("rejects oversized edit input before changing the file", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/large.txt"
+    local limits = require("neoagent.tools.limits")
+    local previous = limits.MAX_EDIT_INPUT_BYTES
+    local original = "old\n" .. string.rep("x", 1021)
+    assert(fs.write_all(path, original))
+    limits.MAX_EDIT_INPUT_BYTES = 1024
+    local ok, failure = pcall(execute, require("neoagent.tools.edit_file").new(), {
+      path = "large.txt", edits = { { oldText = "old", newText = "new" } },
+    }, ctx(workspace))
+    limits.MAX_EDIT_INPUT_BYTES = previous
+    assert.is_false(ok)
+    assert.matches("exceeds 1024 bytes", tostring(failure), 1, true)
+    assert.are.equal(original, fs.read(path))
+  end)
+
   it("bounds edit patches before replacing very long lines", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root

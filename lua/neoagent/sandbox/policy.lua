@@ -3,9 +3,6 @@ local path_module = require("neoagent.sandbox.path")
 
 local M = {}
 
----@alias Neoagent.PathResolver {resolve: (fun(self: Neoagent.PathResolver, path: string): string)}
----@alias Neoagent.SandboxPathContext {context?: Neoagent.PathResolver|{workspace?: Neoagent.PathResolver}}
-
 ---@type table<Neoagent.SandboxAccess, integer>
 local rank = { deny = 0, read = 1, write = 2 }
 ---@type table<Neoagent.SandboxAccess, integer>
@@ -29,40 +26,6 @@ local function access_for(profile, path, paths)
     end
   end
   return selected
-end
-
----@param ctx? Neoagent.SandboxPathContext
----@return Neoagent.PathResolver?
-local function workspace(ctx)
-  local context = ctx and ctx.context
-  local value = context and rawget(context, "workspace") or context
-  if type(value) == "table" and type(value.resolve) == "function" then
-    ---@cast value Neoagent.PathResolver
-    return value
-  end
-end
-
----@param ctx Neoagent.SandboxPathContext?
----@param path string
----@param paths? Neoagent.SandboxPaths
----@return string lexical
----@return string canonical
-function M.resolve_path(ctx, path, paths)
-  paths = paths or path_module.posix
-  if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then
-    error(util.error("sandbox", "Sandbox path must be a non-empty string without NUL bytes"), 0)
-  end
-  local lexical
-  if paths.is_absolute(path) then
-    lexical = paths.normalize(path)
-  else
-    local active = workspace(ctx)
-    if not active then
-      error(util.error("sandbox", "Relative sandbox paths require ctx.context.workspace"), 0)
-    end
-    lexical = paths.normalize(active:resolve(path))
-  end
-  return lexical, paths.canonical_candidate(lexical)
 end
 
 ---@param profile Neoagent.SandboxProfile
@@ -91,6 +54,34 @@ end
 function M.allows(profile, lexical, canonical, required, paths)
   local granted, lexical_access, canonical_access = M.access(profile, lexical, canonical, paths)
   return rank[granted] >= rank[required], granted, lexical_access, canonical_access
+end
+
+---@param profile Neoagent.SandboxProfile
+---@param required_paths string[]
+---@param paths? Neoagent.SandboxPaths
+---@param purpose? string
+---@return string[]
+function M.require_read(profile, required_paths, paths, purpose)
+  paths = paths or path_module.posix
+  purpose = purpose or "runtime"
+  local seen = {}
+  local result = {}
+  for _, value in ipairs(required_paths) do
+    local normalized = paths.normalize(value)
+    if not paths.is_absolute(normalized) then
+      error(util.error("sandbox_unavailable", "Sandbox required " .. purpose .. " path is not absolute", normalized), 0)
+    end
+    local canonical = paths.canonical_candidate(normalized)
+    if not M.allows(profile, normalized, canonical, "read", paths) then
+      error(util.error("sandbox_unavailable", "Sandbox profile denies required " .. purpose .. " path", normalized), 0)
+    end
+    local key = paths.key(normalized)
+    if not seen[key] then
+      seen[key] = true
+      result[#result + 1] = normalized
+    end
+  end
+  return result
 end
 
 return M

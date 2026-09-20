@@ -5,7 +5,7 @@ local M = {}
 
 ---@alias Neoagent.ToolFilesystem {
 ---  create_temp: (fun(prefix?: string, directory?: string): string?, string?),
----  read: (fun(path: string): string?, string?),
+---  read: (fun(path: string, max_bytes?: integer): string?, string?),
 ---  read_chunks?: (fun(path: string, on_chunk: fun(data: string, offset: integer), chunk_size?: integer): true?, unknown),
 ---  mkdirp: (fun(path?: string): true?, unknown),
 ---  write_all: (fun(path: string, data: string, flags?: string, mode?: integer): true?, string?),
@@ -202,11 +202,21 @@ function M.read_chunks(path, on_chunk, chunk_size)
 end
 
 ---@param path string
+---@param max_bytes? integer
 ---@return string? data
 ---@return string? error
-function M.read(path)
+function M.read(path, max_bytes)
+  assert(
+    max_bytes == nil or type(max_bytes) == "number" and max_bytes >= 0 and max_bytes % 1 == 0,
+    "maximum read size must be a non-negative integer"
+  )
   local chunks = {}
+  local bytes = 0
   local ok, err = M.read_chunks(path, function(data)
+    bytes = bytes + #data
+    if max_bytes and bytes > max_bytes then
+      error("file exceeds " .. max_bytes .. " bytes", 0)
+    end
     chunks[#chunks + 1] = data
   end)
   if not ok then

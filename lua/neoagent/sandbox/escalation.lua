@@ -21,19 +21,17 @@ local M = {}
 ---@field input? string
 
 ---@class Neoagent.SandboxEscalationOptions<C>
----@field fs? Neoagent.ToolFilesystem
----@field process? fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 ---@field shell? string|(fun(): string)
 ---@field summarize? fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
+---@field parent? fun(tool: Neoagent.Tool<C>): boolean
 
 ---@class Neoagent.SandboxEscalation<C>
----@field _fs Neoagent.ToolFilesystem
----@field _process fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 ---@field _shell fun(): string
 ---@field _summarize fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
 ---@field _rules Neoagent.SandboxPrefixRule[]
 ---@field _default_session table
 ---@field _session_key? unknown
+---@field _parent fun(tool: Neoagent.Tool<C>): boolean
 ---@field _added_options table<string, boolean>
 local Escalation = {}
 Escalation.__index = Escalation
@@ -42,17 +40,6 @@ Escalation.__index = Escalation
 ---@return TypeGuard<Neoagent.JsonObject>
 local function is_object(value)
   return type(value) == "table" and (next(value) == nil or not util.is_list(value))
-end
-
----@generic T: table
----@param ctx T
----@return T
-local function copy_context(ctx)
-  local copied = {}
-  for key, value in pairs(ctx or {}) do
-    copied[key] = value
-  end
-  return copied --[[@as T]]
 end
 
 ---@param value unknown
@@ -402,7 +389,7 @@ function Escalation:tools(tools)
   assert(type(tools) == "table" and util.is_list(tools), "sandbox tools must be a list")
   local copied = {}
   for index, tool in ipairs(tools) do
-    copied[index] = self:_transform(tool)
+    copied[index] = self._parent(tool) and util.copy(tool) or self:_transform(tool)
   end
   return copied
 end
@@ -697,38 +684,6 @@ function Escalation:_matches(tool, arguments)
   return false
 end
 
----@param ctx Neoagent.ToolContext<C>
----@return Neoagent.ToolContext<C>, fun()
-function Escalation:_elevated_context(ctx)
-  local elevated = copy_context(ctx) --[[@as Neoagent.ToolContext<C> & Neoagent.ToolCapabilities]]
-  local active = true
-  local function require_active()
-    if not active then
-      error(util.error("sandbox_approval", "Elevated capability has expired"), 0)
-    end
-  end
-  ---@generic F: function
-  ---@param operation F
-  ---@return F
-  local function expiring(operation)
-    return function(...)
-      require_active()
-      return operation(...)
-    end --[[@as F]]
-  end
-  elevated.fs = {
-    create_temp = expiring(self._fs.create_temp),
-    read = expiring(self._fs.read),
-    mkdirp = expiring(self._fs.mkdirp),
-    write_all = expiring(self._fs.write_all),
-    atomic_replace = expiring(self._fs.atomic_replace),
-  }
-  elevated.process = expiring(self._process)
-  return elevated, function()
-    active = false
-  end
-end
-
 ---@param executors {restricted: Neoagent.ToolExecutor<C>, elevated: Neoagent.ToolExecutor<C>}
 ---@return Neoagent.ToolExecutor<C>
 function Escalation:wrap(executors)
@@ -809,9 +764,7 @@ function Escalation:wrap(executors)
         tool = tool.name,
       })
     end
-    local elevated, revoke = self:_elevated_context(ctx)
-    local ok, value = pcall(executors.elevated, tool, stripped, elevated)
-    revoke()
+    local ok, value = pcall(executors.elevated, tool, stripped, ctx)
     if not ok then
       error(value, 0)
     end
@@ -824,6 +777,7 @@ end
 ---@return Neoagent.ToolExecutor<C>
 function Escalation:bypass(next_execute_tool)
   assert(type(next_execute_tool) == "function", "sandbox bypass executor must be a function")
+  ---@async
   return function(tool, arguments, ctx)
     local stripped, strip_err = self:_extract(tool, arguments)
     if not stripped then
@@ -841,8 +795,7 @@ end
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "sandbox escalation options must be a table")
-  local fs = opts.fs or require("neoagent.fs")
-  local process = opts.process or require("neoagent.process").run
+  assert(opts.parent == nil or type(opts.parent) == "function", "sandbox parent selector must be a function")
   local shell = opts.shell
   if shell == nil then
     shell = function()
@@ -857,12 +810,13 @@ function M.new(opts)
   end
   assert(type(shell) == "function", "sandbox escalation shell must be a string or function")
   return setmetatable({
-    _fs = fs,
-    _process = process,
     _shell = shell,
     _summarize = opts.summarize or summaries.for_tool,
     _rules = {},
     _default_session = {},
+    _parent = opts.parent or function()
+      return false
+    end,
     _added_options = {},
   }, Escalation)
 end

@@ -164,7 +164,7 @@ local function new()
     ---@async
     execute = function(arguments, ctx)
       local call = common.call(ctx)
-      return run(prepare(arguments, {}, call), call, common.context_dependencies(ctx, deps))
+      return run(prepare(arguments, {}, call), call, deps)
     end,
     render = presentation.grep,
   }

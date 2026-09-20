@@ -1,12 +1,14 @@
 local util = require("neoagent.util")
 local path_module = require("neoagent.sandbox.path")
 local result = require("neoagent.sandbox.result")
+local identities = require("neoagent.tools.identities")
 
 ---@alias Neoagent.SandboxProfileSetting<C> Neoagent.SandboxProfileOverrides|(fun(default: Neoagent.SandboxProfile, ctx: C): Neoagent.SandboxProfile)
 
 ---@class Neoagent.SandboxSettings<C = unknown>
 ---@field enabled boolean
 ---@field profile? Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>
+---@field parent_tools? Neoagent.Tool<C>[]
 
 ---@class Neoagent.SandboxActivation: Neoagent.SandboxInfo
 ---@field enabled boolean
@@ -21,7 +23,6 @@ local result = require("neoagent.sandbox.result")
 ---@field system_prompt? string
 
 ---@class Neoagent.SandboxCompositionOptions<C>: Neoagent.SandboxCheckServices<string>
----@field process? fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 ---@field os? string
 ---@field platforms? Neoagent.SandboxPlatforms<Neoagent.ToolContext<C>>
 ---@field platform? Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
@@ -29,6 +30,7 @@ local result = require("neoagent.sandbox.result")
 ---@field paths? Neoagent.SandboxPaths
 ---@field environ? fun(): table<string, string>
 ---@field dialogs? Neoagent.Dialogs
+---@field start_worker? fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease
 
 ---@class Neoagent.SandboxRuntime<C>
 ---@field _active_execute? Neoagent.ToolExecutor<C>
@@ -38,11 +40,49 @@ local result = require("neoagent.sandbox.result")
 ---@field _settings Neoagent.SandboxSettings<C>
 ---@field _status Neoagent.SandboxActivation
 ---@field _toolset Neoagent.SandboxToolset<C>
----@field _dialogs Neoagent.Dialogs
+---@field _escalation Neoagent.SandboxEscalation<C>
 local Runtime = {}
 Runtime.__index = Runtime
 
 local M = {}
+
+---@generic C
+---@param toolset Neoagent.SandboxToolset<C>
+---@param settings Neoagent.SandboxSettings<C>
+---@return fun(tool: Neoagent.Tool<C>): boolean
+local function parent_selector(toolset, settings)
+  ---@type table<function, table<string, boolean>>
+  local allowed = {}
+  local function grant(tool)
+    local names = allowed[tool.execute] or {}
+    names[tool.name] = true
+    allowed[tool.execute] = names
+  end
+  local selected = {}
+  for _, tool in ipairs(toolset.tools) do
+    local names = selected[tool.execute] or {}
+    names[tool.name] = true
+    selected[tool.execute] = names
+  end
+  for index, tool in ipairs(settings.parent_tools or {}) do
+    assert(
+      type(tool) == "table" and type(tool.name) == "string" and type(tool.execute) == "function",
+      "sandbox.parent_tools[" .. index .. "] must be a Tool"
+    )
+    assert(
+      selected[tool.execute] and selected[tool.execute][tool.name],
+      "sandbox.parent_tools[" .. index .. "] must reference a configured Tool"
+    )
+    grant(tool)
+  end
+  return function(tool)
+    if identities.is_parent(tool) then
+      return true
+    end
+    local names = type(tool) == "table" and allowed[tool.execute] or nil
+    return names ~= nil and names[tool.name] == true
+  end
+end
 
 local sandbox_guidance_template = [[Sandboxed execution:
 - Tool calls run inside a native {platform} sandbox with restricted filesystem, network, and process authority.
@@ -201,7 +241,10 @@ end
 local function validate_settings(settings)
   assert(type(settings) == "table" and not util.is_list(settings), "sandbox must be a table")
   for key in pairs(settings) do
-    assert(key == "enabled" or key == "profile", "unsupported sandbox setting: " .. tostring(key))
+    assert(
+      key == "enabled" or key == "profile" or key == "parent_tools",
+      "unsupported sandbox setting: " .. tostring(key)
+    )
   end
   assert(type(settings.enabled) == "boolean", "sandbox.enabled must be boolean")
   if settings.profile ~= nil then
@@ -210,6 +253,10 @@ local function validate_settings(settings)
       "sandbox.profile must be a table or function"
     )
   end
+  assert(
+    settings.parent_tools == nil or type(settings.parent_tools) == "table" and util.is_list(settings.parent_tools),
+    "sandbox.parent_tools must be a list"
+  )
 end
 
 ---@param name string?
@@ -221,7 +268,7 @@ function M.warning(name, status)
     reason = status.stage .. ": " .. reason
   end
   return string.format(
-    "neoagent: sandbox unavailable for %s; tool execution is blocked: %s",
+    "neoagent: sandbox unavailable for %s; restricted tool execution is blocked: %s",
     bounded(name or "Neo"),
     bounded(reason)
   )
@@ -231,7 +278,7 @@ end
 ---@return Neoagent.ToolResult
 local function unavailable(status)
   return result.sandbox(
-    "Sandbox unavailable; tool execution is blocked: "
+    "Sandbox unavailable; restricted tool execution is blocked: "
       .. bounded(status.message)
       .. "\nDisable sandboxing explicitly to run tools on the host.",
     {
@@ -280,32 +327,24 @@ end
 
 ---@generic C
 ---@param toolset Neoagent.SandboxToolset<C>
----@param settings? Neoagent.SandboxSettings<C>
----@param opts? Neoagent.SandboxCompositionOptions<C>
----@return Neoagent.SandboxComposition<C>?, Neoagent.SandboxActivation, Neoagent.Dialogs?
-function M.compose(toolset, settings, opts)
-  toolset = copy_toolset(toolset)
-  settings = util.copy(settings or { enabled = false })
-  validate_settings(settings)
-  if not settings.enabled then
-    return nil, { enabled = false, active = false }
-  end
-
-  opts = opts or {}
+---@param settings Neoagent.SandboxSettings<C>
+---@param opts Neoagent.SandboxCompositionOptions<C>
+---@param escalation Neoagent.SandboxEscalation<C>
+---@return Neoagent.ToolExecutor<C>?, Neoagent.SandboxActivation
+local function compose_restricted(toolset, settings, opts, escalation)
   local dispatch = require("neoagent.sandbox.platform")
   local selected, status = opts.platform, opts.status
   if selected == nil and status == nil then
     selected, status = dispatch.select(opts.os, opts.platforms)
   end
   local fs = opts.fs or require("neoagent.fs")
-  local process = opts.process or require("neoagent.process").run
   local services = {
     fs = fs,
-    process = process,
     nvim = opts.nvim,
     system = opts.system,
     sandbox_exec = opts.sandbox_exec,
     probe_timeout_ms = opts.probe_timeout_ms,
+    start_worker = opts.start_worker,
   }
   if selected and status == nil then
     local checked, value = pcall(selected.check, services)
@@ -330,41 +369,27 @@ function M.compose(toolset, settings, opts)
   end
   selected = assert(selected)
 
-  local dialogs = opts.dialogs or require("neoagent.dialog").new()
   local paths = opts.paths or selected.paths or path_module.posix
   local temporary_root = type(selected.temporary_root) == "function" and selected.temporary_root(services) or nil
-  ---@type Neoagent.SandboxEnforcementOptions<C>
-  local enforcement_options = {
+  ---@type Neoagent.SandboxInterceptorOptions<C>
+  local interceptor_options = {
     platform = selected,
     profile = profile_source(settings.profile, paths, temporary_root),
     paths = paths,
-    temporary_root = temporary_root,
     fs = fs,
-    process = process,
     environ = opts.environ,
     nvim = opts.nvim,
     capabilities = recorded.capabilities,
+    start_worker = opts.start_worker,
   }
-  local enforcement = require("neoagent.sandbox.enforce").new(enforcement_options)
-  ---@type Neoagent.SandboxEscalationOptions<C>
-  local escalation_options = { fs = fs, process = process }
-  local escalation = require("neoagent.sandbox.escalation").new(escalation_options)
+  local interceptor = require("neoagent.sandbox.interceptor").new(interceptor_options)
   local base = executor(toolset)
-  local execute_tool = require("neoagent.dialog").wrap(
-    dialogs,
-    escalation:wrap({
-      restricted = enforcement:wrap(base),
-      elevated = base,
-    })
-  )
+  local execute_tool = escalation:wrap({
+    restricted = interceptor:wrap(base),
+    elevated = base,
+  })
   ---@cast execute_tool fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
-  return {
-    tools = escalation:tools(toolset.tools),
-    execute_tool = execute_tool,
-    system_prompt = sandbox_guidance(recorded),
-  },
-    recorded,
-    dialogs
+  return execute_tool, recorded
 end
 
 ---@return Neoagent.SandboxActivation
@@ -387,9 +412,8 @@ function Runtime:set_enabled(enabled)
     local requested = util.copy(self._settings)
     requested.enabled = true
     local compose_opts = util.copy(self._opts)
-    compose_opts.dialogs = self._dialogs
     local ok, composed, status = pcall(function()
-      return M.compose(self._toolset, requested, compose_opts)
+      return compose_restricted(self._toolset, requested, compose_opts, self._escalation)
     end)
     if not ok then
       local err = util.normalize_error(composed, "sandbox")
@@ -404,8 +428,9 @@ function Runtime:set_enabled(enabled)
     end
     self._status = util.copy(status)
     if composed then
-      ---@cast composed Neoagent.SandboxComposition<C>
-      self._active_execute = composed.execute_tool
+      assert(type(composed) == "function")
+      ---@cast composed Neoagent.ToolExecutor<C>
+      self._active_execute = composed
     end
   else
     self._status.enabled = true
@@ -418,43 +443,50 @@ end
 ---@param toolset Neoagent.SandboxToolset<C>
 ---@param settings? Neoagent.SandboxSettings<C>
 ---@param opts? Neoagent.SandboxCompositionOptions<C>
+---@param allow_toggle boolean
 ---@return Neoagent.SandboxComposition<C>, Neoagent.SandboxActivation, Neoagent.Dialogs, Neoagent.SandboxRuntime<C>
-function M.switchable(toolset, settings, opts)
+local function build(toolset, settings, opts, allow_toggle)
   toolset = copy_toolset(toolset)
   settings = util.copy(settings or { enabled = false })
-  assert(type(settings) == "table" and not util.is_list(settings), "sandbox must be a table")
-  assert(type(settings.enabled) == "boolean", "sandbox.enabled must be boolean")
+  validate_settings(settings)
   ---@type Neoagent.SandboxCompositionOptions<C>
   opts = opts or {}
   local dialogs = opts.dialogs or require("neoagent.dialog").new()
+  local is_parent = parent_selector(toolset, settings)
   ---@type Neoagent.SandboxEscalationOptions<C>
-  local escalation_options = { fs = opts.fs, process = opts.process }
+  local escalation_options = { parent = is_parent }
   local escalation = require("neoagent.sandbox.escalation").new(escalation_options)
   local base = executor(toolset)
+  local needs_escalation = settings.enabled or allow_toggle
   ---@type Neoagent.SandboxRuntime<C>
   local runtime = setmetatable({
     _active_execute = nil,
     _enabled = false,
-    _host_execute = escalation:bypass(base),
+    _host_execute = needs_escalation and escalation:bypass(base) or base,
     _opts = opts,
     _settings = settings,
     _status = { enabled = false, active = false },
     _toolset = toolset,
-    _dialogs = dialogs,
+    _escalation = escalation,
   }, Runtime)
 
-  local stable = {
-    tools = escalation:tools(toolset.tools),
-    execute_tool = function(tool, arguments, ctx)
-      local execute = runtime._host_execute
-      if runtime._enabled then
-        if not runtime._active_execute then
-          return unavailable(runtime._status)
-        end
-        execute = runtime._active_execute
+  ---@async
+  local function route(tool, arguments, ctx)
+    if is_parent(tool) then
+      return base(tool, arguments, ctx)
+    end
+    local execute = runtime._host_execute
+    if runtime._enabled then
+      if not runtime._active_execute then
+        return unavailable(runtime._status)
       end
-      return execute(tool, arguments, ctx)
-    end,
+      execute = runtime._active_execute
+    end
+    return execute(tool, arguments, ctx)
+  end
+  local stable = {
+    tools = needs_escalation and escalation:tools(toolset.tools) or toolset.tools,
+    execute_tool = require("neoagent.dialog").wrap(dialogs, route),
     system_prompt = #toolset.tools > 0 and switchable_guidance or nil,
   }
   if settings.enabled then
@@ -467,39 +499,23 @@ function M.switchable(toolset, settings, opts)
 end
 
 ---@generic C
----@param configured Neoagent.Config<C>
+---@param toolset Neoagent.SandboxToolset<C>
+---@param settings? Neoagent.SandboxSettings<C>
 ---@param opts? Neoagent.SandboxCompositionOptions<C>
----@return Neoagent.Config<C>, Neoagent.Dialogs?
-function M.agent(configured, opts)
-  assert(type(configured) == "table", "sandbox Agent configuration is required")
-  opts = opts or {}
-  local copied = util.copy(configured)
-  local settings = copied.sandbox or { enabled = false }
-  local selected_tools = copied._tools_supplied and assert(copied.tools)
-    or require("neoagent.tools").coding({
-      shell_timeout = copied.shell_timeout,
-    }) --[[@as Neoagent.Tool<C>[] ]]
-  ---@cast selected_tools Neoagent.Tool<C>[]
-  local toolset, status, dialogs = M.compose({
-    tools = selected_tools,
-    execute_tool = copied.execute_tool,
-  }, settings, opts)
-  copied._sandbox_status = status
-  if not settings.enabled then
-    return copied
-  end
-  if not toolset then
-    copied._sandbox_warning = M.warning(copied.name or "Neo", status)
-    copied.execute_tool = function()
-      return unavailable(status)
-    end
-    return copied
-  end
-  copied.tools = toolset.tools
-  copied._tools_supplied = true
-  copied.execute_tool = toolset.execute_tool
-  copied._sandbox_system_prompt = toolset.system_prompt
-  return copied, dialogs
+---@return Neoagent.SandboxComposition<C>, Neoagent.SandboxActivation, Neoagent.Dialogs, Neoagent.SandboxRuntime<C>
+function M.switchable(toolset, settings, opts)
+  return build(toolset, settings, opts, true)
+end
+
+---@generic C
+---@param toolset Neoagent.SandboxToolset<C>
+---@param settings? Neoagent.SandboxSettings<C>
+---@param opts? Neoagent.SandboxCompositionOptions<C>
+---@return Neoagent.SandboxComposition<C>, Neoagent.SandboxActivation, Neoagent.Dialogs
+function M.compose(toolset, settings, opts)
+  local composed, status, dialogs = build(toolset, settings, opts, false)
+  composed.system_prompt = status.active and sandbox_guidance(status) or nil
+  return composed, status, dialogs
 end
 
 return M
