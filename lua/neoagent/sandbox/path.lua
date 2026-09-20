@@ -70,7 +70,7 @@ local posix = { name = "posix" }
 ---@param path string
 ---@return string
 function posix.normalize(path)
-  return vim.fs.normalize(value(path))
+  return vim.fs.normalize(value(path), { expand_env = false })
 end
 
 ---@param path unknown

@@ -9,6 +9,7 @@
 ---@field steering_claim? Neoagent.SteeringClaim
 ---@field submission_id? integer
 ---@field base? Neoagent.AgentInteractionOptions
+---@field observed_leaf? string
 
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")
@@ -458,10 +459,7 @@ end
 ---@param label string
 ---@return Neoagent.RunResult<R>
 local function operation_result(value, label)
-  assert(
-    type(value) == "table" and type(value.ok) == "boolean",
-    label .. " returned an invalid result"
-  )
+  assert(type(value) == "table" and type(value.ok) == "boolean", label .. " returned an invalid result")
   return value
 end
 
@@ -679,6 +677,22 @@ function M.new(opts)
     return true
   end
 
+  ---@param message Neoagent.ToolResultMessage
+  local function refresh_result(message)
+    if message.isError then
+      return
+    end
+    local details = type(message.details) == "table" and message.details or {}
+    local changed_paths = details.changed_paths
+    if type(changed_paths) == "table" and util.is_list(changed_paths) then
+      for _, path in ipairs(changed_paths) do
+        if type(path) == "string" and path ~= "" then
+          opts.refresh_buffer(path)
+        end
+      end
+    end
+  end
+
   ---@param activity Neoagent.AgentActivity
   ---@param event Neoagent.AgentEvent
   ---@return boolean
@@ -712,18 +726,11 @@ function M.new(opts)
     opts.publish({ type = "event", event = event })
     if event.type == "tool_end" then
       ---@cast event Neoagent.ToolEndEvent
-      if event.message.isError then
-        return true
-      end
-      local details = type(event.message.details) == "table" and event.message.details or {}
-      local changed_paths = details.changed_paths
-      if type(changed_paths) == "table" and util.is_list(changed_paths) then
-        for _, path in ipairs(changed_paths) do
-          if type(path) == "string" and path ~= "" then
-            opts.refresh_buffer(path)
-          end
-        end
-      end
+      refresh_result(event.message)
+      activity.observed_leaf = event.message._neoagent_entry_id or activity.observed_leaf
+    elseif event.type == "message_end" then
+      ---@cast event Neoagent.MessageEndEvent
+      activity.observed_leaf = event.message._neoagent_entry_id or activity.observed_leaf
     end
     return true
   end
@@ -936,6 +943,7 @@ function M.new(opts)
       state.pending_events = {}
       if continuing or not activity.accepted then
         opts.publish_messages(opts.transcript_messages(state.session))
+        activity.observed_leaf = state.session:leaf_id()
       end
       opts.update_context()
     end)
@@ -988,6 +996,7 @@ function M.new(opts)
       activity.steering_claim = nil
     end
     opts.publish_messages(opts.transcript_messages(state.session))
+    activity.observed_leaf = state.session:leaf_id()
     opts.update_context()
     publish_submission(activity, activity.submission_id, prompt, type(entry) == "table" and entry.id or nil)
     local committed, commit_err = opts.commit_model_preference()
@@ -1008,7 +1017,7 @@ function M.new(opts)
   ---@return Neoagent.AgentRunResult
   local function interaction_pipeline(outer, activity, base)
     local overflow_retried = false
-    local length_continued = false
+    local uncompacted_length_continued = false
     local stream_retries = 0
 
     if needs_compaction() then
@@ -1043,8 +1052,8 @@ function M.new(opts)
           return done
         end
         done = run_interaction(outer, activity, base, true, stream_retries)
-      elseif not length_continued and is_length_limited(done) then
-        length_continued = true
+      elseif is_length_limited(done) then
+        local compacted_context = false
         if needs_compaction() then
           local compacted, _, started = run_compaction(outer, activity, "threshold")
           if started and not compacted.ok then
@@ -1053,6 +1062,12 @@ function M.new(opts)
             end
             return done
           end
+          compacted_context = started
+        end
+        if not compacted_context and uncompacted_length_continued then
+          return done
+        elseif not compacted_context then
+          uncompacted_length_continued = true
         end
         done = run_interaction(outer, activity, base, true, stream_retries)
       else
@@ -1116,6 +1131,36 @@ function M.new(opts)
   end
 
   ---@param activity Neoagent.AgentActivity
+  local function reconcile_cancelled(activity)
+    if state.session:leaf_id() == activity.observed_leaf then
+      return
+    end
+    -- Completed effects can be committed after cancellation has stopped event
+    -- delivery. Reconcile the unobserved suffix while this activity still owns
+    -- the Session, before publishing its final state or accepting new work.
+    local path, path_err = state.session:path()
+    if not path then
+      error(path_err, 0)
+    end
+    for index = #path, 1, -1 do
+      local entry = path[index]
+      if entry.id == activity.observed_leaf then
+        break
+      end
+      if entry.type == "message" then
+        ---@cast entry Neoagent.MessageEntry
+        local message = entry.message
+        if message.role == "toolResult" then
+          ---@cast message Neoagent.ToolResultMessage
+          refresh_result(message)
+        end
+      end
+    end
+    state.pending_events = {}
+    opts.publish_messages(opts.transcript_messages(state.session))
+  end
+
+  ---@param activity Neoagent.AgentActivity
   ---@param result Neoagent.AgentRunResult
   ---@return boolean
   local function finalize(activity, result)
@@ -1143,6 +1188,9 @@ function M.new(opts)
       state.last_result = completion
       if not state.destroyed then
         local published, publish_err = pcall(function()
+          if completion.status == "cancelled" then
+            reconcile_cancelled(activity)
+          end
           opts.update_context()
           opts.publish({ type = "finish", result = completion })
         end)
@@ -1181,6 +1229,7 @@ function M.new(opts)
       accepted = false,
       provider_lease = release,
       finalized = false,
+      observed_leaf = state.session:leaf_id(),
     }
     for key, value in pairs(activity_values or {}) do
       activity[key] = value

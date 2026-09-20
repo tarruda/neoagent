@@ -17,7 +17,13 @@ Neoagent Applet
        ├── Session ──► optional store
        └── chat ──► Agent Loop
                      ├── Model ──► API adapter ──► transport
-                     └── execute_tool ──► Tool
+                     └── execute_tool policy ──► Tool
+                           ├── parent-only/host ──► local implementation
+                           └── restricted ──► sandbox interceptor
+                                  ├── native WorkerLease
+                                  └── RPC proxy ──► RpcConnection
+                                                       └── Tool worker
+                                                            └── same implementation
 ```
 
 ## Core and execution
@@ -41,6 +47,8 @@ The Agent Loop receives the Model, messages, tools, executor, context,
 steering, and commit function as explicit dependencies. The message owner
 commits authoritative state before the loop starts work that depends on it.
 Cancellation propagates through Models, tools, child Runs, and provider use.
+Before a cancelled activity finishes, the Agent reconciles committed Tool
+results with its Views, message hooks, and file-buffer refreshes.
 
 ## Agents and the top-level composition
 
@@ -96,22 +104,52 @@ references. A Workspace supplies file and cache capabilities explicitly;
 semantic request state never owns either. Request-scoped preparation uses
 Service leases independent of the calling Agent's lifecycle.
 
-The Provider Shell presents Authentication, catalogs, and Service state. It is
-owned by the top-level Applet and is independent of Agent selection.
-
 ## Tools and Workspace policy
 
-Tools are plain values. The Agent Loop validates calls and delegates them to
-`execute_tool(tool, arguments, ctx)`, which is the composition boundary for
-approval, logging, sandboxing, and other execution policy.
+Tools own their schemas, implementations, message hooks, and presentation.
+The Agent Loop delegates validated calls to `execute_tool(tool, arguments,
+ctx)`, where the composition applies approval, logging, and sandbox policy.
 
-Bundled tools receive file and process capabilities through their context.
+The sandbox interceptor substitutes an RPC proxy for a recognized bundled
+implementation and passes it through the configured executor. The worker runs
+the same implementation used locally. Host execution and explicitly granted
+parent Tools run directly. Unsupported restricted Tools fail closed.
+
+The worker receives copied Workspace input and has no Agent, Session,
+provider, or UI state. Results and updates cross as semantic values; artifact
+bytes are verified and imported into parent storage before publication.
+Sandbox denial evidence is consumed by the interceptor, outside Session data.
+Tool-owned `details` and executor-owned `execution` metadata remain separate
+in results and committed messages. Sandbox policy owns `execution.sandbox`.
+
+`RpcConnection` owns communication with the worker. `WorkerLease` owns the
+worker process and native sandbox resources. Their lifetimes are independent
+of individual requests. The interceptor owns both for each invocation and
+completes cleanup independently of Run cancellation. Received results still
+undergo validation when observation is cancelled. The worker waits for each
+request's launched commands and signals their process groups before
+acknowledging completion or cancellation. On POSIX, descendants can leave
+those groups; complete descendant containment belongs to the native lease.
+Reusing a Tool connection does not establish that earlier descendants have
+stopped. The one-shot interceptor ends the connection and retains the native
+lease until cleanup settles, including detached cleanup after cancellation.
+Channel failure stops progress publication and starts lease disposal
+independently of pending result validation. Invocation deadlines also bound
+parent artifact import and can revoke pending validation without publishing
+unchecked results. Finite shell deadlines have an independent parent watchdog
+so stopping the restricted worker cannot disable its timeout.
+Cancellation of a cleanup wait records an unobserved
+cleanup outcome; detached cleanup retains ownership of the lease.
+Shutdown validation continues through the worker's final output.
+
+File arguments are resolved and authorized in the parent before execution.
+
+Native isolation enforces filesystem, process, and network policy. Parent
+preflight checks concrete paths, including worker bootstrap dependencies;
+it never overrides explicit filesystem denials. Profiles are resolved per
+invocation, while activation status reports native platform availability.
+
 Project instructions and skills are Agent inputs governed by Workspace trust.
-Sandboxing and host escalation decorate tool execution without adding policy
-to the Agent Loop.
-
-Tool presentation and message hooks belong to the Agent layer. Render hooks
-produce semantic data and do not depend on the Agent Loop.
 
 ## Sessions and persistence
 

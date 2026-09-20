@@ -1,16 +1,22 @@
 local compiler = require("neoagent.sandbox.windows.compile")
 local path_module = require("neoagent.sandbox.path")
 local protocol = require("neoagent.sandbox.protocol")
+local relay_lease = require("neoagent.sandbox.relay_lease")
 local util = require("neoagent.util")
+local nvim_launch = require("neoagent.process.nvim")
 
 ---@class Neoagent.WindowsSandboxProfile: Neoagent.SandboxProfile
 ---@field windows Neoagent.WindowsSandboxPolicy
 
----@class Neoagent.WindowsSandboxRequest: Neoagent.SandboxRequest
----@field fs? Neoagent.SandboxFilesystemOperation
+---@class Neoagent.WindowsSandboxRequest
+---@field argv? string[]
+---@field cwd string
+---@field env table<string, string>
+---@field profile Neoagent.SandboxProfile
 ---@field probe? {write: string, deny_write: string, deny_read: string}
+---@field bootstrap_paths? string[]
 
----@alias Neoagent.WindowsSandboxMode 'exec'|'fs'|'probe'
+---@alias Neoagent.WindowsSandboxMode 'exec'|'probe'
 
 ---@class Neoagent.WindowsSandboxSpec
 ---@field v 1
@@ -19,18 +25,11 @@ local util = require("neoagent.util")
 ---@field cwd? string
 ---@field argv? string[]
 ---@field env table<string, string>
----@field fs? Neoagent.SandboxFilesystemOperation
 ---@field probe? {write: string, deny_write: string, deny_read: string}
----@field timeout_ms? integer
+---@field admission_timeout_ms integer
 ---@field runner {argv: string[], read_roots: string[], script: string, version: 'script'}
 
----@class Neoagent.WindowsSandboxCapture
----@field decoder Neoagent.SandboxProtocolDecoder
----@field feed fun(data: string)
----@field values fun(): string, string, string, string?
-
 ---@class Neoagent.WindowsSandboxProbe
----@field request Neoagent.WindowsSandboxRequest
 ---@field spec Neoagent.WindowsSandboxSpec
 ---@field root string
 
@@ -39,11 +38,7 @@ local M = {
   paths = path_module.windows(),
 }
 
-local FS_TIMEOUT_MS = 30000
-local FS_MAX_READ_BYTES = 64 * 1024 * 1024
-local FS_CAPTURE_OVERHEAD_BYTES = 4096
 local PROBE_TIMEOUT_MS = 30000
-local RUNTIME_TIMEOUT_MARGIN_MS = 10000
 local MINIMUM_NVIM = { 0, 12, 0 }
 local CAPABILITIES = {
   filesystem = true,
@@ -102,26 +97,10 @@ local function executable(path)
   end
 end
 
----@param command string[]
----@return string[]
-local function resolved_command(command)
-  if not M.paths.is_absolute(command[1]) then
-    command[1] = vim.fn.exepath((assert(command[1])))
-  end
-  command[1] = executable(command[1]) or command[1]
-  return command
-end
-
 ---@param configured? string|string[]
 ---@return string[]
 local function nvim_command(configured)
-  if type(configured) == "string" and configured ~= "" then
-    return resolved_command({ configured })
-  elseif type(configured) == "table" and util.is_list(configured) and #configured > 0 then
-    ---@cast configured string[]
-    return resolved_command(util.copy(configured))
-  end
-  return resolved_command({ vim.v.progpath })
+  return nvim_launch.command(configured or vim.v.progpath)
 end
 
 ---@param required [integer, integer, integer]
@@ -164,14 +143,22 @@ local function runtime_argv(nvim, script)
   return argv
 end
 
+---@param runtime string
+---@return string
+local function command_module(runtime)
+  local checkout = M.paths.dirname(M.paths.dirname(runtime))
+  return M.paths.join(checkout, "lua", "neoagent", "process", "windows_command.lua")
+end
+
 ---@param nvim string[]
+---@param script string
 ---@return string[]
-local function runner_read_roots(nvim)
+local function runner_read_roots(nvim, script)
   if not M.paths.is_absolute(nvim[1]) then
     return {}
   end
   local executable_root = M.paths.dirname((assert(nvim[1])))
-  local roots = { executable_root }
+  local roots = { executable_root, command_module(script) }
   local installation = M.paths.dirname(executable_root)
   -- Release archives place the runtime below the installation root. Custom
   -- distributions expose their initialized runtime through VIMRUNTIME.
@@ -303,160 +290,18 @@ local function specification(request, mode, runtime, nvim)
     cwd = request.cwd,
     argv = argv,
     env = util.copy(request.env or {}),
-    fs = util.copy(request.fs),
     probe = util.copy(request.probe),
-    timeout_ms = mode == "exec" and request.timeout_ms or nil,
+    admission_timeout_ms = relay_lease.DEFAULT_ADMISSION_TIMEOUT_MS,
     runner = {
       argv = util.copy(nvim),
       -- CreateProcessWithLogonW uses a separate local account. Initialized
       -- Neovim reads adjacent DLLs and its packaged runtime before the Lua
       -- runner can connect, so those installation roots need inherited read
       -- and execute access in addition to the executable itself.
-      read_roots = runner_read_roots(nvim),
+      read_roots = runner_read_roots(nvim, runtime),
       script = runtime,
       version = "script",
     },
-  }
-end
-
----@param request Neoagent.ProcessOptions
----@return Neoagent.WindowsSandboxCapture
-local function new_capture(request)
-  local stdout, stderr, output = "", "", ""
-  local capture = request.capture ~= false
-  local decoder_error
-  local decoder = protocol.new({
-    on_event = function(event)
-      if event.type ~= "output" then
-        return
-      end
-      ---@cast event Neoagent.SandboxOutputEvent
-      local is_stderr = event.stream == "stderr"
-      if capture then
-        if request.max_capture_bytes
-            and #output + #event.data > request.max_capture_bytes then
-          decoder_error = "sandbox output exceeded capture limit"
-          return
-        end
-        if is_stderr then
-          stderr = stderr .. event.data
-        else
-          stdout = stdout .. event.data
-        end
-        output = output .. event.data
-      end
-      if request.on_output then
-        request.on_output(event.data, is_stderr, stdout, stderr, output)
-      end
-    end,
-  })
-  return {
-    decoder = decoder,
-    feed = function(data)
-      if decoder_error then
-        return
-      end
-      local ok, err = pcall(decoder.feed, decoder, data)
-      if not ok then
-        decoder_error = tostring(err)
-      end
-    end,
-    values = function()
-      return stdout, stderr, output, decoder_error
-    end,
-  }
-end
-
----@param request Neoagent.WindowsSandboxRequest
----@param services Neoagent.SandboxServices
----@param mode Neoagent.WindowsSandboxMode
----@return Neoagent.ProcessResult
-local function process_request(request, services, mode)
-  if not supported_version() then
-    error(util.error("sandbox_unavailable", "Windows sandboxing requires Neovim 0.12 or newer"), 0)
-  end
-  local runtime = runtime_file()
-  if not runtime then
-    error(util.error("sandbox_unavailable", "Windows sandbox runtime was not found"), 0)
-  end
-  local nvim = nvim_command(services.nvim)
-  if not executable(nvim[1]) then
-    error(util.error("sandbox_unavailable", "Current Neovim executable cannot be resolved"), 0)
-  end
-  local spec = specification(request, mode, runtime, nvim)
-  local capture = new_capture(request)
-  local runtime_stderr = ""
-  -- The account runner owns the target job and enforces command deadlines
-  -- directly. This host deadline bounds setup, cleanup, and runtime failures.
-  local host_timeout_ms = request.timeout_ms
-  if mode == "exec" and host_timeout_ms then
-    host_timeout_ms = host_timeout_ms + RUNTIME_TIMEOUT_MARGIN_MS
-  end
-  local ok, host = pcall(services.process, runtime_argv(nvim, runtime), {
-    cwd = vim.fs.dirname(runtime),
-    env = environment(spec),
-    clear_env = true,
-    stdin = request.stdin,
-    capture = false,
-    timeout_ms = host_timeout_ms,
-    kill_grace_ms = request.kill_grace_ms,
-    on_output = function(data, is_stderr)
-      if is_stderr then
-        if #runtime_stderr < 1000 then
-          runtime_stderr = (runtime_stderr .. data):sub(1, 1000)
-        end
-      else
-        capture.feed(data)
-      end
-    end,
-  })
-  local stdout, stderr, output, decoder_error = capture.values()
-  if not ok then
-    local err = util.normalize_error(host, "sandbox_unavailable")
-    if err.kind == "cancelled" then
-      error(host, 0)
-    end
-    error(util.error("sandbox_unavailable", "Windows sandbox runtime failed", bounded(err.message)), 0)
-  end
-  if type(host) ~= "table" or type(host.code) ~= "number" or type(host.signal) ~= "number" then
-    error(util.error("sandbox_unavailable", "Windows sandbox runtime returned an invalid process result"), 0)
-  end
-  if host.timed_out then
-    return {
-      code = host.code,
-      signal = host.signal,
-      stdout = stdout,
-      stderr = stderr,
-      output = output,
-      timed_out = true,
-    }
-  end
-  if decoder_error then
-    error(util.error("sandbox_unavailable", "Invalid Windows sandbox protocol", decoder_error), 0)
-  end
-  local terminal, terminal_err = capture.decoder:finish()
-  if not terminal then
-    local diagnostic = bounded(runtime_stderr)
-    error(util.error("sandbox_unavailable", terminal_err, diagnostic ~= "" and diagnostic or nil), 0)
-  end
-  if terminal.type == "error" then
-    error(
-      util.error(
-        "sandbox_unavailable",
-        "Windows sandbox failed at " .. terminal.stage,
-        "win32=" .. tostring(terminal.errno)
-      ),
-      0
-    )
-  end
-  ---@cast terminal Neoagent.SandboxExitEvent
-  return {
-    code = terminal.code,
-    signal = terminal.signal,
-    stdout = stdout,
-    stderr = stderr,
-    output = output,
-    timed_out = terminal.timed_out == true,
   }
 end
 
@@ -468,46 +313,62 @@ function M.compile(profile)
   return compiled
 end
 
----@param request Neoagent.SandboxProcessRequest
----@param services Neoagent.SandboxServices
----@return Neoagent.ProcessResult
-function M.exec(request, services)
-  return process_request(request --[[@as Neoagent.WindowsSandboxRequest]], services, "exec")
-end
-
----@param request Neoagent.SandboxFilesystemRequest
----@param services Neoagent.SandboxServices
----@return string|true|nil, string?
-function M.fs(request, services)
-  local value = process_request({
-    profile = request.profile,
-    cwd = M.temporary_root(),
-    env = {},
-    argv = {},
-    fs = {
-      operation = request.operation,
-      path = request.path,
-      offset = request.offset,
-      size = request.size,
-      flags = request.flags,
-      mode = request.mode,
-      policy = request.policy,
-      suffix = request.suffix,
-    },
-    stdin = request.data,
-    capture = true,
-    max_capture_bytes = (request.operation == "read_range"
-        and assert(request.size) or FS_MAX_READ_BYTES)
-      + FS_CAPTURE_OVERHEAD_BYTES,
-    timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
-  }, services, "fs")
-  if value.code ~= 0 then
-    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
+---@param request Neoagent.SandboxWorkerRequest
+---@param services Neoagent.SandboxExecutionServices<string|string[]>
+---@return Neoagent.WorkerLease
+function M.start_worker(request, services)
+  if not supported_version() then
+    error(util.error("sandbox_unavailable", "Windows sandboxing requires Neovim 0.12 or newer"), 0)
   end
-  if request.operation == "read" or request.operation == "read_range" then
-    return value.stdout
+  local runtime = runtime_file()
+  if not runtime then
+    error(util.error("sandbox_unavailable", "Windows sandbox runtime was not found"), 0)
   end
-  return true
+  local nvim = nvim_command(services.nvim)
+  if not executable(nvim[1]) then
+    error(util.error("sandbox_unavailable", "Current Neovim executable cannot be resolved"), 0)
+  end
+  local required = util.copy(request.bootstrap_paths or {})
+  required[#required + 1] = command_module(runtime)
+  local bootstrap = require("neoagent.sandbox.policy").require_read(request.profile, required, M.paths, "bootstrap")
+  local spec = specification(request --[[@as Neoagent.WindowsSandboxRequest]], "exec", runtime, nvim)
+  local seen = {}
+  for _, path in ipairs(spec.runner.read_roots) do
+    seen[M.paths.key(path)] = true
+  end
+  for _, normalized in ipairs(bootstrap) do
+    local key = M.paths.key(normalized)
+    if not seen[key] then
+      seen[key] = true
+      spec.runner.read_roots[#spec.runner.read_roots + 1] = normalized
+    end
+  end
+  local relay = relay_lease.new({
+    on_failure = request.on_failure,
+    on_stdout = request.on_stdout,
+    on_stderr = request.on_stderr,
+    on_exit = request.on_exit,
+    admission_timeout_ms = spec.admission_timeout_ms,
+  })
+  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+  local started, child = pcall(start, {
+    argv = runtime_argv(nvim, runtime),
+    cwd = assert(vim.fs.dirname(runtime)),
+    env = environment(spec),
+    clear_env = true,
+    kill_grace_ms = request.kill_grace_ms,
+    on_stdout = function(data)
+      relay:feed(data)
+    end,
+    on_exit = function(result)
+      relay:host_exited(result)
+    end,
+  })
+  if not started then
+    error(util.error("sandbox_unavailable", "Could not start Windows sandbox runtime", child), 0)
+  end
+  relay:attach(child)
+  return relay
 end
 
 ---@param path? string
@@ -561,26 +422,14 @@ local function check_request(services, runtime, nvim)
       set = {},
     },
   }
-  local compiled, compile_err = pcall(M.compile, profile)
+  local compiled, profile_or_error = pcall(M.compile, profile)
   if not compiled then
     cleanup_probe(root)
-    return nil, "profile", compile_err
+    return nil, "profile", profile_or_error
   end
   return {
-    request = {
-      profile = compile_err,
-      cwd = root,
-      env = {},
-      probe = {
-        write = write_probe,
-        deny_write = denied_write,
-        deny_read = denied_read,
-      },
-      stdin = "",
-      capture = true,
-    },
     spec = specification({
-      profile = compile_err,
+      profile = profile_or_error,
       cwd = root,
       env = {},
       probe = {
@@ -624,28 +473,22 @@ function M.check(services)
   if not prepared then
     return unavailable(stage, message)
   end
-  local capture = new_capture(prepared.request)
   local completed = (services.system or system)(runtime_argv(nvim, runtime), {
     cwd = vim.fs.dirname(runtime),
     env = environment(prepared.spec),
     clear_env = true,
-    stdin = "",
     text = false,
   }, services.probe_timeout_ms or PROBE_TIMEOUT_MS)
   cleanup_probe(prepared.root)
   if not completed then
     return unavailable("probe", "Windows sandbox probe timed out")
   end
-  capture.feed(completed.stdout or "")
-  local _, _, _, decoder_error = capture.values()
-  if decoder_error then
-    return unavailable("protocol", decoder_error)
-  end
-  local terminal, terminal_err = capture.decoder:finish()
-  if not terminal then
+  local events, terminal = protocol.decode_all(completed.stdout or "")
+  if not events then
     local detail = bounded(completed.stderr)
-    return unavailable("probe", terminal_err .. (detail ~= "" and ": " .. detail or ""))
+    return unavailable("protocol", tostring(terminal) .. (detail ~= "" and ": " .. detail or ""))
   end
+  assert(type(terminal) == "table")
   if terminal.type == "error" then
     local hint = terminal.stage == "state-missing" and "; run the documented elevated Windows sandbox setup command"
       or ""

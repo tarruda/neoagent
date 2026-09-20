@@ -208,7 +208,7 @@ end
 
 ---@param source unknown
 ---@param opts? {paths?: Neoagent.SandboxPaths}
----@return Neoagent.SandboxProfile, string
+---@return Neoagent.SandboxProfile
 function M.validate(source, opts)
   opts = opts or {}
   local paths = opts.paths or path_module.posix
@@ -235,14 +235,14 @@ function M.validate(source, opts)
     network = selected_network,
     environment = normalize_environment(source.environment, paths),
   }
-  return util.copy(normalized), util.json_encode(normalized)
+  return util.copy(normalized)
 end
 
 ---@generic C
 ---@param source Neoagent.SandboxProfileSource<C>
 ---@param ctx C
 ---@param opts? {paths?: Neoagent.SandboxPaths}
----@return Neoagent.SandboxProfile, string
+---@return Neoagent.SandboxProfile
 function M.resolve(source, ctx, opts)
   if type(source) == "function" then
     local ok, value = pcall(source, ctx)

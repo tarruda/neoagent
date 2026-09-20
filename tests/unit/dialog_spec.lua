@@ -268,7 +268,9 @@ describe("neoagent dialog source", function()
     assert.is_true(assert(pending:result()).presenter_unavailable)
   end)
 
-  it("injects a lifetime-scoped optional ctx.dialog capability", function()
+  it("injects a lifetime-scoped optional ctx.dialog capability",
+    ---@async
+    function()
     local source = require("neoagent.dialog").new()
     local detach = source:subscribe(function() end)
     ---@type Neoagent.DialogCapability?

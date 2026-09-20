@@ -240,11 +240,10 @@ local function rate_limit_details(headers)
     names[#names + 1] = prefix
   end
   table.sort(names, function(left, right)
-    if left == "codex" then
-      return right ~= "codex"
-    end
-    if right == "codex" then
-      return false
+    local left_is_codex = left == "codex"
+    local right_is_codex = right == "codex"
+    if left_is_codex ~= right_is_codex then
+      return left_is_codex
     end
     return left < right
   end)

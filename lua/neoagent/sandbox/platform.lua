@@ -1,5 +1,3 @@
-local util = require("neoagent.util")
-
 ---@class Neoagent.SandboxCapabilities
 ---@field [string] boolean|string|number
 ---@field procfs? 'fresh'|'host'
@@ -27,45 +25,22 @@ local util = require("neoagent.util")
 ---@field sandbox_exec? string
 ---@field probe_timeout_ms? integer
 ---@field capabilities? Neoagent.SandboxCapabilities
+---@field start_worker? fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease
 
----@class Neoagent.SandboxServices<N = string|string[]>: Neoagent.SandboxCheckServices<N>
----@field process fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
-
----@class Neoagent.SandboxRequest: Neoagent.ProcessOptions
----@field argv? string[]
+---@class Neoagent.SandboxWorkerRequest: Neoagent.WorkerRequest
+---@field on_failure? fun(error: Neoagent.Error)
 ---@field profile Neoagent.SandboxProfile
----@field env? table<string, string>
-
----@class Neoagent.SandboxProcessRequest: Neoagent.SandboxRequest
----@field argv string[]
-
----@class Neoagent.SandboxFilesystemOperation
----@field operation 'read'|'read_range'|'write_all'|'mkdirp'|'atomic_replace'
----@field path string
----@field canonical_path? string
----@field offset? integer
----@field size? integer
----@field data? string
----@field flags? string
----@field mode? integer
----@field policy? Neoagent.AtomicPolicy
----@field suffix? string
----@field timeout_ms? integer
-
----@class Neoagent.SandboxFilesystemRequest: Neoagent.SandboxFilesystemOperation
----@field profile Neoagent.SandboxProfile
----@field max_capture_bytes? integer
+---@field bootstrap_paths? string[]
 
 ---@class Neoagent.SandboxPlatform<C = unknown>
 ---@field name string
 ---@field paths? Neoagent.SandboxPaths
 ---@field check fun(services?: Neoagent.SandboxCheckServices<string>): Neoagent.SandboxStatus
----@field exec fun(request: Neoagent.SandboxProcessRequest, services: Neoagent.SandboxExecutionServices): Neoagent.ProcessResult
----@field fs fun(request: Neoagent.SandboxFilesystemRequest, services: Neoagent.SandboxExecutionServices): string|true|nil, string?
+---@field start_worker fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerLease
 ---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
 ---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string
 
----@class Neoagent.SandboxExecutionServices<N = string>: Neoagent.SandboxServices<N>
+---@class Neoagent.SandboxExecutionServices<N = string>: Neoagent.SandboxCheckServices<N>
 ---@field fs Neoagent.SandboxFilesystemService
 
 ---@class Neoagent.SandboxPlatforms<C = unknown>
@@ -101,17 +76,6 @@ function M.select(os, modules)
     return modules.windows or require("neoagent.sandbox.windows")
   end
   return nil, unsupported(os)
-end
-
----@param status? Neoagent.SandboxStatus
----@return Neoagent.Error
-function M.status_error(status)
-  status = status or unsupported(jit.os)
-  local message = status.message or "sandbox requirements are unavailable"
-  if status.stage then
-    message = status.stage .. ": " .. message
-  end
-  return util.error("sandbox_unavailable", message)
 end
 
 return M

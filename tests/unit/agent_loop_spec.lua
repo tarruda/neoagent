@@ -241,6 +241,43 @@ describe("neoagent.agent_loop", function()
     }, events)
   end)
 
+  it("runs context-free tools without Workspace or attachment capabilities", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        {
+          type = "toolCall",
+          id = "plan",
+          name = "update_plan",
+          arguments = { plan = { { step = "Keep context light", status = "completed" } } },
+        },
+        {
+          type = "toolCall",
+          id = "documentation",
+          name = "read_agent_documentation",
+          arguments = {},
+        },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = {
+        require("neoagent.tools.update_plan").new(),
+        require("neoagent.tools.read_agent_documentation").new(),
+      },
+      context = { session_id = {} },
+    }))
+
+    assert.is_true(result.ok)
+    local plan = result_message(result, 2)
+    local documentation = result_message(result, 3)
+    assert.is_false(plan.isError, util.text_content(plan.content))
+    assert.is_false(documentation.isError, util.text_content(documentation.content))
+    assert.are.equal("Plan updated", util.text_content(plan.content))
+    assert.matches("# Neoagent API map", util.text_content(documentation.content))
+  end)
+
   it("stops dependent work at every failed message commit", function()
     local storage_error = { kind = "storage", message = "journal failed" }
     local executed = false
@@ -968,6 +1005,38 @@ describe("neoagent.agent_loop", function()
     assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.is_true(cleaned)
     assert.are.equal(1, #model.requests)
+  end)
+
+  it("does not commit invalid or thrown tool results after cancellation", function()
+    for _, throws in ipairs({ false, true }) do
+      local committed = {}
+      local model = fake_model.new({ {
+        result = fake_model.assistant({
+          { type = "toolCall", id = "invalid", name = "cancel", arguments = {} },
+        }, "toolUse"),
+      } })
+      local run = agent_loop.run({
+        model = model, messages = {},
+        tools = { {
+          name = "cancel", description = "", input_schema = { type = "object", properties = {} },
+          execute = function(_, ctx)
+            ctx.run:cancel()
+            if throws then error("failed during cancellation") end
+            return {} --[[@as Neoagent.ToolResult]]
+          end,
+        } },
+        commit_message = function(message)
+          committed[#committed + 1] = message
+          return true
+        end,
+      })
+      local result = wait(run)
+      assert.is_false(result.ok)
+      assert.are.equal("cancelled", assert(result.error).kind, vim.inspect(result))
+      assert.are.equal(1, #committed)
+      assert.are.equal("assistant", committed[1].role)
+      assert.are.equal(1, #model.requests)
+    end
   end)
 
   it("suppresses late image frames after active tool cancellation", function()

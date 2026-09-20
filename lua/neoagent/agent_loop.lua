@@ -6,19 +6,18 @@ local util = require("neoagent.util")
 local M = {}
 
 ---@class Neoagent.Tool<C>: Neoagent.ToolDefinition
----@field execute fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 ---@field capabilities? {read_files?: boolean}
 ---@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: C)
 ---@field current? fun(context: C): unknown
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
----@field _neoagent_sandbox_options_added? boolean
 
 ---@class Neoagent.ToolPresentationOptions
 ---@field arguments Neoagent.JsonObject
 ---@field result? Neoagent.ToolResult|Neoagent.ToolResultMessage
 ---@field state? string
 
----@alias Neoagent.ToolExecutor<C> fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@alias Neoagent.ToolExecutor<C> async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 
 ---@class Neoagent.ToolContext<C>
 ---@field model Neoagent.Model
@@ -108,6 +107,7 @@ local M = {}
 ---@param arguments Neoagent.JsonObject
 ---@param ctx Neoagent.ToolContext<C>
 ---@return Neoagent.ToolResult
+---@async
 local function default_execute(tool, arguments, ctx)
   return tool.execute(arguments, ctx)
 end
@@ -138,7 +138,6 @@ local tool_fields = {
   on_messages = true,
   current = true,
   render = true,
-  _neoagent_sandbox_options_added = true,
 }
 
 ---@generic C
@@ -195,10 +194,6 @@ function M.validate_toolset(tools, execute_tool)
     assert(tool.on_messages == nil or type(tool.on_messages) == "function", label .. ".on_messages must be a function")
     assert(tool.current == nil or type(tool.current) == "function", label .. ".current must be a function")
     assert(tool.render == nil or type(tool.render) == "function", label .. ".render must be a function")
-    assert(
-      tool._neoagent_sandbox_options_added == nil or type(tool._neoagent_sandbox_options_added) == "boolean",
-      label .. "._neoagent_sandbox_options_added must be a boolean"
-    )
     lookup[tool.name] = tool
   end
   return {
@@ -542,12 +537,19 @@ function M.run(opts)
                 return execute(tool, util.copy(arguments), ctx)
               end)
               active = false
-              if run:is_cancelled() then
-                error(async.cancelled_error, 0)
-              end
               if executed then
                 local valid, normalized = pcall(validate_tool_result, value)
-                result = valid and normalized or error_result(normalized)
+                if valid then
+                  -- Returning a final result acknowledges completed work.
+                  -- Commit it before cancellation stops further observation.
+                  result = normalized
+                elseif run:is_cancelled() then
+                  error(async.cancelled_error, 0)
+                else
+                  result = error_result(normalized)
+                end
+              elseif run:is_cancelled() then
+                error(async.cancelled_error, 0)
               else
                 local err = util.normalize_error(value, "tool")
                 if err.kind == "cancelled" then
@@ -569,6 +571,9 @@ function M.run(opts)
           }
           if result.details ~= nil then
             message.details = util.copy(result.details)
+          end
+          if result.execution ~= nil then
+            message.execution = util.copy(result.execution)
           end
           if result.usage ~= nil then
             message.usage = util.copy(result.usage)

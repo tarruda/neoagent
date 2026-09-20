@@ -14,7 +14,6 @@ local status = dispatch_status
 if platform then
   local ok, value = pcall(platform.check, {
     fs = fs,
-    process = process.run,
   })
   status = ok and value or {
     ok = false,
@@ -28,6 +27,8 @@ local required = vim.env.NEOAGENT_REQUIRE_SANDBOX == "1"
 local sandbox_test = active and it or pending
 local linux_sandbox_test =
   active and assert(platform).name == "linux" and it or pending
+local macos_sandbox_test =
+  active and assert(platform).name == "macos" and it or pending
 -- Only the hosted 0.10 runner demonstrated a persistent startup helper, so
 -- keep the regression on that reported path while the shared contract covers
 -- the other supported releases.
@@ -106,6 +107,8 @@ describe("neoagent shared sandbox contract", function()
   local original_path
   ---@type string?
   local original_secret
+  ---@type string?
+  local original_path_target
   ---@type string[]
   local roots
   ---@type string
@@ -120,8 +123,6 @@ describe("neoagent shared sandbox contract", function()
   local metadata
   ---@type Neoagent.TestNativeEnvironment
   local context
-  ---@type Neoagent.Config<Neoagent.TestNativeEnvironment>
-  local configured
   ---@type string[]
   local spill_paths
 
@@ -136,6 +137,7 @@ describe("neoagent shared sandbox contract", function()
     original_inherited = vim.env.NEOAGENT_SANDBOX_TEST_INHERITED
     original_path = assert(vim.env.PATH)
     original_secret = vim.env.NEOAGENT_SANDBOX_TEST_SECRET
+    original_path_target = vim.env.NEOAGENT_SANDBOX_PATH_TARGET
     roots = {}
     spill_paths = {}
     workspace = temporary_directory()
@@ -170,9 +172,11 @@ describe("neoagent shared sandbox contract", function()
   end)
 
   after_each(function()
+    require("tests.helpers.sandbox").cleanup()
     vim.env.NEOAGENT_SANDBOX_TEST_INHERITED = original_inherited
     vim.env.PATH = original_path
     vim.env.NEOAGENT_SANDBOX_TEST_SECRET = original_secret
+    vim.env.NEOAGENT_SANDBOX_PATH_TARGET = original_path_target
     if original_cwd then vim.api.nvim_set_current_dir(original_cwd) end
     for _, path in ipairs(spill_paths or {}) do vim.fn.delete(path) end
     for _, path in ipairs(roots or {}) do vim.fn.delete(path, "rf") end
@@ -239,26 +243,17 @@ describe("neoagent shared sandbox contract", function()
 
   ---@param selected_tools Neoagent.Tool<Neoagent.TestNativeEnvironment>[]
   ---@param profile_callback? fun(default: Neoagent.SandboxProfile, ctx: Neoagent.ToolContext<Neoagent.TestNativeEnvironment>): Neoagent.SandboxProfile
-  ---@return Neoagent.Config<Neoagent.TestNativeEnvironment>
+  ---@return Neoagent.SandboxComposition<Neoagent.TestNativeEnvironment>
   local function sandboxed_config(selected_tools, profile_callback)
-    configured = composition.agent(require("neoagent.config").resolve({
-      name = "Sandbox integration",
-      tools = selected_tools,
-      default_registry = false,
-      persistence = { enabled = false },
-      sandbox = {
-        enabled = true,
-        profile = profile_callback or profile,
-      },
-    }), {
-      platform = platform,
-      status = status,
-    })
-    return configured
+    local toolset = composition.compose({ tools = selected_tools }, {
+      enabled = true,
+      profile = profile_callback or profile,
+    }, { platform = platform, status = status })
+    return (assert(toolset))
   end
 
   ---@async
-  ---@param options Neoagent.Config<Neoagent.TestNativeEnvironment>
+  ---@param options Neoagent.SandboxComposition<Neoagent.TestNativeEnvironment>
   ---@param tool Neoagent.Tool<Neoagent.TestNativeEnvironment>
   ---@param arguments Neoagent.JsonObject
   ---@return Neoagent.ToolResult
@@ -289,6 +284,7 @@ describe("neoagent shared sandbox contract", function()
         content = message.content,
         isError = message.isError,
         details = message.details,
+        execution = message.execution,
       }
     end
     return (assert(result))
@@ -412,9 +408,365 @@ describe("neoagent shared sandbox contract", function()
       assert.are.same(expected, observed)
       for index, tool in ipairs(selected) do
         assert.is_nil(tool.input_schema.properties.options)
-        assert.is_table(assert(assert(assert(options.tools)[index]).input_schema.properties).options)
+        local composed = assert(assert(options.tools)[index])
+        local options_schema = assert(composed.input_schema.properties).options
+        if tool.name == "read_agent_documentation" or tool.name == "update_plan" then
+          assert.is_nil(options_schema)
+        else
+          assert.is_table(options_schema)
+        end
       end
     end)
+
+  sandbox_test("starts file Tools with a bare launcher and an empty restricted PATH", function()
+    vim.env.NEOAGENT_SANDBOX_PATH_TARGET = "parent-resolved"
+    local selected = assert(composition.compose({
+      tools = { require("neoagent.tools.write_file").new() },
+    }, {
+      enabled = true,
+      profile = function(default)
+        default.environment.set.PATH = ""
+        return default
+      end,
+    }, { platform = platform, status = status, nvim = "nvim" }))
+    local model = fake_model.new({
+      { result = fake_model.assistant({ tool_call("write", "write_file", {
+        path = "$NEOAGENT_SANDBOX_PATH_TARGET.txt", content = "resolved in parent\n",
+      }) }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local completed = wait(agent_loop.run({
+      model = model, messages = {}, tools = selected.tools,
+      execute_tool = selected.execute_tool,
+      context = context, commit_message = function() return true end,
+    }))
+    assert.is_true(completed.ok, vim.inspect(completed.error))
+    local written = assert(messages_by_id(assert(completed.new_messages)).write)
+    assert.is_false(written.isError, text(written))
+    assert.are.equal("resolved in parent\n", fs.read(vim.fs.joinpath(workspace, "parent-resolved.txt")))
+    assert.is_nil(fs.read(vim.fs.joinpath(workspace, "$NEOAGENT_SANDBOX_PATH_TARGET.txt")))
+  end)
+
+  sandbox_test("cancels a Tool worker and its foreground descendants",
+    function()
+      local started = vim.fs.joinpath(workspace, "worker-started")
+      local late = vim.fs.joinpath(workspace, "worker-late")
+      local shell = require("neoagent.tools.shell").new({ default_timeout = false })
+      local options = sandboxed_config({ shell })
+      local command = "printf started > " .. vim.fn.shellescape(started)
+        .. "; (sleep 1; printf late > " .. vim.fn.shellescape(late) .. ") & wait"
+      local run = agent_loop.run({
+        model = fake_model.new({
+          { result = fake_model.assistant({
+            tool_call("cancel", "shell", { command = command }),
+          }, "toolUse") },
+          { result = fake_model.assistant({}) },
+        }),
+        tools = assert(options.tools),
+        messages = {},
+        context = context,
+        commit_message = function() return true end,
+        execute_tool = options.execute_tool,
+      })
+      assert(vim.wait(30000, function()
+        return vim.uv.fs_stat(started) ~= nil or run:is_done()
+      end, 10))
+      assert.is_false(run:is_done(), vim.inspect(run:result()))
+
+      run:cancel()
+
+      assert(vim.wait(30000, function() return run:is_done() end, 10))
+      local completed = assert(run:result())
+      assert.is_false(completed.ok)
+      assert.are.equal("cancelled", assert(completed.error).kind)
+      local appeared = vim.wait(1500, function()
+        return vim.uv.fs_stat(late) ~= nil
+      end, 10)
+      assert.are.equal(false, appeared)
+      assert.is_nil(vim.uv.fs_stat(late))
+    end)
+
+  sandbox_test("cancels Tool worker descendants in independent process groups",
+    function()
+      local started = vim.fs.joinpath(workspace, "detached-started")
+      local late = vim.fs.joinpath(workspace, "detached-late")
+      local program = table.concat({
+        "import os, pathlib, sys, time",
+        "os.setsid()",
+        "pathlib.Path(sys.argv[2]).write_text('started')",
+        "time.sleep(0.6)",
+        "pathlib.Path(sys.argv[1]).write_text('late')",
+      }, "\n")
+      local command = "python3 -c " .. vim.fn.shellescape(program)
+        .. " " .. vim.fn.shellescape(late)
+        .. " " .. vim.fn.shellescape(started)
+        .. " >/dev/null 2>&1 & wait"
+      local shell = require("neoagent.tools.shell").new({ default_timeout = false })
+      local options = sandboxed_config({ shell })
+      local run = agent_loop.run({
+        model = fake_model.new({
+          { result = fake_model.assistant({
+            tool_call("cancel-detached", "shell", { command = command }),
+          }, "toolUse") },
+          { result = fake_model.assistant({}) },
+        }),
+        tools = assert(options.tools),
+        messages = {},
+        context = context,
+        commit_message = function() return true end,
+        execute_tool = options.execute_tool,
+      })
+      assert(vim.wait(30000, function()
+        return vim.uv.fs_stat(started) ~= nil or run:is_done()
+      end, 10))
+      assert.is_false(run:is_done(), vim.inspect(run:result()))
+
+      run:cancel()
+
+      assert(vim.wait(30000, function() return run:is_done() end, 10))
+      local completed = assert(run:result())
+      assert.is_false(completed.ok)
+      assert.are.equal("cancelled", assert(completed.error).kind)
+      local appeared = vim.wait(1200, function()
+        return vim.uv.fs_stat(late) ~= nil
+      end, 10)
+      assert.are.equal(false, appeared)
+      assert.is_nil(vim.uv.fs_stat(late))
+    end)
+
+  macos_sandbox_test("prevents Tool commands from stopping their cleanup guardian",
+    function()
+      local target = vim.fs.joinpath(workspace, "guardian-target")
+      local outcome = vim.fs.joinpath(workspace, "guardian-signal")
+      local started = vim.fs.joinpath(workspace, "guardian-command-started")
+      local program = table.concat({
+        "import os, pathlib, signal, sys, time",
+        "pathlib.Path(sys.argv[3]).write_text('started')",
+        "deadline = time.monotonic() + 30",
+        "while not pathlib.Path(sys.argv[1]).exists() and time.monotonic() < deadline:",
+        "    time.sleep(0.01)",
+        "pid = int(pathlib.Path(sys.argv[1]).read_text())",
+        "try:",
+        "    os.kill(pid, signal.SIGSTOP)",
+        "    result = 'stopped'",
+        "except PermissionError:",
+        "    result = 'denied'",
+        "pathlib.Path(sys.argv[2]).write_text(result)",
+        "while time.monotonic() < deadline:",
+        "    time.sleep(0.01)",
+      }, "\n")
+      local shell = require("neoagent.tools.shell").new({ default_timeout = false })
+      ---@type Neoagent.ProcessWorkerLease?
+      local child
+      ---@type Neoagent.WorkerLease?
+      local lease
+      ---@type Neoagent.SandboxPlatform<unknown>
+      local selected_platform = vim.tbl_extend("force", assert(platform), {
+        start_worker = function(request, services)
+          lease = assert(platform).start_worker(request, services)
+          return lease
+        end,
+      })
+      ---@type integer?
+      local guardian_pid
+      local options = composition.compose({ tools = { shell } }, {
+        enabled = true, profile = profile,
+      }, {
+        platform = selected_platform, status = status,
+        start_worker = function(request)
+          child = require("neoagent.rpc.worker_lease").start(request) --[[@as Neoagent.ProcessWorkerLease]]
+          return child
+        end,
+      })
+      local run = async.run(function()
+        return execute_tool(options, assert(options.tools[1]), {
+          command = "exec python3 -c " .. vim.fn.shellescape(program)
+            .. " " .. vim.fn.shellescape(target)
+            .. " " .. vim.fn.shellescape(outcome)
+            .. " " .. vim.fn.shellescape(started),
+        })
+      end)
+      local checked, failure = pcall(function()
+        assert(vim.wait(30000, function()
+          return vim.uv.fs_stat(started) ~= nil or run:is_done()
+        end, 10))
+        assert.is_false(run:is_done(), vim.inspect(run:result()))
+        guardian_pid = assert(child)._process.pid
+        assert(fs.write_all(target, tostring(guardian_pid)))
+        assert(vim.wait(10000, function()
+          return vim.uv.fs_stat(outcome) ~= nil or run:is_done()
+        end, 10))
+        assert.are.equal("denied", fs.read(outcome))
+      end)
+      if guardian_pid then pcall(vim.uv.kill, guardian_pid, 19) end
+      run:cancel()
+      assert(vim.wait(10000, function() return run:is_done() end, 10))
+      if child then
+        child:dispose("guardian signal scenario teardown")
+        wait(async.run(function() return assert(lease):wait() end), 10000)
+      end
+      assert.is_true(checked, tostring(failure))
+    end)
+
+  macos_sandbox_test("contains Tool commands when a stopped supervisor is forcibly terminated",
+    function()
+      local started = vim.fs.joinpath(workspace, "forced-started")
+      local release = vim.fs.joinpath(workspace, "forced-release")
+      local late = vim.fs.joinpath(workspace, "forced-late")
+      local program = table.concat({
+        "import os, pathlib, signal, sys, time",
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))",
+        "deadline = time.monotonic() + 60",
+        "while time.monotonic() < deadline:",
+        "    if pathlib.Path(sys.argv[2]).exists():",
+        "        pathlib.Path(sys.argv[3]).write_text('escaped cleanup')",
+        "        break",
+        "    time.sleep(0.01)",
+        "while time.monotonic() < deadline:",
+        "    time.sleep(0.05)",
+      }, "\n")
+      local shell = require("neoagent.tools.shell").new({ default_timeout = false })
+      ---@type Neoagent.ProcessWorkerLease?
+      local child
+      ---@type Neoagent.WorkerLease?
+      local lease
+      ---@type Neoagent.SandboxPlatform<unknown>
+      local selected_platform = vim.tbl_extend("force", assert(platform), {
+        start_worker = function(request, services)
+          lease = assert(platform).start_worker(request, services)
+          return lease
+        end,
+      })
+      ---@type integer?
+      local command_pid
+      local options = composition.compose({ tools = { shell } }, {
+        enabled = true, profile = profile,
+      }, {
+        platform = selected_platform, status = status,
+        start_worker = function(request)
+          child = require("neoagent.rpc.worker_lease").start(request) --[[@as Neoagent.ProcessWorkerLease]]
+          return child
+        end,
+      })
+      local command = "exec python3 -c " .. vim.fn.shellescape(program)
+        .. " " .. vim.fn.shellescape(started)
+        .. " " .. vim.fn.shellescape(release)
+        .. " " .. vim.fn.shellescape(late)
+      local run = async.run(function()
+        return execute_tool(options, assert(options.tools[1]), { command = command })
+      end)
+      local checked, failure = pcall(function()
+        assert(vim.wait(30000, function()
+          command_pid = tonumber(fs.read(started) or "") --[[@as integer?]]
+          return command_pid ~= nil or run:is_done()
+        end, 10))
+        assert.is_false(run:is_done(), vim.inspect(run:result()))
+        assert(command_pid)
+        assert(vim.uv.kill(assert(child)._process.pid, 17)) -- SIGSTOP on Darwin.
+        run:cancel()
+        assert(vim.wait(10000, function() return run:is_done() end, 10))
+        wait(async.run(function() return assert(lease):wait() end), 10000)
+        assert(fs.write_all(release, "release\n"))
+        local escaped = vim.wait(1500, function()
+          return vim.uv.fs_stat(late) ~= nil
+        end, 10)
+        assert.is_false(escaped, "Tool command survived forced supervisor cleanup")
+        assert(vim.wait(5000, function()
+          return vim.uv.kill(assert(command_pid), 0) == nil
+        end, 10), "Tool command was not terminated")
+      end)
+      run:cancel()
+      if child then
+        child:dispose("forced supervisor scenario teardown")
+        pcall(vim.uv.kill, child._process.pid, 19) -- SIGCONT on Darwin.
+      end
+      if command_pid then
+        pcall(vim.uv.kill, -command_pid, 9)
+      end
+      if child then
+        wait(async.run(function() return assert(lease):wait() end), 10000)
+      end
+      assert.is_true(checked, tostring(failure))
+    end)
+
+  macos_sandbox_test("keeps concurrent invocation cleanup inside its own sandbox",
+    function()
+      local shell = require("neoagent.tools.shell").new({ default_timeout = false })
+      ---@type Neoagent.WorkerLease[]
+      local leases = {}
+      ---@type Neoagent.SandboxPlatform<unknown>
+      local selected_platform = vim.tbl_extend("force", assert(platform), {
+        start_worker = function(request, services)
+          local lease = assert(platform).start_worker(request, services)
+          leases[#leases + 1] = lease
+          return lease
+        end,
+      })
+      local options = composition.compose({ tools = { shell } }, {
+        enabled = true, profile = profile,
+      }, { platform = selected_platform, status = status })
+      local program = table.concat({
+        "import pathlib, sys, time",
+        "pathlib.Path(sys.argv[1]).write_text('started')",
+        "deadline = time.monotonic() + 30",
+        "while not pathlib.Path(sys.argv[2]).exists() and time.monotonic() < deadline:",
+        "    time.sleep(0.01)",
+        "print('completed independently')",
+      }, "\n")
+      local function start(name)
+        return async.run(function()
+          return execute_tool(options, assert(options.tools[1]), {
+            command = "exec python3 -c " .. vim.fn.shellescape(program)
+              .. " " .. vim.fn.shellescape(workspace .. "/" .. name .. ".started")
+              .. " " .. vim.fn.shellescape(workspace .. "/" .. name .. ".release"),
+          })
+        end)
+      end
+      local first = start("first")
+      local second = start("second")
+      local checked, failure = pcall(function()
+        assert(vim.wait(30000, function()
+          return vim.uv.fs_stat(workspace .. "/first.started") ~= nil
+            and vim.uv.fs_stat(workspace .. "/second.started") ~= nil
+        end, 10))
+        first:cancel()
+        assert(vim.wait(10000, function() return first:is_done() end, 10))
+        local first_lease = leases[1] or error("first sandbox lease was not started")
+        wait(async.run(function() return first_lease:wait() end), 15000)
+        assert.is_false(second:is_done(), "another invocation's cleanup stopped this Tool")
+        assert(fs.write_all(workspace .. "/second.release", "release"))
+        local result = wait(second, 15000)
+        assert.is_false(result.isError)
+        assert.matches("completed independently", text(result), 1, true)
+      end)
+      first:cancel()
+      second:cancel()
+      for _, lease in ipairs(leases) do
+        lease:dispose("concurrent invocation teardown")
+        wait(async.run(function() return lease:wait() end), 15000)
+      end
+      assert.is_true(checked, tostring(failure))
+    end)
+
+  macos_sandbox_test("keeps the native lease alive after closing worker stdin", function()
+    local active_profile = profile(composition.default_profile({ context = context }))
+    local value = wait(async.run(function()
+      return require("tests.helpers.sandbox").execute({ "python3", "-c", table.concat({
+        "import sys, time",
+        "assert sys.stdin.read() == 'input'",
+        "deadline = time.monotonic() + 1",
+        "while time.monotonic() < deadline:",
+        "    time.sleep(0.01)",
+        "print('completed after EOF')",
+      }, "\n") }, {
+        profile = active_profile, cwd = workspace, env = active_profile.environment.set,
+        stdin = "input", timeout_ms = 5000,
+      })
+    end), 15000)
+    assert.are.equal(0, value.code)
+    assert.are.equal("completed after EOF\n", value.stdout)
+  end)
 
   sandbox_test("bounds large read_file transfers inside the native sandbox",
     function()
@@ -460,12 +812,12 @@ describe("neoagent shared sandbox contract", function()
       end
       local function assert_ordinary(value)
         assert.is_true(value.isError)
-        assert.is_nil(value.details.sandbox)
+        assert.is_nil(value.execution)
         assert.is_nil((text(value):find("blocked by the sandbox", 1, true)))
       end
       local function assert_restricted(value)
         assert.is_true(value.isError)
-        assert.is_true(value.details.sandbox.ran_restricted)
+        assert.is_true(value.execution.sandbox.ran_restricted)
         assert.matches("blocked by the sandbox", text(value), 1, true)
       end
 
@@ -541,6 +893,93 @@ describe("neoagent shared sandbox contract", function()
       assert.matches("replacement", text(value.replacement_result), 1, true)
     end)
 
+  sandbox_test("reports exact denied files as permission failures", function()
+    local private = vim.fs.joinpath(workspace, "private.txt")
+    assert(fs.write_all(private, "private contents\n"))
+    ---@type Neoagent.Tool<unknown>[]
+    local selected = {
+      require("neoagent.tools.read_file").new(),
+      require("neoagent.tools.shell").new(),
+    }
+    local options = sandboxed_config(selected, function(default)
+      local active_profile = profile(default)
+      active_profile.filesystem.entries[
+        #active_profile.filesystem.entries + 1
+      ] = { path = private, access = "deny" }
+      return active_profile
+    end)
+
+    local read = wait(async.run(function()
+      return execute_tool(options, selected[1], { path = "private.txt" })
+    end))
+    assert.is_true(read.isError, text(read))
+    assert.matches("require_escalation", text(read), 1, true)
+    assert.is_not_matches("private contents", text(read))
+
+    local shell = wait(async.run(function()
+      return execute_tool(options, selected[2], {
+        command = "cat < private.txt",
+      })
+    end))
+    assert.is_true(shell.isError, text(shell))
+    assert.matches("blocked by the sandbox", text(shell), 1, true)
+    assert.is_not_matches("private contents", text(shell))
+  end)
+
+  sandbox_test("fails closed when the checkout is denied", function()
+    local selected = require("neoagent.tools.read_file").new()
+    local permitted_root = temporary_directory()
+    roots[#roots + 1] = permitted_root
+    local permitted = vim.fs.joinpath(permitted_root, "permitted.txt")
+    assert(fs.write_all(permitted, "outside checkout\n"))
+    local options = sandboxed_config({ selected }, function(default)
+      local active_profile = profile(default)
+      active_profile.filesystem.entries[
+        #active_profile.filesystem.entries + 1
+      ] = { path = original_cwd, access = "deny" }
+      return active_profile
+    end)
+    local value = wait(async.run(function()
+      return execute_tool(options, selected, {
+        path = permitted,
+      })
+    end))
+    assert.is_true(value.isError, text(value))
+    assert.is_true(assert(assert(value.execution).sandbox).unavailable)
+    assert.matches(require("neoagent.rpc.worker").worker_file(), text(value), 1, true)
+    assert.is_not_matches("outside checkout", text(value))
+  end)
+
+  linux_sandbox_test(
+    "keeps checkout siblings denied with explicit bootstrap exceptions",
+    function()
+      local worker_module = require("neoagent.rpc.worker")
+      local worker = worker_module.worker_file()
+      local checkout = assert(vim.fs.dirname(assert(vim.fs.dirname(worker))))
+      local modules = vim.fs.joinpath(checkout, "lua", "neoagent")
+      local selected = require("neoagent.tools.shell").new()
+      local options = sandboxed_config({ selected }, function(default)
+        local active_profile = profile(default)
+        vim.list_extend(active_profile.filesystem.entries, {
+          { path = checkout, access = "deny" },
+          { path = worker, access = "read" },
+          { path = modules, access = "read" },
+        })
+        return active_profile
+      end)
+      local value = wait(async.run(function()
+        return execute_tool(options, selected, {
+          command = "cat " .. vim.fn.shellescape(vim.fs.joinpath(host_readonly, "default.txt")),
+        })
+      end))
+      assert.is_true(value.isError, text(value))
+      local sandbox = assert(assert(value.execution).sandbox)
+      assert.is_true(sandbox.ran_restricted)
+      assert.is_nil(sandbox.unavailable)
+      assert.matches("require_escalation", text(value), 1, true)
+      assert.is_not_matches("default-read", text(value))
+    end)
+
   sandbox_test("enforces tool filesystem, environment, network, and path boundaries",
     function()
       local server = assert(vim.uv.new_tcp())
@@ -579,6 +1018,7 @@ describe("neoagent shared sandbox contract", function()
         "if printf blocked > .git/config 2>/dev/null; then exit 21; fi",
         "if printf blocked > denied/created.txt 2>/dev/null; then exit 22; fi",
         "if printf blocked > reserved 2>/dev/null; then exit 23; fi",
+        "if rg secret denied >/dev/null 2>&1; then exit 24; fi",
         "test \"${NEOAGENT_SANDBOX_TEST_SECRET-unset}\" = unset",
         "test \"${NEOAGENT_SANDBOX_TEST_INHERITED-unset}\" = inherited",
         "test \"${SAFE-unset}\" = visible",
@@ -664,14 +1104,16 @@ describe("neoagent shared sandbox contract", function()
       for _, id in ipairs({
         "write-default", "read-denied", "read-link", "write-outside",
         "write-metadata", "write-link", "edit-outside", "edit-metadata",
+        "grep-denied", "grep-link",
       }) do
         assert.matches("require_escalation", text(results[id]), 1, true)
       end
       for _, id in ipairs({
         "grep-denied", "grep-link",
       }) do
-        assert.is_true(assert(assert(results[id].details).sandbox).ran_restricted)
-        assert.matches("blocked by the sandbox", text(results[id]), 1, true)
+        local sandbox = assert(assert(results[id].execution).sandbox)
+        assert.is_true(sandbox.denied)
+        assert.is_nil(sandbox.ran_restricted)
       end
       for _, id in ipairs({ "find-denied", "find-link" }) do
         assert.is_truthy(
@@ -697,6 +1139,7 @@ describe("neoagent shared sandbox contract", function()
   sandbox_test("protects read-only paths before they exist", function()
     vim.fn.delete(metadata, "rf")
     assert.is_nil(vim.uv.fs_stat(metadata))
+    ---@type Neoagent.Tool<unknown>[]
     local selected = {
       require("neoagent.tools.write_file").new(),
       require("neoagent.tools.shell").new(),
@@ -749,7 +1192,7 @@ describe("neoagent shared sandbox contract", function()
       })
       active_profile.environment.set.PATH = vim.env.PATH
       local value = wait(async.run(function()
-        return require("neoagent.sandbox").sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "git", "rev-parse", "--show-toplevel",
         }, {
           profile = active_profile,
@@ -788,7 +1231,7 @@ describe("neoagent shared sandbox contract", function()
       })
       active_profile.environment.set.PATH = vim.env.PATH
       local run = async.run(function()
-        return require("neoagent.sandbox").sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "sh", "-c", table.concat({
             "set -eu",
             "git rev-parse --show-toplevel > discovered",
@@ -855,7 +1298,7 @@ describe("neoagent shared sandbox contract", function()
         }
       end
       local value = wait(async.run(function()
-        return require("neoagent.sandbox").sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c", table.concat({
             "import os",
             "import socket",
@@ -911,17 +1354,12 @@ describe("neoagent shared sandbox contract", function()
       assert(inherited).procfs = "host"
       assert(inherited).procfs_isolated = false
       local value = wait(async.run(function()
-        return assert(platform).exec({
-          argv = {
-            "sh", "-c",
-            "printf allowed > inherited-proc.txt; test ! -e .git",
-          },
+        return require("tests.helpers.sandbox").execute({
+          "sh", "-c", "printf allowed > inherited-proc.txt; test ! -e .git",
+        }, {
           profile = active_profile,
           cwd = workspace,
           env = active_profile.environment.set,
-        }, {
-          fs = fs,
-          process = process.run,
           capabilities = inherited,
         })
       end), 30000)
@@ -941,7 +1379,7 @@ describe("neoagent shared sandbox contract", function()
       #active_profile.filesystem.entries + 1
     ] = { path = public, access = "read" }
     local value = wait(async.run(function()
-      return require("neoagent.sandbox").sandbox_exec({
+      return require("tests.helpers.sandbox").execute({
         "sh", "-c", table.concat({
           "set -eu",
           "test \"$(cat denied/public/visible.txt)\" = visible",
@@ -961,61 +1399,14 @@ describe("neoagent shared sandbox contract", function()
       assert(fs.read(vim.fs.joinpath(public, "visible.txt"))))
   end)
 
-  sandbox_test("enforces the profile inside the native filesystem backend",
+  sandbox_test("preserves binary worker I/O and lease termination",
     function()
-      local active_profile = profile(
-        composition.default_profile({ context = context }))
-      local services = {
-        fs = fs,
-        process = process.run,
-        capabilities = assert(status).capabilities,
-      }
-      local denied_read = wait(async.run(function()
-        local value, err = assert(platform).fs({
-          operation = "read",
-          path = vim.fs.joinpath(denied, "secret.txt"),
-          profile = active_profile,
-        }, services)
-        return { value = value, error = err }
-      end), 30000)
-      assert.is_nil(denied_read.value)
-      assert.is_string(denied_read.error)
-
-      local denied_write = wait(async.run(function()
-        local value, err = assert(platform).fs({
-          operation = "write_all",
-          path = vim.fs.joinpath(metadata, "config"),
-          data = "blocked\n",
-          profile = active_profile,
-        }, services)
-        return { value = value, error = err }
-      end), 30000)
-      assert.is_nil(denied_write.value)
-      assert.is_string(denied_write.error)
-      assert.are.equal("protected\n",
-        assert(fs.read(vim.fs.joinpath(metadata, "config"))))
-
-      local nonregular = wait(async.run(function()
-        local value, err = assert(platform).fs({
-          operation = "read",
-          path = "/dev/null",
-          profile = active_profile,
-        }, services)
-        return { value = value, error = err }
-      end), 30000)
-      assert.is_nil(nonregular.value)
-      assert.matches("regular file", (assert(nonregular.error)))
-    end)
-
-  sandbox_test("preserves binary process I/O and public execution controls",
-    function()
-      local sandbox = require("neoagent.sandbox")
       local active_profile = profile(
         composition.default_profile({ context = context }))
       local binary = "input\0bytes\255"
       local chunks = {}
       local value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c", table.concat({
             "import sys",
             "assert sys.argv[1] == ''",
@@ -1040,7 +1431,7 @@ describe("neoagent shared sandbox contract", function()
 
       local uncaptured = ""
       value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c",
           "import sys; sys.stdout.buffer.write(b'x' * 70000)",
         }, {
@@ -1060,7 +1451,7 @@ describe("neoagent shared sandbox contract", function()
       assert.are.equal(70000, #uncaptured)
 
       value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c", "import sys; sys.exit(17)",
         }, {
           profile = active_profile,
@@ -1071,7 +1462,7 @@ describe("neoagent shared sandbox contract", function()
       assert.are.equal(17, value.code)
 
       value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c", "import time; time.sleep(5)",
         }, {
           profile = active_profile,
@@ -1096,7 +1487,7 @@ describe("neoagent shared sandbox contract", function()
 
       local completed_marker = vim.fs.joinpath(workspace, "late-completed")
       value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "sh", "-c", detached_writer(completed_marker),
         }, {
           profile = active_profile,
@@ -1112,7 +1503,7 @@ describe("neoagent shared sandbox contract", function()
 
       local cancelled_marker = vim.fs.joinpath(workspace, "late-cancelled")
       local cancelled = async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "sh", "-c", detached_writer(cancelled_marker) .. " wait",
         }, {
           profile = active_profile,
@@ -1134,7 +1525,6 @@ describe("neoagent shared sandbox contract", function()
 
   sandbox_test("shares host temporary files across process invocations",
     function()
-      local sandbox = require("neoagent.sandbox")
       local active_profile = profile(
         composition.default_profile({ context = context }))
       local marker = "neoagent-sandbox-shared-" .. tostring(vim.uv.hrtime())
@@ -1144,7 +1534,7 @@ describe("neoagent shared sandbox contract", function()
       assert.is_nil(vim.uv.fs_stat(host_marker))
 
       local value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "sh", "-c", "printf shared > \"$TMPDIR/" .. marker
             .. "\"; printf %s \"$TMPDIR/" .. marker .. "\"",
         }, {
@@ -1158,7 +1548,7 @@ describe("neoagent shared sandbox contract", function()
       assert.are.equal("shared", assert(fs.read(host_marker)))
 
       value = wait(async.run(function()
-        return sandbox.sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "sh", "-c", "cat \"$TMPDIR/" .. marker .. "\"",
         }, {
           profile = active_profile,
@@ -1186,7 +1576,7 @@ describe("neoagent shared sandbox contract", function()
       composition.default_profile({ context = context }))
     active_profile.network = "enabled"
     local value = wait(async.run(function()
-      return require("neoagent.sandbox").sandbox_exec({
+      return require("tests.helpers.sandbox").execute({
         "python3", "-c", table.concat({
           "import socket",
           "listener = socket.socket()",
@@ -1214,7 +1604,7 @@ describe("neoagent shared sandbox contract", function()
       local active_profile = profile(
         composition.default_profile({ context = context }))
       local value = wait(async.run(function()
-        return require("neoagent.sandbox").sandbox_exec({
+        return require("tests.helpers.sandbox").execute({
           "python3", "-c", table.concat({
             "import ctypes",
             "import os",
@@ -1276,7 +1666,6 @@ describe("neoagent shared sandbox contract", function()
     local applet, agent = setup_agent(true)
     local options = agent:config()
     assert.is_true(options.sandbox.enabled)
-    assert.is_nil(options._sandbox_status)
     local sandbox_status = neoagent.sandbox_info()
     assert.is_true(sandbox_status.active)
     assert.is_true(assert(sandbox_status.capabilities).filesystem)

@@ -1,4 +1,5 @@
 local tool_schema = require("neoagent.api.tool_schema")
+local identities = require("neoagent.tools.identities")
 local util = require("neoagent.util")
 
 ---@class Neoagent.PlanStep
@@ -69,7 +70,7 @@ local function session_id(ctx)
   return type(context) == "table" and rawget(context, "session_id") or nil
 end
 
----@param messages? Neoagent.Message[]
+---@param messages? Neoagent.ProjectionMessage[]
 ---@return Neoagent.Plan?
 local function latest(messages)
   ---@type table<string, Neoagent.JsonObject>
@@ -127,11 +128,20 @@ local function presentation(opts)
   }
 end
 
+---@param arguments unknown
+---@return Neoagent.ToolResult
+local function execute(arguments)
+  return {
+    content = { { type = "text", text = "Plan updated" } },
+    details = util.copy(validate(arguments)) --[[@as Neoagent.JsonObject]],
+  }
+end
+
 ---@return Neoagent.Tool<unknown>
 local function new()
   ---@type table<unknown, Neoagent.Plan>
   local states = setmetatable({}, { __mode = "k" })
-  return {
+  return identities.bind_parent({
     name = "update_plan",
     description = table.concat({
       "Updates the task plan.",
@@ -139,13 +149,7 @@ local function new()
       "At most one step can be in_progress at a time.",
     }, "\n"),
     input_schema = util.copy(input_schema),
-    execute = function(arguments)
-      validate(arguments)
-      return {
-        content = { { type = "text", text = "Plan updated" } },
-        details = util.copy(arguments),
-      }
-    end,
+    execute = execute,
     on_messages = function(messages, ctx)
       local id = session_id(ctx)
       if id then
@@ -157,9 +161,9 @@ local function new()
       return id and util.copy(states[id]) or nil
     end,
     render = presentation,
-  }
+  })
 end
 
-local M = new()
+local M = {}
 M.new = new
 return M

@@ -14,7 +14,7 @@ describe("neoagent sandbox activation warning", function()
   local windows = {}
   ---@type Neoagent.Agent[]
   local agents = {}
-  local original_compose
+  local original_switchable = sandbox_composition.switchable
 
   before_each(function()
     config._reset()
@@ -22,7 +22,7 @@ describe("neoagent sandbox activation warning", function()
     notifications = {}
     windows = {}
     agents = {}
-    original_compose = sandbox_composition.compose
+    original_switchable = sandbox_composition.switchable
     vim.notify = function(message, level)
       notifications[#notifications + 1] = { message, level }
     end
@@ -31,7 +31,7 @@ describe("neoagent sandbox activation warning", function()
   after_each(function()
     for _, window in ipairs(windows) do window:destroy() end
     for _, agent in ipairs(agents) do agent:destroy() end
-    sandbox_composition.compose = original_compose
+    sandbox_composition.switchable = original_switchable
     vim.notify = original_notify
     config._reset()
     vim.cmd("silent! only")
@@ -63,19 +63,21 @@ describe("neoagent sandbox activation warning", function()
       stage = "probe",
       message = "native isolation unavailable",
     }
-    neo_options = require("neoagent.sandbox.composition").agent(
-      neo_options, {
+    local toolset, activation, dialogs = sandbox_composition.switchable(
+      { tools = assert(neo_options.tools) }, neo_options.sandbox, {
         platform = {
           name = "test",
           check = function() return (assert(status)) end,
-          exec = function() error("must not execute") end,
-          fs = function() error("must not access files") end,
+          start_worker = function() error("must not start children") end,
         },
         status = status,
       })
+    neo_options.tools = toolset.tools
+    neo_options.execute_tool = toolset.execute_tool
+    neo_options._sandbox_warning = not activation.active and sandbox_composition.warning("Neo", activation) or nil
     local chat_options = agent_options("Chat")
     chat_options.sandbox.enabled = false
-    local neo = Agent.from_config(neo_options)
+    local neo = Agent.from_config(neo_options, { dialogs = dialogs })
     local chat = Agent.from_config(chat_options)
     agents = { neo, chat }
     local window = NeoagentApplet._from_agents({
@@ -134,12 +136,15 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   it("uses the built-in warning when workspace trust is disabled", function()
-    sandbox_composition.compose = function()
-      return nil, {
+    sandbox_composition.switchable = function(toolset, settings, options)
+      options = util.copy(options or {})
+      options.status = {
         ok = false,
+        platform = "test",
         stage = "requirements",
         message = "native isolation unavailable",
       }
+      return original_switchable(toolset, settings, options)
     end
     package.loaded["neoagent"] = nil
     local neoagent = require("neoagent")

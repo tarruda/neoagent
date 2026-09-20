@@ -89,6 +89,7 @@ local M = {}
 ---@field toolName? string
 ---@field isError? boolean
 ---@field details? Neoagent.JsonValue
+---@field execution? Neoagent.JsonObject
 ---@field usage? Neoagent.Usage
 
 ---@alias Neoagent.Message Neoagent.UserMessage|Neoagent.AssistantMessage|Neoagent.ToolResultMessage
@@ -98,6 +99,7 @@ local M = {}
 ---@field isError? boolean
 ---@field is_error? boolean
 ---@field details? Neoagent.JsonValue
+---@field execution? Neoagent.JsonObject
 ---@field usage? Neoagent.Usage
 
 ---@class Neoagent.AssistantValidationError: Neoagent.Error
@@ -136,6 +138,7 @@ local message_fields = {
     toolName = true,
     isError = true,
     details = true,
+    execution = true,
     usage = true,
   },
 }
@@ -647,6 +650,15 @@ function M.normalize(message)
       end
       result.details = util.copy(result.details)
     end
+    if result.execution ~= nil then
+      if not object(result.execution) then
+        return failure("toolResult execution must be an object")
+      end
+      valid, err = json(result.execution, "toolResult execution")
+      if not valid then
+        return nil, err
+      end
+    end
     result.usage, err = normalize_usage(result.usage)
     if message.usage ~= nil and result.usage == nil then
       return nil, err
@@ -795,6 +807,7 @@ function M.normalize_tool_result(result, opts)
     isError = true,
     is_error = true,
     details = true,
+    execution = true,
     usage = true,
   }
   local valid, err = fields(result, accepted, "Tool result")
@@ -817,6 +830,15 @@ function M.normalize_tool_result(result, opts)
   end
   if normalized.details ~= nil then
     valid, err = json(normalized.details, "Tool result details")
+    if not valid then
+      return nil, err
+    end
+  end
+  if normalized.execution ~= nil then
+    if not object(normalized.execution) then
+      return failure("Tool result execution must be an object")
+    end
+    valid, err = json(normalized.execution, "Tool result execution")
     if not valid then
       return nil, err
     end

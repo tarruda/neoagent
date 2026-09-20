@@ -186,6 +186,12 @@ describe("neoagent semantic messages", function()
         details = { text = "\255" } }, pattern = "valid UTF%-8" },
       { value = { role = "toolResult", toolCallId = "call", content = {},
         details = { [true] = "value" } }, pattern = "object keys" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        execution = "status" }, pattern = "execution must be an object" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        execution = { "status" } }, pattern = "execution must be an object" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        execution = { status = "\255" } }, pattern = "valid UTF%-8" },
     }
     for _, case in ipairs(cases) do
       local normalized, err = semantic_message.normalize(case.value)
@@ -224,6 +230,9 @@ describe("neoagent semantic messages", function()
         pattern = "unsupported field" },
       { result = { content = {}, details = { text = "\255" } },
         pattern = "valid UTF%-8" },
+      { result = { content = {}, execution = false }, pattern = "execution must be an object" },
+      { result = { content = {}, execution = { "status" } }, pattern = "execution must be an object" },
+      { result = { content = {}, execution = { status = function() end } }, pattern = "must contain JSON values" },
       { result = { content = {}, usage = { output = -1 } },
         pattern = "non%-negative finite" },
     }) do

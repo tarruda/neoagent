@@ -309,15 +309,22 @@ describe("neoagent native Renderer protocol", function()
   end)
 
   it("renders tool failures with non-object or incompatible optional metadata", function()
+    local executions = {
+      { sandbox = { cleanup_notice = 2 } },
+      { sandbox = { cleanup_notice = 0 } },
+      { sandbox = { cleanup_notice = 1.5 } },
+      { sandbox = { cleanup_notice = "invalid reference" } },
+    }
     for _, selected in ipairs({ renderers.pi, renderers.codex }) do
       for _, name in ipairs({ "shell", "read_file", "edit_file" }) do
-        for _, details in ipairs({ true, 42, vim.NIL,
+        for index, details in ipairs({ true, 42, vim.NIL,
           { patch = true, ansi = 42, truncation = true },
         }) do
           local block = {
             key = "metadata", kind = "tool", state = "error",
             call = { id = "tool-call", name = name, arguments = { path = "sample.lua", command = "sample" } },
             message = { role = "toolResult", toolCallId = "tool-call", toolName = name, isError = true, details = details,
+              execution = executions[index],
               content = { { type = "text", text = "tool failed safely" } } },
           }
           local transcript, err = protocol.render_block(selected, block, { width = 60 })
@@ -442,7 +449,7 @@ describe("neoagent native Renderer protocol", function()
         toolName = "edit_file",
         isError = false,
         content = { { type = "text", text = "edited" } },
-        details = { patch = "@@ -1 +1 @@\n-old\n+" .. edit_line },
+        details = { patch = "@@ -1 +1 @@\n-old\n+" .. edit_line, added_lines = 1, removed_lines = 1 },
       },
     }
     local plan_tool = require("neoagent.tools.update_plan").new()
@@ -793,17 +800,36 @@ describe("neoagent native Renderer protocol", function()
     local edit = tool(renderers.codex, {
       kind = "edit",
       path = "narrow.lua",
+      added = 1500,
+      removed = 1500,
+      truncated = true,
       rows = {
         { kind = "context", number = 1, text = "one" },
         { kind = "delete", number = 2, text = "old" },
         { kind = "add", number = 2, text = "new" },
       },
-    }, 32)
+    }, 64)
     assert.matches("narrow.lua", edit)
+    assert.matches("%+1500", edit)
+    assert.matches("%-1500", edit)
+    assert.matches("patch truncated", edit)
     assert.matches("new", edit)
+    local truncated = require("neoagent.tools.edit_file").new().render({
+      state = "success", arguments = { path = "minified.js" },
+      result = { content = {}, details = {
+        patch = "@@ -1 +1 @@", patch_truncated = true,
+        added_lines = 1, removed_lines = 1,
+      } },
+    })
+    local preview = tool(renderers.codex, truncated, 64)
+    assert.matches("minified.js", preview, 1, true)
+    assert.matches("%+1", preview)
+    assert.matches("%-1", preview)
+    assert.matches("patch truncated", preview, 1, true)
     assert.matches("empty.lua", tool(renderers.codex, {
       kind = "edit",
       path = "empty.lua",
+      added = 0, removed = 0,
       rows = { { kind = "context", number = 1, text = "" } },
     }, 32))
 
@@ -821,6 +847,7 @@ describe("neoagent native Renderer protocol", function()
     local overflowing = tool(renderers.codex, {
       kind = "edit",
       path = "overflow.lua",
+      added = 13, removed = 0,
       rows = overflowing_rows,
     }, 24)
     assert.matches("more line", overflowing)
@@ -840,9 +867,10 @@ describe("neoagent native Renderer protocol", function()
         complete = "Read", subject = "a file" },
       { kind = "plan", explanation = {}, plan = {} },
       { kind = "plan", plan = false },
-      { kind = "edit", path = "bad.lua", rows = {
+      { kind = "edit", path = "bad.lua", added = 1, removed = 0, rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad.lua", added = -1, rows = {} },
       { kind = "edit", path = "bad\npath.lua", rows = {} },
       { kind = "text", title = "bad\ntitle" },
       { kind = "text" },
@@ -907,6 +935,53 @@ describe("neoagent native Renderer protocol", function()
     assert.matches("very long command", text)
     assert.matches("complete output", text)
   end)
+
+  for _, name in ipairs({ "write_file", "edit_file", "shell", "read_file" }) do
+    it("renders execution cleanup notices independently of " .. name .. " previews", function()
+      local tool = require("neoagent.tools." .. name).new()
+      for _, unobserved in ipairs({ false, true }) do
+        local value = require("neoagent.sandbox.result").cleanup({
+          content = { { type = "text", text = "operation completed" } },
+          details = { patch = "@@ -1 +1 @@\n-old\n+new", added_lines = 1, removed_lines = 1,
+            ansi = "\27[32mcommand output\27[0m" },
+        }, "worker could not be reaped", {
+          cleanup_failed = not unobserved or nil,
+          cleanup_unobserved = unobserved or nil,
+        })
+        local metadata = assert(assert(value.execution).sandbox)
+        assert.are.equal(2, metadata.cleanup_notice)
+        if unobserved then
+          value.content[1], value.content[2] = value.content[2], value.content[1]
+          metadata.cleanup_notice = 1
+        end
+        for _, selected in ipairs({ renderers.pi, renderers.codex }) do
+          for _, surface in ipairs({ "transcript", "details" }) do
+            local render = surface == "transcript" and protocol.render_block or protocol.render_details
+            local block = {
+              key = "cleanup", kind = "tool", state = "success", tool = tool,
+              call = { id = "completed", name = name, arguments = {
+                path = "file.txt", content = "written contents", command = "printf output",
+              } },
+              message = {
+                role = "toolResult", toolCallId = "completed", toolName = name,
+                content = value.content, details = value.details, execution = value.execution,
+              },
+            }
+            local node = render(selected, block, { width = 120, spinner = "*" })
+            if not node then error("cleanup result did not render") end
+            local text = table.concat(layout(node, selected.theme, 120).lines, "\n")
+            local notice = unobserved and "Stopped waiting for sandbox cleanup" or "Sandbox cleanup failed"
+            assert.matches(notice, text, 1, true)
+            local _, copies = text:gsub(notice, "")
+            assert.are.equal(1, copies, "cleanup notice must appear exactly once")
+            assert.matches("do not retry it automatically", text, 1, true)
+            if not unobserved then assert.matches("worker could not be reaped", text, 1, true) end
+            assert.is_nil(value.isError)
+          end
+        end
+      end
+    end)
+  end
 
   it("renders physical shell command newlines in card details", function()
     local details = assert(protocol.render_details(renderers.codex, {
@@ -973,7 +1048,7 @@ describe("neoagent native Renderer protocol", function()
             toolName = "edit_file",
             isError = false,
             content = { { type = "text", text = "edited edit.lua" } },
-            details = { patch = "@@ -1 +1 @@\n-old\n+new" },
+            details = { patch = "@@ -1 +1 @@\n-old\n+new", added_lines = 1, removed_lines = 1 },
           },
         },
       },
@@ -1010,13 +1085,14 @@ describe("neoagent native Renderer protocol", function()
       for _, surface in ipairs({ "transcript", "details" }) do
         local render = surface == "transcript"
             and protocol.render_block or protocol.render_details
-        local node = assert(render(renderers.codex, case.block, {
+        local node = render(renderers.codex, case.block, {
           width = 80,
           spinner = "*",
         image_source = image_source,
           tool = case.tool,
-        }))
-        local lines = layout(assert(node), renderers.codex.theme, 80).lines
+        })
+        if not node then error("tool presentation did not render") end
+        local lines = layout(node, renderers.codex.theme, 80).lines
         local header = assert(row_containing(lines, case.header_end))
         local body = assert(row_containing(lines, case.body))
         assert.are.equal(header + 2, body,

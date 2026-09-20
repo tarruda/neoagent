@@ -1,10 +1,52 @@
 local common = require("neoagent.tools.common")
-local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
+local identities = require("neoagent.tools.identities")
+
+---@class Neoagent.ShellDependencies
+---@field fs Neoagent.ToolFilesystem
+---@field process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field hrtime fun(): number
+
+---@param options? Neoagent.ToolDependencyOverrides
+---@return Neoagent.ShellDependencies
+local function dependencies(options)
+  options = options or {}
+  local fs = options.fs
+  local process = options.process
+  local hrtime = options.hrtime
+  if fs == nil then
+    fs = require("neoagent.fs")
+  end
+  if process == nil then
+    process = require("neoagent.process").run
+  end
+  if hrtime == nil then
+    hrtime = vim.uv.hrtime
+  end
+  assert(type(fs) == "table", "Tool filesystem is required")
+  assert(type(process) == "function", "Tool process runner is required")
+  assert(type(hrtime) == "function", "Tool clock is required")
+  return {
+    fs = fs,
+    process = process,
+    hrtime = hrtime,
+  }
+end
+
+local DEFAULT_TIMEOUT_SECONDS = 300
+local ESCAPE = "\27"
+
 ---@class Neoagent.ShellOptions
 ---@field default_timeout? number|false
+
+---@class Neoagent.ShellSettings
+---@field default_timeout number|false
+
+---@class Neoagent.ShellRequest
+---@field argv string[]
+---@field timeout_ms? integer
 
 ---@class Neoagent.ShellSnapshot: Neoagent.TruncationResult
 ---@field escapedBytes integer
@@ -15,9 +57,6 @@ local util = require("neoagent.util")
 ---@field output_path fun(): string?
 ---@field spill_error fun(): string?
 
-local DEFAULT_TIMEOUT_SECONDS = 300
-local ESCAPE = "\27"
-
 ---@param command string
 ---@return string[]
 local function shell_argv(command)
@@ -25,6 +64,52 @@ local function shell_argv(command)
   vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
   argv[#argv + 1] = command
   return argv
+end
+
+---@param value unknown
+---@return boolean
+local function valid_timeout(value)
+  return type(value) == "number" and value > 0 and value < math.huge
+end
+
+---@param value unknown
+---@return Neoagent.ShellRequest
+local function validate_request(value)
+  assert(common.object(value), "shell request must be an object")
+  ---@cast value table
+  common.fields(value, { argv = true, timeout_ms = true }, "shell request")
+  assert(
+    type(value.argv) == "table" and util.is_list(value.argv) and #value.argv > 0,
+    "shell argv must be a non-empty list"
+  )
+  local argv = {}
+  for index, argument in ipairs(value.argv) do
+    argv[index] = common.string(argument, "shell argv[" .. index .. "]", index ~= 1)
+    assert(not argv[index]:find("\0", 1, true), "shell argv must be NUL-free")
+  end
+  local result = { argv = argv }
+  if value.timeout_ms ~= nil then
+    result.timeout_ms = common.integer(value.timeout_ms, "shell timeout_ms")
+  end
+  return common.request(result, "shell request")
+end
+
+---@param arguments Neoagent.JsonObject
+---@param settings Neoagent.ShellSettings
+---@return Neoagent.ShellRequest
+local function prepare(arguments, settings)
+  local command = common.require_string(arguments, "command")
+  local timeout = arguments.timeout
+  if timeout ~= nil and not valid_timeout(timeout) then
+    error("timeout must be a positive finite number")
+  end
+  if timeout == nil then
+    timeout = settings.default_timeout
+  end
+  return validate_request({
+    argv = shell_argv(command),
+    timeout_ms = timeout and math.max(1, math.floor(timeout * 1000)) or nil,
+  })
 end
 
 ---@param value string
@@ -199,15 +284,84 @@ local function prefixed(prefix, text)
   return prefix .. "\n" .. text
 end
 
----@param value unknown
----@return boolean
-local function valid_timeout(value)
-  return type(value) == "number" and value > 0 and value < math.huge
+---@async
+---@param request Neoagent.ShellRequest
+---@param call Neoagent.ToolOperationCall
+---@param dependencies Neoagent.ShellDependencies
+---@return Neoagent.ToolResult
+local function run(request, call, dependencies)
+  local capture = output_capture(dependencies.fs)
+  ---@type number
+  local last_update = 0
+  local result = dependencies.process(request.argv, {
+    capture = false,
+    cwd = call.workspace.cwd,
+    timeout_ms = request.timeout_ms,
+    on_output = function(data)
+      capture.append(data)
+      local now = dependencies.hrtime()
+      if now - last_update >= 100 * 1000 * 1000 then
+        last_update = now
+        local snapshot, ansi = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
+        local update = { content = { { type = "text", text = display(snapshot) } } }
+        if ansi then
+          update.details = { ansi = ansi.content }
+        end
+        call.on_update(update)
+      end
+    end,
+  })
+  local shortened, ansi = capture.snapshot()
+  local text = shortened.content == "" and "(no output)" or display(shortened)
+  local ansi_text = ansi and ansi.content or nil
+  local details = { exit_code = result.code, signal = result.signal, truncation = shortened }
+  if shortened.truncated then
+    local path = capture.output_path()
+    if path then
+      details.output_path = path
+      local prefix = string.format("[Output truncated; full output: %s]", path)
+      text = prefixed(prefix, text)
+      if ansi_text then
+        ansi_text = prefixed(prefix, ansi_text)
+      end
+    else
+      local prefix =
+        string.format("[Output truncated; could not save full output: %s]", tostring(capture.spill_error()))
+      text = prefixed(prefix, text)
+      if ansi_text then
+        ansi_text = prefixed(prefix, ansi_text)
+      end
+    end
+  end
+  local is_error = result.timed_out or result.code ~= 0
+  if result.timed_out then
+    text = prefixed("[Command timed out]", text)
+    if ansi_text then
+      ansi_text = prefixed("[Command timed out]", ansi_text)
+    end
+  end
+  if result.code ~= 0 and not result.timed_out then
+    local prefix = "[Command exited with status " .. result.code .. "]"
+    text = prefixed(prefix, text)
+    if ansi_text then
+      ansi_text = prefixed(prefix, ansi_text)
+    end
+  end
+  if ansi_text then
+    details.ansi = ansi_text
+  end
+  local update = { content = { { type = "text", text = text } } }
+  if ansi_text then
+    update.details = { ansi = ansi_text }
+  end
+  call.on_update(update)
+  return { content = { { type = "text", text = text } }, details = details, isError = is_error }
 end
 
 ---@param options? Neoagent.ShellOptions
 ---@return Neoagent.Tool<unknown>
 local function new(options)
+  local presentation = require("neoagent.tools.activity_presentation")
   options = options or {}
   assert(type(options) == "table", "shell options must be a table")
   local default_timeout = options.default_timeout
@@ -218,9 +372,12 @@ local function new(options)
     default_timeout == false or valid_timeout(default_timeout),
     "shell default_timeout must be false or a positive finite number"
   )
+  ---@type Neoagent.ShellSettings
+  local settings = { default_timeout = default_timeout }
+  local deps = dependencies()
   local timeout_description = default_timeout == false and "Optional positive timeout in seconds"
     or "Positive timeout in seconds. Defaults to " .. default_timeout
-  return {
+  local tool = {
     name = "shell",
     description = "Run a shell command in the workspace cwd. Returns combined text output, escaping non-text bytes and keeping the most recent 2,000 lines or 50 KiB.",
     input_schema = {
@@ -234,87 +391,22 @@ local function new(options)
     },
     ---@async
     execute = function(arguments, ctx)
-      local command = common.require_string(arguments, "command")
-      local timeout = arguments.timeout
-      if timeout ~= nil and not valid_timeout(timeout) then
-        error("timeout must be a positive finite number")
-      end
-      if timeout == nil then
-        timeout = default_timeout
-      end
-      local capture = output_capture(common.fs(ctx))
-      ---@type number
-      local last_update = 0
-      local result = common.process(ctx, shell_argv(command), {
-        capture = false,
-        cwd = common.workspace(ctx).cwd,
-        timeout_ms = timeout and math.floor(timeout * 1000) or nil,
-        on_output = function(data)
-          capture.append(data)
-          local now = vim.uv.hrtime()
-          if ctx.on_update and now - last_update >= 100 * 1000 * 1000 then
-            last_update = now
-            local snapshot, ansi = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
-            local update = { content = { { type = "text", text = display(snapshot) } } }
-            if ansi then
-              update.details = { ansi = ansi.content }
-            end
-            ctx.on_update(update)
-          end
-        end,
-      })
-      local shortened, ansi = capture.snapshot()
-      local text = shortened.content == "" and "(no output)" or display(shortened)
-      local ansi_text = ansi and ansi.content or nil
-      local details = { exit_code = result.code, signal = result.signal, truncation = shortened }
-      if shortened.truncated then
-        local path = capture.output_path()
-        if path then
-          details.output_path = path
-          local prefix = string.format("[Output truncated; full output: %s]", path)
-          text = prefixed(prefix, text)
-          if ansi_text then
-            ansi_text = prefixed(prefix, ansi_text)
-          end
-        else
-          local prefix =
-            string.format("[Output truncated; could not save full output: %s]", tostring(capture.spill_error()))
-          text = prefixed(prefix, text)
-          if ansi_text then
-            ansi_text = prefixed(prefix, ansi_text)
-          end
-        end
-      end
-      local is_error = result.timed_out or result.code ~= 0
-      if result.timed_out then
-        text = prefixed("[Command timed out]", text)
-        if ansi_text then
-          ansi_text = prefixed("[Command timed out]", ansi_text)
-        end
-      end
-      if result.code ~= 0 and not result.timed_out then
-        local prefix = "[Command exited with status " .. result.code .. "]"
-        text = prefixed(prefix, text)
-        if ansi_text then
-          ansi_text = prefixed(prefix, ansi_text)
-        end
-      end
-      if ansi_text then
-        details.ansi = ansi_text
-      end
-      if ctx.on_update then
-        local update = { content = { { type = "text", text = text } } }
-        if ansi_text then
-          update.details = { ansi = ansi_text }
-        end
-        ctx.on_update(update)
-      end
-      return { content = { { type = "text", text = text } }, details = details, isError = is_error }
+      local call = common.call(ctx)
+      return run(prepare(arguments, settings), call, deps)
     end,
     render = presentation.shell,
   }
+  return identities.bind(tool, {
+    token = identities.shell,
+    settings = settings,
+    prepare = prepare,
+  })
 end
 
-local M = new()
+local M = {}
 M.new = new
+M.prepare = prepare
+M.validate_request = validate_request
+M.run = run
+M._dependencies = dependencies
 return M

@@ -146,6 +146,51 @@ describe("neoagent.storage", function()
     assert.are.equal("hello", assert(reopened:load()[1]).content)
   end)
 
+  it("persists execution policy outcomes without changing Tool-owned details", function()
+    local fake_model = require("tests.helpers.fake_model")
+    for _, details in ipairs({ "opaque payload", { "ordered", "payload" }, { sandbox = "Tool-owned value" } }) do
+      local directory = tempdir()
+      dirs[#dirs + 1] = directory
+      local store = storage.new({ directory = directory, cwd = directory })
+      local session = assert(Session.new({ store = store }))
+      local tool = {
+        name = "inspect", description = "Inspect state",
+        input_schema = { type = "object", properties = {} },
+        execute = function()
+          return { content = { { type = "text", text = "complete" } }, details = require("neoagent.util").copy(details) }
+        end,
+      }
+      local run = require("neoagent.chat").run(session, "Inspect state", {
+        model = fake_model.new({
+          { result = fake_model.assistant({ { type = "toolCall", id = "inspect", name = "inspect", arguments = {} } }, "toolUse") },
+          { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+        }),
+        tools = { tool },
+        execute_tool = function(selected, arguments, ctx)
+          local value = selected.execute(arguments, ctx)
+          value.execution = { audit = { call = "inspect" } }
+          return require("neoagent.sandbox.result").cleanup(value, "guardian failed", {
+            cleanup_failed = true, backend = "test",
+          })
+        end,
+      })
+      local settled = vim.wait(3000, function() return run:is_done() end)
+      run:cancel()
+      assert(settled)
+      assert.is_true(assert(run:result()).ok)
+      local message = assert(session:messages()[3])
+      assert.are.equal("toolResult", message.role)
+      assert.are.same(details, message.details)
+      local execution = assert(message.execution, "cleanup metadata was discarded")
+      assert.are.same({ audit = { call = "inspect" }, sandbox = {
+        cleanup_failed = true, backend = "test",
+        cleanup_notice = 2,
+      } }, execution)
+      local reopened = assert(open_session(store:metadata().path))
+      assert.are.same(message, reopened:load()[3])
+    end
+  end)
+
   it("persists pending in-memory journal entries with the first message", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
