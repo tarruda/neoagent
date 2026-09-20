@@ -1017,7 +1017,7 @@ function M.new(opts)
   ---@return Neoagent.AgentRunResult
   local function interaction_pipeline(outer, activity, base)
     local overflow_retried = false
-    local length_continued = false
+    local uncompacted_length_continued = false
     local stream_retries = 0
 
     if needs_compaction() then
@@ -1052,8 +1052,8 @@ function M.new(opts)
           return done
         end
         done = run_interaction(outer, activity, base, true, stream_retries)
-      elseif not length_continued and is_length_limited(done) then
-        length_continued = true
+      elseif is_length_limited(done) then
+        local compacted_context = false
         if needs_compaction() then
           local compacted, _, started = run_compaction(outer, activity, "threshold")
           if started and not compacted.ok then
@@ -1062,6 +1062,12 @@ function M.new(opts)
             end
             return done
           end
+          compacted_context = started
+        end
+        if not compacted_context and uncompacted_length_continued then
+          return done
+        elseif not compacted_context then
+          uncompacted_length_continued = true
         end
         done = run_interaction(outer, activity, base, true, stream_retries)
       else

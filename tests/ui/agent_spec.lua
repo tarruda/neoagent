@@ -1554,6 +1554,75 @@ describe("neoagent default agent", function()
     end, messages)))
   end)
 
+  it("continues after repeated length-triggered compactions in one turn", function()
+    local first_truncated = fake_model.assistant({ {
+      type = "thinking", thinking = "Inspecting the first context window",
+    } }, "length")
+    assert(first_truncated.message.usage).totalTokens = 900
+    local second_truncated = fake_model.assistant({ {
+      type = "thinking", thinking = "Inspecting the second context window",
+    } }, "length")
+    assert(second_truncated.message.usage).totalTokens = 900
+    local finished = fake_model.assistant({ {
+      type = "text", text = "Finished after second compaction",
+    } })
+    assert(finished.message.usage).totalTokens = 100
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = first_truncated },
+      { result = fake_model.assistant({ {
+        type = "text", text = "## Goal\nContinue after the first compaction",
+      } }) },
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-2", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = second_truncated },
+      { result = fake_model.assistant({ {
+        type = "text", text = "## Goal\nContinue after the second compaction",
+      } }) },
+      { result = finished },
+    })
+    model.context_window = 1000
+    setup_model(model, {
+      tools = { {
+        name = "inspect",
+        description = "Inspect state",
+        input_schema = {
+          type = "object", properties = {}, additionalProperties = false,
+        },
+        execute = function()
+          return { content = { { type = "text", text = "inspected" } } }
+        end,
+      } },
+      compaction = {
+        auto = true, reserve_tokens = 200, keep_recent_tokens = 10,
+      },
+    })
+
+    local run = assert(neoagent.send("perform the large task"))
+    assert(type(run) == "table")
+    assert(vim.wait(2000, function()
+      return run:is_done() and is_idle()
+    end))
+    assert.are.equal(7, #model.requests)
+    local messages = current_session():messages()
+    assert.are.equal("Finished after second compaction",
+      assert(assert(messages[#messages].content)[1]).text)
+    assert.are.equal(2, vim.tbl_count(vim.tbl_filter(function(message)
+      return message.role == "assistant" and message.stopReason == "length"
+    end, messages)))
+    assert.are.equal(1, vim.tbl_count(vim.tbl_filter(function(message)
+      return message.role == "user"
+    end, messages)))
+    assert.are.equal(2, vim.tbl_count(vim.tbl_filter(function(entry)
+      return entry.type == "compaction"
+    end, current_session():entries())))
+    assert.is_true(assert(snapshot().result).ok)
+    assert.are.equal("stop", assert(snapshot().result).stop_reason)
+  end)
+
   it("bounds length continuation to one attempt", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ {
