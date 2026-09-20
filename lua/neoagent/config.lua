@@ -134,7 +134,6 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
 ---@field _tools_supplied boolean
----@field _sandbox_status? Neoagent.SandboxActivation
 ---@field _sandbox_warning? string
 
 ---@class Neoagent.ConfigInput<C = unknown>
@@ -399,23 +398,7 @@ local function validate(opts)
       or type(opts.shell_timeout) == "number" and opts.shell_timeout > 0 and opts.shell_timeout < math.huge,
     "shell_timeout must be false or a positive finite number"
   )
-  assert(type(opts.sandbox) == "table" and not util.is_list(opts.sandbox), "sandbox must be a table")
-  assert(type(opts.sandbox.enabled) == "boolean", "sandbox.enabled must be boolean")
-  for key in pairs(opts.sandbox) do
-    assert(
-      key == "enabled" or key == "profile" or key == "parent_tools",
-      "unsupported sandbox setting: " .. tostring(key)
-    )
-  end
-  assert(
-    opts.sandbox.profile == nil or type(opts.sandbox.profile) == "table" or type(opts.sandbox.profile) == "function",
-    "sandbox.profile must be a table or function"
-  )
-  assert(
-    opts.sandbox.parent_tools == nil
-      or type(opts.sandbox.parent_tools) == "table" and util.is_list(opts.sandbox.parent_tools),
-    "sandbox.parent_tools must be a list"
-  )
+  require("neoagent.sandbox.settings").validate(opts.sandbox)
   assert(
     opts.workspace_trust == false or (type(opts.workspace_trust) == "table" and not util.is_list(opts.workspace_trust)),
     "workspace_trust must be false or a table"

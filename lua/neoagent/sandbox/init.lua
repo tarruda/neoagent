@@ -1,12 +1,9 @@
-local util = require("neoagent.util")
-
 ---@class Neoagent.SandboxInfo: Neoagent.SandboxAvailability
 ---@field enabled? boolean
 ---@field active? boolean
 
 ---@class Neoagent.SandboxInfoConfig
 ---@field sandbox? {enabled?: boolean}
----@field _sandbox_status? Neoagent.SandboxInfo
 
 local M = {}
 
@@ -21,12 +18,7 @@ function M.info(agent)
   configured = type(configured) == "table" and configured or {}
   ---@cast configured Neoagent.SandboxInfoConfig
   local enabled = configured.sandbox and configured.sandbox.enabled == true or false
-  local recorded = util.copy(configured._sandbox_status or {})
-  recorded.enabled = enabled
-  if not enabled then
-    recorded.active = false
-  end
-  return recorded
+  return { enabled = enabled, active = false }
 end
 
 ---@param status? Neoagent.SandboxInfo

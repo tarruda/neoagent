@@ -1028,25 +1028,23 @@ describe("neoagent sandbox composition", function()
     end
   end)
 
-  it("reports recorded sandbox capabilities without probing global state",
+  it("formats runtime capabilities and inactive configuration without probing global state",
     ---@async
     function()
       local sandbox = require("neoagent.sandbox")
-      local status = sandbox.info({
-        sandbox = { enabled = true },
-        _sandbox_status = {
-          ok = true,
-          active = true,
-          platform = "linux",
-          degraded = true,
-          degraded_reason = "inherited host procfs is active",
-          capabilities = {
-            filesystem = true,
-            procfs = "host",
-            procfs_isolated = false,
-          },
+      local status = {
+        enabled = true,
+        ok = true,
+        active = true,
+        platform = "linux",
+        degraded = true,
+        degraded_reason = "inherited host procfs is active",
+        capabilities = {
+          filesystem = true,
+          procfs = "host",
+          procfs_isolated = false,
         },
-      })
+      }
       assert.is_true(status.active)
       local agent = require("neoagent.agent").new({
         name = "Sandbox status", default_registry = false, tools = {},
@@ -1055,7 +1053,7 @@ describe("neoagent sandbox composition", function()
       local agent_status = sandbox.info(agent)
       agent:destroy()
       assert.is_true(agent_status.enabled)
-      assert.is_nil(agent_status.active)
+      assert.is_false(agent_status.active)
       local rendered = sandbox.format_info(status)
       assert.matches("isolation: degraded", rendered)
       assert.matches("reason: inherited host procfs is active",
