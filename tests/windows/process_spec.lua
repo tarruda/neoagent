@@ -30,6 +30,65 @@ describe("neoagent Windows process runner", function()
 
   after_each(function()
     if root then vim.fn.delete(root, "rf") end
+    root = nil
+  end)
+
+  it("preserves direct cmd tails and echo state", function()
+    local baseline = run({ "cmd.exe", "/d", "/s", "/c", "echo" })
+    assert.are.equal(0, baseline.code, baseline.stderr)
+
+    local positional = run({ "cmd.exe", "/d", "/s", "/c", "echo %0" })
+    assert.are.equal(0, positional.code, positional.stderr)
+    assert.are.equal("%0", vim.trim(assert(positional.stdout)))
+
+    local quoted = run({
+      "cmd.exe", "/d", "/s", "/c", 'echo "marker">nul & echo',
+    })
+    assert.are.equal(0, quoted.code, quoted.stderr)
+    assert.are.equal(baseline.stdout, quoted.stdout)
+
+    local alias = run({ "cmd", "/d", "/s", "/c", 'echo "marker">nul & echo' })
+    assert.are.equal(0, alias.code, alias.stderr)
+    assert.are.equal(baseline.stdout, alias.stdout)
+
+    root = vim.fn.tempname() .. "-process-unicode"
+    assert(fs.mkdirp(root))
+    local unicode = vim.fs.joinpath(root, "olá.txt")
+    local created = run({
+      "cmd.exe", "/d", "/s", "/c", 'echo value>"' .. unicode .. '"',
+    })
+    assert.are.equal(0, created.code, created.stderr)
+    assert.matches("value", assert(fs.read(unicode)))
+  end)
+
+  it("executes quoted commands with metacharacters in the temporary directory", function()
+    root = vim.fn.tempname() .. "&command"
+    assert(fs.mkdirp(root))
+    local original_create = fs.create_temp_directory
+    fs.create_temp_directory = function(prefix)
+      return original_create(prefix, root)
+    end
+    local ok, value = pcall(run, {
+      "cmd.exe", "/d", "/s", "/c", 'echo "marker" & exit /b 7',
+    })
+    fs.create_temp_directory = original_create
+    assert.is_true(ok, vim.inspect(value))
+    assert.are.equal(7, value.code, vim.inspect(value))
+    assert.are.equal('"marker"', vim.trim(assert(value.stdout)))
+    assert.are.same({}, vim.fn.readdir(root))
+  end)
+
+  it("preserves binary stdin and both output streams through cmd", function()
+    local python = vim.fn.exepath("python")
+    assert.is_not.equal("", python)
+    local bytes = "\0one\r\ntwo\n\255\0"
+    local command = '"' .. python .. '" -c "import sys; '
+      .. 'data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); '
+      .. 'sys.stderr.buffer.write(data)"'
+    local result = run({ "cmd.exe", "/d", "/s", "/c", command }, { stdin = bytes })
+    assert.are.equal(0, result.code, vim.inspect(result))
+    assert.are.equal(bytes, result.stdout)
+    assert.are.equal(bytes, result.stderr)
   end)
 
   it("reuses native declarations and terminates descendants", function()

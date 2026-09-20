@@ -1,5 +1,6 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
+local fs = require("neoagent.fs")
 local process = require("neoagent.process")
 
 ---@generic T
@@ -234,6 +235,133 @@ describe("neoagent process runner", function()
     }, calls)
   end)
 
+  it("preserves cmd syntax and binary streams through the verbatim job launcher", function()
+    local windows = require("neoagent.process.windows")
+    local original_jobstart, original_jobpid = vim.fn.jobstart, vim.fn.jobpid
+    local original_send, original_close = vim.api.nvim_chan_send, vim.fn.chanclose
+    local original_stop, original_system = vim.fn.jobstop, vim.system
+    ---@type string[]?
+    local launched
+    ---@class Neoagent.TestWindowsJobOptions
+    ---@field cwd? string
+    ---@field env? table<string, string|number>
+    ---@field clear_env? boolean
+    ---@field stdin string
+    ---@field on_stdout fun(job: integer, data: string[])
+    ---@field on_stderr fun(job: integer, data: string[])
+    ---@field on_exit fun(job: integer, code: integer)
+    ---@type Neoagent.TestWindowsJobOptions?
+    local options
+    ---@type vim.SystemCompleted?
+    local completion
+    local stdout, stderr, inputs, closed = {}, {}, {}, {}
+    local killed
+    local job_id = 7
+    vim.fn.jobstart = function(command, opts)
+      launched = command
+      options = opts --[[@as Neoagent.TestWindowsJobOptions]]
+      return job_id
+    end
+    vim.fn.jobpid = function(job)
+      assert.are.equal(7, job)
+      return 42
+    end
+    vim.api.nvim_chan_send = function(job, bytes)
+      assert.are.equal(7, job)
+      inputs[#inputs + 1] = bytes
+    end
+    vim.fn.chanclose = function(job, stream)
+      closed[#closed + 1] = { job, stream }
+      return 1
+    end
+    vim.fn.jobstop = function(job)
+      killed = job
+      return 1
+    end
+    vim.system = function(command)
+      launched = command
+      return { pid = 99 } --[[@as vim.SystemObj]]
+    end
+    local ok, err = pcall(function()
+      local command = { "cmd.exe", "/d", "/s", "/c", 'echo "quoted" & exit /b 7' }
+      ---@type Neoagent.ProcessSpawnOptions
+      local spawn_options = {
+        cwd = "C:/work&space", clear_env = true, env = { SAFE = "value" },
+        stdin = "input\0bytes\n",
+        stdout = function(_, bytes)
+          stdout[#stdout + 1] = bytes
+        end,
+        stderr = function(_, bytes)
+          stderr[#stderr + 1] = bytes
+        end,
+      }
+      local process = windows.spawn(command, spawn_options, function(value) completion = value end)
+      assert.are.same({ "cmd.exe", "/d", "/s", "/c", '"echo "quoted" & exit /b 7"' }, launched)
+      assert.are.equal('echo "quoted" & exit /b 7', command[5])
+      local selected_options = assert(options)
+      assert.are.equal("C:/work&space", selected_options.cwd)
+      assert.are.same({ SAFE = "value" }, assert(options).env)
+      assert.is_true(assert(options).clear_env)
+      assert.are.equal("pipe", assert(options).stdin)
+      assert.are.same({ "input\0bytes\n" }, inputs)
+      assert.are.same({ { 7, "stdin" } }, closed)
+      assert(options).on_stdout(7, { "one\ntwo", "three" })
+      assert(options).on_stdout(7, { "", "tail" })
+      assert(options).on_stdout(7, { "" })
+      assert(options).on_stderr(7, { "error\nbyte", "" })
+      assert(options).on_stderr(7, { "" })
+      assert(options).on_exit(7, 7)
+      assert.are.equal("one\0two\nthree\ntail", table.concat(stdout))
+      assert.are.equal("error\0byte\n", table.concat(stderr))
+      assert.are.same({ code = 7, signal = 0 }, completion)
+      process:kill(9)
+      assert.are.equal(7, killed)
+
+      for _, input in ipairs({ { "one", "two" }, {}, true }) do
+        spawn_options.stdin = input
+        spawn_options.env = { "SAFE=list=value" }
+        windows.spawn(command, spawn_options, function() end)
+        assert.are.same({ SAFE = "list=value" }, assert(options).env)
+      end
+      assert.are.same({ "input\0bytes\n", "one\ntwo\n", "" }, inputs)
+      assert.are.equal(3, #closed)
+      spawn_options.stdin = nil
+      spawn_options.env = nil
+      windows.spawn(command, spawn_options, function() end)
+      assert.are.equal("null", assert(options).stdin)
+      assert.is_nil(assert(options).env)
+
+      local alias = { "cmd", "/d", "/s", "/c", 'echo "quoted" & exit /b 7' }
+      assert.are.equal(42, windows.spawn(alias, spawn_options, function() end).pid)
+      assert.are.same({ "cmd", "/d", "/s", "/c", '"echo "quoted" & exit /b 7"' }, launched)
+
+      for _, direct in ipairs({
+        { "powershell.exe", "-Command", 'Write-Output "quoted"' },
+        { "cmd.exe", "/c" },
+        { "cmd.exe", "/c", "echo", "separate" },
+        { "cmd.exe", "/d" },
+      }) do
+        assert.are.equal(99, windows.spawn(direct, spawn_options, function() end).pid)
+        assert.are.same(direct, launched)
+      end
+      killed = nil
+      spawn_options.stdin = "input"
+      vim.api.nvim_chan_send = function() error("stdin failed") end
+      local sent, send_err = pcall(windows.spawn, command, spawn_options, function() end)
+      assert.is_false(sent)
+      assert.matches("stdin failed", tostring(send_err), 1, true)
+      assert.are.equal(7, killed)
+      job_id = -1
+      local started, start_err = pcall(windows.spawn, command, spawn_options, function() end)
+      assert.is_false(started)
+      assert.matches("Could not start cmd.exe job", tostring(start_err), 1, true)
+    end)
+    vim.fn.jobstart, vim.fn.jobpid = original_jobstart, original_jobpid
+    vim.api.nvim_chan_send, vim.fn.chanclose = original_send, original_close
+    vim.fn.jobstop, vim.system = original_stop, original_system
+    assert.is_true(ok, tostring(err))
+  end)
+
   it("configures the native Windows process Job boundary", function()
     ---@type string[]
     local calls = {}
@@ -364,7 +492,7 @@ describe("neoagent process runner", function()
     ---@class Neoagent.TestProcessSupervisor
     ---@field attach? fun(self: Neoagent.TestProcessSupervisor, pid: integer): true?, string?
     ---@field close? fun(self: Neoagent.TestProcessSupervisor, force?: boolean)
-    ---@param tree { detach: boolean, new: fun(): Neoagent.TestProcessSupervisor?, string? }
+    ---@param tree { detach: boolean, spawn?: function, new: fun(): Neoagent.TestProcessSupervisor?, string? }
     ---@return { run: async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult }
     local function runner(tree)
       package.loaded[tree_module] = tree
@@ -382,20 +510,26 @@ describe("neoagent process runner", function()
       assert.matches("Failed to create process supervisor", assert(failed.error).message)
 
       local closed
-      vim.system = function() error("spawn failed") end
-      failed = complete(function()
-        return runner({
-          detach = false,
-          new = function()
-            return {
-              close = function(_, force) closed = force end,
-            }
-          end,
-        }).run({ "true" })
-      end)
-      assert.is_false(failed.ok)
-      assert.matches("Failed to start process", assert(failed.error).message)
-      assert.is_true(closed)
+      vim.system = function()
+        error("spawn failed")
+      end
+      for _, spawn in ipairs({ false, function() error("platform spawn failed") end }) do
+        closed = nil
+        failed = complete(function()
+          return runner({
+            detach = false,
+            spawn = spawn or nil,
+            new = function()
+              return {
+                close = function(_, force) closed = force end,
+              }
+            end,
+          }).run({ "true" })
+        end)
+        assert.is_false(failed.ok)
+        assert.matches("Failed to start process", assert(failed.error).message)
+        assert.is_true(closed)
+      end
 
       local killed
       closed = nil

@@ -1,4 +1,6 @@
 local bit = require("bit")
+local util = require("neoagent.util")
+local command_line = require("neoagent.process.windows_command")
 
 local M = {}
 -- Handles are opaque values: only the owning native backend interprets them.
@@ -40,6 +42,82 @@ local Tree = {}
 Tree.__index = Tree
 ---@type table<Neoagent.WindowsProcessFfi, boolean>
 local declared = {}
+
+---@param callback fun(err?: string, data?: string)
+---@return fun(job: integer, data: string[])
+local function output_callback(callback)
+  return function(_, data)
+    if #data == 1 and data[1] == "" then
+      callback(nil, nil)
+      return
+    end
+    local parts = {}
+    for index, line in ipairs(data) do
+      -- Channel callbacks split LF into list items and encode NUL as LF
+      -- within each item. Undo both transformations before publishing bytes.
+      parts[index] = line:gsub("\n", "\0")
+    end
+    callback(nil, table.concat(parts, "\n"))
+  end
+end
+
+---@param command string[]
+---@param opts Neoagent.ProcessSpawnOptions
+---@param on_exit fun(result: vim.SystemCompleted)
+---@return Neoagent.ProcessChild|vim.SystemObj
+function M.spawn(command, opts, on_exit)
+  local argv = command_line.prepare_cmd(command)
+  if not argv then
+    return vim.system(command, opts, on_exit)
+  end
+  -- jobstart uses Windows verbatim arguments specifically for cmd.exe.
+  -- vim.system applies CRT escaping, which changes cmd's quote syntax.
+  local environment = opts.env
+  if environment and util.is_list(environment) then
+    local entries = environment
+    ---@cast entries string[]
+    environment = {}
+    for _, entry in ipairs(entries) do
+      local name, value = entry:match("^([^=]+)=(.*)$")
+      environment[assert(name)] = assert(value)
+    end
+  end
+  local job = vim.fn.jobstart(argv, {
+    cwd = opts.cwd,
+    env = environment,
+    clear_env = opts.clear_env,
+    detach = opts.detach,
+    stdin = opts.stdin and "pipe" or "null",
+    on_stdout = output_callback(opts.stdout),
+    on_stderr = output_callback(opts.stderr),
+    on_exit = function(_, code)
+      on_exit({ code = code, signal = 0 })
+    end,
+  })
+  assert(job > 0, "Could not start cmd.exe job")
+  local pid = vim.fn.jobpid(job)
+  if opts.stdin and opts.stdin ~= true then
+    local input = opts.stdin
+    if type(input) == "table" then
+      input = table.concat(input, "\n") .. (#input > 0 and "\n" or "")
+    end
+    local sent, err = pcall(function()
+      vim.api.nvim_chan_send(job, input)
+      vim.fn.chanclose(job, "stdin")
+    end)
+    if not sent then
+      pcall(vim.fn.jobstop, job)
+      error(err, 0)
+    end
+  end
+  return {
+    pid = pid,
+    kill = function()
+      -- The job retains the process handle, avoiding a signal to a reused PID.
+      vim.fn.jobstop(job)
+    end,
+  }
+end
 
 ---@param opts? Neoagent.WindowsProcessNativeOptions
 ---@return Neoagent.WindowsProcessBackend
