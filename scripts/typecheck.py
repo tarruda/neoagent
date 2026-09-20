@@ -24,9 +24,10 @@ def main():
     except (OSError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"Cannot run checker; run make typecheck-deps: {error}") from error
 
-    sources = set(subprocess.check_output([
+    candidates = set(subprocess.check_output([
         "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "*.lua"
     ], cwd=ROOT).decode().rstrip("\0").split("\0")) - {""}
+    sources = {source for source in candidates if (ROOT / source).is_file()}
     report = ROOT / ".test-data/typecheck/diagnostics.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     if report.exists():
