@@ -23,6 +23,13 @@ local process_tree = require(jit.os == "Windows" and "neoagent.process.windows" 
 
 local M = {}
 
+---@class Neoagent.ProcessScope
+---@field _pending table<fun(), boolean>
+---@field _waiters table<Neoagent.AwaitCallbacks<true>, fun()>
+---@field _closed boolean
+local Scope = {}
+Scope.__index = Scope
+
 ---@class Neoagent.ProcessChild
 ---@field pid integer
 ---@field kill fun(self: Neoagent.ProcessChild, signal: integer)
@@ -48,7 +55,8 @@ end
 ---@param command string[]
 ---@param opts? Neoagent.ProcessOptions
 ---@return Neoagent.ProcessResult
-function M.run(command, opts)
+---@param scope? Neoagent.ProcessScope
+local function run(command, opts, scope)
   opts = opts or {}
   if opts.max_capture_bytes ~= nil then
     assert(
@@ -116,6 +124,35 @@ function M.run(command, opts)
           end)
         end
       end
+      local function dispose()
+        accepting_output = false
+        close_timer()
+        close_kill_timer()
+        -- A spawn callback can close the scope before its child is returned.
+        -- Keep the unattached supervisor so that child still joins its tree.
+        if process then
+          signal(9)
+          if tree then
+            tree:close(false)
+          end
+        end
+      end
+      local function release()
+        if scope then
+          scope._pending[dispose] = nil
+          if next(scope._pending) == nil then
+            local waiters = scope._waiters
+            scope._waiters = {}
+            for done, cleanup in pairs(waiters) do
+              cleanup()
+              done.resolve(true)
+            end
+          end
+        end
+      end
+      if scope then
+        scope._pending[dispose] = true
+      end
       ---@param data string
       ---@param is_stderr boolean
       ---@return true?
@@ -144,6 +181,7 @@ function M.run(command, opts)
       local tree_err
       tree, tree_err = process_tree.new()
       if not tree then
+        release()
         done.reject(util.error("tool", "Failed to create process supervisor", tree_err))
         return
       end
@@ -184,6 +222,7 @@ function M.run(command, opts)
           end
         end,
       }, function(completed)
+        release()
         close_timer()
         close_kill_timer()
         if tree then
@@ -200,6 +239,7 @@ function M.run(command, opts)
       end)
       if not started then
         tree:close(true)
+        release()
         done.reject(util.error("tool", "Failed to start process", started_process))
         return
       end
@@ -215,7 +255,9 @@ function M.run(command, opts)
         done.reject(util.error("tool", "Failed to supervise process tree", attach_err))
         return
       end
-      if termination_requested then
+      if scope and scope._closed then
+        dispose()
+      elseif termination_requested then
         terminate()
       end
       if opts.timeout_ms then
@@ -233,6 +275,75 @@ function M.run(command, opts)
     end
   )
   return result
+end
+
+---@async
+---@param command string[]
+---@param opts? Neoagent.ProcessOptions
+---@return Neoagent.ProcessResult
+function M.run(command, opts)
+  return run(command, opts)
+end
+
+---@async
+---@param command string[]
+---@param opts? Neoagent.ProcessOptions
+---@return Neoagent.ProcessResult
+function Scope:run(command, opts)
+  assert(not self._closed, "Process scope is closed")
+  return run(command, opts, self)
+end
+
+-- Closing signals pending commands; wait observes their exits. POSIX signals
+-- reach only their process groups. Descendants that leave those groups require
+-- containment by an external guardian owned by the execution environment.
+function Scope:close()
+  if self._closed then
+    return
+  end
+  self._closed = true
+  for dispose in pairs(self._pending) do
+    dispose()
+  end
+end
+
+---@return boolean
+function Scope:is_settled()
+  return next(self._pending) == nil
+end
+
+---@async
+---@param timeout_ms integer
+---@return true
+function Scope:wait(timeout_ms)
+  assert(
+    type(timeout_ms) == "number" and timeout_ms > 0 and timeout_ms % 1 == 0,
+    "Process scope wait requires a positive timeout"
+  )
+  if self:is_settled() then
+    return true
+  end
+  return async.await(function(done)
+    local timer = assert(vim.uv.new_timer())
+    local function cleanup()
+      self._waiters[done] = nil
+      if not timer:is_closing() then
+        timer:stop()
+        timer:close()
+      end
+    end
+    self._waiters[done] = cleanup
+    timer:start(timeout_ms, 0, function()
+      cleanup()
+      done.reject(util.error("process_cleanup", "Process scope cleanup timed out"))
+    end)
+    return cleanup
+  end)
+end
+
+---@return Neoagent.ProcessScope
+function M.scope()
+  return setmetatable({ _pending = {}, _waiters = {}, _closed = false }, Scope)
 end
 
 return M
