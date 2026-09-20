@@ -48,11 +48,10 @@ Create a Pane: >lua
     end,
   })
 <
-`key` is the Pane's stable identity in an Applet layout. `extent = "document"`
-allows natural output beyond the visible window and leaves scrolling to
-Neovim. `extent = "viewport"` bounds physical and virtual output to the
-mounted height. An editable Pane leaves physical text and undo under Neovim
-while it owns virtual chrome, decorations, mappings, and actions.
+`key` identifies the Pane in a layout. `extent = "document"` allows scrolling
+beyond the window; `"viewport"` limits output to the mounted height. Editable
+Panes use Neovim's text editing and undo while retaining Tree decorations and
+actions.
 
 Submit state or a content Tree: >lua
 
@@ -75,13 +74,13 @@ commit failure preserves the prior presentation and reports
 The Pane runtime methods are:
 
   key()                    Return the stable Pane key.
-  is_destroyed()           Report completed resource destruction.
-  is_editable()            Report editable buffer semantics.
-  is_connected()           Report a live Applet connection.
-  is_settled()             Report that the latest submission is committed.
-  is_mounted()             Report a valid buffer/window mount.
-  is_visible()             Report Host visibility.
-  is_focused()             Report semantic and native focus.
+  is_destroyed()           Whether destruction has completed.
+  is_editable()            Whether native editing is enabled.
+  is_connected()           Whether connected to an Applet.
+  is_settled()             Whether the latest submission is committed.
+  is_mounted()             Whether mounted in a valid buffer and window.
+  is_visible()             Whether its Host is visible.
+  is_focused()             Whether it has focus.
   geometry()               Return mounted logical and screen rectangles.
   focus()                  Focus the mounted Pane.
   mode()                   Return `normal` or `insert`.
@@ -192,13 +191,12 @@ above: >lua
 A resolver is `function(state) return host end` and requires state-driven
 `render`. Optional constructor fields are:
 
-  render        Convert copied state and a handle-free environment into one
-                complete Applet layout.
+  render        Return a layout from `(state, env)`.
   handlers      Map non-`applet.*` action names to callbacks.
   domain        Use an injected InteractionDomain owned by the caller.
   critical      Add an unsafe-commit predicate to an Applet-owned domain.
-  notify        Replace the package-owned notification effect.
-  open_uri      Replace the package-owned URI-opening effect.
+  notify        Handle notifications.
+  open_uri      Handle URI opening.
   on_focus      Receive `(current_pane_key, previous_pane_key)`.
   on_resize
   on_pane_buffer_change
@@ -207,7 +205,7 @@ A resolver is `function(state) return host end` and requires state-driven
                 after an observed external change.
   on_error      Receive `{ applet, phase, generation, pane, message }`.
 
-The Host constructors validate and copy plain policy values: >lua
+Choose a Host: >lua
 
   Applet.host.floating({
     container = "editor", -- "editor", "largest_window", or "auto"
@@ -223,9 +221,8 @@ The Host constructors validate and copy plain policy values: >lua
     label = "Example",
   })
 <
-`applet:set_host(host_or_resolver)` selects the next Host policy and reprocesses
-the current submission. A Host-kind change takes effect on the next open.
-`applet:host()` returns its copied semantic descriptor.
+`applet:set_host(host_or_resolver)` updates the Host. Switching between floats
+and a tab takes effect on the next open. `applet:host()` returns a copy.
 `applet:is_visible()` distinguishes an open Applet in an inactive tab from one
 currently visible.
 
@@ -309,9 +306,9 @@ Mount one existing Pane with optional lifecycle and surface policy: >lua
 <
 Retained mounts keep their buffer across close and reopen. Transient mounts
 delete their owned buffer at unmount. `owns_pane` transfers Pane destruction
-to the Applet when that mount identity expires. A required mount makes its
-first content commit part of open success. Changing `mount_revision` or
-calling `remount(key)` clears suppression after an external detach. Sensitive
+to the Applet when that mount identity expires. A required Pane must render
+successfully for the Applet to open. After an external detach, change
+`mount_revision` or call `remount(key)` to mount the Pane again. Sensitive
 buffers require a transient mount, disable swap and undo-file persistence, and
 are overwritten before deletion.
 
@@ -367,17 +364,17 @@ Lifecycle and observation methods are:
   open([opts])           Open or focus; `opts.origin_window` selects origin.
   close([opts])          Close; `restore_origin = false` suppresses restoration.
   toggle([opts])         Open or close.
-  is_open()              Report the logical lifecycle.
-  is_destroyed()         Report completed resource destruction.
-  is_visible()           Report current Host visibility.
-  host()                 Return the active or next semantic Host.
+  is_open()              Whether the Applet is open.
+  is_destroyed()         Whether destruction has completed.
+  is_visible()           Whether its Host is visible.
+  host()                 Return the active or next Host.
   observed()             Return the latest copied Host Snapshot.
   focus(key)             Focus one allowed mounted Pane.
   focused_pane()         Return its semantic key.
   pane(key)              Return the exact mounted Pane value when known.
   remount(key)           Clear external-detach suppression.
   notify(message[, level])
-  open_uri(uri)          Run injected package-owned effects.
+  open_uri(uri)          Open a URI through the configured handler.
   flush()                Settle pending renders and observations eagerly.
   invalidate([opts])     Refresh Host facts or reset adopted split sizes.
   destroy()              Release owned resources; idempotent.
@@ -534,8 +531,7 @@ Viewport overflow is explicit on the root content node:
   collapse  Compile a supplied summary node.
 
 Use `Applet.Pane.widgets.menu`, `Applet.Pane.widgets.dialog`, and
-`Applet.Pane.widgets.card` for common content Trees. Dialog navigation works
-from any cursor position in its Pane.
+`Applet.Pane.widgets.card` for common content Trees.
 
 A three-option menu with an initial selection is: >lua
 
@@ -644,8 +640,7 @@ optional non-negative `priority` defaults to 200. `"end"` addresses the row
 immediately after the target.
 
 Visual and Select modes suppress target chrome so native selection remains
-clear. Reconciliation restores both free cursor positions and surviving
-target-relative positions.
+clear.
 
 ===============================================================================
 6. IMAGES                                                         *applet-images*
@@ -661,8 +656,8 @@ Panes: >lua
   })
 <
 
-ImageSystem validates PNG sources, bounds source size, pixel count, and cached
-bytes, and publishes one complete presentation per Pane. A backend implements:
+ImageSystem limits PNG source size, pixel count, and cached bytes. A backend
+implements:
 
   available                           Report current availability.
   cell_dimensions()                   Return terminal cell pixel dimensions.
@@ -715,9 +710,8 @@ For managed application storage, use a plain source descriptor
 `read_image_resource(source, maximum_bytes, done)` to `Applet.Pane.new()`.
 The reader calls `done(png_bytes)` or `done(nil, error_message)` and returns a
 cancellation function. It must bound reads by `maximum_bytes` and keep resource
-IDs unique within the ImageSystem. The reader belongs to the Pane composition;
-content Trees contain only the descriptor. Loading begins when the image is
-needed for presentation, and the ImageSystem validates the returned PNG.
+IDs unique within the ImageSystem. Loading begins when the image is needed
+for presentation.
 
 Source loading is asynchronous. Existing content remains presented while a new
 revision prepares. Removing a node releases its slot; disconnecting a Pane

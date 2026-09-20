@@ -177,8 +177,7 @@ limits and thinking levels: >lua
 <
 Additions survive catalog refreshes, including responses that omit the ID.
 Their fields override discovered metadata; `models[id]` takes final precedence.
-For a temporary model, remove its addition from your configuration when it is
-no longer available, then restart Neovim. Additions do not expire automatically.
+Remove an addition from your configuration and restart Neovim to remove it.
 
 Built-in adapter names are
 `openai-completions`, `openai-responses`,
@@ -304,17 +303,16 @@ For Anthropic API keys with access to multiple provider workspaces, set
 `request_opts.headers["anthropic-workspace-id"]` to the selected workspace ID.
 Uploads, inspections, and remote mappings follow that selection.
 
-Attachments and remote mappings live in workspace storage. Sessions keep local
-SHA-256 references; switching provider selects an independent remote mapping,
-and compatible models can share mappings within the same workspace. OpenAI
-Platform and DeepSeek uploads request 24-hour expiration. Codex supplies no
-object expiration, so each reuse verifies availability remotely. Codex signed
+Attachments remain in workspace storage. Compatible models share remote
+uploads within a provider; switching providers keeps independent uploads.
+OpenAI Platform and DeepSeek uploads request 24-hour expiration. Codex supplies
+no object expiration, so each reuse verifies availability remotely; signed
 storage URLs are never cached. Anthropic uploads persist until deletion.
-OpenAI and Anthropic reuse ready cached IDs optimistically;
-an explicit missing-file rejection permits one repair before streamed output.
-Known expiry triggers replacement before inference. Other failures are returned
-normally. Upload and local-read failures return errors without an inline
-fallback.
+
+Known expiry triggers replacement before inference. OpenAI and Anthropic reuse
+ready cached IDs optimistically; an explicit missing-file rejection permits
+one repair before streamed output. Other failures are returned normally.
+Upload and local-read failures return errors without an inline fallback.
 
 Opening or viewing a Session does not upload images. The accepted prompt
 appears in the transcript before preparation starts. You can keep editing the
@@ -377,10 +375,6 @@ Configure or disable the sink under the provider: >lua
     },
   }
 <
-OpenCode Go model requests carry the calling Session ID in
-`x-opencode-session`. Calls without a valid Session identity omit the header.
-Model catalog and usage requests are shared across Agents and carry no Session
-ID.
 
 AGENTS AND APPLETS                                   *neoagent-agents*
 
@@ -756,13 +750,9 @@ Snapshots may contain `status`, `field`, `progress`, `limit`, `list`, and
 `activity` blocks. A `field.level` may be `info`, `success`, `warn`, `error`,
 or `muted`.
 
-The Provider Shell presents runtimes independently of Agents. Dynamic catalogs
-offer `Refresh model catalog`. Login and logout actions follow each method's
-credential state; see |neoagent-built-in-providers| and |neoagent-core-api|.
-
-The Shell invokes the Service's non-mutating `refresh` operation on focus,
-with no background polling. Changing provider cancels a pending automatic
-refresh; explicit operations continue when the Shell loses focus.
+The Provider Shell invokes the Service's non-mutating `refresh` operation on
+focus, with no background polling. Changing provider cancels a pending
+automatic refresh; explicit operations continue when the Shell loses focus.
 
 The Provider Shell API is: >lua
 
@@ -867,21 +857,13 @@ Failed finalization preserves the previous recording and the partial file.
   `yaml`   Require compatible `yq` v4 and publish `.yaml`.
   `json`   Publish `.jsonl` without a `yq` dependency.
 
-YAML recordings represent buffered JSON bodies as native values; machine replay
-requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
-and response bodies larger than 1 MiB use base64 with an encoding marker,
-preserving their exact bytes and chunk boundaries.
-
-Large ordinary responses may use private `.body` temporary files. Sensitive
-authentication responses never do; exceeding their 1 MiB limit stops recording
-without changing the provider result. Failed finalization can leave private
-temporary files beside the partial recording.
+YAML recordings represent JSON bodies as native values. Binary and large
+response bodies use marked base64 encoding. Replay preserves recorded bytes
+and chunk boundaries; reading YAML requires `yq`.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive
-are replaced by `*`. Identifier-named request headers such as the OpenCode Go
-`x-opencode-session` are masked the same way, while the Session ID stays
-readable in `context.session_id` and in the Workspace recording directory name.
+are replaced by `*`. Identifier-named request headers are masked too.
 
 Model request bodies, media-upload bodies, and ordinary provider response
 bodies are not sanitized.
@@ -892,7 +874,8 @@ when storing or sharing them.
 Recorder directories and files use private permissions. Failures produce
 content-free diagnostics and do not change provider results. A
 `.partial.ndjson` file marks an exchange interrupted by process exit or
-finalization failure.
+finalization failure. Failed finalization may also leave private `.body`
+temporary files beside it.
 
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
@@ -1110,9 +1093,7 @@ for one stream. Configured catalog entries use `request_timeout_ms` to supply
 the constructor default.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
-unique `input` list containing `text` and optionally `image`. Optional context,
-timeout, and thinking values are validated when the Model is constructed or
-wrapped.
+unique `input` list containing `text` and optionally `image`.
 
 Adapters preserve native assistant signatures for matching API, provider, and
 model identities; omitted fields default to the destination. For other
@@ -1148,7 +1129,7 @@ cancellation-handler failures leave the primary result unchanged and appear as
 bounded diagnostics. `neoagent.async.run()` accepts an optional diagnostic
 reporter.
 
-`neoagent.async.await(start)` gives `start` a completion value and expects an
+`neoagent.async.await(start)` gives `start` completion callbacks and expects an
 optional cancellation function. A producer that transfers a resource may call
 `done.resolve(value, disposer)`; cancellation either cancels pending work or
 disposes a settled value before delivery.
@@ -1300,9 +1281,7 @@ fallback. Edits preserve surrounding text, the BOM, and line-ending convention.
 
 `require("neoagent.session").new()` creates an in-memory Session. It accepts an
 optional store, initial messages, or validated tree snapshot. Its `files`
-option can bind an existing writer; otherwise it creates an in-memory store. User, assistant,
-and tool-result messages use the same semantic message format as Models and the
-Agent Loop.
+option supplies an attachment writer; otherwise it uses in-memory storage.
 
 The bundled append-only store is: >lua
 
@@ -1321,11 +1300,8 @@ with `require("neoagent.workspace_storage").resolve(directory, cwd)`.
 
 Workspace storage contains `workspace.json`, `sessions/<session-id>.jsonl`,
 `files/<sha256>/content`, `provider-cache/<namespace>/<sha256>.json`, and a
-rebuildable `session-index.json`. Keep the entire workspace directory when
-backing up or moving conversations. The only accepted markers are
-`neoagent-workspace` and `neoagent-session`; older workspace and pi JSONL formats
-are unsupported. Journal timestamps use Unix milliseconds. There is no garbage
-collection: unused blobs and provider mappings may remain in workspace storage.
+rebuildable `session-index.json`. Back up or move the whole workspace directory.
+There is no garbage collection: unused blobs and provider mappings may remain.
 
 Tree-aware Session methods are: >lua
 
