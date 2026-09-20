@@ -424,6 +424,15 @@ describe("neoagent direct Agent Applets", function()
   end)
 
   it("persists workspace history without sharing mutable View state", function()
+    ---@param agent Neoagent.Agent
+    local function wait_for_persisted_turn(agent)
+      assert(vim.wait(5000, function()
+        return not agent:is_running()
+      end, 10), "Persisted turn did not finish: " .. vim.inspect(agent:activity()))
+      local result = assert(agent:snapshot().result, "Persisted turn has no completion")
+      assert.are.equal("succeeded", result.status, vim.inspect(result))
+    end
+
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
     local extra = { persistence = { enabled = true, directory = directory } }
@@ -437,17 +446,13 @@ describe("neoagent direct Agent Applets", function()
     assert(owner:open())
     local first_view = assert(owner:view())
     submit(first_view, "first question")
-    assert(vim.wait(1000, function()
-      return first:get_session() and not first:is_running()
-    end))
+    wait_for_persisted_turn(first)
 
     assert.are.equal(second, owner:select(second))
     local second_view = assert(owner:view())
     assert.are.same({ "first question" }, owner:input_history())
     submit(second_view, "second question")
-    assert(vim.wait(1000, function()
-      return second:get_session() and not second:is_running()
-    end))
+    wait_for_persisted_turn(second)
     assert.are.same({ "second question", "first question" },
       owner:input_history())
     assert.are.equal("", assert(first_view):get_input())
