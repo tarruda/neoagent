@@ -1,5 +1,6 @@
 local result = require("neoagent.sandbox.result")
 local summaries = require("neoagent.sandbox.approval_summary")
+local identities = require("neoagent.tools.identities")
 local util = require("neoagent.util")
 
 local M = {}
@@ -437,11 +438,19 @@ function Escalation:_configured_shell()
   return value, shell_kind(value)
 end
 
+---@generic C
+---@param tool Neoagent.Tool<C>
+---@return boolean
+local function is_shell(tool)
+  local identity = identities.identity(tool)
+  return identity ~= nil and identity.token == identities.shell
+end
+
 ---@param tool Neoagent.Tool<C>
 ---@param arguments Neoagent.JsonObject
 ---@return Neoagent.SandboxPrefixCandidate?
 function Escalation:_candidate(tool, arguments)
-  if tool.name ~= "shell" or type(arguments.command) ~= "string" then
+  if not is_shell(tool) or type(arguments.command) ~= "string" then
     return
   end
   local shell, kind = self:_configured_shell()
@@ -664,7 +673,7 @@ end
 ---@param arguments Neoagent.JsonObject
 ---@return boolean
 function Escalation:_matches(tool, arguments)
-  if tool.name ~= "shell" or type(arguments.command) ~= "string" then
+  if not is_shell(tool) or type(arguments.command) ~= "string" then
     return false
   end
   local shell, kind = self:_configured_shell()

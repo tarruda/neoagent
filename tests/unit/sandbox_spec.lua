@@ -1439,6 +1439,52 @@ describe("neoagent sandbox execution", function()
       }, "\n"), assert(request).body)
     end)
 
+  for _, replacement in ipairs({ "renamed", "custom" }) do
+    it("uses implementation identity for " .. replacement .. " shell approvals", function()
+      local escalation = require("neoagent.sandbox.escalation").new({ shell = "/bin/sh" })
+      local shell = assert(escalation:tools({ require("neoagent.tools.shell").new() })[1])
+      local elevated = 0
+      local execute = escalation:wrap({
+        restricted = function() error("expected an escalation request") end,
+        elevated = function()
+          elevated = elevated + 1
+          return { content = { { type = "text", text = "approved" } } }
+        end,
+      })
+      local arguments = {
+        command = "git status --short",
+        options = { require_escalation = true, escalation_justification = "inspect the repository" },
+      }
+      local replies = {
+        "approve_prefix",
+        { ok = true, action = "accept_prefix", input = "git status" },
+      }
+      local ctx = dialog_context(temp(), function() return table.remove(replies, 1) end)
+      assert.is_not_true(execute(shell, arguments, ctx).isError)
+      assert.are.equal(1, elevated)
+      if replacement == "renamed" then
+        shell.name = "run_command"
+        ctx = dialog_context(ctx.context.workspace.root, function()
+          error("renaming the bundled shell discarded its prefix approval")
+        end)
+        assert.is_not_true(execute(shell, arguments, ctx).isError)
+        assert.are.equal(2, elevated)
+      else
+        shell.execute = function() error("custom Tool must not inherit shell approval") end
+        local prompts = 0
+        ctx = dialog_context(ctx.context.workspace.root, function(request)
+          prompts = prompts + 1
+          assert.is_false(vim.tbl_contains(vim.tbl_map(function(action) return action.id end,
+            request.actions), "approve_prefix"))
+          return "deny"
+        end)
+        assert.is_true(execute(shell, arguments, ctx).isError)
+        assert.are.equal(1, prompts)
+        assert.are.equal(1, elevated)
+      end
+    end)
+  end
+
   it("remembers edited shell command prefixes for the current session",
     ---@async
     function()

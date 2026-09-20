@@ -632,8 +632,10 @@ A denied call can request one host execution with: >json
   }
 <
 
-Approval selects the original host Tool before that call begins. Shell
-approvals may remember a literal argument-token prefix for the current Session.
+Approval selects the original host Tool before that call begins. The bundled
+shell implementation may remember a literal argument-token prefix for the
+current Session, including when that Tool is renamed. Custom Tools cannot
+inherit these approvals by sharing its name.
 Compound or dynamic shell syntax always prompts.
 
 Custom compositions can use
