@@ -1263,7 +1263,8 @@ describe("neoagent.ui", function()
       { role = "toolResult", toolCallId = "find", toolName = "find", isError = false,
         content = { { type = "text", text = "src/a.lua" } } },
       { role = "toolResult", toolCallId = "edit", toolName = "edit_file", isError = false,
-        content = { { type = "text", text = "edited" } }, details = { patch = " context\n-old\n+new" } },
+        content = { { type = "text", text = "edited" } },
+        details = { patch = " context\n-old\n+new", added_lines = 1, removed_lines = 1 } },
       { role = "toolResult", toolCallId = "edit-plain", toolName = "edit_file", isError = false,
         content = { { type = "text", text = "edited" } } },
       { role = "toolResult", toolCallId = "edit-error", toolName = "edit_file", isError = true,
@@ -2354,7 +2355,7 @@ describe("neoagent.ui", function()
       { role = "toolResult", toolCallId = "edit-body",
         toolName = "edit_file", isError = false,
         content = { { type = "text", text = "Successfully edited existing.lua" } },
-        details = { patch = " context\n-old\n+new" } },
+        details = { patch = " context\n-old\n+new", added_lines = 1, removed_lines = 1 } },
     })
     assert(result:open())
     assert(vim.wait(1000, function()
@@ -2411,6 +2412,8 @@ describe("neoagent.ui", function()
           type = "text", text = "Successfully edited existing.lua",
         } },
         details = {
+          added_lines = 1,
+          removed_lines = 1,
           patch = table.concat({
             "@@ -1,3 +1,3 @@",
             " line one",

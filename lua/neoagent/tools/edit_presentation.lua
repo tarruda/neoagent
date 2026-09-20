@@ -14,6 +14,9 @@ local activity = require("neoagent.tools.activity_presentation")
 ---@field kind "edit"
 ---@field path string
 ---@field rows Neoagent.EditPatchRow[]
+---@field added integer
+---@field removed integer
+---@field truncated boolean
 
 local M = {}
 
@@ -64,6 +67,15 @@ local function patch_rows(patch)
   return rows
 end
 
+---@param value unknown
+---@return integer?
+local function count(value)
+  if type(value) == "number" and value >= 0 and value % 1 == 0 then
+    ---@cast value integer
+    return value
+  end
+end
+
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.ToolActivityPresentation|Neoagent.ToolEditPresentation|nil
 function M.render(opts)
@@ -76,14 +88,23 @@ function M.render(opts)
     return fallback
   end
   local details = type(opts.result) == "table" and type(opts.result.details) == "table" and opts.result.details or {}
+  local added = count(rawget(details, "added_lines"))
+  local removed = count(rawget(details, "removed_lines"))
+  if not added or not removed then
+    return fallback
+  end
   local rows = patch_rows(rawget(details, "patch"))
-  if #rows == 0 then
+  local truncated = rawget(details, "patch_truncated") == true
+  if #rows == 0 and not truncated then
     return fallback
   end
   return {
     kind = "edit",
     path = arguments.path,
     rows = rows,
+    added = added,
+    removed = removed,
+    truncated = truncated,
   }
 end
 

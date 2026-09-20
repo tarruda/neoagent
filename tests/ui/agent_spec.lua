@@ -1132,6 +1132,7 @@ describe("neoagent default agent", function()
     }
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
@@ -1148,6 +1149,7 @@ describe("neoagent default agent", function()
     local first_session_id = captured[1].session_id
     setup_model(model, {
       tools = { tool },
+      ---@async
       execute_tool = function(selected, arguments, ctx)
         captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
@@ -4224,6 +4226,50 @@ describe("neoagent default agent", function()
     assert(vim.wait(1500, function() return run:is_done() end))
     assert(vim.wait(1000, function() return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "new" end))
   end)
+
+  for _, name in ipairs({ "write_file", "edit_file" }) do
+    for _, literal in ipairs({ false, true }) do
+      it("refreshes the prepared " .. name .. " target with literal dollars=" .. tostring(literal), function()
+        local fs = require("neoagent.fs")
+        local root = vim.fn.tempname()
+        paths[#paths + 1] = root
+        local directory = root .. (literal and "/$NEOAGENT_REFRESH_LITERAL" or "/target")
+        assert(fs.mkdirp(directory))
+        local path = directory .. "/file.txt"
+        assert(fs.write_all(path, "old\n"))
+        vim.cmd("edit " .. vim.fn.fnameescape(path))
+        local buffer = vim.api.nvim_get_current_buf()
+        local saved_target = vim.env.NEOAGENT_REFRESH_TARGET
+        local saved_literal = vim.env.NEOAGENT_REFRESH_LITERAL
+        vim.env.NEOAGENT_REFRESH_TARGET = directory
+        vim.env.NEOAGENT_REFRESH_LITERAL = "wrong-directory"
+        local succeeded, failure = pcall(function()
+          local arguments = name == "write_file"
+            and { path = "$NEOAGENT_REFRESH_TARGET/file.txt", content = "new\n" }
+            or { path = "$NEOAGENT_REFRESH_TARGET/file.txt", edits = { { oldText = "old", newText = "new" } } }
+          local model = fake_model.new({
+            { result = fake_model.assistant({ {
+              type = "toolCall", id = "change", name = name, arguments = arguments,
+            } }, "toolUse") },
+            { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+          })
+          setup_model(model, { tools = require("neoagent.tools").coding() })
+          assert(neoagent.open())
+          local run = assert(neoagent.send("change the selected file"))
+          assert(type(run) == "table")
+          assert(vim.wait(3000, function() return run:is_done() end))
+          assert.are.equal("new\n", fs.read(path))
+          assert(vim.wait(1000, function()
+            return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "new"
+          end), "the modified file's buffer was not refreshed")
+        end)
+        vim.env.NEOAGENT_REFRESH_TARGET = saved_target
+        vim.env.NEOAGENT_REFRESH_LITERAL = saved_literal
+        vim.api.nvim_buf_delete(buffer, { force = true })
+        assert.is_true(succeeded, tostring(failure))
+      end)
+    end
+  end
 
   it("refreshes buffers from semantic custom tool results", function()
     local root = vim.fn.tempname()

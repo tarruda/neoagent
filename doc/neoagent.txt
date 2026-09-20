@@ -1184,7 +1184,9 @@ an ambient credential.
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
 
 A Tool is `{ name, description, input_schema, execute }`.
-`execute(arguments, ctx)` returns
+Construct individual bundled Tools with, for example,
+`require("neoagent.tools.read_file").new()`.
+`execute(arguments, ctx)` is async and returns its final
 `{ content = { ... }, isError?, details? }`. Content blocks contain UTF-8 text
 or local image references: `{ type = "image", file_id = sha256,
 mime_type = "image/png", bytes = byte_count, filename = "sample.png" }`.
@@ -1198,8 +1200,7 @@ file can then change or disappear without changing the attachment.
 `max_image_output_bytes` bounds the binary attachment, defaulting to 3.375 MiB
 (4.5 MiB after base64 encoding) so retained images also fit inline requests.
 With ImageMagick available, larger processed images are recompressed as JPEG.
-Raising this limit requires checking the image limits of every endpoint that
-will receive the attachment, including inline use when uploads are disabled.
+The maximum is 8 MiB; individual model endpoints may impose lower limits.
 Custom producers call the same writer's asynchronous `put(bytes)` and use the
 returned `{ file_id, bytes }` in their image blocks. Failed publication must
 fail the tool result rather than return a reference.
@@ -1235,7 +1236,9 @@ and streaming callbacks. The shell timeout defaults to 300 seconds;
 `write_file` and `edit_file` replace regular files through same-directory
 temporaries, preserve existing modes, reject symbolic links, and request mode
 `0644` for new files. `details.changed_paths` tells the interactive Neo Agent
-which unmodified buffers may be refreshed after success.
+which unmodified buffers may be refreshed after success. These are literal
+filesystem paths; relative paths use the Workspace cwd without environment
+expansion. Bundled file Tools report their prepared absolute targets.
 
 `edit_file` requires unique, non-overlapping matches in the original content.
 Exact matches take precedence over a punctuation- and whitespace-tolerant

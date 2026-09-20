@@ -378,7 +378,7 @@ pathlib.Path(sys.argv[1]).write_bytes(png)
       assert.is_true(input_size < 20 * 1024 * 1024)
       assert.is_true(4 * math.ceil(input_size / 3) > 10 * 1000 * 1000)
       local processed = wait(async.run(function()
-        return { ok = true, value = require("neoagent.tools.read_file").execute({ path = "noise.png" }, {
+        return { ok = true, value = require("neoagent.tools.read_file").new().execute({ path = "noise.png" }, {
           context = {
             workspace = require("neoagent.workspace").new({ root = state.directory, cwd = state.directory }),
             files = session:files(),

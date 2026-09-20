@@ -925,7 +925,10 @@ function M.from_config(options, runtime)
 
   ---@param path string
   local function refresh_buffer(path)
-    local absolute = state.workspace:resolve(path)
+    -- Result metadata carries literal filesystem paths, already prepared by
+    -- the Tool. Only model arguments undergo environment expansion.
+    local absolute = fs.is_absolute(path) and path or state.workspace.cwd .. "/" .. path
+    absolute = vim.fs.normalize(absolute, { expand_env = false })
     local ok, result = pcall(host_effects.refresh_file, absolute)
     if not ok then
       notify("failed to refresh changed file: " .. tostring(result), vim.log.levels.ERROR)

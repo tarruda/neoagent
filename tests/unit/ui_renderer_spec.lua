@@ -442,7 +442,7 @@ describe("neoagent native Renderer protocol", function()
         toolName = "edit_file",
         isError = false,
         content = { { type = "text", text = "edited" } },
-        details = { patch = "@@ -1 +1 @@\n-old\n+" .. edit_line },
+        details = { patch = "@@ -1 +1 @@\n-old\n+" .. edit_line, added_lines = 1, removed_lines = 1 },
       },
     }
     local plan_tool = require("neoagent.tools.update_plan").new()
@@ -793,17 +793,36 @@ describe("neoagent native Renderer protocol", function()
     local edit = tool(renderers.codex, {
       kind = "edit",
       path = "narrow.lua",
+      added = 1500,
+      removed = 1500,
+      truncated = true,
       rows = {
         { kind = "context", number = 1, text = "one" },
         { kind = "delete", number = 2, text = "old" },
         { kind = "add", number = 2, text = "new" },
       },
-    }, 32)
+    }, 64)
     assert.matches("narrow.lua", edit)
+    assert.matches("%+1500", edit)
+    assert.matches("%-1500", edit)
+    assert.matches("patch truncated", edit)
     assert.matches("new", edit)
+    local truncated = require("neoagent.tools.edit_file").new().render({
+      state = "success", arguments = { path = "minified.js" },
+      result = { content = {}, details = {
+        patch = "@@ -1 +1 @@", patch_truncated = true,
+        added_lines = 1, removed_lines = 1,
+      } },
+    })
+    local preview = tool(renderers.codex, truncated, 64)
+    assert.matches("minified.js", preview, 1, true)
+    assert.matches("%+1", preview)
+    assert.matches("%-1", preview)
+    assert.matches("patch truncated", preview, 1, true)
     assert.matches("empty.lua", tool(renderers.codex, {
       kind = "edit",
       path = "empty.lua",
+      added = 0, removed = 0,
       rows = { { kind = "context", number = 1, text = "" } },
     }, 32))
 
@@ -821,6 +840,7 @@ describe("neoagent native Renderer protocol", function()
     local overflowing = tool(renderers.codex, {
       kind = "edit",
       path = "overflow.lua",
+      added = 13, removed = 0,
       rows = overflowing_rows,
     }, 24)
     assert.matches("more line", overflowing)
@@ -840,9 +860,10 @@ describe("neoagent native Renderer protocol", function()
         complete = "Read", subject = "a file" },
       { kind = "plan", explanation = {}, plan = {} },
       { kind = "plan", plan = false },
-      { kind = "edit", path = "bad.lua", rows = {
+      { kind = "edit", path = "bad.lua", added = 1, removed = 0, rows = {
         { kind = "add", number = "one", text = "bad" },
       } },
+      { kind = "edit", path = "bad.lua", added = -1, rows = {} },
       { kind = "edit", path = "bad\npath.lua", rows = {} },
       { kind = "text", title = "bad\ntitle" },
       { kind = "text" },
@@ -973,7 +994,7 @@ describe("neoagent native Renderer protocol", function()
             toolName = "edit_file",
             isError = false,
             content = { { type = "text", text = "edited edit.lua" } },
-            details = { patch = "@@ -1 +1 @@\n-old\n+new" },
+            details = { patch = "@@ -1 +1 @@\n-old\n+new", added_lines = 1, removed_lines = 1 },
           },
         },
       },

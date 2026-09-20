@@ -1,3 +1,6 @@
+local identities = require("neoagent.tools.identities")
+local M = {}
+
 ---@return string
 local function plugin_root()
   local source = assert(debug.getinfo(1, "S")).source
@@ -18,10 +21,18 @@ local function init_path()
   return vim.fn.stdpath("config") .. "/init.lua"
 end
 
----@return string
-local function documentation()
-  local root = plugin_root()
-  return table.concat({
+---@type string
+local DESCRIPTION = table.concat({
+  "Read Neoagent's configuration and composition API map.",
+  "Use this only when the user asks about Neoagent, its configuration, or",
+  "its Lua APIs. Do not call it for ordinary project work.",
+}, " ")
+
+---@param root string
+---@param configuration string
+---@return Neoagent.ToolResult
+local function documentation(root, configuration)
+  local text = table.concat({
     "# Neoagent API map",
     "",
     "Choose the smallest composition that owns the task:",
@@ -71,19 +82,19 @@ local function documentation()
     "- UI package: " .. root .. "/doc/applet.txt",
     "- Ownership and data flow: " .. root .. "/architecture.md",
     "- Contributor guide: " .. root .. "/AGENTS.md",
-    "- Active Neovim configuration: " .. init_path(),
+    "- Active Neovim configuration: " .. configuration,
   }, "\n")
+  return { content = { { type = "text", text = text } } }
 end
 
-local DESCRIPTION = table.concat({
-  "Read Neoagent's configuration and composition API map.",
-  "Use this only when the user asks about Neoagent, its configuration, or",
-  "its Lua APIs. Do not call it for ordinary project work.",
-}, " ")
+---@return Neoagent.ToolResult
+local function execute()
+  return documentation(plugin_root(), init_path())
+end
 
 ---@return Neoagent.Tool<unknown>
 local function new()
-  return {
+  return identities.bind_parent({
     name = "read_agent_documentation",
     description = DESCRIPTION,
     input_schema = {
@@ -91,12 +102,9 @@ local function new()
       properties = {},
       additionalProperties = false,
     },
-    execute = function()
-      return { content = { { type = "text", text = documentation() } } }
-    end,
-  }
+    execute = execute,
+  })
 end
 
-local M = new()
 M.new = new
 return M
