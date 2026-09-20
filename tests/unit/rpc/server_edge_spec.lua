@@ -131,20 +131,20 @@ describe("neoagent Tool RPC server edge cases", function()
       return events[#events]
     end
 
-    local edited = dispatch(1, codec.methods.edit_file, {
+    local edited = dispatch(1, "edit_file", {
       path = "edit.txt", resolved_path = root .. "/edit.txt",
       edits = { { old_text = "old", new_text = "new" } },
     })
     assert.are.equal("response", edited.type)
     assert.are.equal("new\n", assert(require("neoagent.fs").read(root .. "/edit.txt")))
 
-    local grep = dispatch(2, codec.methods.grep, {
+    local grep = dispatch(2, "grep", {
       pattern = "new", path = ".", resolved_path = root, ignore_case = false, literal = false, limit = 10,
     })
     assert.are.equal("response", grep.type)
     assert.matches("edit.txt", assert(grep.value.content[1]).text, 1, true)
 
-    local find = dispatch(3, codec.methods.find, {
+    local find = dispatch(3, "find", {
       pattern = "*.txt", path = ".", resolved_path = root, limit = 10,
     })
     assert.are.equal("response", find.type)
@@ -195,7 +195,7 @@ describe("neoagent Tool RPC server edge cases", function()
       type = "request",
       call_id = "private-policy",
       request_id = 1,
-      method = codec.methods.shell,
+      method = "shell",
       payload = { argv = { "sh", "-c", "ignored" }, timeout_ms = 1000 },
     })
     wait_for(events, "response")
@@ -297,7 +297,7 @@ describe("neoagent Tool RPC server edge cases", function()
       end,
     })
     open(active_server)
-    request(active_server, nil, codec.methods.read_file, {
+    request(active_server, nil, "read_file", {
       path = "file", resolved_path = "/workspace/file",
       offset = 1,
       max_image_input_bytes = 1024,

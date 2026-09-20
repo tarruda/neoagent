@@ -90,7 +90,7 @@ describe("Tool worker execution policy", function()
       on_update = function() end,
     } --[[@as Neoagent.ToolContext<unknown>]]
     local call = common.call(ctx)
-    local policy = require("neoagent.sandbox.api_policy").new({
+    local policy = require("neoagent.sandbox.tool_policy").new({
       profile = {
         id = "budget", filesystem = { default = "read", entries = { { path = root, access = "write" } } },
         network = "restricted", environment = { clear = true, inherit = {}, set = {} },

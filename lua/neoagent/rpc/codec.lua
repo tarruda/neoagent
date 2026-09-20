@@ -1,11 +1,8 @@
 local common = require("neoagent.tools.common")
-local methods = require("neoagent.rpc.methods")
 local util = require("neoagent.util")
 local validation = require("neoagent.validation")
 
 local M = {}
-
-M.methods = methods.names
 
 M.events = {
   update = "tool_update",

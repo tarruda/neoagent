@@ -211,7 +211,7 @@ local function start_request(self, message)
     selected.on_output = function(data, is_stderr, stdout, stderr, output)
       -- Search stdout contains matched file content and names, not diagnostics.
       -- Shell commands may report failures on either stream.
-      if observe and (is_stderr or active.method == codec.methods.shell) then
+      if observe and (is_stderr or active.method == "shell") then
         observe(data, is_stderr)
       end
       if on_output then

@@ -26,7 +26,7 @@ describe("neoagent sandbox Tool RPC policy", function()
     assert(fs.write_all(vim.fs.joinpath(readonly, "existing.txt"), "readonly"))
     assert(vim.uv.fs_symlink(denied, vim.fs.joinpath(root, "denied-link")))
 
-    local api = require("neoagent.sandbox.api_policy").new({
+    local api = require("neoagent.sandbox.tool_policy").new({
       profile = {
         id = "api-policy",
         filesystem = {
@@ -112,7 +112,7 @@ describe("neoagent sandbox Tool RPC policy", function()
       if type(err) ~= "table" then
         error("expected a structured sandbox denial", 0)
       end
-      ---@cast err Neoagent.SandboxApiDenial
+      ---@cast err Neoagent.SandboxToolDenial
       assert.are.equal("sandbox_denied", err.kind)
       assert.are.equal(operation, err.sandbox.operation)
       assert.are.equal(expected_path, err.sandbox.path)

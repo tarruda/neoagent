@@ -68,11 +68,8 @@ M.by_name = {
 
 ---@type table<table, Neoagent.ToolRpcMethod>
 M.by_token = {}
----@type table<string, string>
-M.names = {}
-for name, descriptor in pairs(M.by_name) do
+for _, descriptor in pairs(M.by_name) do
   M.by_token[descriptor.token] = descriptor
-  M.names[name] = name
 end
 
 return M

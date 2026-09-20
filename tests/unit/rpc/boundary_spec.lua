@@ -129,7 +129,7 @@ describe("neoagent Tool RPC boundary", function()
     end))
     assert.is_nil(completed.isError)
     assert.are.equal("remote edit", assert(completed.content[1]).text)
-    assert.are.same(codec.methods.edit_file, requests[1].method)
+    assert.are.same("edit_file", requests[1].method)
     assert.are.same({
       path = "file.txt",
       resolved_path = vim.fs.joinpath(workspace.cwd, "file.txt"),
@@ -183,7 +183,7 @@ describe("neoagent Tool RPC boundary", function()
       local aborted = 0
       local connection = {
         request = function(_, method, payload, handlers)
-          assert.are.equal(codec.methods.read_file, method)
+          assert.are.equal("read_file", method)
           assert.are.equal("remote.png", payload.path)
           return behavior(assert(handlers).on_event)
         end,

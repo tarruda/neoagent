@@ -389,7 +389,7 @@ function Interceptor:wrap(next_execute)
         profile = profile.id,
       })
     end
-    local policy = require("neoagent.sandbox.api_policy").new({
+    local policy = require("neoagent.sandbox.tool_policy").new({
       profile = profile,
       paths = self._paths,
       platform = self._platform.name,

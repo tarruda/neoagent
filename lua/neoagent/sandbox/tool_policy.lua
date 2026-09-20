@@ -24,22 +24,22 @@ local operations = {
   find = { access = "read", target = "resolved_path", read_only = true },
 }
 
----@class Neoagent.SandboxApiPolicyOptions
+---@class Neoagent.SandboxToolPolicyOptions
 ---@field profile Neoagent.SandboxProfile
 ---@field paths Neoagent.SandboxPaths
 ---@field platform string
 
----@class Neoagent.SandboxApiPolicy
+---@class Neoagent.SandboxToolPolicy
 ---@field _profile Neoagent.SandboxProfile
 ---@field _paths Neoagent.SandboxPaths
 ---@field _platform string
-local ApiPolicy = {}
-ApiPolicy.__index = ApiPolicy
+local ToolPolicy = {}
+ToolPolicy.__index = ToolPolicy
 
----@class Neoagent.SandboxApiDenial: Neoagent.Error
+---@class Neoagent.SandboxToolDenial: Neoagent.Error
 ---@field sandbox Neoagent.JsonObject
 
----@param self Neoagent.SandboxApiPolicy
+---@param self Neoagent.SandboxToolPolicy
 ---@param path string
 ---@param required 'read'|'write'
 ---@return string
@@ -51,7 +51,7 @@ local function authorize_path(self, path, required)
   local allowed, granted = policy.allows(self._profile, lexical, canonical, required, paths)
   if not allowed then
     local action = required == "read" and "Read" or "Write"
-    local err = util.error("sandbox_denied", action .. " access is denied: " .. lexical) --[[@as Neoagent.SandboxApiDenial]]
+    local err = util.error("sandbox_denied", action .. " access is denied: " .. lexical) --[[@as Neoagent.SandboxToolDenial]]
     err.sandbox = {
       denied = true,
       can_escalate = true,
@@ -72,7 +72,7 @@ end
 ---@return table request
 ---@return boolean read_only
 ---@return integer? timeout_ms
-function ApiPolicy:authorize(method, request, call)
+function ToolPolicy:authorize(method, request, call)
   call = common.validate_call(call)
   local operation = operations[method]
   if not operation then
@@ -87,8 +87,8 @@ function ApiPolicy:authorize(method, request, call)
   return request, operation.read_only, timeout_ms
 end
 
----@param opts Neoagent.SandboxApiPolicyOptions
----@return Neoagent.SandboxApiPolicy
+---@param opts Neoagent.SandboxToolPolicyOptions
+---@return Neoagent.SandboxToolPolicy
 function M.new(opts)
   assert(type(opts) == "table", "sandbox Tool RPC policy options are required")
   assert(type(opts.profile) == "table", "sandbox Tool RPC policy profile is required")
@@ -98,7 +98,7 @@ function M.new(opts)
     _profile = opts.profile,
     _paths = opts.paths,
     _platform = opts.platform,
-  }, ApiPolicy)
+  }, ToolPolicy)
 end
 
 return M
