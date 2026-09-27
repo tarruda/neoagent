@@ -38,6 +38,57 @@ local function message_start(usage)
 end
 
 describe("neoagent.api.anthropic_messages", function()
+  it("keeps a per-call output cap and fits manual thinking below it", function()
+    local model = anthropic.new({
+      provider = "anthropic", model = "claude-sonnet-4-5", base_url = "https://example.test",
+      max_output_tokens = 32000,
+      thinking = { low = { body = { output_config = { effort = "low" } } } },
+      request_opts_layers = { { body = { max_tokens = 32000 } } },
+    })
+    local normal = model:_request({ messages = {}, request_opts = {
+      body = { thinking = { type = "enabled", budget_tokens = 16000 } },
+    } })
+    assert.are.equal(32000, assert(normal.request.body).max_tokens)
+    assert.are.equal(16000, assert(assert(normal.request.body).thinking).budget_tokens)
+
+    local summary = model:_request({ messages = {}, thinking_level = "low", max_output_tokens = 8192, request_opts = { body = {
+        max_tokens = 32000, thinking = { type = "enabled", budget_tokens = 16000 },
+      } } })
+    local body = assert(summary.request.body)
+    assert.are.equal(8192, body.max_tokens)
+    assert.is_true(assert(assert(body.thinking).budget_tokens) >= 1024)
+    assert.are.equal(8191, assert(body.thinking).budget_tokens)
+    assert.are.equal("low", assert(body.output_config).effort)
+    local small = model:_request({ messages = {}, max_output_tokens = 1024, request_opts = { body = {
+        thinking = { type = "enabled", budget_tokens = 16000 },
+      } } })
+    assert.are.equal("disabled", assert(assert(small.request.body).thinking).type)
+  end)
+
+  it("caps explicit thinking budgets independently of semantic effort", function()
+    local model = anthropic.new({
+      provider = "anthropic", model = "claude-sonnet-4-5", base_url = "https://example.test",
+      max_output_tokens = 32000,
+      request_opts = { body = { thinking = { type = "enabled", budget_tokens = 16000 } } },
+    })
+    for _, limit in ipairs({ 2048, 512 }) do
+      local request = model:_request({ messages = {}, max_thinking_tokens = limit })
+      local body = assert(request.request.body)
+      assert.are.equal(32000, body.max_tokens)
+      if limit >= 1024 then
+        assert.are.equal(limit, assert(body.thinking).budget_tokens)
+      else
+        assert.are.equal("disabled", assert(body.thinking).type)
+      end
+    end
+    local ok, err = pcall(function()
+      model:_request({ messages = {}, max_thinking_tokens = 0 })
+    end)
+    assert.is_false(ok)
+    assert.matches("Thinking token limit", require("neoagent.util").normalize_error(err, "model").message)
+  end)
+
+
   it("streams normalized thinking, text, tools, and usage", function()
     local fake = fake_transport.new({ { chunks = {
       message_start({
@@ -171,6 +222,8 @@ describe("neoagent.api.anthropic_messages", function()
           { type = "thinking", thinking = "hidden", thinkingSignature = "cipher", redacted = true },
           { type = "text", text = "checking" },
           { type = "toolCall", id = "call:1", name = "inspect", arguments = { path = "x.lua" } },
+          { type = "toolCall", id = "call:2", name = "inspect", arguments = {} },
+          { type = "toolCall", id = "call:3", name = "inspect", arguments = {} },
         } },
         { role = "toolResult", toolCallId = "call:1", isError = true, content = {
           { type = "text", text = "failed" },
@@ -209,6 +262,7 @@ describe("neoagent.api.anthropic_messages", function()
     local body = assert(request.body)
     assert.are.equal("Be precise", body.system)
     assert.are.equal(256, body.max_tokens)
+    assert.are.equal(64, assert(assert(model:_request({ messages = {}, max_output_tokens = 64 })).request.body).max_tokens)
     assert.are.same({ provider = true, call = true }, body.metadata)
     assert.are.equal("base64", assert(assert(assert(body.messages[1].content)[2]).source).type)
     assert.are.equal("image/png", assert(assert(assert(body.messages[1].content)[2]).source).media_type)

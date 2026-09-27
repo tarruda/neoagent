@@ -8,9 +8,14 @@ local M = {}
 ---@alias Neoagent.JsonValue boolean|number|string|vim.NIL|Neoagent.JsonArray|Neoagent.JsonObject
 
 ---@class Neoagent.Error
+---@field operation? "compaction" The failure belongs to preparation rather than inference recovery.
+---@field retry_exhausted? "request"|"summary"|"native_reduction" The named recovery scope has spent its retry budget.
+---@field context_overflow? boolean Adapter-classified input overflow.
+---@field retryable? boolean Explicit retry classification; false forbids transient retries.
 ---@field kind string
 ---@field message string
 ---@field detail? unknown
+---@field code? string
 ---@field [string] unknown Additional error metadata is untrusted until validated.
 
 ---@class Neoagent.SafeMessageOptions
@@ -432,6 +437,9 @@ function M.normalize_error(err, kind)
       "provider_status",
       "provider_status_details",
       "stream_max_retries",
+      "retry_exhausted",
+      "operation",
+      "context_overflow",
     }) do
       local selected = rawget(err, name)
       local safe = plain_error_copy(selected, priority_state, 0)

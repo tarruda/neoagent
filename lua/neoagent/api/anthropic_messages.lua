@@ -1,3 +1,4 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
@@ -150,7 +151,7 @@ end
 ---@class Neoagent.AnthropicModel: Neoagent.Model
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
----@field _max_output_tokens integer
+---@field max_output_tokens integer
 ---@field _prompt_caching boolean
 ---@field _timeout_ms? integer
 ---@field _anthropic_version string
@@ -161,16 +162,26 @@ end
 local Model = {}
 Model.__index = Model
 
----@param call_opts Neoagent.StreamOptions
+---@param call_opts Neoagent.RequestOptions
 ---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
 function Model:_request(call_opts)
-  return request.build(self, call_opts)
+  return request_preparation.plan(self, call_opts, false, function(api_key)
+    return request.build(self, call_opts, api_key)
+  end, self._api_key)
+end
+
+---@param options Neoagent.RequestOptions
+---@param operation? "compact"
+---@return integer
+function Model:estimate_request(options, operation)
+  local plan = self:_request(options)
+  return request_preparation.estimate(options, plan)
 end
 
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = util.copy(opts or {})
+  opts = request_preparation.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
   ---@type Neoagent.AnthropicMessage?
   local message
@@ -443,7 +454,7 @@ function Model:stream(opts)
       end)
 
       if not ok then
-        local err = util.normalize_error(outcome, "model")
+        local err = http_response.normalize_error(outcome)
         local partial = partial_message(message, blocks, err)
         return { ok = false, message = partial, error = err }
       end
@@ -485,12 +496,12 @@ function M.new(opts)
       id = opts.model,
       input = util.copy(opts.input or { "text", "image" }),
       context_window = opts.context_window,
+      max_output_tokens = opts.max_output_tokens or 4096,
       timeout_ms = timeout_ms,
       _timeout_ms = timeout_ms,
       thinking = util.copy(opts.thinking),
       _base_url = opts.base_url:gsub("/+$", ""),
       _api_key = opts.api_key,
-      _max_output_tokens = opts.max_output_tokens or 4096,
       _prompt_caching = opts.prompt_caching == true,
       _anthropic_version = "2023-06-01",
       _request_opts = layers,

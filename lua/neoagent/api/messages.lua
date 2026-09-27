@@ -1,4 +1,5 @@
 local semantic_message = require("neoagent.semantic_message")
+local model_contract = require("neoagent.model")
 
 local M = {}
 
@@ -50,7 +51,7 @@ local function with_content(message, content)
   return result
 end
 
----@param message Neoagent.Message
+---@param message Neoagent.RequestMessage
 ---@param model Neoagent.MessageTarget
 ---@return TypeGuard<Neoagent.AssistantMessage>
 local function foreign_assistant(message, model)
@@ -81,21 +82,22 @@ local function portable_content(content)
   return result
 end
 
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param model Neoagent.MessageTarget
----@return Neoagent.Message[]
+---@return Neoagent.RequestMessage[]
 function M.for_model(messages, model)
-  assert(type(messages) == "table" and vim.islist(messages), "messages must be a list")
-  for index, message in ipairs(messages) do
-    local normalized, err = semantic_message.normalize(message)
-    if not normalized then
-      error("message " .. tostring(index) .. ": " .. err, 0)
-    end
+  local normalized, err = semantic_message.normalize_request_list(messages)
+  if not normalized then
+    error(err, 0)
   end
+  local compatible, compatibility_err = model_contract.compatible_context(model, normalized)
+  if not compatible then
+    error(assert(compatibility_err).message, 0)
+  end
+  messages = normalized
   local images = supports_images(model)
-  ---@type Neoagent.Message[]
+  ---@type Neoagent.RequestMessage[]
   local result = {}
-  local changed = false
   for index, message in ipairs(messages) do
     if foreign_assistant(message, model) then
       result[index] = with_content(message, portable_content(message.content))
@@ -106,9 +108,8 @@ function M.for_model(messages, model)
     else
       result[index] = message
     end
-    changed = changed or result[index] ~= message
   end
-  return changed and result or messages
+  return result
 end
 
 return M

@@ -23,23 +23,25 @@ local M = {}
 ---@field headers? table<string, unknown>
 ---@field body? Neoagent.JsonObject
 ---@field timeout_ms? number|false
----@field messages? Neoagent.Message[] Semantic conversation owned by shaping until encoding.
+---@field messages? Neoagent.RequestMessage[] Semantic conversation owned by shaping until encoding.
 
 ---@class Neoagent.RequestPlan
+---@field input_tokens integer Estimated shaped input, before attachment preparation.
 ---@field api string
 ---@field request Neoagent.ApiRequest
----@field messages Neoagent.Message[]
+---@field messages Neoagent.RequestMessage[]
+---@field prompt_prefix? string|Neoagent.JsonObject[] Encoder-owned prompt content.
 ---@field encode async fun(image: Neoagent.ImageEncoder): Neoagent.JsonObject
 
 ---@class Neoagent.RequestOverride
 ---@field url? string
 ---@field headers? table<string, unknown>
 ---@field body? Neoagent.JsonObject
----@field messages? Neoagent.Message[]
+---@field messages? Neoagent.RequestMessage[]
 
 ---@class Neoagent.RequestOptionsInput
 ---@field model Neoagent.Model
----@field messages Neoagent.Message[]
+---@field messages Neoagent.RequestMessage[]
 ---@field system_prompt? string
 ---@field tools Neoagent.ToolDefinition[]
 ---@field request_context? Neoagent.RequestIdentity
@@ -113,13 +115,10 @@ local function merge(request, override)
 end
 
 ---@param request Neoagent.ApiRequest
----@param layer? Neoagent.RequestLayer
+---@param layer Neoagent.RequestLayer
 ---@param context Neoagent.RequestOptionsInput
----@return Neoagent.ApiRequest
-function M.apply(request, layer, context)
-  if layer == nil then
-    return request
-  end
+---@return Neoagent.RequestOverride
+local function resolve(request, layer, context)
   local override = layer
   if type(layer) == "function" then
     local snapshot = util.copy(context)
@@ -135,7 +134,31 @@ function M.apply(request, layer, context)
   if type(override) ~= "table" then
     error(util.error("model", "request_opts must be a table or return a table"), 0)
   end
-  return merge(request, override)
+  return override
+end
+
+---@param request Neoagent.ApiRequest
+---@param layer? Neoagent.RequestLayer
+---@param context Neoagent.RequestOptionsInput
+---@return Neoagent.ApiRequest
+function M.apply(request, layer, context)
+  if layer == nil then
+    return request
+  end
+  return merge(request, resolve(request, layer, context))
+end
+
+-- The composition supplies the selected level. Never infer policy from wire
+-- fields: provider mappings may use arbitrary nested fields or callbacks.
+---@param request Neoagent.ApiRequest
+---@param context Neoagent.RequestOptionsInput
+---@param call Neoagent.RequestOptions
+---@return Neoagent.ApiRequest
+function M.apply_thinking(request, context, call)
+  local thinking = require("neoagent.thinking")
+  local level = call.thinking_level
+  assert(level == nil or thinking.is_level(level), "Request thinking level is invalid")
+  return M.apply(request, thinking.request_opts(context.model, level), context)
 end
 
 return M

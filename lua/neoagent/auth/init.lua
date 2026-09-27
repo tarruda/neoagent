@@ -1,3 +1,4 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request_opts = require("neoagent.api.request_opts")
@@ -676,38 +677,56 @@ function Manager:wrap(model, id, opts)
   method_for(self, id)
   opts = opts or {}
   ---@class Neoagent.AuthenticatedModel: Neoagent.Model
-  ---@field _manager Neoagent.AuthManager
-  ---@field _method string
   ---@field _model Neoagent.Model
-  ---@field _optional boolean
   local wrapped = assert(model_contract.capabilities(model)) --[[@as Neoagent.AuthenticatedModel]]
+  wrapped._model = model
+  ---@async
+  ---@generic T: Neoagent.RequestOptions
+  ---@param call_opts T
+  ---@return T
+  local function authenticated_call(call_opts)
+    -- Authentication remains authoritative at execution, even if a caller
+    -- yielded or changed credentials after estimating this request.
+    local resolved = self:resolve(id, { optional = opts.optional == true }):await()
+    if not resolved.ok then
+      error(resolved.error, 0)
+    end
+    return request_preparation.reuse(wrapped, call_opts, function()
+      local call = request_preparation.copy(call_opts)
+      if resolved.configured then
+        local user_layer = call.request_opts
+        call.request_opts = function(context)
+          local request = request_opts.apply(context.request, user_layer, context)
+          local authorized = request_opts.apply(request, resolved.request_opts, context)
+          return {
+            url = authorized.url,
+            headers = authorized.headers,
+            body = authorized.body,
+            messages = authorized.messages,
+          }
+        end
+      end
+      return call
+    end, resolved)
+  end
+  if model.estimate_request then
+    ---@param call_opts Neoagent.RequestOptions
+    ---@param operation? "compact"
+    ---@async
+    function wrapped:estimate_request(call_opts, operation)
+      return model:estimate_request(authenticated_call(call_opts), operation)
+    end
+  end
   ---@param call_opts Neoagent.StreamOptions
   ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function wrapped:stream(call_opts)
-    call_opts = util.copy(call_opts or {})
+    call_opts = request_preparation.copy(call_opts or {})
     return async.run(
       ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
       ---@return Neoagent.ModelResult
       function(run)
         model_contract.require_files(call_opts)
-        local resolved = self._manager:resolve(self._method, { optional = self._optional }):await()
-        if not resolved.ok then
-          error(resolved.error, 0)
-        end
-        local call = util.copy(call_opts)
-        if resolved.configured then
-          local user_layer = call.request_opts
-          call.request_opts = function(context)
-            local request = request_opts.apply(context.request, user_layer, context)
-            local authorized = request_opts.apply(request, resolved.request_opts, context)
-            return {
-              url = authorized.url,
-              headers = authorized.headers,
-              body = authorized.body,
-              messages = authorized.messages,
-            }
-          end
-        end
+        local call = authenticated_call(call_opts)
         call.on_event = function(event)
           run:emit(event)
         end
@@ -717,8 +736,22 @@ function Manager:wrap(model, id, opts)
       { on_event = call_opts.on_event, on_done = call_opts.on_done, error_kind = "auth" }
     )
   end
-  wrapped._manager, wrapped._method, wrapped._model = self, id, model
-  wrapped._optional = opts.optional == true
+  if model.compact then
+    ---@param call_opts Neoagent.NativeCompactionOptions
+    ---@return Neoagent.Run<Neoagent.NativeCompactionResult, Neoagent.ModelEvent>
+    function wrapped:compact(call_opts)
+      call_opts = request_preparation.copy(call_opts or {})
+      return async.run(function(run)
+        model_contract.require_files(call_opts)
+        local call = authenticated_call(call_opts)
+        call.on_event = function(event)
+          run:emit(event)
+        end
+        call.on_done = nil
+        return model:compact(call):await()
+      end, { on_event = call_opts.on_event, on_done = call_opts.on_done, error_kind = "auth" })
+    end
+  end
   return model_contract.assert(wrapped, "Authentication Model wrapper")
 end
 

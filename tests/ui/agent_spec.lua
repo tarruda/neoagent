@@ -1059,7 +1059,7 @@ describe("neoagent default agent", function()
       assert(vim.wait(1000, function() return run:is_done() end))
       assert.is_true(assert(run:result()).ok)
       assert.are.equal(1, executions)
-      assert.are.same({ 1, 0 }, users)
+      assert.are.same({ 1, 2, 1, 2, 1, 0 }, users)
       assert.are.same({}, session:messages())
     end)
     if sibling then sibling:destroy() end
@@ -3420,7 +3420,7 @@ describe("neoagent default agent", function()
     local model = fake_model.new({})
     setup_model(model, { persistence = { enabled = true, directory = directory } })
     assert(neoagent.open())
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.are.equal("fake/test", current_view().context.model)
     assert.is_nil(vim.uv.fs_stat(directory))
     assert.is_nil(vim.uv.fs_stat(directory))
@@ -3432,7 +3432,7 @@ describe("neoagent default agent", function()
     setup_model(model)
     assert(neoagent.open())
 
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.are.equal("fake/test", current_view().context.model)
   end)
 
@@ -3481,7 +3481,7 @@ describe("neoagent default agent", function()
     neoagent._set_default(pending_agent)
 
     assert(neoagent.open())
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.are.equal("fake/test", current_view().context.model)
 
     options.default_model = { provider = "fake", model = "test" }
@@ -3489,7 +3489,7 @@ describe("neoagent default agent", function()
     local previous = neoagent._set_default(resolved_agent)
     assert(previous):destroy()
     assert(neoagent.open())
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.are.equal("fake/test", current_view().context.model)
   end)
 
@@ -3590,7 +3590,8 @@ describe("neoagent default agent", function()
     assert(value:prepare())
     assert(runtime.catalog:publish_discoveries({ { id = "remote" } }))
     assert(vim.wait(1000, function()
-      return value:get_model() == model
+      local resolved = value:get_model()
+      return resolved and rawget(resolved, "_model") == model
     end, 5))
     local run = assert(value:send("use the discovered model"))
     assert(type(run) == "table")
@@ -3768,12 +3769,12 @@ describe("neoagent default agent", function()
     vim.cmd("cd " .. vim.fn.fnameescape(original_cwd))
     setup_model(models.test, extra)
     assert(neoagent.open())
-    assert.are.equal(models.test, neoagent.get_model())
+    assert.are.equal(models.test, rawget(assert(neoagent.get_model()), "_model"))
     vim.cmd("cd " .. vim.fn.fnameescape(workspace))
 
     setup_model(models.test, extra)
     assert(neoagent.open())
-    assert.are.equal(models.selected, neoagent.get_model())
+    assert.are.equal(models.selected, rawget(assert(neoagent.get_model()), "_model"))
     assert.are.equal("fake/selected", current_view().context.model)
   end)
 
@@ -3822,7 +3823,7 @@ describe("neoagent default agent", function()
     assert.are.same({ provider = "fake", model = "test" },
       assert(require("neoagent.storage").open(assert(path), workspace_storage)):state().model)
 
-    assert.are.equal(models.alpha, neoagent.set_model("fake", "alpha"))
+    assert.are.equal(models.alpha, rawget(assert(neoagent.set_model("fake", "alpha")), "_model"))
     assert.are.same({ provider = "fake", model = "test" },
       assert(assert(settings:load()).agents.Neo).default_model)
     assert.are.same({ provider = "fake", model = "test" },
@@ -3836,7 +3837,7 @@ describe("neoagent default agent", function()
     assert.are.same({ provider = "fake", model = "alpha" },
       assert(require("neoagent.storage").open(assert(path), workspace_storage)):state().model)
 
-    assert.are.equal(models.alpha, neoagent.get_model())
+    assert.are.equal(models.alpha, rawget(assert(neoagent.get_model()), "_model"))
   end)
 
   it("persists workspace preferences and restores session-local model state", function()
@@ -3970,7 +3971,7 @@ describe("neoagent default agent", function()
     local original = setup_model(models.reasoning, options)
     assert(neoagent.open())
     assert.are.equal("high", neoagent.get_thinking_level())
-    assert.are.equal(models.plain, neoagent.set_model("fake", "plain"))
+    assert.are.equal(models.plain, rawget(assert(neoagent.set_model("fake", "plain")), "_model"))
     assert.is_nil(neoagent.get_thinking_level())
 
     local run = assert(neoagent.send("use plain"))
@@ -3991,10 +3992,10 @@ describe("neoagent default agent", function()
     setup_model(models.plain, options)
     original:destroy()
     assert(neoagent.open())
-    assert.are.equal(models.plain, neoagent.get_model())
+    assert.are.equal(models.plain, rawget(assert(neoagent.get_model()), "_model"))
     assert.is_nil(neoagent.get_thinking_level())
     assert.are.equal(models.reasoning,
-      neoagent.set_model("fake", "reasoning"))
+      rawget(assert(neoagent.set_model("fake", "reasoning")), "_model"))
     assert.are.equal("high", neoagent.get_thinking_level())
   end)
 
@@ -4046,7 +4047,7 @@ describe("neoagent default agent", function()
       assert(assert(agent):prepare())
 
       local selected, err = assert(agent):set_model("fake", "test")
-      assert.are.equal(model, selected)
+      assert.are.equal(model, rawget(assert(selected), "_model"))
       assert.is_nil(err)
 
       local position, position_err = assert(agent):set_ui_position("left")
@@ -4070,7 +4071,7 @@ describe("neoagent default agent", function()
       fail_settings = false
       assert(captured_store).append = function() return nil, journal_error end
       selected, err = assert(agent):set_model("fake", "test")
-      assert.are.equal(model, selected)
+      assert.are.equal(model, rawget(assert(selected), "_model"))
       assert.is_nil(err)
       local rejected_run
       rejected_run, err = assert(agent):send("rejected")
@@ -4912,16 +4913,17 @@ describe("neoagent default agent", function()
       vim.tbl_map(function(item) return item.label end, assert(model_request.items)))
     presentation.choose(window, "fake/alpha")
     assert(vim.wait(1000, function()
-      return neoagent.get_model() == model and current_view():is_open()
+      local resolved = neoagent.get_model()
+      return resolved and rawget(resolved, "_model") == model and current_view():is_open()
     end, 5))
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.is_true(current_view():is_open())
 
     neoagent.close()
     assert(neoagent.select_model())
     presentation.cancel(window)
     assert(vim.wait(1000, function() return current_view():is_open() end, 5))
-    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal(model, rawget(assert(neoagent.get_model()), "_model"))
     assert.is_true(current_view():is_open())
 
     neoagent.setup({ default_registry = false, workspace_trust = false,

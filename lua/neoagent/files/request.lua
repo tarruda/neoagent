@@ -16,7 +16,7 @@ local M = {}
 ---@field headers? fun(request: Neoagent.ApiRequest): table<string, string>
 ---@field rejected? fun(result: Neoagent.HttpResult): boolean Definitive stale-file rejection; repair inspects every used ID.
 
----@param manager_for fun(dependencies: Neoagent.StreamOptions): Neoagent.FileManager
+---@param manager_for fun(dependencies: Neoagent.RequestDependencies): Neoagent.FileManager
 ---@param policy Neoagent.FileRequestPolicy
 ---@return Neoagent.ImageRequest
 function M.new(manager_for, policy)

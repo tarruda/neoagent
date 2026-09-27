@@ -16,6 +16,53 @@ local function wait(run)
 end
 
 describe("neoagent.api.openai_completions", function()
+  it("keeps the per-call output limit after Model and call request layers", function()
+    local model = openai.new({
+      provider = "test", model = "test", base_url = "https://example.test/v1",
+      request_opts_layers = { { body = { max_completion_tokens = 32000, reasoning_effort = "high" } } },
+      thinking = {
+        low = { body = { reasoning_effort = "low" } },
+        high = { body = { reasoning_effort = "high" } },
+      },
+    })
+    local plan = model:_request({ messages = {}, thinking_level = "high", max_output_tokens = 8192, request_opts = { body = { max_completion_tokens = 40000 } } })
+    assert.are.equal(8192, assert(plan.request.body).max_completion_tokens)
+    assert.are.equal("high", assert(plan.request.body).reasoning_effort)
+  end)
+
+  it("preserves disabled reasoning and uses the Model's supported effort mapping", function()
+    local model = openai.new({
+      provider = "test", model = "test", base_url = "https://example.test/v1",
+      thinking = {
+        off = { body = { reasoning_effort = "disabled" } },
+        low = { body = { reasoning_effort = "minimal" } },
+      },
+    })
+    local disabled = model:_request({ messages = {}, max_output_tokens = 128, request_opts = { body = { reasoning_effort = "none" } } })
+    assert.are.equal("none", assert(disabled.request.body).reasoning_effort)
+    local mapped_off = model:_request({ messages = {}, max_output_tokens = 128, request_opts = { body = { reasoning_effort = "disabled" } } })
+    assert.are.equal("disabled", assert(mapped_off.request.body).reasoning_effort)
+    local thinking_disabled = model:_request({ messages = {}, max_output_tokens = 128, request_opts = { body = { thinking = { type = "disabled" }, reasoning_effort = "high" } } })
+    assert.are.equal("high", assert(thinking_disabled.request.body).reasoning_effort)
+    assert.are.equal("disabled", assert(assert(thinking_disabled.request.body).thinking).type)
+    local enabled = model:_request({ messages = {}, thinking_level = "low", max_output_tokens = 128 })
+    assert.are.equal("minimal", assert(enabled.request.body).reasoning_effort)
+  end)
+
+  it("rejects invalid output limits before sending a request", function()
+    local model = openai.new({
+      provider = "test", model = "test", base_url = "https://example.test/v1",
+    })
+    for _, limit in ipairs({ 0, -1, 1.5, math.huge }) do
+      local ok, err = pcall(function()
+        local options = { messages = {} }
+        rawset(options, "max_output_tokens", limit)
+        model:_request(options)
+      end)
+      assert.is_false(ok)
+      assert.matches("positive integer", require("neoagent.util").normalize_error(err, "model").message)
+    end
+  end)
   it("reports provider errors that omit a message", function()
     local transport = fake_transport.new({ { chunks = {
       'data: {"error":{}}\n\n',
@@ -470,6 +517,7 @@ describe("neoagent.api.openai_completions", function()
           { type = "text", text = "checking" },
           { type = "toolCall", id = "call-1", name = "inspect",
             arguments = { zeta = true, path = "x.lua", alpha = { second = 2, first = 1 } } },
+          { type = "toolCall", id = "call-2", name = "inspect", arguments = {} },
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
           attachments.image(vim.base64.decode("BBBB"), "image/jpeg"),
@@ -487,6 +535,8 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal("http://override/v1/chat/completions", request.url)
     local body = assert(request.body)
     assert.are.equal(256, body.max_completion_tokens)
+    assert.are.equal(64,
+      assert(assert(model:_request({ messages = {}, max_output_tokens = 64 })).request.body).max_completion_tokens)
     assert.are.equal(0, body.temperature)
     assert.are.equal("Be precise", body.messages[1].content)
     assert.are.equal("data:image/png;base64,AAAA", assert(assert(assert(body.messages[2].content)[2]).image_url).url)

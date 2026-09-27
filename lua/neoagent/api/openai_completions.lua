@@ -1,3 +1,5 @@
+local request_preparation = require("neoagent.api.request_preparation")
+local request_estimate = require("neoagent.api.request_estimate")
 local async = require("neoagent.async")
 local messages = require("neoagent.api.messages")
 local model_contract = require("neoagent.model")
@@ -5,6 +7,7 @@ local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
 local request_stream = require("neoagent.api.request_stream")
 local semantic_message = require("neoagent.semantic_message")
+local output_budget = require("neoagent.api.output_limit")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local tool_schema = require("neoagent.api.tool_schema")
 local http = require("neoagent.transport.http")
@@ -110,7 +113,7 @@ local function encode_assistant(message, requires_reasoning_content)
 end
 
 ---@async
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param system_prompt? string
 ---@param requires_reasoning_content? boolean
 ---@param image? Neoagent.ImageEncoder
@@ -394,7 +397,6 @@ end
 ---@class Neoagent.CompletionsModel: Neoagent.Model
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
----@field _max_output_tokens? number
 ---@field _requires_reasoning_content boolean
 ---@field _request_opts Neoagent.RequestLayer[]
 ---@field _request_context? Neoagent.RequestIdentity
@@ -404,16 +406,14 @@ end
 local Model = {}
 Model.__index = Model
 
----@param call_opts Neoagent.StreamOptions
+---@param self Neoagent.CompletionsModel
+---@param call_opts Neoagent.RequestOptions
+---@param api_key? string
 ---@return Neoagent.RequestPlan
 ---@return Neoagent.RequestIdentity?
-function Model:_request(call_opts)
-  call_opts = util.copy(call_opts)
+local function build_request(self, call_opts, api_key)
+  call_opts = request_preparation.copy(call_opts)
   local headers = { ["Content-Type"] = "application/json" }
-  local api_key = self._api_key
-  if type(api_key) == "function" then
-    api_key = api_key()
-  end
   if api_key ~= nil and api_key ~= "" then
     headers.Authorization = "Bearer " .. api_key
   end
@@ -423,8 +423,8 @@ function Model:_request(call_opts)
     stream = true,
     stream_options = { include_usage = true },
   }
-  if self._max_output_tokens then
-    body.max_completion_tokens = self._max_output_tokens
+  if call_opts.max_output_tokens or self.max_output_tokens then
+    body.max_completion_tokens = call_opts.max_output_tokens or self.max_output_tokens
   end
   local schemas = encode_tools(call_opts.tools)
   if #schemas > 0 then
@@ -448,12 +448,18 @@ function Model:_request(call_opts)
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, ctx)
   end
+  request = request_opts.apply_thinking(request, ctx, call_opts)
   request = request_opts.apply(request, call_opts.request_opts, ctx)
+  if call_opts.max_output_tokens ~= nil or call_opts.max_thinking_tokens ~= nil then
+    request = output_budget.apply(request, ctx, call_opts.max_output_tokens, call_opts.max_thinking_tokens)
+  end
   local selected = messages.for_model(assert(request.messages), self)
   return {
     api = self.api,
     request = request,
     messages = selected,
+    prompt_prefix = call_opts.system_prompt,
+    input_tokens = request_estimate.shaped(request, selected, call_opts.system_prompt),
     ---@async
     encode = function(image)
       local encoded = util.copy(request.body or {})
@@ -464,10 +470,26 @@ function Model:_request(call_opts)
     ctx.request_context
 end
 
+---@param call_opts Neoagent.RequestOptions
+---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
+function Model:_request(call_opts)
+  return request_preparation.plan(self, call_opts, false, function(api_key)
+    return build_request(self, call_opts, api_key)
+  end, self._api_key)
+end
+
+---@param options Neoagent.RequestOptions
+---@param operation? "compact"
+---@return integer
+function Model:estimate_request(options, operation)
+  local plan = self:_request(options)
+  return request_preparation.estimate(options, plan)
+end
+
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = util.copy(opts or {})
+  opts = request_preparation.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
   ---@type Neoagent.AssistantMessage?
   local message
@@ -653,7 +675,7 @@ function Model:stream(opts)
       end)
 
       if not ok then
-        local err = util.normalize_error(outcome, "model")
+        local err = http_response.normalize_error(outcome)
         local partial = partial_message(message, calls_complete, err)
         return { ok = false, message = partial, error = err }
       end
@@ -696,10 +718,10 @@ function M.new(opts)
       id = opts.model,
       input = util.copy(opts.input or { "text", "image" }),
       context_window = opts.context_window,
+      max_output_tokens = opts.max_output_tokens,
       timeout_ms = timeout_ms,
       _base_url = opts.base_url:gsub("/+$", ""),
       _api_key = opts.api_key,
-      _max_output_tokens = opts.max_output_tokens,
       _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
       thinking = util.copy(opts.thinking),
       _request_opts = layers,

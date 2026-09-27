@@ -1,3 +1,4 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local responses = require("neoagent.api.openai_responses")
@@ -342,13 +343,12 @@ end
 ---@param message? string
 ---@return boolean
 local function terminal_error(code, message)
+  if model_contract.is_context_overflow({ kind = "model", code = code, message = message or "" }) then
+    return true
+  end
   local text = ((code or "") .. " " .. (message or "")):lower()
   for _, pattern in ipairs({
-    "context_length",
-    "context window",
-    "context_window",
-    "maximum context",
-    "too many tokens",
+    "max_output_tokens",
     "invalid_prompt",
     "invalid request",
     "invalid_request",
@@ -441,7 +441,7 @@ local function enrich_error(value)
     err.provider_status_details = provider_status_details
   end
   err.retry_after_ms = retry_after(headers) or message_retry_after(err.code, err.message)
-  if err.kind == "cancelled" or terminal_error(err.code, err.message) then
+  if err.retryable == false or err.kind == "cancelled" or terminal_error(err.code, err.message) then
     err.retryable = false
   elseif status then
     err.retryable = status == 429 or status == 500 or status == 502 or status == 503 or status == 504 or status == 200
@@ -462,7 +462,7 @@ local function retry_delay(err, attempt)
 end
 
 ---@param self Neoagent.CodexModel
----@param call_opts Neoagent.StreamOptions
+---@param call_opts Neoagent.StreamOptions|Neoagent.NativeCompactionOptions
 ---@param event_type "request_retry"|"request_failed"
 ---@param err Neoagent.CodexError
 ---@param attempt integer
@@ -500,6 +500,7 @@ end
 ---@return Neoagent.CodexModel
 local function wrap_stream(model, opts)
   local base_stream = model.stream
+  local base_compact = model.compact
   ---@cast model Neoagent.CodexModel
   model._request_max_retries = opts.request_max_retries == nil and REQUEST_MAX_RETRIES or opts.request_max_retries
   assert(
@@ -525,7 +526,7 @@ local function wrap_stream(model, opts)
           local max_retries = self._request_max_retries
           local attempt = 0
           while true do
-            local call = util.copy(call_opts)
+            local call = request_preparation.copy(call_opts)
             call.on_event = function(event)
               run:emit(event)
             end
@@ -546,6 +547,11 @@ local function wrap_stream(model, opts)
 
             local should_retry = err.retryable and result.message == nil and attempt < max_retries
             if not should_retry then
+              err.retry_exhausted = err.retryable == true
+                  and result.message == nil
+                  and attempt >= max_retries
+                  and "request"
+                or nil
               emit_diagnostic(self, call_opts, "request_failed", err, attempt + 1, max_retries + 1)
               return result
             end
@@ -576,6 +582,52 @@ local function wrap_stream(model, opts)
       }
     )
   end
+  if base_compact then
+    ---@param self Neoagent.CodexModel
+    ---@param call_opts Neoagent.NativeCompactionOptions
+    ---@return Neoagent.Run<Neoagent.NativeCompactionResult, Neoagent.ModelEvent>
+    function model.compact(self, call_opts)
+      call_opts = request_preparation.copy(call_opts)
+      return async.run(function(run)
+        local retries = math.min(self._request_max_retries, 2)
+        local attempt = 0
+        local reconnecting = false
+        local ok, outcome = pcall(function()
+          while true do
+            local call = request_preparation.copy(call_opts)
+            call.on_event = function(event)
+              run:emit(event)
+            end
+            call.on_done = nil
+            local result = base_compact(self, call):await()
+            if result.ok then
+              return result
+            end
+            local err = enrich_error(result.error)
+            result.error = err
+            if err.kind == "cancelled" or not err.retryable or attempt >= retries then
+              err.retry_exhausted = err.retryable == true and attempt >= retries and "request" or nil
+              emit_diagnostic(self, call_opts, "request_failed", err, attempt + 1, retries + 1)
+              return result
+            end
+            local wait = retry_delay(err, attempt)
+            emit_diagnostic(self, call_opts, "request_retry", err, attempt + 1, retries + 1, wait)
+            reconnecting = true
+            run:emit({ type = "provider_status", text = "Reconnecting…", reconnecting = true })
+            self._sleep(wait)
+            attempt = attempt + 1
+          end
+        end)
+        if reconnecting then
+          run:emit({ type = "provider_status", reconnecting = false })
+        end
+        if not ok then
+          error(outcome, 0)
+        end
+        return outcome --[[@as Neoagent.NativeCompactionResult]]
+      end, { on_event = call_opts.on_event, on_done = call_opts.on_done, error_kind = "model" })
+    end
+  end
   return model
 end
 
@@ -586,6 +638,7 @@ function M.new(opts)
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
   opts.base_url = base_url(opts.base_url)
   opts.profile = "codex"
+  opts.native_compaction = true
   opts.response_status = rate_limit_status
   local model = responses.new(opts)
   model.api = "openai-codex-responses"

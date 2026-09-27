@@ -28,6 +28,7 @@ end
 ---@field reasoning_effort? string
 ---@field reasoning_summary? string
 ---@field request_opts_layers? Neoagent.RequestLayer[]
+---@field thinking? Neoagent.ThinkingOptions
 ---@field input? ('text'|'image')[]
 
 ---@param fake Neoagent.ByteBackend
@@ -205,6 +206,7 @@ describe("neoagent.api.openai_responses", function()
           { type = "text", text = "checking", phase = "commentary", textSignature = '{"id":"msg_saved"}' },
           { type = "toolCall", id = "call_saved|fc_saved", name = "inspect",
             arguments = { zeta = true, path = "x.lua", alpha = { second = 2, first = 1 } } },
+          { type = "toolCall", id = "empty", name = "inspect", arguments = {} },
         } },
         { role = "toolResult", toolCallId = "call_saved|fc_saved", content = {
           { type = "text", text = "image" },
@@ -236,6 +238,8 @@ describe("neoagent.api.openai_responses", function()
     assert.are.same({ provider = true, call = true }, body.metadata)
     assert.are.equal(0, body.temperature)
     assert.are.equal(16, body.max_output_tokens)
+    assert.are.equal(64,
+      assert(assert(instance:_request({ messages = {}, max_output_tokens = 64 })).request.body).max_output_tokens)
     assert.are.same({ effort = "high", summary = "detailed" }, body.reasoning)
     assert.are.same({ "reasoning.encrypted_content" }, body.include)
     assert.are.equal("system", body.input[1].role)
@@ -246,10 +250,25 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("fc_saved", body.input[5].id)
     assert.are.equal([[{"alpha":{"first":1,"second":2},"path":"x.lua","zeta":true}]],
       body.input[5].arguments)
-    assert.are.equal("data:image/jpeg;base64,BBBB", assert(assert(body.input[6].output)[2]).image_url)
-    assert.are.equal("(no tool output)", body.input[7].output)
-    assert.is_nil(body.input[8].id)
+    assert.are.equal("data:image/jpeg;base64,BBBB", assert(assert(body.input[7].output)[2]).image_url)
+    assert.are.equal("(no tool output)", body.input[8].output)
+    assert.is_nil(body.input[9].id)
     assert.are.same({ provider = true }, provider_opts.body.metadata)
+  end)
+
+  it("keeps the per-call output limit after Model and call request layers", function()
+    local instance = model(fake_transport.new(), {
+      request_opts_layers = { { body = { max_output_tokens = 32000 } } },
+      reasoning = true, reasoning_effort = "high",
+    })
+    local plan = instance:_request({ messages = {}, max_output_tokens = 8192, request_opts = { body = { max_output_tokens = 40000 } } })
+    assert.are.equal(8192, assert(plan.request.body).max_output_tokens)
+    assert.are.equal("high", assert(assert(plan.request.body).reasoning).effort)
+    local ok, err = pcall(function()
+      instance:_request({ messages = {}, max_output_tokens = 8 })
+    end)
+    assert.is_false(ok)
+    assert.matches("at least 16", util.normalize_error(err, "model").message)
   end)
 
   it("adapts foreign reasoning history without changing the Session", function()
@@ -279,6 +298,18 @@ describe("neoagent.api.openai_responses", function()
       assert.matches("Hello!", encoded, 1, true)
       assert.are.same(before, session:messages())
     end
+  end)
+
+  it("rejects an invalid conversation installed by request options", function()
+    local instance = model(fake_transport.new())
+    local prepared, err = pcall(function()
+      return instance:_request({
+        messages = { { role = "user", content = "Original" } },
+        request_opts = { messages = { { role = "toolResult", toolCallId = "missing", content = {} } } },
+      })
+    end)
+    assert.is_false(prepared)
+    assert.matches("unknown toolCall", tostring(err))
   end)
 
   it("downgrades images before encoding requests for text-only models", function()

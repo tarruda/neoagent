@@ -64,8 +64,9 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
+---@param api? string
 ---@return string[]?, Neoagent.Error?
-function M.available(configured, manager, runtimes)
+function M.available(configured, manager, runtimes, api)
   configured = configured or config.get()
   ---@cast configured Neoagent.ModelResolutionConfig
   runtimes = assert_runtimes(runtimes)
@@ -80,7 +81,7 @@ function M.available(configured, manager, runtimes)
     end
     if credential_state.usable then
       for model_id, model in pairs(runtime.catalog:snapshot().models) do
-        if model.hidden ~= true then
+        if model.hidden ~= true and (api == nil or (model.api or provider.api) == api) then
           result[#result + 1] = provider_id .. "/" .. model_id
         end
       end
@@ -93,9 +94,10 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
+---@param api? string
 ---@return Neoagent.ModelSelection?, Neoagent.Error?
-function M.first_available(configured, manager, runtimes)
-  local available, err = M.available(configured, manager, runtimes)
+function M.first_available(configured, manager, runtimes, api)
+  local available, err = M.available(configured, manager, runtimes, api)
   if not available then
     return nil, err
   end
@@ -111,8 +113,9 @@ end
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@param listener fun(choices?: string[], err?: Neoagent.Error)
+---@param api? string
 ---@return fun(): boolean
-function M.subscribe_available(configured, manager, runtimes, listener)
+function M.subscribe_available(configured, manager, runtimes, listener, api)
   runtimes = assert_runtimes(runtimes)
   assert(type(listener) == "function", "available-model subscriber must be a function")
   local active = true
@@ -124,7 +127,7 @@ function M.subscribe_available(configured, manager, runtimes, listener)
     if not active then
       return
     end
-    local choices, err = M.available(configured, manager, runtimes)
+    local choices, err = M.available(configured, manager, runtimes, api)
     local value = choices and { choices = choices } or { error = util.copy(err) }
     if previous and vim.deep_equal(previous, value) then
       return
@@ -282,6 +285,9 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes, supplie
   if concrete.context_window == nil then
     concrete.context_window = resolved.model.context_window
   end
+  if concrete.max_output_tokens == nil then
+    concrete.max_output_tokens = resolved.model.max_output_tokens
+  end
   if concrete.thinking == nil then
     concrete.thinking = util.copy(resolved.model.thinking)
   end
@@ -299,10 +305,7 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes, supplie
   if type(service.wrap_model) == "function" then
     concrete = validated_model(service:wrap_model(concrete), "Provider Service Model wrapper")
   end
-  if resolved.images then
-    concrete = require("neoagent.provider_model").wrap(concrete, service)
-  end
-  return concrete
+  return require("neoagent.provider_model").wrap(concrete, service)
 end
 
 return M

@@ -11,15 +11,35 @@ describe("neoagent runtime Models", function()
       id = "model",
       input = { "text" },
       context_window = 1000,
+      max_output_tokens = 500,
       timeout_ms = 50,
       thinking = { high = { body = { effort = "high" } } },
       stream = function() end,
     }, overrides or {})
   end
 
+  it("requires overflow evidence and honors an explicit provider classification", function()
+    assert.is_false(model_contract.is_context_overflow(nil))
+    assert.is_false(model_contract.is_context_overflow({ kind = "model", message = "Connection failed" }))
+    assert.is_true(model_contract.is_context_overflow({ kind = "model", message = "Request rejected",
+      code = "context_length_exceeded" }))
+    assert.is_false(model_contract.is_context_overflow({ kind = "model", message = "request too large",
+      context_overflow = false }))
+  end)
+
+  it("prioritizes structured rate limits over ambiguous context wording", function()
+    assert.is_false(model_contract.is_context_overflow({ kind = "model", code = "rate_limit_exceeded",
+      message = "Request too large for the token-per-minute budget" }))
+    assert.is_false(model_contract.is_context_overflow({ kind = "model", code = "rate_limit_error",
+      message = "Too many tokens requested this minute" }))
+    assert.is_true(model_contract.is_context_overflow({ kind = "model", code = "rate_limit_exceeded",
+      message = "Request too large", context_overflow = true }))
+  end)
+
   it("validates and owns the complete capability projection", function()
     local source = model()
     local capabilities = assert(model_contract.capabilities(source))
+    assert.are.equal(500, capabilities.max_output_tokens)
     capabilities.input[1] = "image"
     assert(assert(assert(capabilities.thinking).high).body).effort = "changed"
     assert.are.same({ "text" }, rawget(source, "input"))
@@ -37,11 +57,16 @@ describe("neoagent runtime Models", function()
       model({ provider = "bad\nprovider" }),
       model({ id = "" }),
       model({ stream = false }),
+      model({ compact = false }),
+      model({ estimate_request = false }),
+      model({ id = false }),
       model({ input = {} }),
       model({ input = { "image" } }),
       model({ input = { "text", "text" } }),
       model({ context_window = math.huge }),
       model({ timeout_ms = 0 }),
+      model({ max_output_tokens = 0 }),
+      model({ max_output_tokens = 1.5 }),
       model({ thinking = { {} } }),
       model({ thinking = { future = {} } }),
       model({ thinking = { high = "yes" } }),
@@ -79,4 +104,11 @@ describe("neoagent runtime Models", function()
     assert.are.equal("completed output", assert(assert(result.message).content[1]).text)
     assert.are.equal("stop", original.message.stopReason)
   end)
+  it("does not treat context field validation as overflow", function()
+    assert.is_false(require("neoagent.model").is_context_overflow({
+      kind = "model",
+      message = "Unsupported request parameter: context_window",
+    }))
+  end)
+
 end)
