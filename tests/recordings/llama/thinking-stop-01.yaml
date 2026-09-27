@@ -1,0 +1,54 @@
+---
+# Synthetic reasoning-only stop adapted from the supplied bug handoff.
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/chat/completions
+  body:
+    model: qwen-synthetic
+    messages:
+    - role: user
+      content: Summarize the sample.
+    stream: true
+    stream_options:
+      include_usage: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 89
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 67
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 14
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"choices":[{"index":0,"delta":{"reasoning_content":"Check the sample input."}}]}
+
+  data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+  data: [DONE]
+
+bytes: 170
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

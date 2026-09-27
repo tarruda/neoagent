@@ -1,4 +1,5 @@
 local assert = require("luassert")
+local agent_loop = require("neoagent.agent_loop")
 local http_replay = require("tests.helpers.http_replay")
 local codex = require("neoagent.api.openai_codex_responses")
 local openai = require("neoagent.api.openai_completions")
@@ -59,6 +60,44 @@ describe("OpenAI-compatible HTTP integration", function()
     assert(vim.wait(1000, function() return #deltas == 2 end))
     assert.are.same({ "Hel", "lo" }, deltas)
     assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
+  end)
+
+  it("resubmits a thinking-only llama.cpp stop with its reasoning history", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/llama/thinking-stop-01.yaml", headers_subset = true },
+      { path = "tests/recordings/llama/thinking-stop-02.yaml", headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
+    ---@type Neoagent.Message[]
+    local owner = { { role = "user", content = "Summarize the sample." } }
+    local llama_model = openai.new({
+      provider = "llama.cpp",
+      model = "qwen-synthetic",
+      transport = scenario,
+      base_url = scenario.url .. "/v1",
+    })
+    local result = wait(agent_loop.run({
+      model = llama_model,
+      messages = owner,
+      commit_message = function(message)
+        owner[#owner + 1] = message
+        return true
+      end,
+    }))
+
+    assert(result.ok)
+    assert.are.equal("Finished.", result.text)
+    assert.are.equal(3, #owner)
+    local first = assert(owner[2])
+    local second = assert(owner[3])
+    assert.are.equal("assistant", first.role)
+    assert.are.equal("assistant", second.role)
+    ---@cast first Neoagent.AssistantMessage
+    ---@cast second Neoagent.AssistantMessage
+    assert.are.same({ { type = "thinking", thinking = "Check the sample input.",
+      thinkingSignature = "reasoning_content" } }, first.content)
+    assert.are.equal("Finished.", assert(second.content[1]).text)
+    assert.are.equal(2, #scenario.requests)
   end)
 
   it("streams DeepSeek reasoning and replays it through a tool turn", function()

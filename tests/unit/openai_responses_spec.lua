@@ -47,6 +47,34 @@ local function model(fake, extra)
 end
 
 describe("neoagent.api.openai_responses", function()
+  it("resubmits encrypted reasoning with no summary through the Agent Loop", function()
+    local reasoning = { type = "reasoning", id = "rs_opaque", summary = util.list(),
+      encrypted_content = "synthetic-encrypted-reasoning" }
+    local answer = { type = "message", id = "msg_answer", role = "assistant", status = "completed",
+      content = { { type = "output_text", text = "Finished", annotations = util.list() } } }
+    local transport = fake_transport.new({
+      { chunks = { event({ type = "response.output_item.done", output_index = 0, item = reasoning }),
+        event({ type = "response.completed", response = { status = "completed", output = { reasoning } } }) } },
+      { chunks = { event({ type = "response.output_item.done", output_index = 0, item = answer }),
+        event({ type = "response.completed", response = { status = "completed", output = { answer } } }) } },
+    })
+    local committed = {}
+    local result = wait(require("neoagent.agent_loop").run({
+      model = model(transport), messages = { { role = "user", content = "Solve the sample" } },
+      commit_message = function(message)
+        committed[#committed + 1] = message
+        return true
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal("Finished", result.text)
+    assert.are.equal(2, #transport.requests)
+    assert.are.equal("", committed[1].content[1].thinking)
+    assert.are.same(reasoning, vim.json.decode(committed[1].content[1].thinkingSignature))
+    local body = vim.json.decode((assert(assert(transport.requests[2]).body)))
+    assert.are.same(reasoning, body.input[2])
+  end)
+
   it("streams normalized reasoning, text, tools, and usage", function()
     local reasoning = {
       type = "reasoning", id = "rs_1", summary = {

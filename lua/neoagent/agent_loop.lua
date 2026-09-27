@@ -285,6 +285,24 @@ local function has_visible_text(message)
   return util.trim(util.text_content(message.content)) ~= ""
 end
 
+---@param message Neoagent.AssistantMessage
+---@return boolean
+local function thinking_only_stop(message)
+  if message.stopReason ~= "stop" or has_visible_text(message) then
+    return false
+  end
+  local has_thinking = false
+  for _, block in ipairs(message.content) do
+    if
+      block.type == "thinking"
+      and (block.thinking ~= "" or block.thinkingSignature and block.thinkingSignature ~= "" or block.redacted)
+    then
+      has_thinking = true
+    end
+  end
+  return has_thinking
+end
+
 ---@param err unknown
 ---@return Neoagent.ToolResult
 local function error_result(err)
@@ -331,6 +349,7 @@ function M.run(opts)
       local last_message
       ---@type table<string, boolean>
       local seen_calls = {}
+      local retrying_thinking_stop = false
       local recovering_model = false
       ---@param messages Neoagent.RequestMessage[]
       local function call_ids(messages)
@@ -739,13 +758,24 @@ function M.run(opts)
           if steering_failure then
             return steering_failure
           end
+          if retrying_thinking_stop then
+            if #calls == 0 and not has_visible_text(last_message) and last_message.stopReason ~= "length" then
+              return commit_failure(last_message, util.error("model", "Model stopped during reasoning after one retry"))
+            end
+            retrying_thinking_stop = false
+          end
+          if #calls == 0 and thinking_only_stop(last_message) then
+            retrying_thinking_stop = true
+          end
           if #calls == 0 and count == 0 then
-            return {
-              ok = true,
-              new_messages = generated,
-              message = last_message,
-              text = util.text_content(last_message.content),
-            }
+            if not retrying_thinking_stop then
+              return {
+                ok = true,
+                new_messages = generated,
+                message = last_message,
+                text = util.text_content(last_message.content),
+              }
+            end
           end
         end
       end

@@ -81,6 +81,137 @@ describe("neoagent.agent_loop", function()
     assert.are.equal(1, #result.new_messages)
   end)
 
+  it("reports a second thinking-only stop after one resubmission", function()
+    ---@type Neoagent.TestModelResponse[]
+    local responses = {}
+    for index = 1, 2 do
+      responses[index] = { result = fake_model.assistant({ {
+        type = "thinking", thinking = "Step " .. index,
+      } }) }
+    end
+    responses[3] = { result = fake_model.assistant({ { type = "text", text = "too late" } }) }
+    local model = fake_model.new(responses)
+    local owner = { { role = "user", content = "Solve the sample." } }
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = owner,
+      commit_message = function(message)
+        owner[#owner + 1] = message
+        return true
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.are.equal("model", assert(result.error).kind)
+    assert.matches("stopped during reasoning after one retry", assert(result.error).message)
+    assert.are.equal(2, #model.requests)
+    assert.are.equal(3, #owner)
+    assert.are.equal(2, #assert(result.new_messages))
+    assert.are.equal("Step 2", assert(assert(result.message).content[1]).thinking)
+    assert.are.same(vim.list_slice(owner, 1, 2), assert(model.requests[2]).messages)
+  end)
+
+  it("reports an empty response to the thinking-stop retry", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "thinking", thinking = "Check the input." } }) },
+      { result = fake_model.assistant({}) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "Solve the sample." } },
+    }))
+
+    assert.is_false(result.ok)
+    assert.are.equal("model", assert(result.error).kind)
+    assert.matches("after one retry", assert(result.error).message)
+    assert.are.equal(2, #model.requests)
+    assert.are.equal(2, #assert(result.new_messages))
+    assert.are.same({}, assert(result.message).content)
+  end)
+
+  it("retries opaque reasoning without requiring display text", function()
+    for _, followup in ipairs({ "Visible answer", "" }) do
+      local reasoning = { type = "thinking", thinking = "", thinkingSignature = "synthetic-opaque-reasoning" }
+      local model = fake_model.new({
+        { result = fake_model.assistant({ reasoning }) },
+        { result = fake_model.assistant(followup == "" and { reasoning } or { { type = "text", text = followup } }) },
+      })
+      local result = wait(agent_loop.run({ model = model, messages = { { role = "user", content = "Solve it" } } }))
+      assert.are.equal(2, #model.requests)
+      local retained = assert(assert(model.requests[2]).messages[2])
+      assert(retained.role == "assistant")
+      ---@cast retained Neoagent.AssistantMessage
+      assert.are.same(reasoning, assert(retained.content[1]))
+      assert.are.equal(followup ~= "", result.ok)
+      if followup == "" then
+        assert.matches("after one retry", assert(result.error).message)
+      end
+    end
+  end)
+
+  it("retries reasoning followed by whitespace and rejects a whitespace-only retry", function()
+    for _, followup in ipairs({ "Complete answer", " \n\t" }) do
+      local model = fake_model.new({
+        { result = fake_model.assistant({
+          { type = "thinking", thinking = "Check the requirements." },
+          { type = "text", text = " \n\t" },
+        }) },
+        { result = fake_model.assistant({ { type = "text", text = followup } }) },
+      })
+      local result = wait(agent_loop.run({ model = model, messages = { { role = "user", content = "Solve it" } } }))
+      assert.are.equal(2, #model.requests)
+      assert.are.equal(2, #assert(result.new_messages))
+      if followup == "Complete answer" then
+        assert.is_true(result.ok)
+        assert.are.equal(followup, result.text)
+      else
+        assert.is_false(result.ok)
+        assert.matches("after one retry", assert(result.error).message)
+      end
+    end
+  end)
+
+  it("returns a length stop from the thinking retry for outer recovery", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "thinking", thinking = "First attempt" } }) },
+      { result = fake_model.assistant({ { type = "thinking", thinking = "Window exhausted" } }, "length") },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "Solve the sample." } },
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal("length", assert(result.message).stopReason)
+    assert.are.equal(2, #model.requests)
+  end)
+
+  it("accepts a tool call on the thinking-stop retry", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "thinking", thinking = "Inspect the sample." } }) },
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "Solve the sample." } },
+      tools = { {
+        name = "inspect", description = "Inspect the sample",
+        input_schema = { type = "object", properties = {}, additionalProperties = false },
+        execute = function()
+          return { content = { { type = "text", text = "sample inspected" } } }
+        end,
+      } },
+    }))
+
+    assert(result.ok)
+    assert.are.equal("done", result.text)
+    assert.are.equal(3, #model.requests)
+    assert.are.equal(4, #assert(result.new_messages))
+    assert.are.equal("toolResult", result_message(result, 3).role)
+  end)
+
   it("prepares only selected requests after committed Tool output and keeps generated history", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ {

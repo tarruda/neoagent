@@ -94,7 +94,7 @@ local function encode_assistant(message, requires_reasoning_content)
       }
     end
   end
-  if #text > 0 or #calls > 0 then
+  if #text > 0 or #calls > 0 or next(reasoning) ~= nil then
     local encoded = {
       role = "assistant",
       content = #text > 0 and table.concat(text) or vim.NIL,

@@ -1213,6 +1213,11 @@ acceptance or completion. Rejected or cancelled preparation is not acknowledged.
 authoritative or `nil, err` on failure. Its optional third result is a copied
 observation message with presentation metadata. Assistant, tool-result, and
 steering messages commit before dependent work or final observation.
+When a Model stops after visible or opaque thinking with no visible text or
+tool call, the loop commits that message and resubmits the conversation once.
+If the follow-up has no visible text or tool call, the Run ends with a model error
+and retains the partial messages. OpenAI-compatible Completions requests
+include reasoning-only assistant messages in the resubmitted history.
 
 A failed Model result may include `recovery = { message = user_message,
 warning = text }`. The Loop commits the partial assistant response and recovery

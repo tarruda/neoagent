@@ -2213,6 +2213,32 @@ describe("neoagent default agent", function()
     end, messages)))
   end)
 
+  it("compacts a length stop returned by the thinking-only retry", function()
+    local first = fake_model.assistant({ { type = "thinking", thinking = "Initial reasoning" } })
+    local length = fake_model.assistant({ { type = "thinking", thinking = "Window exhausted" } }, "length")
+    assert(length.message.usage).totalTokens = 900
+    local model = fake_model.new({
+      { result = first },
+      { result = length },
+      { result = fake_model.assistant({ { type = "text", text = "## Goal\nFinish the task" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "Finished after recovery" } }) },
+    })
+    model.context_window = 1000
+    setup_model(model, {
+      compaction = { auto = true, reserve_tokens = 200, keep_recent_tokens = 1 },
+    })
+
+    local run = assert(neoagent.send("Finish the task"))
+    assert(type(run) == "table")
+    assert(vim.wait(2000, function() return run:is_done() and is_idle() end))
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal(4, #model.requests)
+    assert.are.equal("Finished after recovery", assert(assert(run:result()).text))
+    assert.are.equal(1, vim.tbl_count(vim.tbl_filter(function(entry)
+      return entry.type == "compaction"
+    end, current_session():entries())))
+  end)
+
   it("compacts when a length continuation crosses the threshold", function()
     local first = fake_model.assistant({ { type = "text", text = "First partial answer" } }, "length")
     assert(first.message.usage).totalTokens = 100
