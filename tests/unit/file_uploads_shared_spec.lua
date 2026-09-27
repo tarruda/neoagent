@@ -544,7 +544,7 @@ describe("shared provider file lifecycle", function()
         end)
       end },
     })
-    local wrapped = require("neoagent.files.model").wrap(model, f.service)
+    local wrapped = require("neoagent.provider_model").wrap(model, f.service)
     local run = wrapped:stream({ messages = {}, on_done = function() completed = completed + 1 end })
     assert(vim.wait(1000, function() return requested end))
     run:cancel()

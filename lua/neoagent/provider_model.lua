@@ -58,7 +58,7 @@ function M.wrap(model, service)
       { on_done = opts.on_done, on_event = opts.on_event, error_kind = "model" }
     )
   end
-  return contract.assert(result, "File-capable provider Model")
+  return contract.assert(result, "Provider Model")
 end
 
 return M

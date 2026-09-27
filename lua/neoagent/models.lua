@@ -300,7 +300,7 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes, supplie
     concrete = validated_model(service:wrap_model(concrete), "Provider Service Model wrapper")
   end
   if resolved.images then
-    concrete = require("neoagent.files.model").wrap(concrete, service)
+    concrete = require("neoagent.provider_model").wrap(concrete, service)
   end
   return concrete
 end
