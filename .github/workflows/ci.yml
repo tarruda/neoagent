@@ -110,7 +110,7 @@ jobs:
 
   test-macos:
     name: test (macOS, stable)
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       NVIM: nvim
       NEOAGENT_REQUIRE_SANDBOX: "1"

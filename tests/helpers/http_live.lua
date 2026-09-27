@@ -15,8 +15,10 @@ function M.start()
   local started = vim.wait(3000, function() return port ~= nil or exited end)
   if not started or not port then
     process:kill(15)
-    process:wait(3000)
-    error("HTTP backend server did not start")
+    local result = process:wait(3000)
+    error("HTTP backend server did not start: " .. vim.inspect({
+      code = result.code, signal = result.signal, stdout = output, stderr = result.stderr,
+    }))
   end
   return {
     url = "http://127.0.0.1:" .. port,
