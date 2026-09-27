@@ -1488,6 +1488,36 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same({}, applet:agents())
   end)
 
+  it("stages Codex draft sandbox controls and binds the selected state", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "ready" } }) } })
+    model.api = "openai-codex-responses"
+    model.compact = function()
+      error("unexpected native compaction")
+    end
+    setup(model, {
+      providers = { fake = { api = "openai-codex-responses", base_url = "https://example.test",
+        models = { test = {} } } },
+      _apis = { ["openai-codex-responses"] = function() return model end },
+    })
+    assert(applet:new("codex"))
+    assert.are.equal("codex", assert(applet:foreground_applet()).profile)
+    assert.is_false(neoagent.sandbox_info().enabled)
+    assert.is_true(assert(neoagent.set_sandbox_enabled(true)).enabled)
+    assert.is_true(neoagent.sandbox_info().enabled)
+    assert.is_false(assert(neoagent.set_sandbox_enabled(false)).enabled)
+    assert.is_false(neoagent.sandbox_info().enabled)
+    assert.is_true(assert(neoagent.set_sandbox_enabled(true)).enabled)
+    assert(applet:send("bind the selected sandbox"))
+    assert(vim.wait(1000, function()
+      local agent = applet:agents()[1]
+      local record = agent and applet:record(agent)
+      return record and record.draft_rollback == nil
+    end, 5))
+    local agent = assert(applet:agents()[1])
+    assert.are.equal("codex", agent:profile_id())
+    assert.is_true(assert(assert(applet:record(agent)).metadata.sandbox).status.enabled)
+  end)
+
   it("does not commit one Neo draft's sandbox choice into its Profile", function()
     setup(fake_model.new({}))
     assert(applet:new("neo"))

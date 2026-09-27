@@ -1109,6 +1109,70 @@ describe("Neoagent Applet boundaries", function()
     assert.are.equal(2, update_count)
   end)
 
+  it("filters Codex draft choices and rejects incompatible explicit selection", function()
+    local model = fake_model.new({})
+    local options = configuration(model)
+    options.default_model = { provider = "fake", model = "native" }
+    local provider = assert(assert(options.providers).fake)
+    provider.models = {
+      native = { api = "openai-codex-responses" },
+      plain = { api = "fake-api" },
+    }
+    provider.base_url = "https://example.test/codex"
+    assert(options._apis)["openai-codex-responses"] = function() return model end
+    local owner = require("neoagent").setup(options)
+    applets[#applets + 1] = owner
+    local profile = assert(owner:profile("codex"))
+    local applet = assert(owner:draft("codex"))
+    local draft = owner:_owned_draft(applet)
+    local selected, err = draft:set_model("fake", "plain")
+    assert.is_nil(selected)
+    assert.matches("Profile requires a Model using openai%-codex%-responses", assert(err).message)
+    local updated, update_err = draft:update({ default_model = { provider = "fake", model = "plain" } })
+    assert.is_nil(updated)
+    assert.matches("Profile requires a Model using openai%-codex%-responses", assert(update_err).message)
+
+    local presenter = applet:presenter()
+    local original_select = presenter.select
+    local choices
+    local selection
+    rawset(presenter, "select", function(_, request)
+      choices = request.items
+      selection = async.run(function() return async.await(function() end) end)
+      return selection, function() return true end
+    end)
+    local models = require("neoagent.models")
+    local original_subscribe = models.subscribe_available
+    local subscribed_api
+    models.subscribe_available = function(_, _, _, _, api)
+      subscribed_api = api
+      return function() return true end
+    end
+    assert.is_true(((owner:_select_unbound_model(profile, applet))))
+    rawset(presenter, "select", original_select)
+    models.subscribe_available = original_subscribe
+    assert.are.same({ "fake/native" }, vim.tbl_map(function(item) return item.value end, assert(choices)))
+    assert.are.equal("openai-codex-responses", subscribed_api)
+    assert.is_not_nil(selection)
+    if selection then
+      selection:cancel()
+    end
+  end)
+
+  it("leaves Codex without a default when only incompatible Models are configured", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("codex"))
+    local applet = assert(owner:draft("codex"))
+    local draft = assert(owner:_owned_draft(applet))
+
+    assert.are.same({ provider = "fake", model = "test" },
+      assert(owner:profile("neo")).config.default_model)
+    assert.is_nil(profile.config.default_model)
+    assert.is_nil(draft:model_selection())
+    assert.is_nil(draft:options().default_model)
+    assert.is_nil(draft:snapshot().initial_selection)
+  end)
+
   it("rejects resumed Sessions without an assigned Profile", function()
     local owner = setup(fake_model.new({}))
     local orphan = { session = require("neoagent.session").new() }

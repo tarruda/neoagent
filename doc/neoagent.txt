@@ -267,7 +267,9 @@ each call, allowing an unbound Model to serve independent Sessions.
 Return `messages = { ... }` from a callback to replace semantic conversation
 content before modality adaptation and file preparation. `body.messages` and
 `body.input` are encoder-owned and cannot be overridden. Shaping runs once per
-Model call, including when attachment repair requires resubmission.
+request preparation; attachment repair reuses the shaped request. Planning
+and credential changes can repeat preparation. Callbacks should return
+request changes without side effects.
 
 A model's `thinking` table maps levels to request options. Levels are ordered
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`.
@@ -378,9 +380,12 @@ Configure or disable the sink under the provider: >lua
 
 AGENTS AND APPLETS                                   *neoagent-agents*
 
-`setup(opts)` creates the command-facing Neoagent Applet and registers the Neo
-and Chat Profiles. Neo is configured for coding; Chat has an empty system
-prompt and no tools. Agents and Sessions are created when work begins.
+`setup(opts)` creates the command-facing Neoagent Applet and registers the Neo,
+Chat, and Codex Profiles. Neo and Codex are configured for coding; Chat has an
+empty system prompt and no tools. Codex offers Models using the
+`openai-codex-responses` API. A global default using another API is ignored for
+Codex; its draft has no selected Model when none is compatible. Agents and
+Sessions are created when work begins.
 
 `:Neoagent` opens the Neo draft for the current Workspace. Drafts retain model,
 thinking, sandbox, and input choices per Profile and Workspace until the first
@@ -924,7 +929,7 @@ scalars, and other values. A `vim.NIL` value deletes its key.
   :NeoagentCompact [instructions] Compact the active branch.
   :NeoagentBranch [entry-id]      Move to an entry or select a branch point.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
-  :NeoagentToggleSandbox          Toggle sandbox execution for Neo.
+  :NeoagentToggleSandbox          Toggle sandbox execution for Neo or Codex.
   :NeoagentSandboxInfo            Show sandbox status and capabilities.
 
 Use the `<Plug>` targets to assign global mappings: >lua
@@ -1081,6 +1086,11 @@ Other constructors are `neoagent.api.anthropic_messages`,
 `neoagent.api.openai_codex_responses`. Optional settings include `api_key`,
 `context_window`, `max_output_tokens`, `timeout_ms`, and `request_opts`;
 `stream()` also accepts `system_prompt`, `tools`, and `request_opts`.
+A per-request `max_output_tokens` overrides output settings in `request_opts`
+after shaping; Responses requires at least 16 tokens. `max_thinking_tokens`
+caps explicit thinking budgets (currently Anthropic manual thinking), while
+`thinking_level` selects reasoning effort. Manual thinking must fit below the
+output limit and is disabled when the remaining budget is too small.
 Image-bearing calls supply `files`, a reader for their local file references.
 Configured provider Models may also receive `file_cache` from the same workspace.
 Session chat helpers bind both dependencies automatically.
@@ -1095,7 +1105,34 @@ for one stream. Configured catalog entries use `request_timeout_ms` to supply
 the constructor default.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
-unique `input` list containing `text` and optionally `image`.
+unique `input` list containing `text` and optionally `image`. Its optional
+`context_window` and `max_output_tokens` advertise context and configured
+output budgets; Model wrappers preserve these values.
+
+`thinking_level` selects a declared mapping from `model.thinking`; explicit
+`request_opts` take precedence. Omitting it keeps the configured wire options.
+
+Built-in Models provide `estimate_request(opts[, "compact"])`, which returns
+estimated input tokens after shaping. Pass the corresponding call's request
+options and invoke it inside a Run, since Authentication may need to resolve
+credentials. It performs no inference or file preparation. Model wrappers
+preserve this method and acquire provider leases. Custom Models may omit it;
+compaction then estimates messages, the system prompt, and Tool schemas.
+Tokenization, images, and encrypted context remain approximate and may need
+overflow recovery.
+
+Errors can set `context_overflow = true` to request bounded context recovery.
+Set `retry_exhausted = "request"` when the Model's retry budget is spent, so
+outer recovery will not replay the failure. Compaction uses `"summary"` or
+`"native_reduction"` for its own budgets. Errors with `operation = "compaction"`
+do not trigger inference recovery. Estimation failures before compaction is
+needed retain their normal classification and retry behavior.
+
+Codex Models provide `compact(opts)`, a cancellable Run returning one encrypted
+context item and optional usage. Replaying the item requires its original API,
+provider, and Model. Native requests do not inherit the Model's stream output
+cap. Set `compaction_output_tokens` to cap native output; it must be at least
+20000 tokens. This minimum also applies to caps supplied through `request_opts`.
 
 Adapters preserve native assistant signatures for matching API, provider, and
 model identities; omitted fields default to the destination. For other
@@ -1155,11 +1192,34 @@ The reusable Agent Loop is: >lua
 
 The loop copies messages and uses the supplied dependencies. Optional fields
 are `system_prompt`, `execute_tool`, `context`, `model_options`,
-`get_steering_messages`, `on_event`, `on_done`, and `report`.
+`get_steering_messages`, `prepare_request_messages`, `on_event`, `on_done`,
+and `report`.
+
+The async `prepare_request_messages(messages, options)` callback receives
+copied messages and Model request options after commits, before each Model
+call. Return replacement messages or `nil, err`; the Loop validates the list
+and stops locally on failure. The list may contain a `nativeCompaction` item
+for a compatible Model. To budget the request, estimate the final replacement
+using the supplied options before returning it. Built-in adapters require a
+fresh estimate if credentials or later changes alter request content;
+credential-only header changes remain valid.
+
+An optional third result, `acknowledge()`, runs immediately before the Model
+call. Steering may trigger another preparation pass; only the final validated
+pass is acknowledged. Use this to count request attempts, not provider
+acceptance or completion. Rejected or cancelled preparation is not acknowledged.
+
 `commit_message(message)` returns `true` after the message becomes
 authoritative or `nil, err` on failure. Its optional third result is a copied
 observation message with presentation metadata. Assistant, tool-result, and
 steering messages commit before dependent work or final observation.
+
+A failed Model result may include `recovery = { message = user_message,
+warning = text }`. The Loop commits the partial assistant response and recovery
+message, then prepares one follow-up. A second failure ends that recovery.
+OpenCode Go uses this for Qwen responses that declare tool use without a call.
+Standalone Model callers receive the proposal and own any follow-up; `stream()`
+does not add hidden conversation requests. Usage remains per response.
 
 Tool schemas and model-produced arguments are validated before execution.
 Malformed calls become error tool results.
@@ -1320,11 +1380,13 @@ Tree-aware Session methods are: >lua
   session:identity()
   session:messages()
   session:context_messages()
+  session:checkpoint_identity()
   session:entries()
   session:entry(id)
   session:leaf_id()
   session:path([id])
   session:state()
+  session:preview_compaction(values)
   session:append_compaction(values)
   session:move_to(id)
   session:snapshot()
@@ -1338,6 +1400,22 @@ Tree-aware Session methods are: >lua
 thinking state preserves the active branch value; a string selects a level;
 `vim.NIL` clears it. `move_to()` selects another tree entry, and the next
 append creates a branch.
+
+`checkpoint_identity()` returns the active encrypted checkpoint's required
+API, provider, and Model, or nil when there is none.
+
+`append_compaction(values)` requires `tokens_before` and either:
+
+  - Local: `summary` and optional `first_kept_entry_id` for the retained suffix.
+    Omit the ID to summarize the whole active context.
+  - Native: encrypted `native` and `retained_users`, an ordered list of
+    `{ entry_id, text_chars? }` records referencing user messages on the active
+    path. `text_chars` limits the request's text prefix across content blocks;
+    images, journal messages, and transcript text remain intact.
+
+`preview_compaction(values)` validates the same payload and returns prospective
+request messages without changing the journal or leaf, or `nil, error` if
+validation fails. Use it to budget the request before publishing a checkpoint.
 
 Create a linked child inside a Run with: >lua
 
@@ -1362,7 +1440,10 @@ blobs and provider mappings; cross-workspace copies import blobs only.
 `require("neoagent.profile_sessions")` associates Session headers with stable
 Profile IDs. It provides `new`, `open`, `derive`, and `list` operations for
 new, resumed, forked, and copied Profile Sessions. Generic Session and storage
-constructors remain Profile-free.
+constructors remain Profile-free. For `derive`, pass `target_native_api` when
+the target Profile supports encrypted checkpoints. An active encrypted
+checkpoint requires a matching target API, and the derived Agent must use the
+original provider and Model.
 
 Session documents are authoritative. Workspace indexes are rebuilt when
 missing or invalid. Cross-process mutation uses `neoagent.file_lock`: >lua
@@ -1380,20 +1461,65 @@ cancellable. Locks use OS advisory ownership and stable private lock files.
 
 CONTEXT COMPACTION                                  *neoagent-compaction*
 
-Automatic compaction runs near the Model's context limit and after a provider
-context-overflow error. It stores a summary in the Session tree and uses that
-summary before retained recent messages in later requests. The full tree
-remains available for branch navigation.
+Automatic compaction runs before a Model request at the active Profile's
+`context_window - reserve_tokens` threshold. Compaction can also recover from
+provider context-overflow errors. Set `compaction = false` to disable all
+Agent compaction, or `compaction.auto = false` to keep manual and overflow
+compaction. Successful final answers do not trigger maintenance compaction.
 
-The threshold is `context_window - reserve_tokens`; recent retention uses
-`keep_recent_tokens`. Set `compaction = false` to disable all Agent
-compaction or `compaction.auto = false` to keep manual and overflow
-compaction.
+Neo and Chat store local summaries followed by a retained recent suffix.
+When this cannot fit, compaction tries smaller suffixes or summarizes the
+whole active context, including oversized completed exchanges.
 
-`neoagent.compaction.run(opts)` returns a cancellable Run whose result contains
-`summary`, `first_kept_entry_id`, `tokens_before`, and optional `usage`. The
-module also exposes `settings`, `estimate_context`, `should_compact`, `prepare`,
-and `serialize`.
+Codex uses server-side encrypted compaction. Native requests place retained
+recent user messages before the encrypted checkpoint and omit consumed
+assistant and Tool history. The oldest retained message may have a limited
+text prefix; if its images exceed the remaining budget, the message is omitted
+without backfilling older messages. The full Session tree remains available
+for branch navigation, and native transcripts show the complete journal path.
+Resuming an encrypted checkpoint requires its original API, provider, and
+Model. Local compaction cannot replace it.
+
+Request estimates include the system prompt, Tool schemas, and configured or
+authenticated shaping. This overhead reduces space for summaries and retained
+history; `keep_recent_tokens` is an upper retention target. Summary output
+respects the Model output budget, with its per-call cap overriding request
+option layers. Summaries lower an explicit `thinking_level` to `low` (or the
+lowest declared enabled level), preserving `off` and any already lower
+selection. Without a selection, configured reasoning options remain in effect.
+Explicit thinking-token budgets are capped to reserve room for text output.
+
+Local summaries require Models that can read consumed images. Before
+inference, they check that the request and reserved output fit the Model
+window. Generated checkpoints are validated and budgeted before publication;
+native retention is fitted around the returned encrypted item. If either check
+fails, the previous context remains active. Preparation failures end the
+activity before its next Model request. Accepted prompts, assistant messages,
+and Tool results remain committed; a later continuation uses them without
+resubmitting the prompt.
+
+Codex may shorten text and Tool results in copied native compaction requests
+to fit estimates or recover from provider overflow. Copies keep the longest
+fitting text excerpt and mark omissions. Reduction retries are bounded. An
+overflow immediately after a native checkpoint can trigger one more native
+preparation with retained users removed.
+
+`agent:compact(instructions)` accepts additional focus for local summaries.
+Native compaction rejects non-empty custom instructions.
+The returned activity Run reports preparation failures or no compactable
+history. Disabled compaction or an unavailable Model can return `nil, error`
+immediately.
+
+For the lower-level summary API, call
+`neoagent.compaction.local_component.evaluate(opts)`, pass its budget decision
+as `opts.budget` to `local_component.prepare(opts)`, then set
+`opts.preparation` to its result for `neoagent.compaction.run(opts)`.
+Evaluation and preparation must run inside a Run when Models need
+authentication. The returned cancellable Run contains `summary`,
+`tokens_before`, optional `usage`, and optional `first_kept_entry_id` in its
+result. Agents invoke components for native compaction.
+`neoagent.compaction` also exposes `settings`, `estimate_context`,
+`should_compact`, and `serialize`.
 
 Session adapters are: >lua
 

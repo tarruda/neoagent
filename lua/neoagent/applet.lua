@@ -1355,7 +1355,9 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
       return { id = value, label = value, value = value }
     end, values)
   end
-  local choices, err = models.available(profile.config, resources.auth, resources.runtimes or {})
+  local choices, err = models.available(
+    profile.config, resources.auth, resources.runtimes or {}, profile.compaction.required_api
+  )
   if not choices then
     return self:_construction_error(applet, err)
   end
@@ -1387,7 +1389,8 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
         elseif changed == nil and presentation_err then
           self:_report_draft_selection(applet, presentation_err)
         end
-      end
+      end,
+      profile.compaction.required_api
     )
   end
   async.run(function()
@@ -1600,6 +1603,7 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
     kind = opts.kind,
     source_profile_id = source_profile_id,
     target_profile_id = profile.id,
+    target_native_api = profile.compaction.require_native and profile.compaction.required_api or nil,
     workspace = workspace,
     persistence = util.copy(profile.config.persistence),
     entry_id = opts.entry_id,

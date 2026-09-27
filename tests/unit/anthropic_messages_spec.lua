@@ -88,7 +88,38 @@ describe("neoagent.api.anthropic_messages", function()
     assert.matches("Thinking token limit", require("neoagent.util").normalize_error(err, "model").message)
   end)
 
-
+  it("sends a bounded summary through the Anthropic adapter", function()
+    local transport = fake_transport.new({ { chunks = {
+      message_start(),
+      event({ type = "content_block_start", index = 0, content_block = { type = "text", text = "" } }),
+      event({ type = "content_block_delta", index = 0, delta = { type = "text_delta", text = "Checkpoint" } }),
+      event({ type = "content_block_stop", index = 0 }),
+      event({ type = "message_delta", delta = { stop_reason = "end_turn" }, usage = { output_tokens = 2 } }),
+      event({ type = "message_stop" }),
+    } } })
+    local model = anthropic.new({
+      provider = "anthropic", model = "claude-sonnet-4-5", base_url = "https://example.test",
+      transport = transport, context_window = 131072, max_output_tokens = 32000,
+      request_opts_layers = { { body = { max_tokens = 32000 } } },
+    })
+    local compaction = require("neoagent.compaction")
+    local run = compaction.run({
+      model = model,
+      model_options = { request_opts = { body = { thinking = { type = "enabled", budget_tokens = 16000 } } } },
+      preparation = {
+        first_kept_entry_id = "keep", messages = { { role = "user", content = "Earlier request" } },
+        kind = "summary", turn_prefix = {}, split_turn = false, tokens_before = 1000,
+        settings = compaction.settings({ reserve_tokens = 16384 }, 131072),
+        max_output_tokens = 8192,
+      },
+    })
+    local result = wait(run)
+    assert.is_true(result.ok)
+    local body = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    assert.are.equal(8192, body.max_tokens)
+    assert.is_true(body.thinking.budget_tokens < body.max_tokens)
+    assert.is_true(body.thinking.budget_tokens <= 2048)
+  end)
   it("streams normalized thinking, text, tools, and usage", function()
     local fake = fake_transport.new({ { chunks = {
       message_start({

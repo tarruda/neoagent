@@ -56,6 +56,11 @@ An Agent has fixed Profile, Workspace, and Session identity. It owns model and
 thinking selection, tools, steering, dialogs, and one activity lifecycle.
 Closing its UI does not transfer or end that ownership.
 
+Profiles declare eligible Model APIs. Selectors filter by this declaration;
+request selection enforces it whenever a Model binds, including default and
+lazy selections. An active encrypted checkpoint also requires its original
+API, provider, and Model, and supplies that Model selection when resuming.
+
 A Profile is an Agent recipe. Neo supplies coding tools and Workspace policy;
 Chat supplies a tool-free conversation. `neoagent.new()` constructs an
 independent Agent. `neoagent.setup()` registers Profiles with the command-facing
@@ -96,7 +101,9 @@ ModelCatalog owns selectable inventory and publishes complete revisioned
 snapshots. Authentication owns credentials and login, refresh, logout, and
 Model wrapping. A Provider Service owns management state and operations.
 Service and Authentication boundaries coordinate shared and exclusive provider
-use.
+use. Each resolved Model operation acquires a shared Service lease before
+Authentication and holds it until the child operation settles. This applies to
+estimation, inference, and native compaction, with or without attachments.
 
 Provider runtimes own remote file preparation and upload protocols. Sessions
 retain local image bytes, while the workspace provider cache owns remote
@@ -164,11 +171,78 @@ storage; cross-workspace derivations import retained attachments before the
 new Session is published.
 
 The top-level Applet owns derivation work until it can publish the resulting
-Agent. Session and storage modules remain independent of Profiles and UI.
+Agent. The Profile Session boundary rejects derivations whose target Profile
+cannot preserve the active encrypted checkpoint. Session and storage modules
+remain independent of Profiles and UI.
 
-Compaction consumes a Session path and Model and returns a summary for a
-prefix. The Agent owns compaction policy; the Session retains the complete
-conversation tree.
+## Request preparation and compaction
+
+Profiles choose compaction components. The Agent's private checkpoint
+operation owns planning, acceptance, and journal publication; its activity
+lifecycle owns provider leases, child Runs, and events. Components receive
+request inputs and return checkpoint candidates. All Model calls, including
+compaction and recovery, receive copied Tool definitions; executable Tools
+stay with the Agent and Loop.
+
+The Loop prepares requests from committed messages before each Model call,
+including Tool follow-ups and continuations. The Agent persists any required
+checkpoint at this gate. Steering can require another preparation pass; only
+the final validated pass is acknowledged and counted as a request attempt.
+Preparation failure blocks inference. A provider recovery proposal also passes
+through this gate: the Loop commits the partial response and recovery prompt
+before one bounded follow-up. Usage stays with each response rather than being
+added across requests as a context-size observation.
+
+Models estimate the complete request after configured and authenticated
+shaping. Estimation resolves credentials within a cancellable activity but
+performs no inference or file preparation. The request owner keeps the
+estimated candidate separate from later rebuilt candidates. Copies of request
+options share this preparation; Models and Services never retain it. Reuse
+requires matching credentials, inputs, and operation. Execution revalidates
+credentials and checks content against the estimate before preparing files or
+sending a request. Credential-only header changes are allowed; changed content
+or operations require fresh estimation and otherwise fail locally without
+transient retries.
+
+Component evaluation decides whether compaction is needed. Semantic estimates
+select journal cuts, while Models budget complete candidate requests with
+output reserved for each generated part. Observed usage from the active
+context supplies a conservative floor. Strategies own generation inputs and
+retention policy; API adapters enforce per-call output and thinking budgets
+after shaping.
+
+The Session validates and projects candidates without changing the journal.
+Shared checkpoint acceptance budgets that projection through the Model; the
+Agent publishes it only while the source leaf and activity remain current. The
+request gate then checks the published context's budget. The Codex component
+fits retained users around the returned encrypted item, shortening boundary
+text or dropping messages while preserving that item exactly. Acceptance
+validates this result without changing the component's retention policy.
+
+Local checkpoints retain a contiguous suffix, omitting superseded checkpoints,
+or consume the whole active context when necessary. They cannot replace
+encrypted context. Native checkpoints project selected user messages, with
+optional text prefix limits, before the encrypted item and omit consumed
+assistant and Tool history. The Session keeps the full conversation tree;
+native transcripts show the complete journal path with a checkpoint marker.
+
+Candidate searches and request reductions are bounded and cancellable;
+reductions change request copies only. If a provider rejects the estimated
+context size, bounded recovery can compact the active projection again. Local
+strategies consume the retained suffix with less summary output; native
+recovery removes retained users and recompacts the encrypted item. Neither
+restores consumed history. Length continuations are limited per checkpoint and
+counted when the prepared request is acknowledged. At the limit, a budget-only
+check determines whether another checkpoint is needed. Successful final
+answers do not start maintenance compaction.
+
+Each retry owner reports exhaustion so outer recovery cannot repeat it. The
+Agent contains compaction failures from planning through publication and
+publishes one completion result while the activity remains current. These
+failures are tagged as compaction errors and cannot restart inference
+recovery. Failed overflow recovery preserves the original provider error
+unless cancelled; estimation errors before compaction is needed retain their
+normal classification.
 
 ## Presentation
 

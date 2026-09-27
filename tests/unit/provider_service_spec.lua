@@ -283,6 +283,39 @@ describe("neoagent provider service", function()
     assert.is_true(exclusive:finish())
   end)
 
+  it("budgets authenticated request layers while holding a shared provider lease", function()
+    local value = service({})
+    local auth = require("neoagent.auth")
+    local key = require("neoagent.auth.api_key").new({
+      name = "Synthetic key",
+      request_opts = function()
+        assert.is_nil((provider_service.begin_operation(value, { mutating = true })))
+        return { body = { instructions = string.rep("instructions ", 1000) } }
+      end,
+    })
+    local storage = require("tests.helpers.auth_manager").store({
+      key = { type = "api_key", key = "synthetic-key" },
+    })
+    local manager = auth.new({ methods = { key = key }, store = storage })
+    local model = require("neoagent.api.openai_responses").new({
+      provider = "test", model = "test", base_url = "https://example.test", context_window = 1000,
+      transport = { request = function() error("estimation must not send an inference request") end },
+    })
+    local wrapped = require("neoagent.provider_model").wrap(manager:wrap(model, "key"), value)
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Continue" }))
+    local evaluation = wait(async.run(function()
+      return require("tests.helpers.compaction")(require("neoagent.compaction").local_component, {
+        model = wrapped, configured = {}, path = assert(session:path()), messages = assert(session:context_messages()),
+      })
+    end))
+    assert.matches("leave no room", assert(evaluation.error).message)
+    assert.is_true(evaluation.needed)
+    assert.is_true(evaluation.tokens > evaluation.input_limit)
+    local exclusive = assert(provider_service.begin_operation(value, { mutating = true }))
+    assert.is_true(exclusive:finish())
+  end)
+
   it("releases request estimation leases after failure or cancellation", function()
     for _, failure in ipairs({ "failure", "cancelled" }) do
       local value = service({})

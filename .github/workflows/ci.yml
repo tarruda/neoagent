@@ -72,7 +72,7 @@ jobs:
         run: make test test-http-live test-native-sandbox
       - name: Check container, transcript, and submission performance budgets
         if: matrix.neovim == 'stable'
-        run: make benchmark-applet benchmark-transcript benchmark-submission
+        run: make benchmark-applet benchmark-transcript benchmark-submission benchmark-compaction
 
   terminal-images:
     name: terminal images (Linux, stable)

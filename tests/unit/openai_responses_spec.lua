@@ -271,6 +271,20 @@ describe("neoagent.api.openai_responses", function()
     assert.matches("at least 16", util.normalize_error(err, "model").message)
   end)
 
+  it("uses supported summary reasoning and preserves an explicitly disabled effort", function()
+    for _, case in ipairs({
+      { levels = { high = { body = { reasoning = { effort = "high" } } } }, selected = "high", expected = "high" },
+      { levels = { medium = { body = { reasoning = { effort = "medium" } } }, high = {}, xhigh = {} }, selected = "xhigh", expected = "medium" },
+      { levels = { off = { body = { reasoning = { effort = "none" } } }, medium = {}, high = {} }, selected = "off", expected = "none" },
+    }) do
+      local instance = model(fake_transport.new(), { thinking = case.levels })
+      local plan = instance:_request(require("neoagent.compaction.summary").generation_options(instance, {
+        messages = {}, thinking_level = case.selected,
+      }, 8192))
+      assert.are.equal(case.expected, assert(assert(plan.request.body).reasoning).effort)
+    end
+  end)
+
   it("adapts foreign reasoning history without changing the Session", function()
     for _, source in ipairs({
       { api = "openai-completions", provider = "deepseek", signature = "reasoning_content" },

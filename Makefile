@@ -10,7 +10,7 @@ INTEGRATION_TEST_TIMEOUT ?= 50000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript benchmark-submission coverage-deps coverage coverage-ci coverage-collect coverage-report coverage-render coverage-check clean
+.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript benchmark-submission benchmark-compaction coverage-deps coverage coverage-ci coverage-collect coverage-report coverage-render coverage-check clean
 
 typecheck-deps:
 	python3 scripts/typecheck_deps.py
@@ -76,6 +76,11 @@ benchmark-submission:
 	$(TEST_ENV) NEOAGENT_SUBMISSION_BENCH_ENFORCE=1 \
 		$(NVIM) --headless --noplugin -u tests/minimal_init.lua \
 		-l scripts/benchmark-submission.lua
+
+benchmark-compaction:
+	$(TEST_ENV) NEOAGENT_COMPACTION_BENCH_ENFORCE=1 \
+		$(NVIM) --headless --noplugin -u tests/minimal_init.lua \
+		-l scripts/benchmark-compaction.lua
 
 coverage: coverage-deps
 	python3 scripts/coverage.py start

@@ -8,6 +8,8 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field id string
 ---@field label string
 ---@field config Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@field compaction Neoagent.CompactionComponent
+---@field sandbox_controls? boolean
 ---@field create_applet fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet, Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
 ---@field create_agent fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent, Neoagent.ProfileAgentResources?
 
@@ -43,9 +45,11 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field store? Neoagent.CatalogStorage
 ---@field startup? boolean
 ---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
----@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field compaction_run? fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 ---@field provider_view? fun(options: Neoagent.ProviderShellViewOptions): Neoagent.ProviderShellView
 ---@field provider_host? Applet.HostSource<Neoagent.ProviderShellViewState>
+
+local RequestSelection = require("neoagent.request_selection")
 
 local M = {}
 
@@ -140,16 +144,28 @@ end
 ---@param profile_label string
 ---@param auth Neoagent.AuthManager
 ---@param runtimes Neoagent.ProviderRuntimes
+---@param required_api? string
 ---@return fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet, Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
-local function applet_factory(configured, profile_id, profile_label, auth, runtimes)
+local function applet_factory(configured, profile_id, profile_label, auth, runtimes, required_api)
   return function(context)
     local presenter = require("neoagent.presenter").new()
     local built, applet, options = pcall(function()
       local workspace = require("neoagent.fs").canonical(context.workspace)
       local draft = draft_options(configured, profile_id, presenter, workspace)
       local selected_model = draft.default_model or configured.default_model
+      if selected_model and required_api
+        and RequestSelection.api_compatible(runtimes, selected_model, required_api) == false
+      then
+        selected_model = nil
+        draft.default_model = nil
+      end
       if not selected_model then
-        local fallback, err = require("neoagent.models").first_available(configured, auth, runtimes)
+        local fallback, err = require("neoagent.models").first_available(
+          configured,
+          auth,
+          runtimes,
+          required_api
+        )
         if err then
           presenter:notify({
             message = "neoagent: " .. err.message .. (err.detail and ": " .. err.detail or ""),
@@ -226,6 +242,7 @@ local function make_chat(configured, auth, runtimes, runtime)
     id = "chat",
     label = "Chat",
     config = chat,
+    compaction = require("neoagent.compaction").for_config(chat.compaction),
     create_applet = applet_factory(chat, "chat", "Chat", auth, runtimes),
     create_agent = function(context)
       local selected = agent_options(chat, context)
@@ -244,6 +261,7 @@ local function make_chat(configured, auth, runtimes, runtime)
         dialogs = context.applet:dialogs(),
         interaction = runtime.interaction,
         compaction_run = runtime.compaction_run,
+        compaction_component = context.profile.compaction,
       })
     end,
   }
@@ -253,15 +271,26 @@ end
 ---@param auth Neoagent.AuthManager
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@param runtime Neoagent.ProfileRuntimeOptions
+---@param profile_id string
+---@param profile_name string
+---@param component Neoagent.CompactionComponent
 ---@return Neoagent.Profile
-local function make_neo(configured, auth, runtimes, runtime)
+local function make_neo(configured, auth, runtimes, runtime, profile_id, profile_name, component)
   local neo = util.copy(configured)
-  neo.name = neo.name or "Neo"
+  neo.name = profile_id == "neo" and (neo.name or profile_name) or profile_name
+  local configured_default = neo.default_model
+  if configured_default and component.required_api
+    and RequestSelection.api_compatible(runtimes, configured_default, component.required_api) == false
+  then
+    neo.default_model = nil
+  end
   return {
-    id = "neo",
+    id = profile_id,
     label = neo.name,
     config = neo,
-    create_applet = applet_factory(neo, "neo", neo.name, auth, runtimes),
+    sandbox_controls = true,
+    compaction = component,
+    create_applet = applet_factory(neo, profile_id, neo.name, auth, runtimes, component.required_api),
     create_agent = function(context)
       local selected = agent_options(neo, context)
       local applet = context.applet
@@ -293,7 +322,7 @@ local function make_neo(configured, auth, runtimes, runtime)
       end
       local agent = Agent.from_config(selected, {
         id = context.id,
-        profile_id = "neo",
+        profile_id = profile_id,
         label = context.label,
         initial_selection = context.initial_selection,
         session = context.session,
@@ -307,6 +336,7 @@ local function make_neo(configured, auth, runtimes, runtime)
         dialogs = dialogs,
         interaction = runtime.interaction,
         compaction_run = runtime.compaction_run,
+        compaction_component = context.profile.compaction,
       })
       assert(agent:set_toolset(toolset))
       if trust then
@@ -448,8 +478,9 @@ function M.bundled(configured, runtime)
     end
   end
   return {
-    make_neo(configured, auth, runtimes, runtime),
+    make_neo(configured, auth, runtimes, runtime, "neo", "Neo", require("neoagent.compaction").for_config(configured.compaction)),
     make_chat(configured, auth, runtimes, runtime),
+    make_neo(configured, auth, runtimes, runtime, "codex", "Codex", require("neoagent.compaction.codex").component),
   },
     "neo",
     resources

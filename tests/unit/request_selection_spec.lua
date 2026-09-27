@@ -55,6 +55,28 @@ describe("neoagent upper-layer request selection", function()
     }, issues)
   end)
 
+  it("rejects incompatible staged defaults and unavailable checkpoint identities", function()
+    local configured = configuration()
+    local providers = runtimes(configured)
+    local selection = RequestSelection.new({ config = configured, runtimes = providers })
+    local selected = { provider = "fake", model = "one" }
+    assert(selection:stage(selected))
+    selection.required_api = "openai-codex-responses"
+    local accepted, err = selection:stage(selected)
+    assert.is_nil(accepted)
+    assert.matches("Profile requires", assert(err).message)
+    assert.are.equal("no model", selection:label())
+
+    local failure = { kind = "session", message = "Checkpoint path unavailable" }
+    selection = RequestSelection.new({ config = configured, runtimes = providers,
+      checkpoint_identity = function() return nil, failure end })
+    local model = fake_model.new()
+    local ok, bind_err = pcall(selection.bind, selection, selected, model)
+    assert.is_false(ok)
+    assert.are.same(failure, bind_err)
+    assert.is_nil(selection:model())
+  end)
+
   it("owns live, resolved, and Workspace-default request state", function()
     local configured = configuration()
     local selection = RequestSelection.new({
@@ -172,6 +194,85 @@ describe("neoagent upper-layer request selection", function()
     assert.are.equal(original_thinking, selection:thinking_level())
   end)
 
+  it("rejects incompatible lazy defaults after catalog discovery without binding a draft", function()
+    local configured = configuration()
+    configured.default_model = { provider = "fake", model = "discovered" }
+    local providers = runtimes(configured)
+    local profile = {
+      id = "codex", label = "Codex", config = configured,
+      compaction = require("neoagent.compaction.codex").component,
+      create_applet = function() error("unused") end,
+      create_agent = function() error("unused") end,
+    }
+    local applet = require("neoagent.agent_applet").new({ config = configured.ui })
+    local draft = ProfileDraft.new({
+      key = "codex\0/workspace", profile = profile, workspace = "/workspace", applet = applet,
+      runtimes = providers,
+    })
+    assert(assert(providers.fake).catalog:publish_discoveries({ {
+      id = "discovered", api = "fake", thinking = { off = {}, high = {} },
+    } }))
+    for _, operation in ipairs({
+      function() return draft:thinking_levels() end,
+      function() return draft:set_thinking_level("high") end,
+      function() return draft:cycle_thinking_level() end,
+      function() return draft:set_model("fake", "one") end,
+      function() return draft:update({ default_model = { provider = "fake", model = "one" } }) end,
+    }) do
+      local result, err = operation()
+      assert.is_nil(result)
+      assert.matches("Profile requires a Model using openai%-codex%-responses", assert(err).message)
+      assert.is_nil(draft.selection:model())
+      assert.is_nil(draft:model_selection())
+    end
+    draft:destroy()
+    applet:destroy()
+  end)
+
+  it("validates the resolved Model before replacing a compatible selection", function()
+    local configured = configuration()
+    local providers = runtimes(configured)
+    local selection = RequestSelection.new({ config = configured, runtimes = providers, required_api = "fake" })
+    local original = assert(selection:resolve())
+    assert(providers.fake).service.wrap_model = function(_, model)
+      model.api = "incompatible"
+      return model
+    end
+    local selected, err = selection:select("fake", "two")
+    assert.is_nil(selected)
+    assert.matches("Profile requires", assert(err).message)
+    assert.are.equal(original, selection:model())
+    assert.are.same({ provider = "fake", model = "one" }, selection:model_selection())
+  end)
+
+  it("keeps an undiscovered compatible default staged until its catalog arrives", function()
+    local configured = configuration()
+    configured.default_model = { provider = "fake", model = "discovered" }
+    local providers = runtimes(configured)
+    local selection = RequestSelection.new({ config = configured, runtimes = providers, required_api = "fake" })
+    assert.are.same(configured.default_model, selection:stage(assert(selection:candidate())))
+    assert.are.same(configured.default_model, selection:model_selection())
+    assert(assert(providers.fake).catalog:publish_discoveries({ { id = "discovered", api = "fake" } }))
+    assert(selection:resolve())
+    assert.are.equal("fake/discovered", selection:label())
+  end)
+
+  it("rejects a Model change that cannot replay the active native checkpoint", function()
+    local configured = configuration()
+    local providers = runtimes(configured)
+    local checkpoint = { api = "fake", provider = "fake", model = "one" }
+    local selection = RequestSelection.new({
+      config = configured, runtimes = providers, required_api = "fake",
+      checkpoint_identity = function() return checkpoint end,
+    })
+    local original = assert(selection:resolve())
+    local changed, err = selection:select("fake", "two")
+    assert.is_nil(changed)
+    assert.matches("original API, provider, and Model", assert(err).message)
+    assert.are.equal(original, selection:model())
+    assert.are.same({ provider = "fake", model = "one" }, selection:model_selection())
+  end)
+
   it("binds Workspace, Agent, and Session identity to resolved HTTP", function()
     local configured = configuration()
     local seen
@@ -230,6 +331,7 @@ describe("neoagent upper-layer request selection", function()
       id = "neo",
       label = "Neo",
       config = configuration(),
+      compaction = require("neoagent.compaction").local_component,
       create_applet = function() error("unexpected Applet construction") end,
       create_agent = function() error("unexpected Agent construction") end,
     }
@@ -301,6 +403,7 @@ describe("neoagent upper-layer request selection", function()
     configured.default_model = nil
     local profile = {
       id = "neo", label = "Neo", config = configured,
+      compaction = require("neoagent.compaction").local_component,
       create_applet = function() error("unused") end,
       create_agent = function() error("unused") end,
     }

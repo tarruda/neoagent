@@ -43,6 +43,7 @@ function ProfileDraft.new(opts)
   options.default_thinking_level = nil
   local selection = RequestSelection.new({
     config = opts.profile.config,
+    required_api = opts.profile.compaction.required_api,
     auth = opts.auth,
     runtimes = opts.runtimes,
     workspace = {
