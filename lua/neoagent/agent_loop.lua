@@ -142,21 +142,6 @@ local tool_fields = {
 
 ---@generic C
 ---@param tools Neoagent.Tool<C>[]
----@return Neoagent.ToolDefinition[]
-local function schemas(tools)
-  local result = {}
-  for _, tool in ipairs(tools) do
-    result[#result + 1] = {
-      name = tool.name,
-      description = tool.description,
-      input_schema = util.copy(tool.input_schema),
-    }
-  end
-  return result
-end
-
----@generic C
----@param tools Neoagent.Tool<C>[]
 ---@param execute_tool? Neoagent.ToolExecutor<C>
 ---@return Neoagent.Toolset<C>
 function M.validate_toolset(tools, execute_tool)
@@ -231,7 +216,7 @@ function M.prepare(opts)
     messages = messages,
     system_prompt = opts.system_prompt,
     tools = toolset.tools,
-    tool_schemas = schemas(toolset.tools),
+    tool_schemas = tool_schema.definitions(toolset.tools),
     tool_lookup = toolset.lookup,
     execute_tool = toolset.execute_tool,
     context = opts.context,
