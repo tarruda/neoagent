@@ -29,7 +29,9 @@ local M = {}
 ---@field message? unknown
 ---@field request? unknown
 ---@field summary? unknown
+---@field native? unknown
 ---@field first_kept_entry_id? unknown
+---@field retained_users? unknown
 ---@field tokens_before? unknown
 ---@field target_id? unknown
 
@@ -43,10 +45,16 @@ local M = {}
 ---@field message Neoagent.Message
 ---@field request? Neoagent.JournalRequest
 
+---@class Neoagent.RetainedUser
+---@field entry_id string
+---@field text_chars? integer Maximum text characters across blocks; images remain intact.
+
 ---@class Neoagent.CompactionEntry: Neoagent.JournalEntryBase
 ---@field type "compaction"
----@field summary string
----@field first_kept_entry_id string
+---@field summary? string Local summaries only.
+---@field native? Neoagent.NativeCompactionMessage
+---@field first_kept_entry_id? string
+---@field retained_users? Neoagent.RetainedUser[]
 ---@field tokens_before integer
 
 ---@class Neoagent.LeafEntry: Neoagent.JournalEntryBase
@@ -70,7 +78,12 @@ local M = {}
 ---@field tokens_before integer
 ---@field created_at integer
 
----@alias Neoagent.ProjectionMessage Neoagent.Message|Neoagent.CompactionSummary
+---@class Neoagent.CompactionCheckpoint
+---@field role "compactionCheckpoint"
+---@field tokens_before integer
+---@field created_at integer
+
+---@alias Neoagent.ProjectionMessage Neoagent.Message|Neoagent.CompactionSummary|Neoagent.CompactionCheckpoint
 
 ---@param value unknown
 ---@return TypeGuard<nil|vim.NIL>
@@ -193,12 +206,39 @@ local function normalize_compaction_summary(message)
 end
 
 ---@param message unknown
+---@return Neoagent.CompactionCheckpoint?, string?
+local function normalize_compaction_checkpoint(message)
+  if type(message) ~= "table" or (util.is_list(message) and next(message) ~= nil) then
+    return nil, "compaction checkpoint must be an object"
+  end
+  for key in pairs(message) do
+    if key ~= "role" and key ~= "tokens_before" and key ~= "created_at" then
+      return nil, "compaction checkpoint has unsupported field: " .. tostring(key)
+    end
+  end
+  if message.role ~= "compactionCheckpoint" then
+    return nil, "compaction checkpoint role is required"
+  end
+  if not finite_nonnegative_integer(message.tokens_before) then
+    return nil, "compaction checkpoint tokens_before must be a non-negative integer"
+  end
+  if not finite_nonnegative_integer(message.created_at) then
+    return nil, "compaction checkpoint created_at must be a non-negative integer"
+  end
+  ---@cast message Neoagent.CompactionCheckpoint
+  return util.copy(message)
+end
+
+---@param message unknown
 ---@return Neoagent.ProjectionMessage?, string?
 ---@return_overload Neoagent.ProjectionMessage
 ---@return_overload nil, string
 function M.normalize_projection_message(message)
   if type(message) == "table" and message.role == "compactionSummary" then
     return normalize_compaction_summary(message)
+  end
+  if type(message) == "table" and message.role == "compactionCheckpoint" then
+    return normalize_compaction_checkpoint(message)
   end
   return semantic_message.normalize(message)
 end
@@ -232,13 +272,17 @@ function M.normalize_projection(messages)
     return true
   end
   for index, message in ipairs(messages) do
-    if type(message) == "table" and message.role == "compactionSummary" then
+    if type(message) == "table" and (message.role == "compactionSummary" or message.role == "compactionCheckpoint") then
       local ok, err = flush()
       if not ok then
         return nil, err
       end
       local normalized
-      normalized, err = normalize_compaction_summary(message)
+      if message.role == "compactionSummary" then
+        normalized, err = normalize_compaction_summary(message)
+      else
+        normalized, err = normalize_compaction_checkpoint(message)
+      end
       if not normalized then
         return nil, "message " .. tostring(index) .. ": " .. err
       end
@@ -268,13 +312,44 @@ local validators = {
     return validate_request(entry.request)
   end,
   compaction = function(entry)
-    if
+    if not finite_nonnegative_integer(entry.tokens_before) then
+      return false, "compactions require tokens_before"
+    end
+    if entry.native ~= nil then
+      if entry.summary ~= nil then
+        return false, "native compactions cannot contain a summary"
+      end
+      local normalized, native_err = semantic_message.normalize_native_compaction(entry.native)
+      if not normalized then
+        return false, native_err
+      end
+      if
+        entry.first_kept_entry_id ~= nil
+        or type(entry.retained_users) ~= "table"
+        or not util.is_list(entry.retained_users)
+      then
+        return false, "native compactions require retained_users and no first_kept_entry_id"
+      end
+      for _, retained in ipairs(entry.retained_users) do
+        if type(retained) ~= "table" or not safe_text(retained.entry_id) then
+          return false, "native compaction retained entry ids must be safe text"
+        end
+        for key in pairs(retained) do
+          if key ~= "entry_id" and key ~= "text_chars" then
+            return false, "native compaction retained user has an unsupported field"
+          end
+        end
+        if retained.text_chars ~= nil and not finite_nonnegative_integer(retained.text_chars) then
+          return false, "native compaction retained text limit must be a non-negative integer"
+        end
+      end
+    elseif
       not nonempty_string(entry.summary)
       or not util.is_valid_utf8(entry.summary)
-      or not safe_text(entry.first_kept_entry_id)
-      or not finite_nonnegative_integer(entry.tokens_before)
+      or entry.first_kept_entry_id ~= nil and not safe_text(entry.first_kept_entry_id)
+      or entry.retained_users ~= nil
     then
-      return false, "compactions require summary, first_kept_entry_id, and tokens_before"
+      return false, "local compactions require a summary, optional safe first_kept_entry_id, and no retained_users"
     end
     return true
   end,
@@ -302,7 +377,9 @@ local entry_fields = {
     parent_id = true,
     created_at = true,
     summary = true,
+    native = true,
     first_kept_entry_id = true,
+    retained_users = true,
     tokens_before = true,
   },
   leaf = {
@@ -352,15 +429,52 @@ function M.validate_references(entry, by_id)
     return nil, "leaf target does not exist"
   end
   if entry.type == "compaction" then
-    if not by_id[entry.first_kept_entry_id] then
-      return nil, "compaction first kept entry does not exist"
-    end
-    local current = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
-    while current and current.id ~= entry.first_kept_entry_id do
-      current = is_null(current.parent_id) and nil or by_id[current.parent_id]
-    end
-    if not current then
-      return nil, "compaction first kept entry is not on the active path"
+    if entry.native then
+      local distance = {}
+      local current = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
+      local index = 0
+      while current do
+        index = index + 1
+        distance[current.id] = index
+        current = is_null(current.parent_id) and nil or by_id[current.parent_id]
+      end
+      local previous_distance
+      for _, selected in ipairs(assert(entry.retained_users)) do
+        local id = selected.entry_id
+        local retained = by_id[id]
+        local selected_distance = distance[id]
+        if not retained or retained.type ~= "message" or retained.message.role ~= "user" or not selected_distance then
+          return nil, "native compaction retained entries must be user messages on the active path"
+        end
+        if previous_distance and selected_distance >= previous_distance then
+          return nil, "native compaction retained entries must follow path order without duplicates"
+        end
+        previous_distance = selected_distance
+      end
+    else
+      local first_kept = entry.first_kept_entry_id
+      local previous = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
+      while previous do
+        if previous.type == "compaction" then
+          if previous.native then
+            return nil, "local compaction cannot replace an encrypted checkpoint"
+          end
+          break
+        end
+        previous = is_null(previous.parent_id) and nil or by_id[previous.parent_id]
+      end
+      if first_kept then
+        if not by_id[first_kept] then
+          return nil, "compaction first kept entry does not exist"
+        end
+        local current = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
+        while current and current.id ~= first_kept do
+          current = is_null(current.parent_id) and nil or by_id[current.parent_id]
+        end
+        if not current then
+          return nil, "compaction first kept entry is not on the active path"
+        end
+      end
     end
   end
   if entry.type == "message" then
@@ -557,10 +671,13 @@ function M.entry_messages(entry)
   end
   if entry.type == "compaction" then
     ---@cast entry Neoagent.CompactionEntry
+    if entry.native then
+      return { { role = "compactionCheckpoint", tokens_before = entry.tokens_before, created_at = entry.created_at } }
+    end
     return {
       {
         role = "compactionSummary",
-        summary = entry.summary,
+        summary = assert(entry.summary),
         tokens_before = entry.tokens_before,
         created_at = entry.created_at,
       },
@@ -582,6 +699,16 @@ local function latest_compaction(path)
 end
 
 ---@param path Neoagent.JournalEntry[]
+---@return Neoagent.NativeContextIdentity?
+function M.checkpoint_identity(path)
+  local index = latest_compaction(path)
+  local checkpoint = index and path[index] or nil
+  if checkpoint and checkpoint.type == "compaction" and checkpoint.native then
+    return { api = checkpoint.native.api, provider = checkpoint.native.provider, model = checkpoint.native.model }
+  end
+end
+
+---@param path Neoagent.JournalEntry[]
 ---@param compaction_index integer
 ---@return Neoagent.JournalEntry[]
 local function retained_before(path, compaction_index)
@@ -590,28 +717,78 @@ local function retained_before(path, compaction_index)
   local compaction = path[compaction_index]
   ---@cast compaction Neoagent.CompactionEntry
   local first_kept = compaction.first_kept_entry_id
+  if not first_kept then
+    return result
+  end
   for index = 1, compaction_index - 1 do
     local entry = assert(path[index])
     if entry.id == first_kept then
       keeping = true
     end
-    if keeping then
+    -- The latest checkpoint already incorporates older summaries. Only the
+    -- retained journal messages belong beside it in the active projection.
+    if keeping and entry.type ~= "compaction" then
       result[#result + 1] = util.copy(entry)
     end
   end
   return result
 end
 
+---@param message Neoagent.UserMessage
+---@param text_chars integer
+local function truncate_user_text(message, text_chars)
+  if type(message.content) == "string" then
+    message.content = vim.fn.strcharpart(message.content, 0, text_chars)
+    return
+  end
+  for _, block in ipairs(message.content) do
+    if block.type == "text" then
+      block.text = vim.fn.strcharpart(block.text, 0, text_chars)
+      text_chars = text_chars - vim.fn.strchars(block.text)
+    end
+  end
+end
+
 ---@param path Neoagent.JournalEntry[]
+---@param compaction_index integer
+---@param request boolean
 ---@return Neoagent.JournalEntry[]
-local function compacted_entries(path)
+local function native_retained_before(path, compaction_index, request)
+  local compaction = path[compaction_index]
+  ---@cast compaction Neoagent.CompactionEntry
+  local selected = assert(compaction.retained_users)
+  local result = {}
+  local next_index = 1
+  for index = 1, compaction_index - 1 do
+    local entry = assert(path[index])
+    local retained = selected[next_index]
+    if retained and entry.id == retained.entry_id then
+      local copy = util.copy(entry) --[[@as Neoagent.MessageEntry]]
+      if request and retained.text_chars ~= nil then
+        truncate_user_text(copy.message --[[@as Neoagent.UserMessage]], retained.text_chars)
+      end
+      result[#result + 1] = copy
+      next_index = next_index + 1
+    end
+  end
+  return result
+end
+
+---@param path Neoagent.JournalEntry[]
+---@param request boolean
+---@return Neoagent.JournalEntry[]
+local function compacted_entries(path, request)
   local compaction_index = latest_compaction(path)
   if not compaction_index then
     return util.copy(path)
   end
-  local compaction = util.copy(path[compaction_index])
-  local result = { compaction }
-  vim.list_extend(result, retained_before(path, compaction_index))
+  local compaction = util.copy(assert(path[compaction_index]))
+  local result = compaction.native and native_retained_before(path, compaction_index, request) or { compaction }
+  if compaction.native then
+    result[#result + 1] = compaction
+  else
+    vim.list_extend(result, retained_before(path, compaction_index))
+  end
   for index = compaction_index + 1, #path do
     result[#result + 1] = util.copy(path[index])
   end
@@ -621,13 +798,17 @@ end
 ---@param path Neoagent.JournalEntry[]
 ---@return Neoagent.JournalEntry[]
 function M.context_entries(path)
-  return compacted_entries(path)
+  return compacted_entries(path, true)
 end
 
 ---@param path Neoagent.JournalEntry[]
 ---@return Neoagent.JournalEntry[]
 function M.transcript_entries(path)
-  return compacted_entries(path)
+  local compaction_index = latest_compaction(path)
+  if compaction_index and assert(path[compaction_index]).native then
+    return util.copy(path)
+  end
+  return compacted_entries(path, false)
 end
 
 ---@param entries Neoagent.JournalEntry[]
@@ -667,14 +848,82 @@ function M.to_llm(messages)
         ),
         timestamp = message.created_at,
       }
+    elseif message.role == "compactionCheckpoint" then
+      error("Native compaction checkpoint requires its opaque request item", 0)
     end
   end
   return result
 end
 
+---@param path Neoagent.JournalEntry[]
+---@return Neoagent.RequestMessage[]
+function M.context_messages(path)
+  local result = {}
+  for _, entry in ipairs(M.context_entries(path)) do
+    if entry.type == "compaction" and entry.native then
+      result[#result + 1] = util.copy(entry.native)
+    else
+      vim.list_extend(result, M.to_llm(M.entry_messages(entry)))
+    end
+  end
+  return result
+end
+
+-- Snapshot one source path for a planning operation. Candidate validation and
+-- projection remain identical to Session publication, while the journal index
+-- and prospective path are reused across retention attempts.
+---@param path Neoagent.JournalEntry[]
+---@return fun(values: Neoagent.CompactionPayload): Neoagent.RequestMessage[]?, Neoagent.Error?
+function M.compaction_projector(path)
+  local prospective = util.copy(path)
+  local length = #prospective
+  local by_id = {}
+  for _, entry in ipairs(prospective) do
+    by_id[entry.id] = entry
+  end
+  local id = "compaction-preview"
+  while by_id[id] do
+    id = id .. "_"
+  end
+  local leaf = prospective[length]
+  return function(values)
+    local entry, err = M.prepare_entry({
+      type = "compaction",
+      id = id,
+      parent_id = leaf and leaf.id or vim.NIL,
+      created_at = util.now_ms(),
+      payload = values,
+      by_id = by_id,
+    })
+    if not entry then
+      return nil, util.error("session", "Invalid compaction", err)
+    end
+    prospective[length + 1] = entry
+    local messages, message_err = semantic_message.normalize_request_list(M.context_messages(prospective))
+    if not messages then
+      return nil, util.error("session", "Invalid compacted context", message_err)
+    end
+    return messages
+  end
+end
+
+-- Planning and acceptance use the same validation and projection as the
+-- Session, without allocating a durable entry or changing its source path.
+---@param path Neoagent.JournalEntry[]
+---@param values Neoagent.CompactionPayload
+---@return Neoagent.RequestMessage[]?, Neoagent.Error?
+function M.preview_compaction(path, values)
+  return M.compaction_projector(path)(values)
+end
+
 ---@param result Neoagent.SelectionState
 ---@param entry Neoagent.JournalEntry
 local function apply_state(result, entry)
+  if entry.type == "compaction" and entry.native then
+    -- A manually published checkpoint may precede any message using this
+    -- Model. Its encrypted context determines the selection on resume.
+    result.model = { provider = entry.native.provider, model = entry.native.model }
+  end
   local request = entry.type == "message" and entry.request or nil
   if request then
     if request.model then

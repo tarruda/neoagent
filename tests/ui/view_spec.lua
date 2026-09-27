@@ -3762,7 +3762,7 @@ describe("neoagent.ui", function()
       return text(result):find("printf", 1, true) ~= nil
     end))
 
-    assert.is_true(result:show_card_details("tool:wrapped-shell"))
+    assert.is_true(result:show_card_details((assert(result.transcript.blocks[1])).key))
     local window = view_handles.window(result, "details")
     assert.is_true(vim.wo[window].wrap)
     assert.is_false(vim.wo[window].linebreak)

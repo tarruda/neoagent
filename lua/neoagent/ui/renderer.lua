@@ -17,6 +17,7 @@ local util = require("neoagent.util")
 ---@field message? Neoagent.ToolResultMessage
 ---@field finished? boolean
 ---@field summary? string
+---@field checkpoint? boolean
 ---@field tokens_before? number
 ---@field image_scope? string
 ---@field text_epoch? unknown

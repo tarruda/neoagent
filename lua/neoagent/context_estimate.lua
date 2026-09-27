@@ -42,11 +42,15 @@ function M.usage_tokens(usage)
   return total > 0 and total or nil
 end
 
----@param message Neoagent.ProjectionMessage
+---@param message Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage
 ---@return integer
 function M.estimate_tokens(message)
-  if message.role == "user" or message.role == "toolResult" then
-    ---@cast message Neoagent.UserMessage|Neoagent.ToolResultMessage
+  if message.role == "user" then
+    ---@cast message Neoagent.UserMessage
+    return math.ceil(content_chars(message.content) / 4)
+  end
+  if message.role == "toolResult" then
+    ---@cast message Neoagent.ToolResultMessage
     return math.ceil(content_chars(message.content) / 4)
   end
   if message.role == "assistant" then
@@ -67,23 +71,30 @@ function M.estimate_tokens(message)
   if message.role == "compactionSummary" then
     return math.ceil(#(message.summary or "") / 4)
   end
+  if message.role == "compactionCheckpoint" then
+    return 0
+  end
+  if message.role == "nativeCompaction" then
+    -- Ciphertext length is only a planning estimate, not a decoded token count.
+    return math.ceil(#message.encrypted_content * 3 / 16)
+  end
   return 0
 end
 
----@param message Neoagent.ProjectionMessage
+---@param message? Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage
 ---@return number?
-local function valid_assistant_usage(message)
-  if message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
+function M.valid_assistant_usage(message)
+  if not message or message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
     return nil
   end
   return M.usage_tokens(message.usage)
 end
 
----@param messages Neoagent.ProjectionMessage[]
+---@param messages (Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage)[]
 ---@return Neoagent.ContextEstimate
 function M.estimate_context(messages)
   for index = #messages, 1, -1 do
-    local usage = valid_assistant_usage(messages[index])
+    local usage = M.valid_assistant_usage(messages[index])
     if usage then
       local trailing = 0
       for trailing_index = index + 1, #messages do

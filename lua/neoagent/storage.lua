@@ -343,13 +343,13 @@ function Store:workspace_storage()
   return self._workspace
 end
 
----@return Neoagent.Message[]?, Neoagent.Error?
+---@return Neoagent.RequestMessage[]?, Neoagent.Error?
 function Store:context_messages()
   local path, err = self:path()
   if not path then
     return nil, storage_error("Failed to build session context", err)
   end
-  return tree.to_llm(tree.messages(path, true))
+  return tree.context_messages(path)
 end
 
 ---@return Neoagent.JournalEntry[]

@@ -4,7 +4,10 @@ local util = require("neoagent.util")
 ---@class Neoagent.TranscriptCompactionMessage: Neoagent.CompactionSummary
 ---@field _neoagent_entry_id? string
 
----@alias Neoagent.TranscriptMessage Neoagent.ObservedMessage|Neoagent.TranscriptCompactionMessage
+---@class Neoagent.TranscriptCheckpointMessage: Neoagent.CompactionCheckpoint
+---@field _neoagent_entry_id? string
+
+---@alias Neoagent.TranscriptMessage Neoagent.ObservedMessage|Neoagent.TranscriptCompactionMessage|Neoagent.TranscriptCheckpointMessage
 
 ---@class Neoagent.SessionLifecycleState
 ---@field session Neoagent.Session

@@ -23,6 +23,78 @@ local function valid_entry(entry_type, values)
 end
 
 describe("neoagent.session_tree", function()
+  it("projects independent checkpoint candidates from one unchanged source snapshot", function()
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Earlier request" }))
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "Earlier answer" } } }))
+    local _, _, retained = session:append({ role = "user", content = "Continue" })
+    local before = session:entries()
+    local path = assert(session:path())
+    local project = tree.compaction_projector(path)
+    assert(assert(path[3]).message).content = "Changed after snapshot"
+    local invalid, err = project({ summary = "", tokens_before = 100 })
+    assert.is_nil(invalid)
+    assert.are.equal("Invalid compaction", assert(err).message)
+    local payload = { summary = "Checkpoint", tokens_before = 100, first_kept_entry_id = assert(retained).id }
+    local first = assert(project(payload))
+    assert.are.equal("Continue", assert(first[2]).content)
+    assert(first[2]).content = "Changed projection"
+    assert.are.equal("Continue", assert(assert(project(payload))[2]).content)
+    local whole = assert(project({ summary = "Whole context", tokens_before = 100 }))
+    assert.are.equal(1, #whole)
+    assert.matches("Whole context", require("neoagent.util").text_content(assert(whole[1]).content))
+    assert.are.same(before, session:entries())
+  end)
+
+  it("validates native checkpoint metadata before projecting or previewing context", function()
+    local native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+      model = "gpt-test", encrypted_content = "synthetic-ciphertext" }
+    for _, values in ipairs({
+      { native = native, retained_users = {}, tokens_before = -1 },
+      { native = { role = "nativeCompaction" }, retained_users = {}, tokens_before = 1 },
+      { native = native, first_kept_entry_id = "user", tokens_before = 1 },
+    }) do
+      local valid, err = tree.validate_entry(base("compaction", values))
+      assert.is_false(valid)
+      assert.is_string(err)
+    end
+    for _, values in ipairs({ { tokens_before = -1, created_at = 1 },
+      { tokens_before = 1, created_at = -1 } }) do
+      local projected, err = tree.normalize_projection({ vim.tbl_extend("force", values,
+        { role = "compactionCheckpoint" }) })
+      assert.is_nil(projected)
+      assert.is_string(err)
+    end
+    local array = setmetatable({ "array" }, { __index = { role = "compactionCheckpoint" } })
+    assert.is_nil((tree.normalize_projection_message(array)))
+    local reads = 0
+    local changing = setmetatable({ tokens_before = 1, created_at = 1 }, { __index = function(_, key)
+      if key ~= "role" then return nil end
+      reads = reads + 1
+      return reads <= 2 and "compactionCheckpoint" or nil
+    end })
+    assert.is_nil((tree.normalize_projection_message(changing)))
+    assert.has_error(function()
+      tree.to_llm({ { role = "compactionCheckpoint", tokens_before = 1, created_at = 1 } })
+    end, "Native compaction checkpoint requires its opaque request item")
+
+    local user = valid_entry("message", { id = "compaction-preview", message = { role = "user", content = "History" } })
+    local path = { user }
+    local projected = assert(tree.preview_compaction(path, { native = native, retained_users = {}, tokens_before = 1 }))
+    assert.are.same({ native }, projected)
+    assert.are.same({ user }, path)
+    local invalid, err = tree.preview_compaction(path, { summary = "", tokens_before = 1 })
+    assert.is_nil(invalid)
+    assert.are.equal("Invalid compaction", assert(err).message)
+    local orphan = valid_entry("message", { id = "orphan", message = { role = "toolResult",
+      toolCallId = "missing", content = {} } })
+    invalid, err = tree.preview_compaction({ user, orphan }, {
+      summary = "Summary", first_kept_entry_id = "orphan", tokens_before = 1,
+    })
+    assert.is_nil(invalid)
+    assert.are.equal("Invalid compacted context", assert(err).message)
+  end)
+
   it("assembles entries without exposing journal-owned fields", function()
     for _, entry_type in ipairs({ "message", "compaction", "leaf" }) do
       for _, field in ipairs({ "type", "id", "parent_id", "created_at" }) do
@@ -265,6 +337,23 @@ describe("neoagent.session_tree", function()
       ids(tree.transcript_entries(path)))
   end)
 
+  it("keeps native checkpoint history visible without retaining it in requests", function()
+    local user = valid_entry("message", { id = "user", message = { role = "user", content = "question" } })
+    local answer = valid_entry("message", { id = "answer", parent_id = user.id,
+      message = { role = "assistant", content = { { type = "text", text = "completed answer" } } } })
+    local checkpoint = valid_entry("compaction", { id = "checkpoint", parent_id = answer.id,
+      native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+        model = "test", encrypted_content = "opaque" },
+      retained_users = { { entry_id = user.id, text_chars = 3 } }, tokens_before = 100 })
+    local path = { user, answer, checkpoint }
+    local ids = function(entries)
+      return vim.tbl_map(function(entry) return entry.id end, entries)
+    end
+    assert.are.same({ "user", "checkpoint" }, ids(tree.context_entries(path)))
+    assert.are.same({ "user", "answer", "checkpoint" }, ids(tree.transcript_entries(path)))
+    assert.are.equal("question", assert(assert(tree.transcript_entries(path)[1]).message).content)
+  end)
+
   it("projects compaction summaries into LLM context", function()
     local context = tree.to_llm({
       { role = "compactionSummary", summary = "old work", tokens_before = 0, created_at = 5 },
@@ -278,10 +367,12 @@ describe("neoagent.session_tree", function()
       { role = "user", content = "before", timestamp = 1 },
       { role = "compactionSummary", summary = "checkpoint",
         tokens_before = 20, created_at = 2 },
+      { role = "compactionCheckpoint", tokens_before = 30, created_at = 3 },
       { role = "user", content = "after", timestamp = 3 },
     }
     local projected = assert(tree.normalize_projection(source))
     assert.are.equal("compactionSummary", assert(projected[2]).role)
+    assert.are.equal("compactionCheckpoint", assert(projected[3]).role)
     assert(projected[2]).summary = "changed"
     assert.are.equal("checkpoint", source[2].summary)
 
@@ -291,6 +382,11 @@ describe("neoagent.session_tree", function()
     } })
     assert.is_nil(invalid)
     assert.matches("tokens_before", (assert(err)))
+    invalid, err = tree.normalize_projection({ {
+      role = "compactionCheckpoint", summary = "fabricated", tokens_before = 30, created_at = 3,
+    } })
+    assert.is_nil(invalid)
+    assert.matches("unsupported field", assert(err))
   end)
 
   it("rejects malformed request, projection, and preparation boundaries", function()

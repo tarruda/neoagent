@@ -38,8 +38,10 @@ local M = {}
 ---@field metadata? fun(self: Neoagent.SessionStorage): Neoagent.SessionMetadata?
 
 ---@class Neoagent.CompactionPayload
----@field summary string
----@field first_kept_entry_id string
+---@field summary? string
+---@field native? Neoagent.NativeCompactionMessage
+---@field first_kept_entry_id? string
+---@field retained_users? Neoagent.RetainedUser[]
 ---@field tokens_before integer
 
 ---@class Neoagent.SessionOptions
@@ -263,14 +265,14 @@ function Session:messages()
   return util.copy(self._messages)
 end
 
----@return Neoagent.Message[]?, Neoagent.Error?
+---@return Neoagent.RequestMessage[]?, Neoagent.Error?
 function Session:context_messages()
   if self._store and type(self._store.context_messages) == "function" then
     local messages, err = self._store:context_messages()
     if not messages then
       return nil, util.normalize_error(err, "storage")
     end
-    local normalized, message_err = semantic_message.normalize_list(messages)
+    local normalized, message_err = semantic_message.normalize_request_list(messages)
     if not normalized then
       return nil, util.error("storage", "Store returned invalid context", message_err)
     end
@@ -281,9 +283,18 @@ function Session:context_messages()
     if not path then
       return nil, err
     end
-    return tree.to_llm(tree.messages(path, true))
+    return tree.context_messages(path)
   end
   return tree.to_llm(self._messages)
+end
+
+---@return Neoagent.NativeContextIdentity?, Neoagent.Error?
+function Session:checkpoint_identity()
+  local path, err = self:path()
+  if not path then
+    return nil, err
+  end
+  return tree.checkpoint_identity(path)
 end
 
 ---@return Neoagent.JournalEntry[]
@@ -343,6 +354,16 @@ function Session:state()
     return nil, err
   end
   return tree.state(path)
+end
+
+---@param values Neoagent.CompactionPayload
+---@return Neoagent.RequestMessage[]?, Neoagent.Error?
+function Session:preview_compaction(values)
+  local path, path_err = self:path()
+  if not path then
+    return nil, path_err
+  end
+  return tree.preview_compaction(path, values)
 end
 
 ---@param values Neoagent.CompactionPayload

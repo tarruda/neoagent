@@ -1157,25 +1157,28 @@ end
 ---@return Neoagent.RenderContent
 local function compaction_content(self, block, surface, width)
   local content = rendered()
-  local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
+  local label, label_spans = segments({ { text = block.checkpoint and "[checkpoint]" or "[compaction]",
+    group = "NeoagentMarkdownBold" } })
   local token_count = format_token_count(assert(block.tokens_before))
+  local summary = block.summary or ""
   if surface == "details" then
     add_line(content, label, label_spans)
     add_line(content, "")
-    local body = "**Compacted from " .. token_count .. "**"
-    if block.summary ~= "" then
-      body = body .. "\n\n" .. block.summary
+    local body = (block.checkpoint and "**Encrypted context checkpoint from " or "**Compacted from ")
+      .. token_count .. "**"
+    if summary ~= "" then
+      body = body .. "\n\n" .. summary
     end
     append_rendered(content, markdown_content(markdown.render(body, { width = width })))
   else
-    local message = "Compacted from " .. token_count
+    local message = (block.checkpoint and "Encrypted context checkpoint from " or "Compacted from ") .. token_count
     local title, spans = segments({
       { text = label, group = "NeoagentMarkdownBold" },
       { text = " " .. message, group = "NeoagentMuted" },
     })
     add_line(content, title, spans)
-    if block.summary ~= "" then
-      append_rendered(content, markdown_content(markdown.render(block.summary, { width = width })))
+    if summary ~= "" then
+      append_rendered(content, markdown_content(markdown.render(summary, { width = width })))
     end
     clip_head(content, COMPACTION_CONTENT_MAX_LINES)
   end

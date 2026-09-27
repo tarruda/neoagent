@@ -73,7 +73,7 @@ local M = {}
 ---@field on_done? fun(result: Neoagent.ModelResult)
 
 ---@class Neoagent.StreamOptions: Neoagent.StreamOverrides
----@field messages Neoagent.Message[]
+---@field messages Neoagent.RequestMessage[]
 
 ---@class Neoagent.MessageTarget
 ---@field input ("text"|"image")[]
@@ -90,6 +90,32 @@ local M = {}
 ---@field timeout_ms? number
 ---@field thinking? table<Neoagent.ThinkingLevel, Neoagent.RequestLayer>
 ---@field stream fun(self: Neoagent.Model, opts: Neoagent.StreamOptions): Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+
+---@param model Neoagent.MessageTarget
+---@param identity? Neoagent.NativeContextIdentity
+---@return true?, Neoagent.Error?
+function M.compatible_context_identity(model, identity)
+  if identity and (identity.api ~= model.api or identity.provider ~= model.provider or identity.model ~= model.id) then
+    return nil, util.error("model", "Encrypted context requires its original API, provider, and Model")
+  end
+  return true
+end
+
+---@param model Neoagent.MessageTarget
+---@param messages Neoagent.RequestMessage[]
+---@return true?, Neoagent.Error?
+function M.compatible_context(model, messages)
+  for _, message in ipairs(messages) do
+    if message.role == "nativeCompaction" then
+      return M.compatible_context_identity(model, {
+        api = message.api,
+        provider = message.provider,
+        model = message.model,
+      })
+    end
+  end
+  return true
+end
 
 ---@param message string
 ---@return nil
@@ -230,7 +256,7 @@ function M.require_files(options)
     assert(files.valid(options.files), "Model attachment file reader is incomplete")
   end
   for _, message in ipairs(options.messages or {}) do
-    if type(message.content) == "table" then
+    if message.role ~= "nativeCompaction" and type(message.content) == "table" then
       for _, block in ipairs(message.content) do
         if block.type == "image" then
           assert(files.valid(options.files), "Model image messages require an attachment file reader")
