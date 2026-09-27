@@ -1,3 +1,4 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local request_context = require("neoagent.api.request_context")
@@ -15,7 +16,7 @@ local M = {}
 
 ---@alias Neoagent.ChatResult Neoagent.ChatSuccess|Neoagent.ChatFailure
 ---@alias Neoagent.ChatRun Neoagent.Run<Neoagent.ChatResult, Neoagent.AgentLoopEvent>
----@alias Neoagent.ContextMessages Neoagent.Message[]|fun(session: Neoagent.Session): Neoagent.Message[]?, Neoagent.Error?
+---@alias Neoagent.ContextMessages Neoagent.RequestMessage[]|fun(session: Neoagent.Session): Neoagent.RequestMessage[]?, Neoagent.Error?
 
 ---@class Neoagent.ChatOptions<C>
 ---@field model Neoagent.Model
@@ -25,6 +26,7 @@ local M = {}
 ---@field context? C
 ---@field execute_tool? Neoagent.ToolExecutor<C>
 ---@field get_steering_messages? Neoagent.SteeringMessages
+---@field prepare_request_messages? Neoagent.PrepareRequestMessages
 ---@field on_event? fun(event: Neoagent.AgentLoopEvent)
 ---@field on_done? fun(result: Neoagent.ChatResult)
 ---@field on_accept? fun(entry?: Neoagent.JournalEntry)
@@ -40,6 +42,7 @@ local M = {}
 ---@field context? C
 ---@field execute_tool Neoagent.ToolExecutor<C>
 ---@field get_steering_messages Neoagent.SteeringMessages
+---@field prepare_request_messages? Neoagent.PrepareRequestMessages
 ---@field commit_message Neoagent.MessageCommit
 ---@field on_event? fun(event: Neoagent.AgentLoopEvent)
 ---@field on_done? fun(result: Neoagent.ChatResult)
@@ -78,7 +81,7 @@ end
 ---@param overrides? Neoagent.StreamOverrides
 ---@return Neoagent.StreamOverrides
 local function model_options(session, overrides)
-  local result = util.copy(overrides or {})
+  local result = request_preparation.copy(overrides or {})
   local files = session:files()
   assert(
     result.files == nil or result.files.identity == files.identity,
@@ -130,6 +133,7 @@ local function preflight(session, opts, tools, commit_message)
     context = opts.context,
     execute_tool = opts.execute_tool,
     get_steering_messages = opts.get_steering_messages,
+    prepare_request_messages = opts.prepare_request_messages,
     commit_message = commit_message,
     on_event = opts.on_event,
     report = diagnostic_report(opts.report),
@@ -143,6 +147,7 @@ local function preflight(session, opts, tools, commit_message)
     context = prepared.context,
     execute_tool = prepared.execute_tool,
     get_steering_messages = prepared.get_steering_messages,
+    prepare_request_messages = prepared.prepare_request_messages,
     commit_message = prepared.commit_message,
     on_event = prepared.on_event,
     on_done = opts.on_done,
@@ -184,7 +189,7 @@ end
 ---@generic C
 ---@param session Neoagent.Session
 ---@param opts Neoagent.PreparedChat<C>
----@return Neoagent.Message[]
+---@return Neoagent.RequestMessage[]
 local function context_messages(session, opts)
   local source = opts.context_messages
   local messages
@@ -323,9 +328,39 @@ function M.send(session, prompt, opts)
         local model_opts = model_options(session, prepared.model_options)
         ---@cast model_opts Neoagent.StreamOptions
         model_opts.messages = context_messages(session, prepared)
+        model_opts._preparation = request_preparation.new()
         model_opts.system_prompt = prepared.system_prompt
+        local acknowledge
+        if prepared.prepare_request_messages then
+          local replacement, prepare_err
+          replacement, prepare_err, acknowledge =
+            prepared.prepare_request_messages(util.copy(model_opts.messages), request_preparation.copy(model_opts))
+          if not replacement then
+            return finish_result({ ok = false, error = util.normalize_error(prepare_err, "context") }, session)
+          end
+          assert(
+            acknowledge == nil or type(acknowledge) == "function",
+            "prepare_request_messages acknowledgement must be a function"
+          )
+          model_opts.messages = replacement
+        end
+        local normalized, validation_err =
+          agent_loop.validate_request_messages(prepared.model, model_opts.messages, model_opts.files)
+        if not normalized then
+          return finish_result({ ok = false, error = assert(validation_err) }, session)
+        end
+        model_opts.messages = normalized
+        if run:is_cancelled() then
+          return finish_result({ ok = false, error = async.cancelled_error }, session)
+        end
         model_opts.on_event = function(event)
           run:emit(event)
+        end
+        if acknowledge then
+          acknowledge()
+          if run:is_cancelled() then
+            return finish_result({ ok = false, error = async.cancelled_error }, session)
+          end
         end
         local result = prepared.model:stream(model_opts):await()
         if result.message then
@@ -383,6 +418,7 @@ local function run_agent(session, opts)
         context = opts.context,
         execute_tool = opts.execute_tool,
         get_steering_messages = opts.get_steering_messages,
+        prepare_request_messages = opts.prepare_request_messages,
         commit_message = opts.commit_message,
         on_event = function(event)
           run:emit(event)

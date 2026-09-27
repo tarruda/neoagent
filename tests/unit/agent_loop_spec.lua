@@ -81,6 +81,297 @@ describe("neoagent.agent_loop", function()
     assert.are.equal(1, #result.new_messages)
   end)
 
+  it("prepares only selected requests after committed Tool output and keeps generated history", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local owner = { { role = "user", content = "start" } }
+    local observed = {}
+    local native = {
+      role = "nativeCompaction", api = model.api, provider = model.provider, model = model.id,
+      encrypted_content = "synthetic",
+    }
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = owner,
+      tools = { {
+        name = "inspect", description = "Inspect",
+        input_schema = { type = "object", properties = {}, additionalProperties = false },
+        execute = function()
+          return { content = { { type = "text", text = "large result" } } }
+        end,
+      } },
+      commit_message = function(message)
+        owner[#owner + 1] = message
+        return true
+      end,
+      prepare_request_messages = function(messages)
+        observed[#observed + 1] = util.copy(messages)
+        if #messages == 1 then
+          return messages
+        end
+        return { native, messages[#messages - 1], messages[#messages] }
+      end,
+    }))
+    assert(result.ok)
+    assert.are.equal(2, #observed)
+    assert.are.same(vim.list_slice(owner, 1, 3), observed[2])
+    assert.are.equal("nativeCompaction", assert(assert(model.requests[2]).messages[1]).role)
+    local generated = assert(result.new_messages)
+    assert.are.equal(3, #generated)
+    assert.are.equal("assistant", assert(generated[1]).role)
+    assert.are.equal("toolResult", assert(generated[2]).role)
+    assert.are.equal("assistant", assert(generated[3]).role)
+    assert.are.equal(4, #owner)
+  end)
+
+  it("blocks malformed prepared context before a Model request", function()
+    local model = fake_model.new({})
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "start" } },
+      prepare_request_messages = function()
+        return { { role = "toolResult", toolCallId = "missing", content = {} } }
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.matches("unknown toolCall", tostring(assert(result.error).detail))
+    assert.are.equal(0, #model.requests)
+  end)
+
+  it("reuses a call id after preparation consumes its earlier exchange", function()
+    local old_call = { type = "toolCall", id = "call-1", name = "echo", arguments = {} }
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "toolCall", id = "call-1", name = "echo", arguments = {} } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {
+        { role = "assistant", content = { old_call } },
+        { role = "toolResult", toolCallId = "call-1", content = {} },
+      },
+      tools = { { name = "echo", description = "Echo", input_schema = {},
+        execute = function() return { content = {} } end } },
+      prepare_request_messages = function(messages)
+        if #messages == 2 then
+          return { { role = "user", content = "continue" } }
+        end
+        return messages
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal(2, #model.requests)
+  end)
+
+  it("rejects a call id introduced through prepared context", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "introduced", name = "echo", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "unexpected" } }) },
+    })
+    local executed = false
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "continue" } },
+      tools = { { name = "echo", description = "Echo", input_schema = {},
+        execute = function() executed = true; return { content = {} } end } },
+      prepare_request_messages = function()
+        return {
+          { role = "assistant", content = { { type = "toolCall", id = "introduced", name = "echo", arguments = {} } } },
+          { role = "toolResult", toolCallId = "introduced", content = {} },
+          { role = "user", content = "continue" },
+        }
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.matches("duplicate conversation toolCall", assert(result.error).message)
+    assert.is_false(executed)
+  end)
+
+  it("does not launch inference after cancellation during request preparation", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
+    local polls = 0
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "cancel" } },
+      get_steering_messages = function()
+        polls = polls + 1
+        return polls == 1 and {} or { { role = "user", content = "late steering" } }
+      end,
+      prepare_request_messages = function(messages)
+        assert(require("neoagent.async").current()):cancel()
+        return messages
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal(1, polls)
+    assert.are.equal(0, #model.requests)
+  end)
+
+  it("blocks encrypted context from another Model before inference", function()
+    local model = fake_model.new({})
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "continue" } },
+      prepare_request_messages = function()
+        return { {
+          role = "nativeCompaction", api = model.api, provider = model.provider,
+          model = "earlier-model", encrypted_content = "synthetic",
+        }, { role = "user", content = "continue" } }
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.matches("Encrypted context requires its original API, provider, and Model",
+      assert(result.error).message)
+    assert.are.equal(0, #model.requests)
+  end)
+
+  it("honors cancellation while acknowledging the final request", function()
+    local model = fake_model.new({})
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "Continue" } },
+      prepare_request_messages = function(messages)
+        return messages, nil, function() assert(require("neoagent.async").current()):cancel() end
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal(0, #model.requests)
+  end)
+
+  it("prepares again when steering commits during request preparation", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    ---@type Neoagent.UserMessage[]
+    local queued = {}
+    local passes = 0
+    local dispatched = {}
+    local acknowledged = false
+    ---@async
+    ---@param messages Neoagent.RequestMessage[]
+    ---@return Neoagent.RequestMessage[], nil, Neoagent.RequestAcknowledgement
+    local function prepare(messages)
+      passes = passes + 1
+      if passes == 1 then
+        vim.schedule(function()
+          queued[#queued + 1] = { role = "user", content = "arrived while compacting" }
+        end)
+        require("neoagent.async").yield()
+      elseif passes == 2 then
+        queued[#queued + 1] = { role = "user", content = "arrived after second pass" }
+      end
+      local pass = passes
+      return messages, nil, function()
+        dispatched[#dispatched + 1] = pass
+        assert.are.equal(#dispatched - 1, #model.requests)
+      end
+    end
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "start" } },
+      get_steering_messages = function()
+        if #queued == 0 then
+          return {}
+        end
+        local message = table.remove(queued, 1)
+        return { assert(message) }, function(committed)
+          acknowledged = committed
+        end
+      end,
+      prepare_request_messages = prepare,
+    }))
+    assert(result.ok)
+    assert.are.equal(3, passes)
+    assert.are.same({ 2, 3 }, dispatched)
+    assert.is_true(acknowledged)
+    assert.are.equal("arrived while compacting", assert(assert(model.requests[1]).messages[2]).content)
+    assert.are.equal(2, #model.requests)
+    assert.are.equal(2, #assert(model.requests[1]).messages)
+    assert.are.equal("arrived after second pass", assert(assert(model.requests[2]).messages[4]).content)
+  end)
+
+  it("stops preparation when either steering commit fails", function()
+    for _, phase in ipairs({ "before", "after" }) do
+      local model = fake_model.new()
+      local polls, preparations, acknowledged = 0, 0, false
+      local failure = { kind = "session", message = "Steering commit failed" }
+      local result = wait(agent_loop.run({ model = model, messages = {},
+        get_steering_messages = function()
+          polls = polls + 1
+          if polls == (phase == "before" and 1 or 2) then
+            return { { role = "user", content = "Steering" } }
+          end
+          return {}
+        end,
+        commit_message = function() return nil, failure end,
+        prepare_request_messages = function(messages)
+          preparations = preparations + 1
+          return messages, nil, function() acknowledged = true end
+        end,
+      }))
+      assert.is_false(result.ok)
+      assert.are.same(failure, result.error)
+      assert.are.equal(phase == "before" and 0 or 1, preparations)
+      assert.is_false(acknowledged)
+      assert.are.equal(0, #model.requests)
+    end
+  end)
+
+  it("honors cancellation from steering polls before and after preparation", function()
+    for _, cancel_poll in ipairs({ 1, 2 }) do
+      local model = fake_model.new()
+      local polls, preparations = 0, 0
+      local result = wait(agent_loop.run({ model = model, messages = {},
+        get_steering_messages = function()
+          polls = polls + 1
+          if polls == cancel_poll then assert(require("neoagent.async").current()):cancel() end
+          return {}
+        end,
+        prepare_request_messages = function(messages)
+          preparations = preparations + 1
+          return messages
+        end,
+      }))
+      assert.is_false(result.ok)
+      assert.are.equal("cancelled", assert(result.error).kind)
+      assert.are.equal(cancel_poll - 1, preparations)
+      assert.are.equal(0, #model.requests)
+    end
+  end)
+
+  it("keeps committed steering when the replacement request cannot be prepared", function()
+    local model = fake_model.new()
+    local polls, preparations, acknowledged = 0, 0, false
+    local committed = {}
+    local result = wait(agent_loop.run({ model = model, messages = {},
+      get_steering_messages = function()
+        polls = polls + 1
+        return polls == 2 and { { role = "user", content = "Late steering" } } or {}
+      end,
+      commit_message = function(message) committed[#committed + 1] = message; return true end,
+      prepare_request_messages = function(messages)
+        preparations = preparations + 1
+        if preparations == 2 then return nil, { kind = "context", message = "Replacement rejected" } end
+        return messages, nil, function() acknowledged = true end
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("Replacement rejected", assert(result.error).message)
+    assert.are.equal("Late steering", committed[1].content)
+    assert.are.equal(1, #result.new_messages)
+    assert.is_false(acknowledged)
+    assert.are.equal(0, #model.requests)
+  end)
+
   it("commits owned copies to an ordinary in-memory message owner", function()
     local source = fake_model.assistant({ { type = "text", text = "answer" } })
     local model = fake_model.new({ { result = source } })

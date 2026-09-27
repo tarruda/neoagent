@@ -48,6 +48,105 @@ describe("neoagent.chat", function()
     assert.are.equal(2, #session:messages())
   end)
 
+  for _, method in ipairs({ "send", "run" }) do
+    it("retains an accepted " .. method .. " prompt after preparation failure", function()
+      local session = assert(Session.new())
+      local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "continued" } }) } })
+      local order = {}
+      local first = wait(chat[method](session, "committed prompt", {
+        model = model,
+        on_accept = function() order[#order + 1] = "accepted" end,
+        prepare_request_messages = function(messages)
+          order[#order + 1] = "prepare"
+          assert.are.same(messages, assert(session:context_messages()))
+          assert.are.equal("committed prompt", assert(messages[1]).content)
+          return nil, { kind = "context", message = "preparation failed" }
+        end,
+      }))
+      assert.is_false(first.ok)
+      assert.are.equal("preparation failed", assert(first.error).message)
+      assert.are.same({ "accepted", "prepare" }, order)
+      assert.are.equal(0, #model.requests)
+      assert.are.equal(1, #session:messages())
+
+      local later = wait(chat.continue(session, { model = model }))
+      assert(later.ok)
+      assert.are.equal(2, #session:messages())
+      assert.are.equal("committed prompt", assert(assert(model.requests[1]).messages[1]).content)
+    end)
+  end
+
+  it("rejects invalid direct-send request context after accepting its prompt", function()
+    local session = assert(Session.new())
+    local model = fake_model.new({})
+    local acknowledged = false
+    local result = wait(chat.send(session, "committed prompt", {
+      model = model,
+      prepare_request_messages = function()
+        return { { role = "toolResult", toolCallId = "missing", content = {} } }, nil, function()
+          acknowledged = true
+        end
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.is_false(acknowledged)
+    assert.are.equal(0, #model.requests)
+    assert.are.equal("committed prompt", assert(session:messages()[1]).content)
+  end)
+
+  it("does not launch direct-send inference after cancellation during preparation", function()
+    local session = assert(Session.new())
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
+    local acknowledged = false
+    local result = wait(chat.send(session, "accepted prompt", {
+      model = model,
+      prepare_request_messages = function(messages)
+        assert(async.current()):cancel()
+        return messages, nil, function()
+          acknowledged = true
+        end
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.is_false(acknowledged)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal(0, #model.requests)
+    assert.are.equal("accepted prompt", assert(session:messages()[1]).content)
+  end)
+
+  it("acknowledges the validated direct-send request before inference", function()
+    local session = assert(Session.new())
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "Done" } }) } })
+    local acknowledged = 0
+    local result = wait(chat.send(session, "Continue", {
+      model = model,
+      prepare_request_messages = function(messages)
+        return messages, nil, function()
+          assert.are.equal(0, #model.requests)
+          acknowledged = acknowledged + 1
+        end
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal(1, acknowledged)
+    assert.are.equal(1, #model.requests)
+  end)
+
+  it("honors cancellation while acknowledging a direct-send request", function()
+    local session = assert(Session.new())
+    local model = fake_model.new({})
+    local result = wait(chat.send(session, "Continue", {
+      model = model,
+      prepare_request_messages = function(messages)
+        return messages, nil, function() assert(async.current()):cancel() end
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal(0, #model.requests)
+    assert.are.equal("Continue", assert(session:messages()[1]).content)
+  end)
+
   for _, method in ipairs({ "send", "run", "continue" }) do
     it("completes " .. method .. " turns with a projection-only Session store", function()
       ---@type Neoagent.Message[]
@@ -120,7 +219,9 @@ describe("neoagent.chat", function()
       assert.are.same(vim.list_slice(committed, 2), observed)
       assert.are.equal("hello", assert(assert(model.requests[1]).messages[1]).content)
       if method ~= "send" then
-        assert.are.equal("echoed", assert(assert(assert(model.requests[2]).messages[3]).content[1]).text)
+        local echo = assert(assert(model.requests[2]).messages[3])
+        assert(echo.role == "toolResult")
+        assert.are.equal("echoed", assert(assert(echo.content)[1]).text)
         assert.are.equal("Follow up after the echo.", assert(assert(model.requests[2]).messages[4]).content)
       end
 
@@ -448,8 +549,10 @@ describe("neoagent.chat", function()
     assert.is_nil(assert(assert(assert(messages[3]).content)[1]).revision)
     assert.are.equal(assert(frames[3]).file_id, assert(assert(assert(messages[3]).content)[1]).file_id)
     assert.are.equal(png(11), attachments.read(assert(assert(assert(messages[3]).content)[1])))
+    local request_result = assert(assert(model.requests[2]).messages[3])
+    assert(request_result.role == "toolResult")
     assert.are.equal(assert(frames[3]).file_id,
-      assert(assert(assert(model.requests[2]).messages[3]).content[1]).file_id)
+      assert(assert(request_result.content)[1]).file_id)
 
     local path = store:metadata().path
     local journal = table.concat(vim.fn.readfile(path), "\n")
