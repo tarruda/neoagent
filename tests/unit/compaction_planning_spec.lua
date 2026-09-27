@@ -17,7 +17,7 @@ end
 
 describe("neoagent.compaction_planning", function()
   it("retains the first fitting suffix with a non-monotonic Model estimate", function()
-    for _, component in ipairs({ compaction.local_component }) do
+    for _, component in ipairs({ compaction.local_component, require("neoagent.compaction.prefix").component }) do
       local session = assert(Session.new())
       for index = 1, 8 do
         assert(session:append(index % 2 == 1
@@ -70,7 +70,7 @@ describe("neoagent.compaction_planning", function()
   end)
 
   it("replaces older checkpoints when retaining a suffix across them", function()
-    for _, component in ipairs({ compaction.local_component }) do
+    for _, component in ipairs({ compaction.local_component, require("neoagent.compaction.prefix").component }) do
       local session = assert(Session.new())
       assert(session:append({ role = "user", content = "Original history" }))
       local _, _, user = session:append({ role = "user", content = string.rep("u", 400) })
@@ -109,7 +109,7 @@ describe("neoagent.compaction_planning", function()
   end)
 
   it("recompacts only active local context with a smaller output allowance", function()
-    for _, component in ipairs({ compaction.local_component }) do
+    for _, component in ipairs({ compaction.local_component, require("neoagent.compaction.prefix").component }) do
       for _, retain in ipairs({ false, true }) do
         local session = assert(Session.new())
         assert(session:append({ role = "user", content = "Consumed original history" }))

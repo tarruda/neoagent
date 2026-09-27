@@ -1513,6 +1513,32 @@ describe("neoagent default agent", function()
     assert.is_false(current_view().context.provider_status)
   end)
 
+  it("uses the configured prefix strategy for a directly constructed Agent", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "Checkpoint" } }) } })
+    model.context_window = 32768
+    local agent = setup_model(model, {
+      system_prompt = function() return "Original instructions" end,
+      compaction = { strategy = "prefix", auto = false, reserve_tokens = 4096, keep_recent_tokens = 10 },
+    })
+    local session = agent:get_session()
+    assert(session:append({ role = "user", content = "Earlier request" }))
+    assert(session:append({ role = "assistant", content = { { type = "text", text = string.rep("Recent work ", 60) } } }))
+    local original = assert(session:context_messages())
+    local run = assert(agent:compact("Preserve the requirements"))
+    assert(type(run) == "table")
+    assert(vim.wait(1000, function() return run:is_done() and not agent:is_running() end))
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal(1, #model.requests)
+    local request = assert(model.requests[1])
+    assert.are.equal("Original instructions", request.system_prompt)
+    assert.are.same(original[1], request.messages[1])
+    assert.are.equal(2, #request.messages)
+    assert.are.equal(3, #session:entries())
+    local projected = assert(session:context_messages())
+    assert.are.equal(2, #projected)
+    assert.are.same(original[2], projected[2])
+  end)
+
   it("compacts a committed Tool result before the next provider request", function()
     local first = fake_model.assistant({ {
       type = "toolCall", id = "inspect-large", name = "inspect", arguments = {},
@@ -3748,7 +3774,7 @@ describe("neoagent default agent", function()
   end)
 
   it("projects Tool schemas for manual compaction and checkpoint acceptance", function()
-    for _, strategy in ipairs({ "summary" }) do
+    for _, strategy in ipairs({ "summary", "prefix" }) do
       local shaped = 0
       local transport = require("tests.helpers.fake_transport").new({ { chunks = {
         'data: {"choices":[{"delta":{"content":"Checkpoint"},"finish_reason":"stop"}]}\n\n',

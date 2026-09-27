@@ -60,7 +60,15 @@ local M = {}
 ---@field tokens_before integer
 ---@field settings Neoagent.CompactionSettings
 
----@alias Neoagent.AnyCompactionPreparation Neoagent.CompactionPreparation|Neoagent.NativeCompactionPreparation
+---@class Neoagent.PrefixCompactionPreparation
+---@field kind "prefix"
+---@field messages Neoagent.Message[]
+---@field first_kept_entry_id? string
+---@field tokens_before integer
+---@field settings Neoagent.CompactionSettings
+---@field max_output_tokens integer
+
+---@alias Neoagent.AnyCompactionPreparation Neoagent.CompactionPreparation|Neoagent.PrefixCompactionPreparation|Neoagent.NativeCompactionPreparation
 
 ---@type Neoagent.CompactionSettings
 M.defaults = {
@@ -348,7 +356,7 @@ local function local_source(path, settings)
 end
 
 ---@class Neoagent.LocalCheckpointPlan
----@field build fun(max_output_tokens: integer): Neoagent.CompactionPreparation
+---@field build fun(max_output_tokens: integer): Neoagent.CompactionPreparation|Neoagent.PrefixCompactionPreparation
 ---@field known_summary string Fixed text carried into the checkpoint, excluding generated output.
 ---@field generations integer Number of independently capped generated summaries.
 

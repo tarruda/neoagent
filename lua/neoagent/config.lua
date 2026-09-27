@@ -45,12 +45,16 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field max_retries? integer
 ---@field base_delay_ms? integer
 
+---@alias Neoagent.LocalCompactionStrategy "summary"|"prefix"
+
 ---@class Neoagent.CompactionConfig: Neoagent.CompactionOptions
+---@field strategy Neoagent.LocalCompactionStrategy
 ---@field auto boolean
 ---@field reserve_tokens integer
 ---@field keep_recent_tokens integer
 
 ---@class Neoagent.CompactionConfigInput
+---@field strategy? Neoagent.LocalCompactionStrategy
 ---@field auto? boolean
 ---@field reserve_tokens? integer
 ---@field keep_recent_tokens? integer
@@ -232,6 +236,7 @@ local defaults = {
     base_delay_ms = 2000,
   },
   compaction = {
+    strategy = "summary",
     auto = true,
     reserve_tokens = 16384,
     keep_recent_tokens = 20000,
@@ -437,6 +442,10 @@ local function validate(opts)
   )
   if opts.compaction ~= false then
     assert(type(opts.compaction) == "table", "compaction must be false or a table")
+    assert(
+      opts.compaction.strategy == "summary" or opts.compaction.strategy == "prefix",
+      'compaction.strategy must be "summary" or "prefix"'
+    )
     assert(type(opts.compaction.auto) == "boolean", "compaction.auto must be boolean")
     for _, key in ipairs({ "reserve_tokens", "keep_recent_tokens" }) do
       local value = opts.compaction[key]
@@ -447,7 +456,7 @@ local function validate(opts)
     end
     for key in pairs(opts.compaction) do
       assert(
-        key == "auto" or key == "reserve_tokens" or key == "keep_recent_tokens",
+        key == "strategy" or key == "auto" or key == "reserve_tokens" or key == "keep_recent_tokens",
         "unsupported compaction setting: " .. tostring(key)
       )
     end

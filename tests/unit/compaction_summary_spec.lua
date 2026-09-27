@@ -17,7 +17,7 @@ end
 
 describe("neoagent.compaction_summary", function()
   it("selects summary thinking without raising a lower inherited effort", function()
-    for _, component in ipairs({ compaction.local_component }) do
+    for _, component in ipairs({ compaction.local_component, require("neoagent.compaction.prefix").component }) do
       for _, case in ipairs({
         { selected = "off", expected = "off", levels = { off = {}, low = {}, high = {} } },
         { selected = "minimal", expected = "minimal", levels = { minimal = {}, low = {}, high = {} } },

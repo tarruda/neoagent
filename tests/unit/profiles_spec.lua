@@ -33,6 +33,14 @@ describe("bundled Profile resources", function()
     resources:destroy()
   end)
 
+  it("selects prefix compaction for Neo and Chat while Codex keeps native compaction", function()
+    local selected, _, resources = profiles.bundled(config({ compaction = { strategy = "prefix" } }), { startup = false })
+    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[1]).compaction)
+    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[2]).compaction)
+    assert.are.equal(require("neoagent.compaction.codex").component, assert(selected[3]).compaction)
+    resources:destroy()
+  end)
+
   it("keeps a Codex draft default visible while its catalog is loading", function()
     local configured = config({
       default_model = { provider = "dynamic", model = "discovered" },

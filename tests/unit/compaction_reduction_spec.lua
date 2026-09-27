@@ -17,8 +17,8 @@ local function finish(run)
 end
 
 describe("neoagent.compaction_reduction", function()
-  it("combines reductions from several Tool results in native requests", function()
-    for _, strategy in ipairs({ "codex" }) do
+  it("combines reductions from several Tool results in native and prefix requests", function()
+    for _, strategy in ipairs({ "codex", "prefix" }) do
       local session = assert(Session.new())
       assert(session:append({ role = "user", content = "Inspect both files" }))
       for index = 1, 2 do

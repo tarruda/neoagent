@@ -80,6 +80,7 @@ The main options and defaults are: >lua
 
     retry = { enabled = true, max_retries = 3, base_delay_ms = 2000 },
     compaction = {
+      strategy = "summary",
       auto = true,
       reserve_tokens = 16384,
       keep_recent_tokens = 20000,
@@ -1494,20 +1495,34 @@ lowest declared enabled level), preserving `off` and any already lower
 selection. Without a selection, configured reasoning options remain in effect.
 Explicit thinking-token budgets are capped to reserve room for text output.
 
-Local summaries require Models that can read consumed images. Before
-inference, they check that the request and reserved output fit the Model
-window. Generated checkpoints are validated and budgeted before publication;
-native retention is fitted around the returned encrypted item. If either check
-fails, the previous context remains active. Preparation failures end the
-activity before its next Model request. Accepted prompts, assistant messages,
-and Tool results remain committed; a later continuation uses them without
-resubmitting the prompt.
+Both local strategies require summarizing Models that can read consumed
+images. Before inference, they check that the request and reserved output fit
+the Model window. Generated checkpoints are validated and budgeted before
+publication; native retention is fitted around the returned encrypted item.
+If either check fails, the previous context remains active. Preparation
+failures end the activity before its next Model request. Accepted prompts,
+assistant messages, and Tool results remain committed; a later continuation
+uses them without resubmitting the prompt.
 
 Codex may shorten text and Tool results in copied native compaction requests
 to fit estimates or recover from provider overflow. Copies keep the longest
 fitting text excerpt and mark omissions. Reduction retries are bounded. An
 overflow immediately after a native checkpoint can trigger one more native
 preparation with retained users removed.
+
+`compaction.strategy` selects the local strategy for Neo, Chat, and directly
+constructed Agents. The default, `"summary"`, sends a serialized conversation
+to a dedicated summary prompt. `"prefix"` summarizes the original contiguous
+prefix, including prior checkpoints and consumed portions of split turns.
+It preserves the normal system prompt, Tool schemas, and message order so
+servers such as llama.cpp can reuse matching cached prompt prefixes. It appends
+a temporary user instruction, never stored in the Session, and rejects Tool
+calls in the summary response. This setting does not change Codex compaction.
+
+The prefix request, temporary instruction, and reserved output must fit the
+Model window. Large Tool results may be shortened in the request copy, with
+an excerpt and omission marker. If it still cannot fit, compact earlier or
+reduce the request.
 
 `agent:compact(instructions)` accepts additional focus for local summaries.
 Native compaction rejects non-empty custom instructions.
@@ -1522,7 +1537,7 @@ as `opts.budget` to `local_component.prepare(opts)`, then set
 Evaluation and preparation must run inside a Run when Models need
 authentication. The returned cancellable Run contains `summary`,
 `tokens_before`, optional `usage`, and optional `first_kept_entry_id` in its
-result. Agents invoke components for native compaction.
+result. Agents invoke components for prefix or native compaction.
 `neoagent.compaction` also exposes `settings`, `estimate_context`,
 `should_compact`, and `serialize`.
 
