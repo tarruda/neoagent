@@ -668,15 +668,7 @@ function M.new(opts, resources)
   function service:wrap_model(model)
     model = require("neoagent.model").assert(model, "llama.cpp input Model")
     local router_id = definitions[model.id] and definitions[model.id].router_id or model.id
-    local wrapped = {
-      api = model.api,
-      provider = model.provider,
-      id = model.id,
-      input = util.copy(model.input),
-      context_window = model.context_window,
-      thinking = util.copy(model.thinking),
-      timeout_ms = model.timeout_ms,
-    }
+    local wrapped = assert(require("neoagent.model").capabilities(model))
     ---@param opts Neoagent.StreamOptions
     ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function wrapped:stream(opts)
@@ -761,8 +753,6 @@ function M.new(opts, resources)
         }
       )
     end
-    wrapped._llama_service = service
-    wrapped._llama_router_id = router_id
     return require("neoagent.model").assert(wrapped, "llama.cpp Model wrapper")
   end
 

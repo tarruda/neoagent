@@ -10,16 +10,10 @@ local M = {}
 ---@param service Neoagent.ProviderService
 ---@return Neoagent.Model
 function M.wrap(model, service)
-  local result = {
-    _model = model,
-    api = model.api,
-    provider = model.provider,
-    id = model.id,
-    input = util.copy(model.input),
-    context_window = model.context_window,
-    timeout_ms = model.timeout_ms,
-    thinking = util.copy(model.thinking),
-  }
+  ---@class Neoagent.ProviderModel: Neoagent.Model
+  ---@field _model Neoagent.Model
+  local result = assert(contract.capabilities(model)) --[[@as Neoagent.ProviderModel]]
+  result._model = model
   ---@param opts Neoagent.StreamOptions
   function result:stream(opts)
     opts = util.copy(opts)

@@ -680,15 +680,7 @@ function Manager:wrap(model, id, opts)
   ---@field _method string
   ---@field _model Neoagent.Model
   ---@field _optional boolean
-  local wrapped = {
-    api = model.api,
-    provider = model.provider,
-    id = model.id,
-    input = util.copy(model.input),
-    context_window = model.context_window,
-    timeout_ms = model.timeout_ms,
-    thinking = util.copy(model.thinking),
-  }
+  local wrapped = assert(model_contract.capabilities(model)) --[[@as Neoagent.AuthenticatedModel]]
   ---@param call_opts Neoagent.StreamOptions
   ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function wrapped:stream(call_opts)
