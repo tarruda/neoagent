@@ -1,4 +1,8 @@
+local async = require("neoagent.async")
+local request_preparation = require("neoagent.api.request_preparation")
+local estimate = require("neoagent.context_estimate")
 local tree = require("neoagent.session_tree")
+local request_estimate = require("neoagent.api.request_estimate")
 local util = require("neoagent.util")
 
 local M = {}
@@ -13,11 +17,24 @@ local M = {}
 ---@field reserve_tokens integer
 ---@field keep_recent_tokens integer
 
----@class Neoagent.ContextEstimate
+---@class Neoagent.CompactionEvaluationOptions
+---@field configured Neoagent.CompactionOptions
+---@field model Neoagent.Model
+---@field messages Neoagent.RequestMessage[]
+---@field path Neoagent.JournalEntry[]
+---@field system_prompt? string
+---@field tools? Neoagent.ToolDefinition[]
+---@field force? boolean
+---@field model_options? Neoagent.StreamOverrides
+
+---@class Neoagent.CompactionEvaluation
+---@field needed boolean
 ---@field tokens number
----@field usage_tokens number
----@field trailing_tokens number
----@field last_usage_index? integer
+---@field input_limit number
+---@field settings Neoagent.CompactionSettings
+
+---@class Neoagent.CompactionPlanningOptions: Neoagent.CompactionEvaluationOptions
+---@field budget Neoagent.CompactionEvaluation
 
 ---@class Neoagent.CompactionCut
 ---@field first_kept_index integer
@@ -25,13 +42,33 @@ local M = {}
 ---@field split_turn boolean
 
 ---@class Neoagent.CompactionPreparation
----@field first_kept_entry_id string
+---@field kind "summary"
+---@field max_output_tokens? integer
+---@field first_kept_entry_id? string
 ---@field messages Neoagent.Message[]
 ---@field turn_prefix Neoagent.Message[]
 ---@field split_turn boolean
 ---@field tokens_before integer
 ---@field previous_summary? string
 ---@field settings Neoagent.CompactionSettings
+
+---@class Neoagent.NativeCompactionPreparation
+---@field kind "native"
+---@field source_messages Neoagent.RequestMessage[] Original request copy for bounded provider-overflow retries.
+---@field request_messages Neoagent.RequestMessage[] Bounded request copy; Session context remains unchanged.
+---@field retained_users Neoagent.RetainedUser[]
+---@field tokens_before integer
+---@field settings Neoagent.CompactionSettings
+
+---@class Neoagent.PrefixCompactionPreparation
+---@field kind "prefix"
+---@field messages Neoagent.Message[]
+---@field first_kept_entry_id? string
+---@field tokens_before integer
+---@field settings Neoagent.CompactionSettings
+---@field max_output_tokens integer
+
+---@alias Neoagent.AnyCompactionPreparation Neoagent.CompactionPreparation|Neoagent.PrefixCompactionPreparation|Neoagent.NativeCompactionPreparation
 
 ---@type Neoagent.CompactionSettings
 M.defaults = {
@@ -40,97 +77,31 @@ M.defaults = {
   keep_recent_tokens = 20000,
 }
 
----@param content? string|Neoagent.InputBlock[]
----@return integer
-local function content_chars(content)
-  if type(content) == "string" then
-    return vim.fn.strchars(content)
-  end
-  local count = 0
-  for _, block in ipairs(content or {}) do
-    if block.type == "text" then
-      count = count + vim.fn.strchars(block.text or "")
-    elseif block.type == "image" then
-      count = count + 4800
+M.messages_tokens = request_estimate.messages
+M.usage_tokens = estimate.usage_tokens
+M.estimate_tokens = estimate.estimate_tokens
+M.valid_assistant_usage = estimate.valid_assistant_usage
+M.estimate_context = estimate.estimate_context
+
+---@param path Neoagent.JournalEntry[]
+---@return boolean
+function M.has_usage_after_checkpoint(path)
+  local checkpoint
+  for index, entry in ipairs(path) do
+    if entry.type == "compaction" then
+      checkpoint = index
     end
   end
-  return count
-end
-
----@param usage? Neoagent.Usage
----@return number?
-function M.usage_tokens(usage)
-  if type(usage) ~= "table" then
-    return nil
+  if not checkpoint then
+    return true
   end
-  if type(usage.totalTokens) == "number" and usage.totalTokens > 0 then
-    return usage.totalTokens
-  end
-  ---@type number
-  local total = 0
-  for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
-    if type(usage[key]) == "number" then
-      total = total + usage[key]
+  for index = checkpoint + 1, #path do
+    local entry = assert(path[index])
+    if entry.type == "message" and M.valid_assistant_usage(entry.message) then
+      return true
     end
   end
-  return total > 0 and total or nil
-end
-
----@param message Neoagent.ProjectionMessage
----@return integer
-function M.estimate_tokens(message)
-  if message.role == "user" or message.role == "toolResult" then
-    ---@cast message Neoagent.UserMessage|Neoagent.ToolResultMessage
-    return math.ceil(content_chars(message.content) / 4)
-  end
-  if message.role == "assistant" then
-    ---@cast message Neoagent.AssistantMessage
-    local chars = 0
-    for _, block in ipairs(message.content or {}) do
-      if block.type == "text" then
-        chars = chars + vim.fn.strchars(block.text or "")
-      elseif block.type == "thinking" then
-        chars = chars + vim.fn.strchars(block.thinking or "")
-      elseif block.type == "toolCall" then
-        local ok, encoded = pcall(vim.json.encode, block.arguments or {})
-        chars = chars + #(block.name or "") + (ok and #encoded or 16)
-      end
-    end
-    return math.ceil(chars / 4)
-  end
-  if message.role == "compactionSummary" then
-    return math.ceil(#(message.summary or "") / 4)
-  end
-  return 0
-end
-
----@param message Neoagent.ProjectionMessage
----@return number?
-local function valid_assistant_usage(message)
-  if message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
-    return nil
-  end
-  return M.usage_tokens(message.usage)
-end
-
----@param messages Neoagent.ProjectionMessage[]
----@return Neoagent.ContextEstimate
-function M.estimate_context(messages)
-  for index = #messages, 1, -1 do
-    local usage = valid_assistant_usage(messages[index])
-    if usage then
-      local trailing = 0
-      for trailing_index = index + 1, #messages do
-        trailing = trailing + M.estimate_tokens(messages[trailing_index])
-      end
-      return { tokens = usage + trailing, usage_tokens = usage, trailing_tokens = trailing, last_usage_index = index }
-    end
-  end
-  local total = 0
-  for _, message in ipairs(messages) do
-    total = total + M.estimate_tokens(message)
-  end
-  return { tokens = total, usage_tokens = 0, trailing_tokens = total }
+  return false
 end
 
 ---@param configured? Neoagent.CompactionOptions
@@ -149,21 +120,29 @@ function M.settings(configured, context_window, defaults)
   return { auto = merged.auto, reserve_tokens = reserve, keep_recent_tokens = keep }
 end
 
+---@param model Neoagent.Model
+---@param settings Neoagent.CompactionSettings
+---@return integer
+function M.summary_output_limit(model, settings)
+  return math.max(
+    1,
+    math.floor(
+      math.min(
+        8192,
+        (model.context_window or 32768) / 16,
+        settings.reserve_tokens / 2,
+        model.max_output_tokens or math.huge
+      )
+    )
+  )
+end
+
 ---@param context_tokens number
 ---@param context_window number
 ---@param settings Neoagent.CompactionSettings
 ---@return boolean
 function M.should_compact(context_tokens, context_window, settings)
   return settings.auto and context_window > 0 and context_tokens > context_window - settings.reserve_tokens
-end
-
----@param entry Neoagent.JournalEntry
----@return Neoagent.Message?
-local function entry_message(entry)
-  if entry.type == "message" then
-    return util.copy(entry.message)
-  end
-  return nil
 end
 
 ---@param entry Neoagent.JournalEntry
@@ -252,13 +231,13 @@ function M.find_cut_point(entries, start_index, end_index, keep_recent_tokens)
   }
 end
 
+---@class Neoagent.LocalCompactionBoundary
+---@field start_index integer
+---@field previous_summary? string
+
 ---@param path_entries Neoagent.JournalEntry[]
----@param settings Neoagent.CompactionSettings
----@return Neoagent.CompactionPreparation?, Neoagent.Error?
-function M.prepare(path_entries, settings)
-  if #path_entries == 0 or assert(path_entries[#path_entries]).type == "compaction" then
-    return nil
-  end
+---@return Neoagent.LocalCompactionBoundary?, Neoagent.Error?
+local function local_boundary(path_entries)
   local previous_index
   for index = #path_entries, 1, -1 do
     if assert(path_entries[index]).type == "compaction" then
@@ -271,7 +250,10 @@ function M.prepare(path_entries, settings)
   if previous_index then
     local previous = path_entries[previous_index]
     ---@cast previous Neoagent.CompactionEntry
-    previous_summary = previous.summary
+    if previous.native then
+      return nil, util.error("compaction", "Local compaction cannot replace an encrypted checkpoint")
+    end
+    previous_summary = assert(previous.summary)
     for index, entry in ipairs(path_entries) do
       if entry.id == previous.first_kept_entry_id then
         boundary_start = index
@@ -282,40 +264,207 @@ function M.prepare(path_entries, settings)
       boundary_start = previous_index + 1
     end
   end
-  local context = tree.to_llm(tree.messages(path_entries, true))
-  local cut = M.find_cut_point(path_entries, boundary_start, #path_entries, settings.keep_recent_tokens)
-  local first_kept = assert(path_entries[cut.first_kept_index])
-  local history_end = cut.turn_start_index or cut.first_kept_index
-  ---@type Neoagent.Message[]
-  local messages = {}
-  for index = boundary_start, history_end - 1 do
-    local message = entry_message(assert(path_entries[index]))
-    if message then
-      messages[#messages + 1] = message
+  return { start_index = boundary_start, previous_summary = previous_summary }
+end
+
+---@class Neoagent.LocalCompactionSelection
+---@field consumed Neoagent.JournalEntry[]
+---@field first_kept_entry_id? string
+---@field turn_start_entry_id? string
+---@field previous_summary? string
+---@field tokens_before integer
+---@field settings Neoagent.CompactionSettings
+
+---@class Neoagent.LocalCompactionSource
+---@field select fun(whole?: boolean, first_kept_index?: integer): Neoagent.LocalCompactionSelection?, Neoagent.Error?
+---@field next_cut table<string, integer>
+
+-- One planning operation owns its active projection and semantic estimate.
+-- Neither changes as the candidate retention boundary moves forward.
+---@param path Neoagent.JournalEntry[]
+---@param settings Neoagent.CompactionSettings
+---@return Neoagent.LocalCompactionSource?, Neoagent.Error?
+local function local_source(path, settings)
+  if #path == 0 then
+    return nil
+  end
+  local boundary, err = local_boundary(path)
+  if not boundary then
+    return nil, err
+  end
+  local active = tree.context_entries(path)
+  local tokens_before = math.ceil(M.estimate_context(tree.to_llm(tree.messages(active))).tokens)
+  local preferred = M.find_cut_point(path, boundary.start_index, #path, settings.keep_recent_tokens)
+  local first_message, turn_start
+  local turns, next_cut = {}, {}
+  for index = boundary.start_index, #path do
+    local entry = assert(path[index])
+    if entry.type == "message" and not first_message then
+      first_message = index
+    end
+    if is_turn_start(entry) then
+      turn_start = index
+    else
+      turns[index] = turn_start
     end
   end
-  ---@type Neoagent.Message[]
-  local turn_prefix = {}
-  if cut.split_turn then
-    for index = assert(cut.turn_start_index), cut.first_kept_index - 1 do
-      local message = entry_message(assert(path_entries[index]))
-      if message then
-        turn_prefix[#turn_prefix + 1] = message
-      end
+  local following, after_following
+  for index = #path, 1, -1 do
+    local entry = assert(path[index])
+    if is_cut_point(entry) then
+      following, after_following = index, following
     end
-  end
-  if #messages == 0 and #turn_prefix == 0 then
-    return nil, util.error("compaction", "Nothing can be compacted while retaining the recent context")
+    next_cut[entry.id] = after_following
   end
   return {
-    first_kept_entry_id = first_kept.id,
-    messages = messages,
-    turn_prefix = turn_prefix,
-    split_turn = cut.split_turn,
-    tokens_before = math.ceil(M.estimate_context(context).tokens),
-    previous_summary = previous_summary,
-    settings = util.copy(settings),
+    next_cut = next_cut,
+    select = function(whole, first_kept_index)
+      local cut
+      if not whole then
+        cut = preferred
+        if first_kept_index then
+          cut = {
+            first_kept_index = first_kept_index,
+            turn_start_index = turns[first_kept_index],
+            split_turn = turns[first_kept_index] ~= nil,
+          }
+        end
+        if not first_message or first_message >= cut.first_kept_index then
+          return nil, util.error("compaction", "Nothing can be compacted while retaining the recent context")
+        end
+      end
+      ---@type Neoagent.LocalCompactionSelection
+      local result = {
+        consumed = {},
+        settings = util.copy(settings),
+        previous_summary = boundary.previous_summary,
+        first_kept_entry_id = cut and assert(path[cut.first_kept_index]).id,
+        tokens_before = tokens_before,
+      }
+      if cut and cut.turn_start_index then
+        result.turn_start_entry_id = assert(path[cut.turn_start_index]).id
+      end
+      for _, entry in ipairs(active) do
+        if entry.id == result.first_kept_entry_id then
+          break
+        end
+        result.consumed[#result.consumed + 1] = entry
+      end
+      return result
+    end,
   }
+end
+
+---@class Neoagent.LocalCheckpointPlan
+---@field build fun(max_output_tokens: integer): Neoagent.CompactionPreparation|Neoagent.PrefixCompactionPreparation
+---@field known_summary string Fixed text carried into the checkpoint, excluding generated output.
+---@field generations integer Number of independently capped generated summaries.
+
+---@async
+---@param model Neoagent.Model
+---@param messages Neoagent.RequestMessage[]
+---@param system_prompt? string
+---@param tools? Neoagent.ToolDefinition[]
+---@param model_options? Neoagent.StreamOverrides
+---@param operation? "compact"
+---@return integer
+function M.request_tokens(model, messages, system_prompt, tools, model_options, operation)
+  local call = request_preparation.copy(model_options or {})
+  ---@cast call Neoagent.StreamOptions
+  call.messages, call.system_prompt, call.tools = messages, system_prompt, tools
+  return request_estimate.request(model, call, operation)
+end
+
+-- Observed usage already includes request overhead. It supplies a conservative
+-- floor only when it belongs to the current context; semantic counts alone
+-- never override the Model estimate.
+---@param options Neoagent.CompactionEvaluationOptions
+---@param defaults? Neoagent.CompactionSettings
+---@return Neoagent.CompactionEvaluation
+---@async
+function M.evaluate_budget(options, defaults)
+  local model = options.model
+  local settings = M.settings(options.configured, model.context_window, defaults)
+  ---@type number
+  local tokens = M.request_tokens(model, options.messages, options.system_prompt, options.tools, options.model_options)
+  local observed = M.estimate_context(options.messages)
+  if observed.last_usage_index and M.has_usage_after_checkpoint(options.path) then
+    tokens = math.max(tokens, observed.tokens)
+  end
+  local input_limit = model.context_window and model.context_window - settings.reserve_tokens or math.huge
+  return {
+    needed = options.force == true or M.should_compact(tokens, model.context_window or 0, settings),
+    tokens = tokens,
+    input_limit = input_limit,
+    settings = settings,
+  }
+end
+
+---@async
+---@param options Neoagent.CompactionPlanningOptions
+---@param assemble fun(selection: Neoagent.LocalCompactionSelection): Neoagent.LocalCheckpointPlan
+---@return Neoagent.AnyCompactionPreparation?, Neoagent.Error?
+function M.prepare_local(options, assemble)
+  local evaluation = options.budget
+  local settings = evaluation.settings
+  local limit = M.summary_output_limit(options.model, settings)
+  local leaf = options.path[#options.path]
+  local recompacting = leaf ~= nil and leaf.type == "compaction"
+  if recompacting then
+    -- A provider overflow can follow a checkpoint without committing another
+    -- message. Consume its active projection, including the retained suffix,
+    -- and reduce output instead of selecting the same retention boundary.
+    limit = math.min(limit, math.max(1, math.floor(M.messages_tokens(options.messages) / 2)))
+  end
+  local source, err = local_source(options.path, settings)
+  if not source then
+    return nil, err
+  end
+  local selection
+  selection, err = source.select(recompacting)
+  -- A completed exchange may occupy the entire request. It is still a valid
+  -- checkpoint boundary when retaining any suffix would prevent progress.
+  if not selection and evaluation.tokens <= evaluation.input_limit then
+    return nil, err
+  end
+  local project = tree.compaction_projector(options.path)
+  for _ = 1, #options.path + 1 do
+    if not selection then
+      selection = assert(source.select(true))
+    end
+    local checkpoint = assemble(selection)
+    local projected, projection_err = project({
+      summary = checkpoint.known_summary ~= "" and checkpoint.known_summary or "Summary pending.",
+      tokens_before = selection.tokens_before,
+      first_kept_entry_id = selection.first_kept_entry_id,
+    })
+    if not projected then
+      return nil, projection_err
+    end
+    local fixed = M.request_tokens(
+      options.model,
+      projected,
+      options.system_prompt,
+      options.tools,
+      options.model_options
+    ) + 32
+    local output = math.min(limit, math.floor((evaluation.input_limit - fixed) / checkpoint.generations))
+    -- Prefer the complete output allowance; a whole-context checkpoint may
+    -- use a smaller allowance if fixed request content takes most of the window.
+    if output >= limit or not selection.first_kept_entry_id and output >= 1 then
+      return checkpoint.build(output)
+    end
+    if not selection.first_kept_entry_id then
+      break
+    end
+    -- Move through real journal boundaries, preserving Tool-call/result pairs.
+    -- A preferred semantic suffix is only the first candidate, not a choice
+    -- between retaining that entire suffix and retaining nothing.
+    local next_index = source.next_cut[selection.first_kept_entry_id]
+    async.yield()
+    selection, err = source.select(next_index == nil, next_index)
+  end
+  return nil, util.error("compaction", "Request instructions and tools leave no room for compacted context")
 end
 
 return M

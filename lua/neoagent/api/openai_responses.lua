@@ -1,5 +1,7 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local decoder = require("neoagent.api.openai_responses.decoder")
+local compact_decoder = require("neoagent.api.openai_responses.compact_decoder")
 local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
 local request_context = require("neoagent.api.request_context")
@@ -23,11 +25,11 @@ local M = {}
 ---@field responses_lite? boolean
 ---@field text_verbosity? string
 ---@field response_status? Neoagent.ResponseStatus
+---@field native_compaction? boolean
 
 ---@class Neoagent.ResponsesModel: Neoagent.Model
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
----@field _max_output_tokens? number
 ---@field _timeout_ms? integer
 ---@field _reasoning boolean
 ---@field _reasoning_effort? string
@@ -44,17 +46,30 @@ local M = {}
 local Model = {}
 Model.__index = Model
 
----@param call_opts Neoagent.StreamOptions
+---@param call_opts Neoagent.RequestOptions
+---@param compact? boolean
 ---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
-function Model:_request(call_opts)
-  return request_builder.build(self, call_opts)
+function Model:_request(call_opts, compact)
+  return request_preparation.plan(self, call_opts, compact and "compact" or false, function(api_key)
+    return request_builder.build(self, call_opts, compact, api_key)
+  end, self._api_key)
+end
+
+---@param options Neoagent.RequestOptions
+---@param operation? "compact"
+---@return integer
+function Model:estimate_request(options, operation)
+  local plan = self:_request(options, operation == "compact")
+  return request_preparation.estimate(options, plan)
 end
 
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = util.copy(opts or {})
+  opts = request_preparation.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
+  local compatible, compatibility_err = model_contract.compatible_context(self, opts.messages)
+  assert(compatible, compatibility_err)
   ---@type Neoagent.ResponsesDecoder?
   local stream
   return async.run(
@@ -95,7 +110,7 @@ function Model:stream(opts)
       end)
 
       if not ok then
-        local err = util.normalize_error(outcome, "model")
+        local err = http_response.normalize_error(outcome)
         local partial = stream and stream.partial() or nil
         if partial then
           partial.stopReason = err.kind == "cancelled" and "aborted" or "error"
@@ -121,10 +136,39 @@ function Model:stream(opts)
   )
 end
 
+---@param self Neoagent.ResponsesModel
+---@param opts Neoagent.NativeCompactionOptions
+---@return Neoagent.Run<Neoagent.NativeCompactionResult, Neoagent.ModelEvent>
+local function compact(self, opts)
+  opts = request_preparation.copy(opts or {})
+  assert(type(opts.messages) == "table", "messages are required")
+  local compatible, compatibility_err = model_contract.compatible_context(self, opts.messages)
+  assert(compatible, compatibility_err)
+  return async.run(function(run)
+    model_contract.require_files(opts)
+    local request, identity = self:_request(opts, true)
+    local transport = request_context.bind_transport(self._transport, identity)
+    local native = compact_decoder.new(self)
+    local result = request_stream.send(transport, request, opts, { on_event = native.process }, self._images):await()
+    local response = http_response.check(result)
+    if self._response_status then
+      local status, details = self._response_status(response.headers)
+      if type(status) == "string" and status ~= "" or type(details) == "table" then
+        run:emit({ type = "provider_status", text = status, details = details })
+      end
+    end
+    return native.result()
+  end, { on_event = opts.on_event, on_done = opts.on_done, error_kind = "model" })
+end
+
 ---@param opts Neoagent.ResponsesOptions
 ---@return Neoagent.ResponsesModel
 function M.new(opts)
   opts = opts or {}
+  assert(
+    opts.native_compaction == nil or type(opts.native_compaction) == "boolean",
+    "native_compaction must be boolean"
+  )
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
   assert(type(opts.model) == "string" and opts.model ~= "", "model is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
@@ -142,12 +186,13 @@ function M.new(opts)
       provider = opts.provider,
       id = opts.model,
       input = util.copy(opts.input or { "text", "image" }),
+      compact = opts.native_compaction == true and compact or nil,
       context_window = opts.context_window,
+      max_output_tokens = opts.max_output_tokens,
       timeout_ms = timeout_ms,
       _timeout_ms = timeout_ms,
       _base_url = opts.base_url:gsub("/+$", ""),
       _api_key = opts.api_key,
-      _max_output_tokens = opts.max_output_tokens,
       _reasoning = opts.reasoning == true,
       _reasoning_effort = opts.reasoning_effort,
       _reasoning_summary = opts.reasoning_summary,

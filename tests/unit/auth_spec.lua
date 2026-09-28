@@ -81,6 +81,7 @@ describe("neoagent provider authentication", function()
     local model = require("tests.helpers.fake_model").new()
     model.api, model.provider, model.id = "fake", "provider", "model"
     model.context_window = 128000
+    model.max_output_tokens = 4096
     ---@param opts Neoagent.StreamOptions
     ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function model:stream(opts)
@@ -95,12 +96,29 @@ describe("neoagent provider authentication", function()
         return require("tests.helpers.fake_model").assistant({ { type = "text", text = "done" } })
       end, { on_event = opts.on_event })
     end
+    ---@param opts Neoagent.NativeCompactionOptions
+    ---@return Neoagent.Run<Neoagent.NativeCompactionResult, Neoagent.ModelEvent>
+    function model:compact(opts)
+      return async.run(function()
+        local decorate = opts.request_opts
+        assert(type(decorate) == "function")
+        seen = decorate({
+          request = { url = "http://model", headers = {}, body = {} },
+          tools = {}, messages = {}, model = self, request_context = {},
+        })
+        return { ok = true, item = {
+          role = "nativeCompaction", api = "fake", provider = "provider", model = "model",
+          id = "item", encrypted_content = "cipher",
+        } }
+      end)
+    end
     local streamed = {}
     model.thinking = { high = { body = { reasoning_effort = "high" } } }
     local wrapped = manager:wrap(model, "plan")
     assert.are.same(model.thinking, wrapped.thinking)
     assert.are.same({ "text" }, wrapped.input)
     assert.are.equal(128000, wrapped.context_window)
+    assert.are.equal(4096, wrapped.max_output_tokens)
     local model_result = wait(wrapped:stream({
       messages = {},
       request_opts = { body = { caller = true }, headers = { Authorization = "wrong" } },
@@ -117,6 +135,10 @@ describe("neoagent provider authentication", function()
     assert.are.equal("yes", rawget(assert(assert(seen).headers), "Existing"))
     assert.are.same({ base = true, caller = true }, assert(seen).body)
     assert.are.equal("fake", wrapped.api)
+    local native = wait(assert(wrapped.compact)(wrapped, { messages = {} }))
+    assert.is_true(native.ok)
+    assert.are.equal("cipher", assert(native.item).encrypted_content)
+    assert.are.equal("Bearer token", rawget(assert(assert(seen).headers), "Authorization"))
   end)
 
   it("stores non-expiring API keys and removes only the stored credential", function()

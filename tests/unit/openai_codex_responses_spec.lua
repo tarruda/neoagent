@@ -20,6 +20,351 @@ local function wait(run)
 end
 
 describe("neoagent.api.openai_codex_responses", function()
+  for _, operation in ipairs({ "stream", "compact" }) do
+    for _, credential_source in ipairs({ "callable key", "Authentication" }) do
+      it("requires fresh " .. operation .. " preparation after " .. credential_source .. " changes content", function()
+        local key = "synthetic-before"
+        local delays, reconnects = {}, {}
+        local chunks = { event({ type = "response.completed", response = {
+          id = "prepared", status = "completed", output = operation == "compact"
+            and { { type = "compaction", encrypted_content = "synthetic-checkpoint" } }
+            or { { type = "message", id = "reply", role = "assistant", status = "completed",
+              content = { { type = "output_text", text = "Prepared answer", annotations = {} } } } },
+        } }) }
+        if operation == "compact" then
+          table.insert(chunks, 1, event({ type = "response.output_item.done", item = {
+            type = "compaction", encrypted_content = "synthetic-checkpoint",
+          } }))
+        end
+        local transport = fake_transport.new({ { chunks = chunks } })
+        ---@type Neoagent.Model
+        local model = codex.new({ provider = "codex", model = "gpt-test", base_url = "https://example.test",
+          transport = transport, sleep = function(delay) delays[#delays + 1] = delay end,
+          api_key = credential_source == "callable key" and function() return key end or nil,
+          request_opts = credential_source == "callable key" and function()
+            return { messages = { { role = "user", content = key == "synthetic-before" and "Short"
+              or string.rep("Changed context. ", 100) } } }
+          end or nil,
+        })
+        local rotate = function() key = "synthetic-after" end
+        if credential_source == "Authentication" then
+          local store = require("tests.helpers.auth_manager").store({ key = { type = "api_key", key = key } })
+          local manager = require("neoagent.auth").new({ store = store,
+            methods = { key = require("neoagent.auth.api_key").new({ name = "Synthetic key",
+              request_opts = function(credential)
+                return { headers = { Authorization = "Bearer " .. credential.key },
+                  messages = { { role = "user", content = credential.key == "synthetic-before" and "Short"
+                    or string.rep("Changed context. ", 100) } } }
+              end,
+            }) },
+          })
+          model = manager:wrap(model, "key")
+          rotate = function() assert(store:write("key", { type = "api_key", key = "synthetic-after" })) end
+        end
+        local call = { messages = { { role = "user", content = "Original" } },
+          _preparation = require("neoagent.api.request_preparation").new(),
+          on_event = function(value)
+            if value.type == "provider_status" and value.reconnecting then reconnects[#reconnects + 1] = value end
+          end,
+        }
+        local before = assert(model.estimate_request)(model, call, operation == "compact" and "compact" or nil)
+        rotate()
+        ---@async
+        local function execute()
+          if operation == "compact" then return assert(model.compact)(model, call):await() end
+          return model:stream(call):await()
+        end
+        local result = execute()
+        assert.is_false(result.ok)
+        assert.are.equal("stale_request_preparation", assert(result.error).code)
+        assert.are.equal(0, #transport.requests)
+        assert.are.same({}, delays)
+        assert.are.same({}, reconnects)
+        assert.is_false(assert(result.error).retryable)
+        assert.is_nil(assert(result.error).retry_exhausted)
+        local after = assert(model.estimate_request)(model, call, operation == "compact" and "compact" or nil)
+        assert.is_true(after > before)
+        assert.is_true(execute().ok)
+        assert.are.equal(1, #transport.requests)
+      end)
+    end
+  end
+
+  it("retries structured rate limits whose message resembles a context overflow", function()
+    local transport = fake_transport.new({
+      { error = { kind = "transport", message = "HTTP 429", response = { status = 429 },
+        detail = [[{"error":{"code":"rate_limit_exceeded","message":"Request too large for the token-per-minute budget"}}]],
+      } },
+      { chunks = { event({ type = "response.completed", response = { id = "retried", status = "completed",
+        output = { { type = "message", id = "reply", role = "assistant", status = "completed",
+          content = { { type = "output_text", text = "Recovered", annotations = {} } } } },
+      } }) } },
+    })
+    local delays = {}
+    local model = codex.new({ provider = "codex", model = "gpt-test", base_url = "https://example.test",
+      transport = transport, sleep = function(delay) delays[#delays + 1] = delay end })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_true(result.ok)
+    assert.are.equal("Recovered", result.text)
+    assert.are.equal(2, #transport.requests)
+    assert.are.same({ 200 }, delays)
+  end)
+
+  it("compacts through Codex Responses and replays only compatible encrypted context", function()
+    local encrypted = "synthetic-encrypted-checkpoint"
+    local transport = fake_transport.new({
+      { chunks = {
+        event({ type = "response.output_item.done", item = { type = "message", role = "assistant" } }),
+        event({ type = "response.output_item.done", item = {
+          type = "compaction", encrypted_content = encrypted,
+        } }),
+        event({ type = "response.completed", response = {
+          id = "compacted-1", usage = { input_tokens = 30, output_tokens = 5, total_tokens = 35 },
+        } }),
+      } },
+      { chunks = { event({ type = "response.done", response = {
+        id = "reply-1", status = "completed", output = { {
+          type = "message", id = "message-1", role = "assistant", status = "completed",
+          content = { { type = "output_text", text = "continued", annotations = {} } },
+        } },
+      } }) } },
+    })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport,
+    })
+    local compact = assert(model.compact)
+    local result = wait(compact(model, { messages = { { role = "user", content = "original" } } }))
+    assert(result.ok)
+    assert.are.equal(encrypted, result.item.encrypted_content)
+    assert.are.equal(35, assert(result.usage).totalTokens)
+    local first = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    assert.are.equal("compaction_trigger", first.input[#first.input].type)
+    assert.is_true(first.parallel_tool_calls)
+
+    local reply = wait(model:stream({ messages = {
+      result.item, { role = "user", content = "continue" },
+    } }))
+    assert(reply.ok)
+    assert.are.equal("continued", reply.text)
+    local second = vim.json.decode((assert(assert(transport.requests[2]).body)))
+    assert.are.equal("compaction", second.input[1].type)
+    assert.are.equal(encrypted, second.input[1].encrypted_content)
+    assert.is_nil(second.input[1].id)
+    assert.are.equal("continue", second.input[2].content[1].text)
+
+    local incompatible = codex.new({
+      provider = "other", model = "gpt-test", base_url = "https://example.test/codex",
+    })
+    local rejected = wait(incompatible:stream({ messages = { result.item } }))
+    assert.is_false(rejected.ok)
+    assert.matches("Encrypted context requires its original API, provider, and Model", assert(rejected.error).message)
+  end)
+
+  it("omits a small output cap for native compaction but keeps it for inference", function()
+    local transport = fake_transport.new({
+      { chunks = {
+        event({ type = "response.output_item.done", item = {
+          type = "compaction", encrypted_content = "opaque",
+        } }),
+        event({ type = "response.completed", response = { id = "compacted" } }),
+      } },
+      { chunks = { event({ type = "response.done", response = {
+        id = "reply", status = "completed", output = { {
+          type = "message", role = "assistant", status = "completed",
+          content = { { type = "output_text", text = "continued" } },
+        } },
+      } }) } },
+    })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport, max_output_tokens = 4096,
+    })
+    local compacted = wait(assert(model.compact)(model, { messages = { { role = "user", content = "original" } } }))
+    assert.is_true(compacted.ok)
+    local compact_body = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    assert.are.equal("compaction_trigger", compact_body.input[#compact_body.input].type)
+    assert.is_nil(compact_body.max_output_tokens)
+
+    assert.is_true(wait(model:stream({ messages = { { role = "user", content = "continue" } } })).ok)
+    local inference_body = vim.json.decode((assert(assert(transport.requests[2]).body)))
+    assert.are.equal(4096, inference_body.max_output_tokens)
+  end)
+
+  it("uses an explicit native output budget and rejects an unsupported small one", function()
+    local transport = fake_transport.new({ { chunks = {
+      event({ type = "response.output_item.done", item = {
+        type = "compaction", encrypted_content = "opaque",
+      } }),
+      event({ type = "response.completed", response = { id = "compacted" } }),
+    } } })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport, max_output_tokens = 4096,
+      request_opts_layers = { { body = { max_output_tokens = 32000 } } },
+    })
+    local invalid = wait(assert(model.compact)(model, { messages = {}, compaction_output_tokens = 16000 }))
+    assert.is_false(invalid.ok)
+    assert.matches("at least 20000", assert(invalid.error).message)
+    assert.are.equal(0, #transport.requests)
+
+    local valid = wait(assert(model.compact)(model, { messages = {}, compaction_output_tokens = 24000 }))
+    assert.is_true(valid.ok)
+    local body = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    assert.are.equal(24000, body.max_output_tokens)
+  end)
+
+  it("rejects inference output caps and undersized shaped native budgets before sending", function()
+    local transport = fake_transport.new()
+    local model = codex.new({ provider = "codex", model = "gpt-test", base_url = "https://example.test",
+      transport = transport, request_max_retries = 0 })
+    local invalid_options = { messages = {} }
+    rawset(invalid_options, "max_output_tokens", 24000)
+    local invalid = wait(assert(model.compact)(model, invalid_options))
+    assert.is_false(invalid.ok)
+    assert.matches("uses compaction_output_tokens", assert(invalid.error).message)
+    invalid = wait(assert(model.compact)(model, { messages = {},
+      request_opts = { body = { max_output_tokens = 1000 } } }))
+    assert.is_false(invalid.ok)
+    assert.matches("at least 20000", assert(invalid.error).message)
+    assert.are.equal(0, #transport.requests)
+  end)
+
+  it("accepts a Codex response.done compaction without an item id", function()
+    local transport = fake_transport.new({ { chunks = {
+      event({ type = "response.output_item.done", item = {
+        type = "compaction", encrypted_content = "opaque",
+      } }),
+      event({ type = "response.done", response = { id = "response", status = "completed" } }),
+    } } })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport,
+    })
+    local result = wait(assert(model.compact)(model, { messages = {} }))
+    assert.is_true(result.ok)
+    assert.is_nil(assert(result.item).id)
+  end)
+
+  it("bounds retries of native Codex compaction failures", function()
+    local failure = { error = {
+      kind = "transport", message = "HTTP 503: busy",
+      response = { status = 503, headers = {} },
+    } }
+    local transport = fake_transport.new({
+      failure,
+      { chunks = {
+        event({ type = "response.output_item.done", item = {
+          type = "compaction", encrypted_content = "opaque",
+        } }),
+        event({ type = "response.completed", response = { id = "response" } }),
+      } },
+    })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport, request_max_retries = 1, sleep = function() end,
+    })
+    assert.is_true(wait(assert(model.compact)(model, { messages = {} })).ok)
+    assert.are.equal(2, #transport.requests)
+
+    transport = fake_transport.new({ failure, failure, failure, failure })
+    model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport, request_max_retries = 3, sleep = function() end,
+    })
+    local result = wait(assert(model.compact)(model, { messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal(3, #transport.requests)
+  end)
+
+  it("classifies incomplete and coded terminal native failures without retrying", function()
+    for _, case in ipairs({
+      { event = { type = "error", code = "context_length_exceeded", message = "Request failed" },
+        code = "context_length_exceeded" },
+      { event = { type = "response.incomplete", response = {
+        status = "incomplete", incomplete_details = { reason = "max_output_tokens" },
+      } }, code = "max_output_tokens" },
+      { event = { type = "response.failed", response = {
+        status = "failed", error = { code = "context_length_exceeded", message = "Request failed" },
+      } }, code = "context_length_exceeded" },
+    }) do
+      local transport = fake_transport.new({ { chunks = { event(case.event) } } })
+      local model = codex.new({
+        provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+        transport = transport, request_max_retries = 2, sleep = function() end,
+      })
+      local result = wait(assert(model.compact)(model, { messages = {} }))
+      assert.is_false(result.ok)
+      assert.are.equal(case.code, rawget(assert(result.error), "code"))
+      assert.is_false(rawget(assert(result.error), "retryable"))
+      assert.are.equal(1, #transport.requests)
+    end
+  end)
+
+  it("cancels native Codex compaction during retry backoff", function()
+    local retrying = false
+    local statuses = {}
+    local transport = fake_transport.new({ { error = {
+      kind = "transport", message = "HTTP 503: overloaded",
+      response = { status = 503, headers = {} },
+    } } })
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport, request_max_retries = 1,
+      on_diagnostic = function(value)
+        if value.type == "request_retry" then
+          retrying = true
+        end
+      end,
+    })
+    local run = assert(model.compact)(model, {
+      messages = {},
+      on_event = function(value)
+        if value.type == "provider_status" then statuses[#statuses + 1] = value end
+      end,
+    })
+    assert(vim.wait(1000, function() return retrying end))
+    run:cancel()
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal(1, #transport.requests)
+    assert.is_true(statuses[1].reconnecting)
+    assert.is_false(statuses[#statuses].reconnecting)
+  end)
+
+  it("rejects incomplete or malformed native compaction responses", function()
+    local compact_item = event({ type = "response.output_item.done", item = {
+      type = "compaction", encrypted_content = "opaque",
+    } })
+    local completed = event({ type = "response.completed", response = { id = "response" } })
+    for _, case in ipairs({
+      { chunks = { completed }, error = "exactly one encrypted output item" },
+      { chunks = { event({ type = "response.output_item.done", item = {
+        type = "compaction", encrypted_content = "",
+      } }), completed }, error = "Invalid encrypted compaction output" },
+      { chunks = { compact_item, compact_item, completed }, error = "exactly one encrypted output item" },
+      { chunks = { compact_item }, error = "terminal response event" },
+      { chunks = { compact_item, event({ type = "response.completed", response = {} }) },
+        error = "requires a response id" },
+      { chunks = { compact_item, event({ type = "response.done", response = {
+        id = "response", status = "incomplete",
+      } }) }, error = "Compaction response incomplete" },
+      { chunks = { event({ type = "response.failed", response = { error = { message = "unavailable" } } }) },
+        error = "unavailable" },
+    }) do
+      local transport = fake_transport.new({ { chunks = case.chunks } })
+      local model = codex.new({
+        provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+        transport = transport, request_max_retries = 0,
+      })
+      local result = wait(assert(model.compact)(model, { messages = {} }))
+      assert.is_false(result.ok)
+      assert.matches(case.error, assert(result.error).message)
+      assert.are.equal(1, #transport.requests)
+    end
+  end)
+
   it("builds the Codex SSE request profile on the shared Responses protocol", function()
     local model = codex.new({
       provider = "openai-codex",
@@ -364,6 +709,35 @@ describe("neoagent.api.openai_codex_responses", function()
     }))
 
     assert.is_false(result.ok)
+    assert.is_true(statuses[1].reconnecting)
+    assert.is_false(statuses[#statuses].reconnecting)
+  end)
+
+  it("clears reconnect state after a native compaction retry", function()
+    local statuses = {}
+    local model = codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = fake_transport.new({
+        { error = { kind = "transport", message = "HTTP 503: overloaded",
+          response = { status = 503, headers = {} } } },
+        { chunks = {
+          event({ type = "response.output_item.done", item = {
+            type = "compaction", encrypted_content = "synthetic-ciphertext",
+          } }),
+          event({ type = "response.completed", response = { id = "compacted", status = "completed" } }),
+        } },
+      }),
+      request_max_retries = 1,
+      sleep = function() end,
+    })
+    local compact = assert(model.compact)
+    local result = wait(compact(model, {
+      messages = { { role = "user", content = "Summarize" } },
+      on_event = function(value)
+        if value.type == "provider_status" then statuses[#statuses + 1] = value end
+      end,
+    }))
+    assert.is_true(result.ok)
     assert.is_true(statuses[1].reconnecting)
     assert.is_false(statuses[#statuses].reconnecting)
   end)

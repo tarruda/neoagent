@@ -143,7 +143,8 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field initial_selection? Neoagent.InitialSelection
 ---@field host_effects? Applet.HostEffectsModule
 ---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
----@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field compaction_run? fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field compaction_component? Neoagent.CompactionComponent
 ---@field session? Neoagent.Session
 ---@field workspace? string
 ---@field restore_session_selection? boolean
@@ -248,6 +249,21 @@ function M.from_config(options, runtime)
   for _, field in ipairs({ "interaction", "compaction_run" }) do
     assert(runtime[field] == nil or type(runtime[field]) == "function", "agent " .. field .. " must be a function")
   end
+  if runtime.compaction_component ~= nil then
+    local component = runtime.compaction_component
+    assert(
+      type(component) == "table"
+        and type(component.evaluate) == "function"
+        and type(component.prepare) == "function"
+        and (component.fit == nil or type(component.fit) == "function")
+        and type(component.run) == "function",
+      "agent compaction component is invalid"
+    )
+    assert(
+      component.required_api == nil or type(component.required_api) == "string" and component.required_api ~= "",
+      "agent compaction component API is invalid"
+    )
+  end
   if runtime.session ~= nil then
     assert(type(runtime.session) == "table", "agent Session is invalid")
     for _, method in ipairs({
@@ -255,8 +271,10 @@ function M.from_config(options, runtime)
       "identity",
       "append",
       "append_compaction",
+      "preview_compaction",
       "messages",
       "context_messages",
+      "checkpoint_identity",
       "entries",
       "entry",
       "leaf_id",
@@ -324,6 +342,7 @@ function M.from_config(options, runtime)
   next_id = next_id + 1
   local agent_id = runtime.id or "agent-" .. next_id
   local profile_id = runtime.profile_id
+  local required_api = runtime.compaction_component and runtime.compaction_component.required_api
   local agent_label = runtime.label or options.name or agent_id
   ---@class Neoagent.Agent
   ---@field _neoagent_agent true
@@ -338,6 +357,10 @@ function M.from_config(options, runtime)
     auth = auth_manager,
     runtimes = runtimes,
     initial_selection = runtime.initial_selection,
+    required_api = required_api,
+    checkpoint_identity = function()
+      return initial_session:checkpoint_identity()
+    end,
     request_context = function()
       return {
         workspace = workspace_root,
@@ -529,7 +552,7 @@ function M.from_config(options, runtime)
             vim.log.levels.ERROR
           )
         end
-      end)
+      end, required_api)
     end
     return tracked
   end
@@ -769,7 +792,8 @@ function M.from_config(options, runtime)
 
   ---@return Neoagent.ModelSelection?
   local function first_available_model()
-    local selected, err = require("neoagent.models").first_available(options, auth_manager, state.provider_runtimes)
+    local selected, err =
+      require("neoagent.models").first_available(options, auth_manager, state.provider_runtimes, required_api)
     if err then
       error(err, 0)
     end
@@ -1071,6 +1095,7 @@ function M.from_config(options, runtime)
     provider_event = provider_event,
     interaction = runtime.interaction,
     compaction_run = runtime.compaction_run,
+    compaction_component = runtime.compaction_component,
     acquire_provider = function()
       local service = assert(model_service(), "selected Model has no Provider Service")
       local lease, err = provider_service.acquire_use(service)
@@ -1197,7 +1222,8 @@ function M.from_config(options, runtime)
       notify("cannot change model while the agent is running", vim.log.levels.WARN)
       return nil
     end
-    local choices, err = require("neoagent.models").available(options, auth_manager, state.provider_runtimes)
+    local choices, err =
+      require("neoagent.models").available(options, auth_manager, state.provider_runtimes, required_api)
     if not choices then
       assert(err)
       notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR)

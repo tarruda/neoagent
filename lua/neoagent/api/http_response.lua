@@ -23,6 +23,16 @@ function M.error_message(body, fallback)
   return fallback
 end
 
+-- Normalize overflow at the adapter boundary. Custom Models may instead
+-- provide the semantic marker directly or rely on the contract's text fallback.
+---@param value unknown
+---@return Neoagent.Error
+function M.normalize_error(value)
+  local err = util.normalize_error(value, "model")
+  err.context_overflow = require("neoagent.model").is_context_overflow(err)
+  return err
+end
+
 -- API adapters classify unsuccessful HTTP responses. The HTTP client itself
 -- leaves status handling to its consumer (including auth polling and caches).
 ---@param result Neoagent.HttpResult
@@ -42,10 +52,10 @@ function M.check(result)
     err.message = "HTTP " .. status .. (type(message) == "string" and ": " .. message or "")
     err.response = { status = status, headers = response.headers or {} }
     err.detail = result.ok and result.detail or err.detail
-    error(err, 0)
+    error(M.normalize_error(err), 0)
   end
   if not result.ok then
-    error(result.error, 0)
+    error(M.normalize_error(result.error), 0)
   end
   -- Only successful transport results survive classification.
   ---@cast result Neoagent.HttpSuccess

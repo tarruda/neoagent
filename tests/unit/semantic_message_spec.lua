@@ -2,6 +2,35 @@ local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
 
 describe("neoagent semantic messages", function()
+  it("rejects malformed native identities and validates both sides of the encrypted boundary", function()
+    local native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+      model = "gpt-test", encrypted_content = "synthetic-ciphertext" }
+    for _, value in ipairs({ false, {}, { "array" }, { role = "user" },
+      vim.tbl_extend("force", native, { extra = true }),
+      vim.tbl_extend("force", native, { api = "" }),
+      vim.tbl_extend("force", native, { provider = "unsafe\nprovider" }),
+      vim.tbl_extend("force", native, { model = string.rep("m", 513) }),
+      vim.tbl_extend("force", native, { encrypted_content = "" }),
+      vim.tbl_extend("force", native, { id = "bad\nid" }),
+    }) do
+      local normalized, err = semantic_message.normalize_native_compaction(value)
+      assert.is_nil(normalized)
+      assert.is_string(err)
+    end
+    local normalized = assert(semantic_message.normalize_native_compaction(native))
+    normalized.encrypted_content = "changed"
+    assert.are.equal("synthetic-ciphertext", native.encrypted_content)
+    for _, value in ipairs({ false, { message = native },
+      { { role = "user", content = false }, native },
+      { vim.tbl_extend("force", native, { encrypted_content = "" }) },
+      { native, { role = "toolResult", toolCallId = "missing", content = {} } },
+    }) do
+      local messages, err = semantic_message.normalize_request_list(value)
+      assert.is_nil(messages)
+      assert.is_string(err)
+    end
+  end)
+
   it("validates complete local file identities and metadata without reading bytes", function()
     local id = string.rep("a", 64)
     local original = { type = "image", file_id = id, bytes = 9,

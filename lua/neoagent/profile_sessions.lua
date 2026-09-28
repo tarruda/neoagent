@@ -1,5 +1,6 @@
 local fs = require("neoagent.fs")
 local Session = require("neoagent.session")
+local session_tree = require("neoagent.session_tree")
 local storage = require("neoagent.storage")
 local util = require("neoagent.util")
 local workspace_storage = require("neoagent.workspace_storage")
@@ -39,6 +40,7 @@ local M = {}
 ---@field workspace? string
 ---@field entry_id? string
 ---@field position? "before"|"at"
+---@field target_native_api? string API allowed to preserve an active native checkpoint.
 ---@field persistence? Neoagent.Persistence
 
 ---@class Neoagent.OpenedProfileSession
@@ -338,6 +340,14 @@ function M.derive(source, opts)
     end
   else
     entries, leaf_or_err = snapshot.entries, snapshot.leaf_id
+  end
+  local path, path_err = session_tree.path(assert(entries), leaf_or_err)
+  if not path then
+    return nil, profile_error("Cannot derive Session", path_err)
+  end
+  local checkpoint = session_tree.checkpoint_identity(path)
+  if checkpoint and checkpoint.api ~= opts.target_native_api then
+    return nil, profile_error("Target Profile cannot preserve encrypted context")
   end
   ---@type Neoagent.ProfileDerivation|false
   local derivation = false

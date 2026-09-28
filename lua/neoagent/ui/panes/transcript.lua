@@ -871,7 +871,7 @@ function Transcript:_message(message, prefix)
           name = content.name,
           state = "pending",
           call = util.copy(content),
-        }, content.id and "tool:" .. content.id or prefix .. ":tool:" .. tostring(index))
+        }, prefix .. ":tool:" .. tostring(index))
         self:_set_animated(block, true)
         if content.id then
           self.calls[content.id] = block
@@ -885,7 +885,7 @@ function Transcript:_message(message, prefix)
         kind = "tool",
         name = message.toolName,
         call = { name = message.toolName, arguments = {} },
-      }, message.toolCallId and "tool:" .. message.toolCallId or prefix .. ":tool-result:unknown")
+      }, prefix .. ":tool-result:unknown")
       if message.toolCallId then
         self.calls[message.toolCallId] = block
       end
@@ -896,10 +896,11 @@ function Transcript:_message(message, prefix)
     self:_set_animated(block, false)
     self:_change(block)
     return block
-  elseif message.role == "compactionSummary" then
+  elseif message.role == "compactionSummary" or message.role == "compactionCheckpoint" then
     return self:_add_block({
       kind = "compaction",
-      summary = message.summary or "",
+      summary = message.role == "compactionSummary" and message.summary or "",
+      checkpoint = message.role == "compactionCheckpoint",
       tokens_before = message.tokens_before,
     }, prefix .. ":compaction")
   end
@@ -998,7 +999,6 @@ function Transcript:apply(event)
     block.id = event.id or block.id
     if block.id then
       self.calls[block.id] = block
-      block.key = "tool:" .. block.id
     end
     block.raw = block.raw .. (event.arguments_delta or "")
     self:_change(block)
@@ -1011,7 +1011,7 @@ function Transcript:apply(event)
     elseif message.role == "assistant" then
       ---@cast message Neoagent.ObservedAssistantMessage
       local call_index = 0
-      for _, content in ipairs(message.content or {}) do
+      for index, content in ipairs(message.content or {}) do
         if content.type == "text" then
           local key = content.index ~= nil and tostring(content.index) or "default"
           local block = self.live_texts[key] or (key == "default" and self.live_text or nil)
@@ -1041,19 +1041,31 @@ function Transcript:apply(event)
           end
         elseif content.type == "toolCall" then
           local provider_index = content.index ~= nil and content.index or call_index
-          local block = content.id and self.calls[content.id]
-            or self.pending_calls[self.response .. ":" .. provider_index]
+          local block
+          if content.id then
+            local live = self.calls[content.id]
+            if live and live.key:find("^response:" .. self.response .. ":tool:") and not live.finished then
+              block = live
+            end
+          end
           if not block then
-            block = self:_add_block(
-              { kind = "tool", state = "pending" },
-              content.id and "tool:" .. content.id or "response:" .. self.response .. ":tool:" .. provider_index
-            )
+            local pending = self.pending_calls[self.response .. ":" .. provider_index]
+            if pending and (not content.id or not pending.id or pending.id == content.id) then
+              block = pending
+            end
+          end
+          local journal_id = message._neoagent_entry_id
+          local key = journal_id and "message:" .. journal_id .. ":tool:" .. tostring(index)
+            or "response:" .. self.response .. ":tool:" .. tostring(index)
+          if not block then
+            block = self:_add_block({ kind = "tool", state = "pending" }, key)
+          else
+            block.key = key
           end
           self:_set_animated(block, true)
           block.call, block.id, block.name = util.copy(content), content.id, content.name
           if content.id then
             self.calls[content.id] = block
-            block.key = "tool:" .. content.id
           end
           self:_change(block)
           call_index = call_index + 1

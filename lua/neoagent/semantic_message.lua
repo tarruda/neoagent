@@ -94,6 +94,21 @@ local M = {}
 
 ---@alias Neoagent.Message Neoagent.UserMessage|Neoagent.AssistantMessage|Neoagent.ToolResultMessage
 
+---@class Neoagent.NativeCompactionMessage
+---@field role 'nativeCompaction'
+---@field api string
+---@field provider string
+---@field model string
+---@field encrypted_content string
+---@field id? string
+
+---@class Neoagent.NativeContextIdentity
+---@field api string
+---@field provider string
+---@field model string
+
+---@alias Neoagent.RequestMessage Neoagent.Message|Neoagent.NativeCompactionMessage
+
 ---@class Neoagent.ToolResult
 ---@field content Neoagent.InputBlock[]
 ---@field isError? boolean
@@ -111,6 +126,92 @@ local M = {}
 
 local MAX_ID_BYTES = 512
 local MAX_TYPE_BYTES = 128
+local MAX_OPAQUE_BYTES = 16 * 1024 * 1024
+
+---@param item unknown
+---@return Neoagent.NativeCompactionMessage?, string?
+function M.normalize_native_compaction(item)
+  if type(item) ~= "table" or (next(item) ~= nil and util.is_list(item))
+    or item.role ~= "nativeCompaction"
+  then
+    return nil, "native compaction item is required"
+  end
+  for key in pairs(item) do
+    if key ~= "role" and key ~= "api" and key ~= "provider" and key ~= "model"
+      and key ~= "encrypted_content" and key ~= "id"
+    then
+      return nil, "native compaction has unsupported field: " .. tostring(key)
+    end
+  end
+  for _, key in ipairs({ "api", "provider", "model" }) do
+    local value = item[key]
+    if type(value) ~= "string" or value == "" or #value > MAX_ID_BYTES
+      or not util.is_valid_utf8(value) or value:find("[%z\1-\31\127]")
+    then
+      return nil, "native compaction " .. key .. " must be safe non-empty text"
+    end
+  end
+  if type(item.encrypted_content) ~= "string" or item.encrypted_content == ""
+    or #item.encrypted_content > MAX_OPAQUE_BYTES
+  then
+    return nil, "native compaction encrypted content is invalid"
+  end
+  if item.id ~= nil and (type(item.id) ~= "string" or item.id == "" or #item.id > MAX_ID_BYTES
+    or not util.is_valid_utf8(item.id) or item.id:find("[%z\1-\31\127]"))
+  then
+    return nil, "native compaction id is invalid"
+  end
+  return util.copy(item) --[[@as Neoagent.NativeCompactionMessage]]
+end
+
+---@param messages unknown
+---@return Neoagent.RequestMessage[]?, string?
+function M.normalize_request_list(messages)
+  if type(messages) ~= "table" or not util.is_list(messages) then
+    return nil, "messages must be a list"
+  end
+  local native_index
+  for index, message in ipairs(messages) do
+    if type(message) == "table" and message.role == "nativeCompaction" then
+      if native_index then
+        return nil, "request context may contain only one native compaction"
+      end
+      native_index = index
+    end
+  end
+  if not native_index then
+    return M.normalize_list(messages)
+  end
+  local result = {}
+  local prefix = {}
+  for index = 1, native_index - 1 do
+    local message = assert(messages[index])
+    if type(message) ~= "table" or message.role ~= "user" then
+      return nil, "only user messages may precede native compaction"
+    end
+    prefix[#prefix + 1] = message
+  end
+  local normalized_prefix, prefix_err = M.normalize_list(prefix)
+  if not normalized_prefix then
+    return nil, prefix_err
+  end
+  vim.list_extend(result, normalized_prefix)
+  local native, native_err = M.normalize_native_compaction(messages[native_index])
+  if not native then
+    return nil, "message " .. native_index .. ": " .. native_err
+  end
+  result[#result + 1] = native
+  local suffix = {}
+  for index = native_index + 1, #messages do
+    suffix[#suffix + 1] = messages[index]
+  end
+  local normalized, err = M.normalize_list(suffix, { index_offset = native_index })
+  if not normalized then
+    return nil, err
+  end
+  vim.list_extend(result, normalized)
+  return result
+end
 
 local message_fields = {
   user = {

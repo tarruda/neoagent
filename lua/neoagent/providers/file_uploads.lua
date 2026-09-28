@@ -135,7 +135,7 @@ function M.new(id, provider, service, opts)
   ---@type table<string, Neoagent.FileManager>
   local managers = {}
   local retired = false
-  ---@param dependencies Neoagent.StreamOptions
+  ---@param dependencies Neoagent.RequestDependencies
   ---@return Neoagent.FileManager
   local function manager_for(dependencies)
     assert(not retired, "provider file runtime is retired")

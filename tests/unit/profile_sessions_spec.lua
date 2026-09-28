@@ -91,6 +91,48 @@ describe("neoagent.profile_sessions", function()
     assert.matches("source missing", assert(err).message)
   end)
 
+  it("rejects a Profile copy that cannot preserve active encrypted context", function()
+    local root = directory()
+    local source = assert(profile_sessions.new({ profile_id = "codex", workspace = root,
+      persistence = { enabled = false } }))
+    local _, _, first = source:append({ role = "user", content = "Original work" })
+    assert(source:append_compaction({
+      native = { role = "nativeCompaction", api = "openai-codex-responses",
+        provider = "codex", model = "gpt-test", encrypted_content = "synthetic-ciphertext" },
+      retained_users = { { entry_id = assert(first).id } }, tokens_before = 100,
+    }))
+    for _, target_api in ipairs({ "", "other-api" }) do
+      local copied, err = profile_sessions.derive(source, { kind = "copy", source_profile_id = "codex",
+        target_profile_id = "chat", target_native_api = target_api, workspace = root,
+        persistence = { enabled = false } })
+      assert.is_nil(copied)
+      assert.matches("cannot preserve encrypted context", assert(err).message)
+    end
+    local compatible = assert(profile_sessions.derive(source, { kind = "copy", source_profile_id = "codex",
+      target_profile_id = "codex", target_native_api = "openai-codex-responses", workspace = root,
+      persistence = { enabled = false } }))
+    assert.are.same(assert(source:context_messages()), assert(compatible:context_messages()))
+    local forked = assert(profile_sessions.derive(source, { kind = "fork", source_profile_id = "codex",
+      target_profile_id = "chat", target_native_api = "", entry_id = assert(first).id,
+      position = "at", workspace = root, persistence = { enabled = false } }))
+    assert.are.same({ "user" }, vim.tbl_map(function(message) return message.role end,
+      assert(forked:context_messages())))
+  end)
+
+  it("rejects a copy whose source snapshot has lost its active leaf", function()
+    local root = directory()
+    local source = assert(profile_sessions.new({ profile_id = "neo", workspace = root,
+      persistence = { enabled = false } }))
+    assert(source:append({ role = "user", content = "History" }))
+    local snapshot = assert(source:snapshot())
+    snapshot.leaf_id = "missing"
+    source.snapshot = function() return snapshot end
+    local copied, err = profile_sessions.derive(source, { kind = "copy", source_profile_id = "neo",
+      target_profile_id = "neo", workspace = root, persistence = { enabled = false } })
+    assert.is_nil(copied)
+    assert.are.equal("Cannot derive Session", assert(err).message)
+  end)
+
   it("reports malformed cached Profile attributes as listing errors", function()
     local root = directory()
     local persistence = { enabled = true, directory = root }

@@ -1,6 +1,9 @@
+local request_preparation = require("neoagent.api.request_preparation")
+local request_estimate = require("neoagent.api.request_estimate")
 local messages = require("neoagent.api.messages")
 local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
+local output_budget = require("neoagent.api.output_limit")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
@@ -111,7 +114,7 @@ local function tool_result(block, image)
 end
 
 ---@async
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param image? Neoagent.ImageEncoder
 ---@return Neoagent.JsonObject[]
 local function encode_messages(messages, image)
@@ -201,18 +204,15 @@ local function cache_prompt(body)
 end
 
 ---@param model Neoagent.AnthropicModel
----@param call_opts Neoagent.StreamOptions
+---@param call_opts Neoagent.RequestOptions
+---@param api_key? string
 ---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
-function M.build(model, call_opts)
-  call_opts = util.copy(call_opts)
+function M.build(model, call_opts, api_key)
+  call_opts = request_preparation.copy(call_opts)
   local headers = {
     ["Content-Type"] = "application/json",
     ["anthropic-version"] = model._anthropic_version,
   }
-  local api_key = model._api_key
-  if type(api_key) == "function" then
-    api_key = api_key()
-  end
   if api_key ~= nil and api_key ~= "" then
     headers["x-api-key"] = api_key
   end
@@ -220,7 +220,7 @@ function M.build(model, call_opts)
   ---@type Neoagent.JsonObject
   local body = {
     model = model.id,
-    max_tokens = model._max_output_tokens,
+    max_tokens = call_opts.max_output_tokens or model.max_output_tokens,
     stream = true,
   }
   if call_opts.system_prompt and call_opts.system_prompt ~= "" then
@@ -250,12 +250,17 @@ function M.build(model, call_opts)
   for _, layer in ipairs(model._request_opts) do
     request = request_opts.apply(request, layer, context)
   end
+  request = request_opts.apply_thinking(request, context, call_opts)
   request = request_opts.apply(request, call_opts.request_opts, context)
+  if call_opts.max_output_tokens ~= nil or call_opts.max_thinking_tokens ~= nil then
+    request = output_budget.apply(request, context, call_opts.max_output_tokens, call_opts.max_thinking_tokens)
+  end
   local selected = messages.for_model(assert(request.messages), model)
   return {
     api = model.api,
     request = request,
     messages = selected,
+    input_tokens = request_estimate.shaped(request, selected),
     ---@async
     encode = function(image)
       local encoded = util.copy(request.body or {})

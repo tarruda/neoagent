@@ -20,6 +20,59 @@ local function config(overrides)
 end
 
 describe("bundled Profile resources", function()
+  it("selects local and native compaction directly in the bundled Profiles", function()
+    local selected, default_profile, resources = profiles.bundled(config(), { startup = false })
+    assert.are.equal("neo", default_profile)
+    assert.are.same({ "neo", "chat", "codex" }, vim.tbl_map(function(profile)
+      return profile.id
+    end, selected))
+    assert.are.equal(require("neoagent.compaction").local_component, assert(selected[1]).compaction)
+    assert.are.equal(require("neoagent.compaction").local_component, assert(selected[2]).compaction)
+    assert.are.equal(require("neoagent.compaction.codex").component, assert(selected[3]).compaction)
+    assert.is_true(assert(selected[3]).compaction.require_native)
+    resources:destroy()
+  end)
+
+  it("selects prefix compaction for Neo and Chat while Codex keeps native compaction", function()
+    local selected, _, resources = profiles.bundled(config({ compaction = { strategy = "prefix" } }), { startup = false })
+    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[1]).compaction)
+    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[2]).compaction)
+    assert.are.equal(require("neoagent.compaction.codex").component, assert(selected[3]).compaction)
+    resources:destroy()
+  end)
+
+  it("keeps a Codex draft default visible while its catalog is loading", function()
+    local configured = config({
+      default_model = { provider = "dynamic", model = "discovered" },
+      providers = { dynamic = { api = "openai-codex-responses",
+        base_url = "https://example.test/codex", models = {} } },
+    })
+    local selected, _, resources = profiles.bundled(configured, { startup = false })
+    local codex = assert(selected[3])
+    local applet = codex.create_applet({ profile = codex, label = "Codex", workspace = vim.fn.getcwd() })
+    assert.are.equal("dynamic/discovered", applet:_context().model)
+    applet:destroy()
+    resources:destroy()
+  end)
+
+  it("clears incompatible configured and persisted defaults from a Codex draft", function()
+    local directory = vim.fn.tempname()
+    local settings = require("neoagent.workspace_settings").new({ directory = directory, root = vim.fn.getcwd() })
+    assert(settings:update({ agents = { codex = { default_model = { provider = "local", model = "test" } } } }))
+    local configured = config({ default_model = { provider = "local", model = "test" },
+      persistence = { enabled = true, workspace_settings = true, directory = directory },
+      providers = { ["local"] = { api = "openai-completions", base_url = "https://example.test",
+        models = { test = {} } } } })
+    local selected, _, resources = profiles.bundled(configured, { startup = false })
+    local codex = assert(selected[3])
+    assert.is_nil(codex.config.default_model)
+    local applet = codex.create_applet({ profile = codex, label = "Codex", workspace = vim.fn.getcwd() })
+    assert.are.equal("no model", applet:_context().model)
+    applet:destroy()
+    resources:destroy()
+    vim.fn.delete(directory, "rf")
+  end)
+
   it("buffers construction reports and destroys recording resources once", function()
     local recording = require("neoagent.http_recording")
     local runtimes = require("neoagent.provider_runtimes")

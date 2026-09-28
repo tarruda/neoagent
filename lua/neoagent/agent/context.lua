@@ -11,26 +11,9 @@ local M = {}
 ---@field total number
 ---@field percent number
 
----@param usage? Neoagent.Usage
----@return number?
-function M.usage_tokens(usage)
-  if type(usage) ~= "table" then
-    return nil
-  end
-  if type(usage.totalTokens) == "number" and usage.totalTokens >= 0 then
-    return usage.totalTokens
-  end
-  ---@type number
-  local total = 0
-  for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
-    if type(usage[key]) == "number" then
-      total = total + usage[key]
-    end
-  end
-  return total
-end
+M.usage_tokens = compaction.usage_tokens
 
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param first integer
 ---@return integer
 local function estimate_messages(messages, first)
@@ -41,19 +24,6 @@ local function estimate_messages(messages, first)
   return tokens
 end
 
----@param message? Neoagent.Message
----@return number?
-local function valid_assistant_usage(message)
-  if not message or message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
-    return nil
-  end
-  local tokens = M.usage_tokens(message.usage)
-  if tokens ~= nil and tokens > 0 then
-    return tokens
-  end
-  return nil
-end
-
 ---@param session Neoagent.Session
 ---@return boolean
 local function historical_usage_is_current(session)
@@ -61,32 +31,11 @@ local function historical_usage_is_current(session)
   if not path then
     return false
   end
-  local compaction_index
-  for index, entry in ipairs(path) do
-    if entry.type == "compaction" then
-      compaction_index = index
-    end
-  end
-  if not compaction_index then
-    return true
-  end
-  for index = compaction_index + 1, #path do
-    local entry = assert(path[index])
-    if entry.type == "message" and valid_assistant_usage(entry.message) ~= nil then
-      return true
-    end
-  end
-  return false
-end
-
----@param messages Neoagent.Message[]
----@return integer
-local function estimate_projected(messages)
-  return estimate_messages(messages, 1)
+  return compaction.has_usage_after_checkpoint(path)
 end
 
 ---@param session Neoagent.Session
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param live_usage? Neoagent.LiveContextUsage
 ---@return number
 function M.tokens(session, messages, live_usage)
@@ -94,14 +43,9 @@ function M.tokens(session, messages, live_usage)
     return live_usage.tokens + estimate_messages(messages, live_usage.message_count + 1)
   end
   if historical_usage_is_current(session) then
-    for index = #messages, 1, -1 do
-      local tokens = valid_assistant_usage(messages[index])
-      if tokens ~= nil then
-        return tokens + estimate_messages(messages, index + 1)
-      end
-    end
+    return compaction.estimate_context(messages).tokens
   end
-  return estimate_projected(messages)
+  return estimate_messages(messages, 1)
 end
 
 ---@param session? Neoagent.Session

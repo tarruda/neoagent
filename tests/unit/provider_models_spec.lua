@@ -58,6 +58,38 @@ describe("neoagent provider model catalogs", function()
     provider_runtimes.destroy(runtimes)
   end)
 
+  it("forwards native compaction status through Authentication and Service leases", function()
+    local transport = require("tests.helpers.fake_transport").new({ { chunks = {
+      'data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"synthetic"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"compact"}}\n\n',
+      'data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"late"}}\n\n',
+    }, headers = { ["X-Codex-Primary-Used-Percent"] = "25", ["X-Codex-Primary-Window-Minutes"] = "300" } } })
+    local value, runtimes = runtime({ api = "openai-codex-responses", base_url = "https://example.test",
+      diagnostics = false, catalog = { seed = { { id = "seed" } } } }, { transport = transport })
+    assert(runtimes.dynamic).definition.auth = "key"
+    local manager = require("neoagent.auth").new({
+      methods = { key = require("neoagent.auth.api_key").new({ name = "Synthetic key" }) },
+      store = test_auth.store({ key = { type = "api_key", key = "synthetic-key" } }),
+    })
+    local model = models.resolve("dynamic", "seed", value, manager, runtimes)
+    local events = {}
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(assert(runtimes.dynamic).service,
+      function(state) users[#users + 1] = state.users end)
+    local run = assert(model.compact)(model, { messages = {},
+      on_event = function(event) events[#events + 1] = event end })
+    assert(vim.wait(1000, function() return run:is_done() end))
+    local result = assert(run:result())
+    assert.is_true(result.ok)
+    assert.are.equal("synthetic", assert(result.item).encrypted_content)
+    assert.are.equal(1, #events)
+    assert.are.equal("provider_status", events[1].type)
+    assert.are.equal("5h 75% left", events[1].text)
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
+    provider_runtimes.destroy(runtimes)
+  end)
+
   it("restores cached OpenCode Go discoveries before the first selector read", function()
     local directory = vim.fn.tempname()
     local store = state_store.new({ directory = directory })
@@ -140,7 +172,7 @@ describe("neoagent provider model catalogs", function()
       provider = "dynamic",
       id = "seed",
       input = { "text" },
-      request_timeout_ms = 30000,
+      timeout_ms = 30000,
       stream = function() error("unexpected model request") end,
     }
     local value, runtimes = runtime({
@@ -161,11 +193,45 @@ describe("neoagent provider model catalogs", function()
       end,
     })
     local resolved = models.resolve("dynamic", "seed", value, nil, runtimes)
-    assert.are.equal(30000, rawget(resolved, "request_timeout_ms"))
+    assert.are.equal(30000, resolved.timeout_ms)
     assert.are.equal(1, #wrapped)
-    assert.are.equal(replacement, resolved)
+    assert.are.equal(replacement, rawget(resolved, "_model"))
     assert.are_not.equal(resolved, wrapped[1])
     provider_runtimes.destroy(runtimes)
+  end)
+
+  it("leases standalone authenticated Models independently of file support", function()
+    for _, input in ipairs({ { "text" }, { "text", "image" } }) do
+      local transport = require("tests.helpers.fake_transport").new({ { chunks = {
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+      } } })
+      local value, runtimes = runtime({
+        api = "openai-responses", base_url = "https://example.test/v1", file_uploads = false,
+        catalog = { seed = { { id = "seed", input = input } } },
+      }, { transport = transport })
+      local service = assert(runtimes.dynamic).service
+      assert(runtimes.dynamic).definition.auth = "key"
+      local shaped = 0
+      local key = require("neoagent.auth.api_key").new({ name = "Synthetic key", request_opts = function()
+        shaped = shaped + 1
+        assert.is_false(require("neoagent.provider_service").operation_enabled(service, { mutating = true }))
+        return { headers = { ["X-Synthetic"] = "authorized" } }
+      end })
+      local manager = require("neoagent.auth").new({ methods = { key = key },
+        store = test_auth.store({ key = { type = "api_key", key = "synthetic-key" } }) })
+      local model = models.resolve("dynamic", "seed", value, manager, runtimes)
+      local run = require("neoagent.async").run(function()
+        assert.is_true(assert(model.estimate_request)(model, { messages = {} }) >= 0)
+        assert.are.equal(0, #transport.requests)
+        return model:stream({ messages = {} }):await()
+      end)
+      assert(vim.wait(1000, function() return run:is_done() end))
+      assert.is_true(assert(run:result()).ok)
+      assert.are.equal(2, shaped)
+      local exclusive = assert(require("neoagent.provider_service").begin_operation(service, { mutating = true }))
+      exclusive:finish()
+      provider_runtimes.destroy(runtimes)
+    end
   end)
 
   it("rejects failed Provider Service Model wrappers", function()
@@ -245,13 +311,17 @@ describe("neoagent provider model catalogs", function()
     local manager = test_auth.new()
     function manager:wrap() return replacement end
     local resolved = models.resolve("dynamic", "seed", value, manager, runtimes)
-    assert.are.equal(replacement, resolved)
+    assert.are.equal(replacement, rawget(resolved, "_model"))
     provider_runtimes.destroy(runtimes)
   end)
 
   it("reports Codex diagnostic sink failures through its runtime", function()
     local path = vim.fn.tempname()
     assert(fs.write_all(path, "blocking file", "w"))
+    local response = { status = 400, chunks = {
+      '{"error":{"code":"invalid_request_error","message":"private response body"}}',
+    } }
+    local transport = require("tests.helpers.fake_transport").new({ response, response })
     ---@type {message: string, level: integer}[]
     local reports = {}
     local value, runtimes = runtime({
@@ -260,17 +330,19 @@ describe("neoagent provider model catalogs", function()
       diagnostics = { path = path .. "/codex.log" },
       catalog = { seed = { { id = "seed" } } },
     }, {
+      transport = transport,
       report = function(message, level)
         reports[#reports + 1] = { message = message, level = level }
       end,
     })
     local model = models.resolve("dynamic", "seed", value, nil, runtimes)
 
-    rawget(model, "_on_diagnostic")({
-      type = "request_failed",
-      detail = "private response body",
-    })
-    rawget(model, "_on_diagnostic")({ type = "request_failed" })
+    for _ = 1, 2 do
+      local run = model:stream({ messages = { { role = "user", content = "Synthetic request" } } })
+      assert(vim.wait(1000, function() return run:is_done() end))
+      assert.is_false(assert(run:result()).ok)
+    end
+    assert.are.equal(2, #transport.requests)
 
     assert(vim.wait(1000, function() return #reports == 1 end))
     local report = assert(reports[1])
@@ -325,6 +397,26 @@ describe("neoagent provider model catalogs", function()
     assert.is_false(unsubscribe())
     assert(assert(runtimes.dynamic).catalog:publish_discoveries({ { id = "later" } }))
     assert.are.equal(2, #publications)
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("filters available and subscribed Models by a Profile-required API", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+      models = {},
+    })
+    assert.are.same({ "dynamic/seed" }, models.available(value, nil, runtimes, "fake"))
+    assert.are.same({}, models.available(value, nil, runtimes, "openai-codex-responses"))
+    assert.is_nil((models.first_available(value, nil, runtimes, "openai-codex-responses")))
+    local publications = {}
+    local unsubscribe = models.subscribe_available(value, nil, runtimes, function(choices)
+      publications[#publications + 1] = choices
+    end, "openai-codex-responses")
+    assert.are.same({ {} }, publications)
+    assert(assert(runtimes.dynamic).catalog:publish_discoveries({ { id = "seed" }, { id = "new" } }))
+    assert.are.same({ {} }, publications)
+    assert.is_true(unsubscribe())
     provider_runtimes.destroy(runtimes)
   end)
 

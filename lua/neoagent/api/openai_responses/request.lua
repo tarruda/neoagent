@@ -1,10 +1,14 @@
+local request_preparation = require("neoagent.api.request_preparation")
+local request_estimate = require("neoagent.api.request_estimate")
 local messages = require("neoagent.api.messages")
 local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
+local output_budget = require("neoagent.api.output_limit")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
 local M = {}
+local COMPACTION_MIN_OUTPUT_TOKENS = 20000
 
 ---@async
 ---@param content string|Neoagent.InputBlock[]
@@ -122,7 +126,7 @@ local function tool_output(content, image)
 end
 
 ---@async
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@param system_prompt? string
 ---@param include_system? boolean
 ---@param image? Neoagent.ImageEncoder
@@ -146,6 +150,12 @@ local function encode_messages(messages, system_prompt, include_system, image)
       local call_id = split_call_id(message.toolCallId)
       local output = tool_output(message.content, image)
       result[#result + 1] = { type = "function_call_output", call_id = call_id, output = output }
+    elseif message.role == "nativeCompaction" then
+      result[#result + 1] = {
+        type = "compaction",
+        id = message.id,
+        encrypted_content = message.encrypted_content,
+      }
     else
       error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
     end
@@ -193,18 +203,16 @@ local function prepend_input(prefix, input)
 end
 
 ---@param self Neoagent.ResponsesModel
----@param call_opts Neoagent.StreamOptions
+---@param call_opts Neoagent.RequestOptions
+---@param compact? boolean
+---@param api_key? string
 ---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
-function M.build(self, call_opts)
-  call_opts = util.copy(call_opts)
+function M.build(self, call_opts, compact, api_key)
+  call_opts = request_preparation.copy(call_opts)
   local headers = {
     ["Accept"] = "text/event-stream",
     ["Content-Type"] = "application/json",
   }
-  local api_key = self._api_key
-  if type(api_key) == "function" then
-    api_key = api_key()
-  end
   if api_key ~= nil and api_key ~= "" then
     headers.Authorization = "Bearer " .. api_key
   end
@@ -241,8 +249,24 @@ function M.build(self, call_opts)
   elseif #tools > 0 then
     body.tools = tools
   end
-  if self._max_output_tokens then
-    body.max_output_tokens = math.max(16, self._max_output_tokens)
+  if compact and rawget(call_opts, "max_output_tokens") ~= nil then
+    error(util.error("model", "Native compaction uses compaction_output_tokens for its output budget"), 0)
+  end
+  local output_limit = compact and call_opts.compaction_output_tokens
+    or call_opts.max_output_tokens
+    or self.max_output_tokens
+  if compact and call_opts.compaction_output_tokens == nil then
+    output_limit = nil
+  end
+  if
+    compact
+    and output_limit ~= nil
+    and (type(output_limit) ~= "number" or output_limit % 1 ~= 0 or output_limit < COMPACTION_MIN_OUTPUT_TOKENS)
+  then
+    error(util.error("model", "Native compaction output budget must be at least 20000 tokens"), 0)
+  end
+  if output_limit then
+    body.max_output_tokens = math.max(16, output_limit)
   end
   if self._reasoning then
     local reasoning = { effort = self._reasoning_effort or "medium" }
@@ -275,7 +299,11 @@ function M.build(self, call_opts)
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, context)
   end
+  request = request_opts.apply_thinking(request, context, call_opts)
   request = request_opts.apply(request, call_opts.request_opts, context)
+  if call_opts.max_output_tokens ~= nil or call_opts.max_thinking_tokens ~= nil then
+    request = output_budget.apply(request, context, call_opts.max_output_tokens, call_opts.max_thinking_tokens)
+  end
   local reasoning_context = self._reasoning_context or (responses_lite and "all_turns" or nil)
   if reasoning_context and type(request.body) == "table" then
     if request.body.reasoning == nil then
@@ -285,16 +313,31 @@ function M.build(self, call_opts)
       request.body.reasoning.context = reasoning_context
     end
   end
+  if compact then
+    local shaped = assert(request.body)
+    if call_opts.compaction_output_tokens ~= nil then
+      shaped.max_output_tokens = call_opts.compaction_output_tokens
+    end
+    local limit = shaped.max_output_tokens
+    if limit ~= nil and (type(limit) ~= "number" or limit % 1 ~= 0 or limit < COMPACTION_MIN_OUTPUT_TOKENS) then
+      error(util.error("model", "Native compaction output budget must be at least 20000 tokens"), 0)
+    end
+  end
   local selected = messages.for_model(assert(request.messages), self)
   return {
     api = self.api,
     request = request,
     messages = selected,
+    prompt_prefix = util.copy(prefix or (not codex and call_opts.system_prompt or nil)),
+    input_tokens = request_estimate.shaped(request, selected, prefix or (not codex and call_opts.system_prompt or nil)),
     ---@async
     encode = function(image)
       local encoded = util.copy(request.body or {})
       local input = encode_messages(selected, call_opts.system_prompt, not codex, image)
       encoded.input = prefix and prepend_input(prefix, input) or input
+      if compact then
+        encoded.input[#encoded.input + 1] = { type = "compaction_trigger" }
+      end
       return encoded
     end,
   },

@@ -107,6 +107,8 @@ local function usage_from(raw)
   }
 end
 
+M.usage_from = usage_from
+
 ---@param model Neoagent.Model
 ---@param emit fun(event: Neoagent.ModelEvent)
 ---@return Neoagent.ResponsesDecoder

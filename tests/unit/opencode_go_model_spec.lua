@@ -51,12 +51,23 @@ describe("OpenCode Go Model recovery policy", function()
     local provider_error = missing(); provider_error.error.kind = "model"
     for _, result in ipairs({ fake.assistant({}), unrelated, provider_error, absent }) do
       local value = model({ { result = result } })
-      assert.are.same(result, wait(recovery.wrap(value):stream({ messages = {} })))
+      local wrapped = recovery.wrap(value)
+      assert.are.same(result, wait(wrapped:stream({ messages = {} })))
       assert.are.equal(1, #value.requests)
     end
   end)
 
-  it("recognizes structured failures and combines final text, costs and live usage", function()
+  it("returns a recovery proposal without issuing another Model request", function()
+    local first = missing()
+    local value = model({ { result = first } })
+    local result = wait(recovery.wrap(value):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.same(first.message, result.message)
+    assert.matches("no tool call", util.text_content(assert(result.recovery).message.content))
+    assert.are.equal(1, #value.requests)
+  end)
+
+  it("commits recovery history and gates the follow-up with separate usage", function()
     local first = missing()
     first.message.content[#first.message.content + 1] = { type = "text", text = "Before." }
     local second = fake.assistant({ { type = "text", text = "After." } })
@@ -64,41 +75,90 @@ describe("OpenCode Go Model recovery policy", function()
     local value = model({ { result = first }, { result = second, events = {
       { type = "text_delta", text = "After." }, { type = "usage", usage = second.message.usage },
     } } })
-    ---@type Neoagent.ModelEvent[]
-    local events = {}
-    local result = wait(recovery.wrap(value):stream({ messages = {}, on_event = function(event)
-      events[#events + 1] = event
-    end }))
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Start" }))
+    local gates, events = 0, {}
+    local result = wait(require("neoagent.agent_loop").run({
+      model = recovery.wrap(value), messages = assert(session:context_messages()), tools = {},
+      commit_message = function(message) local ok, err = session:append(message) return ok, err end,
+      prepare_request_messages = function(messages)
+        gates = gates + 1
+        assert.are.same(assert(session:context_messages()), messages)
+        if gates == 2 then
+          assert.are.equal(3, #messages)
+          assert.are.equal("Before.", util.text_content(assert(messages[2]).content))
+          assert.matches("no tool call", util.text_content(assert(messages[3]).content))
+        end
+        return messages
+      end,
+      on_event = function(event) events[#events + 1] = event end,
+    }))
     assert(result.ok)
-    assert.are.equal("Before.After.", result.text)
-    assert.are.equal("stop", assert(result.message).stopReason)
-    assert.is_nil(result.message.errorMessage)
-    assert.are.same({ input = 1, output = 2, total = 3 }, assert(assert(result.message).usage).cost)
-    assert.are.equal(12, assert(assert(result.message).usage).totalTokens)
-    assert.are.equal("warning", assert(events[1]).type)
-    assert.are.equal(1, rawget(assert(events[2]), "index"))
-    assert.are.same(result.message.usage, rawget(assert(events[3]), "usage"))
-    assert.are.same({ { type = "text", text = "After." } }, second.message.content)
+    assert.are.equal("After.", result.text)
+    assert.are.equal(2, gates)
+    assert.are.equal(4, #session:messages())
+    assert.are.same(first.message.usage, assert(session:messages()[2]).usage)
+    assert.are.same(second.message.usage, result.message.usage)
+    assert.are.equal(7, require("neoagent.context_estimate").estimate_context(assert(session:context_messages())).tokens)
+    local usages = vim.tbl_filter(function(event) return event.type == "usage" end, events)
+    assert.are.same(second.message.usage, usages[1].usage)
   end)
 
-  it("retains the first response when the follow-up fails before producing output", function()
-    for _, throws in ipairs({ false, true }) do
-      local value = model({ { result = missing() }, { result = {
-        ok = false, error = { kind = "auth", message = "Credentials unavailable" },
-      } } })
-      if throws then
-        local stream = value.stream
-        function value:stream(opts)
-          if #self.requests == 1 then error(util.error("auth", "Credentials unavailable"), 0) end
-          return stream(self, opts)
-        end
-      end
-      local result = wait(recovery.wrap(value):stream({ messages = {} }))
+  it("retains partial history when the follow-up fails before producing output", function()
+    local value = model({ { result = missing() }, { result = {
+      ok = false, error = { kind = "auth", message = "Credentials unavailable" },
+    } } })
+    local committed = {}
+    local result = wait(require("neoagent.agent_loop").run({
+      model = recovery.wrap(value), messages = {}, tools = {},
+      commit_message = function(message) committed[#committed + 1] = message return true end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("Credentials unavailable", assert(result.error).message)
+    assert.are.equal("First thought.", committed[1].content[1].thinking)
+    assert.are.equal(5, committed[1].usage.totalTokens)
+    assert.are.equal(2, #committed)
+    assert.are.equal(2, #value.requests)
+  end)
+
+  it("fails a recovery that returns no visible answer or Tool call", function()
+    for _, content in ipairs({ {}, { { type = "thinking", thinking = "Still thinking" } } }) do
+      local value = model({ { result = missing() }, { result = fake.assistant(content) } })
+      local committed = {}
+      local result = wait(require("neoagent.agent_loop").run({
+        model = recovery.wrap(value), messages = {}, tools = {},
+        commit_message = function(message) committed[#committed + 1] = message return true end,
+      }))
       assert.is_false(result.ok)
-      assert.are.equal("Credentials unavailable", assert(result.error).message)
-      assert.are.equal("First thought.", assert(assert(result.message).content[1]).thinking)
-      assert.are.equal("error", assert(result.message).stopReason)
-      assert.are.equal(5, assert(assert(result.message).usage).totalTokens)
+      assert.matches("no visible answer or tool call", assert(result.error).message)
+      assert.are.equal(2, #value.requests)
+      assert.are.equal(3, #committed)
+    end
+  end)
+
+  it("blocks the follow-up when committing its prompt or preparing its context fails", function()
+    for _, phase in ipairs({ "commit", "prepare" }) do
+      local value = model({ { result = missing() } })
+      local gates, committed = 0, {}
+      local result = wait(require("neoagent.agent_loop").run({
+        model = recovery.wrap(value), messages = {}, tools = {},
+        commit_message = function(message)
+          if message.role == "user" and phase == "commit" then
+            return nil, { kind = "session", message = "Recovery commit rejected" }
+          end
+          committed[#committed + 1] = message
+          return true
+        end,
+        prepare_request_messages = function(messages)
+          gates = gates + 1
+          if gates == 2 then return nil, { kind = "context", message = "Recovery budget rejected" } end
+          return messages
+        end,
+      }))
+      assert.is_false(result.ok)
+      assert.matches("Recovery", assert(result.error).message)
+      assert.are.equal(phase == "commit" and 1 or 2, #committed)
+      assert.are.equal(1, #value.requests)
     end
   end)
 
@@ -108,10 +168,15 @@ describe("OpenCode Go Model recovery policy", function()
       { result = fake.assistant({ { type = "text", text = "answer B" } }) },
     })
     local wrapped = recovery.wrap(value)
-    local a = wrapped:stream({ messages = { { role = "user", content = "A" } } })
-    local b = wrapped:stream({ messages = { { role = "user", content = "B" } } })
-    assert.are.equal("A", assert(assert(wait(a).message).content[1]).thinking)
-    assert.are.equal("B", assert(assert(wait(b).message).content[1]).thinking)
+    local function start(prompt)
+      return require("neoagent.agent_loop").run({ model = wrapped,
+        messages = { { role = "user", content = prompt } }, tools = {},
+        commit_message = function() return true end,
+      })
+    end
+    local a, b = start("A"), start("B")
+    assert.are.equal("answer A", wait(a).text)
+    assert.are.equal("answer B", wait(b).text)
     assert.are.equal("A", assert(assert(value.requests[3]).messages[1]).content)
     assert.are.equal("B", assert(assert(value.requests[4]).messages[1]).content)
   end)

@@ -2,6 +2,12 @@ local assert = require("luassert")
 local lifecycle_module = require("neoagent.agent.session_lifecycle")
 
 describe("neoagent Agent session lifecycle", function()
+  local owned_runtimes = {}
+  after_each(function()
+    for _, runtimes in ipairs(owned_runtimes) do require("neoagent.provider_runtimes").destroy(runtimes) end
+    owned_runtimes = {}
+  end)
+
   ---@param restore_selection? boolean
   local function fixture(restore_selection)
     local steering = require("neoagent.agent.steering").new()
@@ -103,6 +109,49 @@ describe("neoagent Agent session lifecycle", function()
 
     assert.are.equal(model, state.request_selection:model())
     assert.are.same(selection, state.request_selection:model_selection())
+  end)
+
+  it("restores the checkpoint Model when it differs from message history and defaults", function()
+    local session = assert(require("neoagent.session").new())
+    local _, _, original = session:append({ role = "user", content = "Earlier request" }, {
+      model = { provider = "fake", model = "one" },
+    })
+    local _, _, checkpoint = session:append_compaction({
+      native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "fake",
+        model = "two", encrypted_content = "synthetic-checkpoint" }, retained_users = {}, tokens_before = 100,
+    })
+    assert(checkpoint)
+    local configured = require("neoagent.config").resolve({
+      default_registry = false, default_model = { provider = "fake", model = "one" },
+      providers = { fake = { api = "openai-codex-responses", base_url = "https://example.test",
+        models = { one = {}, two = {} } } },
+      _apis = { ["openai-codex-responses"] = function(resolved)
+        local model = require("tests.helpers.fake_model").new()
+        model.api, model.provider, model.id = resolved.api, resolved.provider_id, resolved.model_id
+        return model
+      end },
+    })
+    local runtimes = assert(require("neoagent.provider_runtimes").compose(configured, { startup = false }))
+    owned_runtimes[#owned_runtimes + 1] = runtimes
+    local selection = require("neoagent.request_selection").new({
+      config = configured, runtimes = runtimes, required_api = "openai-codex-responses",
+      checkpoint_identity = function() return session:checkpoint_identity() end,
+    })
+    local warnings = {}
+    local lifecycle = lifecycle_module.new({
+      state = { session = session, steering = require("neoagent.agent.steering").new(), pending_events = {} },
+      workspace = "/bound-workspace", restore_selection = true, request_selection = selection,
+      preferences = function() return { default_model = { provider = "fake", model = "one" } } end,
+      bind_provider = function() end, publish_messages = function() end, update_context = function() end,
+      notify = function(message) warnings[#warnings + 1] = message end,
+    })
+    assert(lifecycle.initialize())
+    assert.are.equal("two", assert(selection:model()).id)
+    assert(lifecycle.branch(assert(original).id))
+    assert.are.equal("one", assert(selection:model()).id)
+    assert(lifecycle.branch(checkpoint.id))
+    assert.are.equal("two", assert(selection:model()).id)
+    assert.are.same({}, warnings)
   end)
 
   it("rejects branch changes while a Run is active", function()

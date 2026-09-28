@@ -1648,6 +1648,37 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.is_nil(captured[#captured].timeout_ms)
   end)
 
+  it("uses the estimated request while waiting for a router worker", function()
+    local transport = fake_transport.new({ { chunks = {
+      'data: {"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n',
+    } } })
+    local value = service(transport)
+    local shaped = 0
+    local inner = require("neoagent.api.openai_completions").new({
+      provider = "llama.cpp", model = "qwen-test", base_url = "https://example.test",
+      transport = transport, timeout_ms = 60000,
+      request_opts = function()
+        shaped = shaped + 1
+        return { body = { metadata = { preparation = shaped } } }
+      end,
+    })
+    local wrapped = value:wrap_model(inner)
+    local result = wait(require("neoagent.agent_loop").run({
+      model = wrapped, messages = { { role = "user", content = "Continue" } },
+      commit_message = function() return true end,
+      prepare_request_messages = function(messages, options)
+        require("neoagent.api.request_estimate").request(wrapped, options)
+        return messages
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal(1, shaped)
+    local sent = assert(transport.requests[1])
+    assert.is_false(sent.timeout_ms)
+    assert.are.equal(1, vim.json.decode((assert(sent.body))).metadata.preparation)
+  end)
+
   it("publishes independent concurrent requests and their latest usage", function()
     local value = service(fake_transport.new())
     ---@type Neoagent.AwaitCallbacks<Neoagent.ModelResult>[]

@@ -34,16 +34,27 @@ Update this guide when the development workflow or a hard invariant changes.
 Architecture is the canonical ownership reference. Changes must preserve:
 
 - Complete, validated dependencies for Models and the Agent Loop; message
-  commits precede dependent work.
+  commits precede dependent work, including provider recovery prompts. Request
+  accounting acknowledges only the final validated preparation before inference;
+  credential refresh cannot authorize unbudgeted request content.
 - Cancellation through Models, tools, child Runs, provider leases, and
   deferred destruction; completion and disposal once; stale callbacks unable
   to mutate newer state.
 - Tool-free Sessions and fixed Profile, Workspace, and Session identity per
   Agent, with one independent activity lifecycle.
+- Local compaction never replaces encrypted native context. Native checkpoints
+  retain selected user messages before the encrypted item and omit consumed
+  assistant and Tool history from later requests. Native transcript projection
+  keeps the complete journal path. Local checkpoints may consume an oversized
+  completed exchange without retaining a suffix. Checkpoint candidates pass
+  Session projection validation and Model request budgeting before the Agent
+  publishes them against the unchanged source leaf.
 - Explicit runtime sharing and coordination at the Service or Authentication
   boundary; request shaping receives copied request identity from the owning
   composition, and shared provider operations receive no Agent state.
-- Request-scoped file preparation uses independent shared Service leases and
+- Resolved Model estimation, inference, and native compaction acquire shared
+  Service leases before Authentication, independently of attachment support.
+  Request-scoped file preparation uses independent shared Service leases and
   content-key coordination. Credential changes and mutating management remain
   exclusive. Sessions retain image bytes; remote references stay in request
   copies and the separate provider cache.
@@ -161,8 +172,9 @@ native platform suite.
 `make benchmark-applet` checks container update budgets.
 `make benchmark-transcript` measures streaming latency and memory use.
 `make benchmark-submission` measures Session resume and prompt submission.
+`make benchmark-compaction` measures local planning across long suffix searches.
 Run benchmarks separately from other suites for useful timings. Linux stable
-CI runs all three targets once; any failed budget check fails CI.
+CI runs all four targets once; any failed budget check fails CI.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.

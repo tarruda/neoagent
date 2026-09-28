@@ -10,9 +10,14 @@
 ---@field submission_id? integer
 ---@field base? Neoagent.AgentInteractionOptions
 ---@field observed_leaf? string
+---@field compaction_epoch? integer
+---@field last_length_epoch? integer
+---@field length_continuation? boolean
 
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")
+local request_preparation = require("neoagent.api.request_preparation")
+local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
 ---@alias Neoagent.AgentRunResult Neoagent.ChatResult|Neoagent.CompactionResult
@@ -35,10 +40,6 @@ local util = require("neoagent.util")
 ---@field thinking_level? Neoagent.ThinkingLevel
 ---@field activity? Neoagent.AgentActivity
 ---@field model_options Neoagent.StreamOverrides
-
----@class Neoagent.AgentCompactionOptions: Neoagent.CompactionRunOptions
----@field reason string
----@field session Neoagent.Session
 
 ---@class Neoagent.AgentCompactionSuccess: Neoagent.CompactionSuccess
 ---@field estimated_tokens_after? number
@@ -77,7 +78,8 @@ local util = require("neoagent.util")
 ---@field refresh_buffer fun(path: string)
 ---@field provider_event? fun(event: Neoagent.AgentEvent)
 ---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
----@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field compaction_run? fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field compaction_component? Neoagent.CompactionComponent
 ---@field acquire_provider fun(): Neoagent.ProviderRelease
 
 ---@class Neoagent.RunLifecycle
@@ -199,6 +201,9 @@ local function completion_error(value)
       result[field] = bounded_text(selected, 128)
     end
   end
+  result.retry_exhausted = source.retry_exhausted
+  result.operation = source.operation
+  result.context_overflow = source.context_overflow
   local retryable = rawget(source, "retryable")
   if type(retryable) == "boolean" then
     result.retryable = retryable
@@ -326,7 +331,7 @@ end
 ---@param err Neoagent.Error
 ---@return boolean
 local function is_retryable_error(err)
-  if err.kind == "cancelled" then
+  if err.kind == "cancelled" or err.retry_exhausted or err.operation == "compaction" then
     return false
   end
   local retryable = rawget(err, "retryable")
@@ -381,49 +386,10 @@ end
 ---@param result Neoagent.AgentRunResult?
 ---@return boolean
 local function is_context_overflow(result)
-  if not result or result.ok or not result.error then
+  if not result or result.ok or not result.error or result.error.operation == "compaction" then
     return false
   end
-  local parts = { result.error.message or "" }
-  if result.error["detail"] ~= nil then
-    local ok, encoded = pcall(vim.json.encode, result.error["detail"])
-    parts[#parts + 1] = ok and encoded or tostring(result.error["detail"])
-  end
-  local text = table.concat(parts, " "):lower()
-  for _, pattern in ipairs({ "rate limit", "too many requests" }) do
-    if text:find(pattern, 1, true) then
-      return false
-    end
-  end
-  for _, pattern in ipairs({
-    "context_length_exceeded",
-    "model_context_window_exceeded",
-    "request_too_large",
-    "prompt is too long",
-    "prompt too long",
-    "input is too long for requested model",
-    "exceeds the context window",
-    "maximum context length",
-    "maximum prompt length",
-    "reduce the length of the messages",
-    "maximum allowed input length",
-    "longer than the model's context length",
-    "exceeds the available context size",
-    "greater than the context length",
-    "context window exceeds limit",
-    "exceeded model token limit",
-    "token limit exceeded",
-    "too many tokens",
-    "too large for model",
-    "configured context size",
-    "range of input length should be",
-    "request too large",
-  }) do
-    if text:find(pattern, 1, true) then
-      return true
-    end
-  end
-  return false
+  return require("neoagent.model").is_context_overflow(result.error)
 end
 
 ---@param result Neoagent.AgentRunResult?
@@ -474,6 +440,7 @@ local function default_interaction(options)
     context = options.context,
     execute_tool = options.execute_tool,
     get_steering_messages = options.get_steering_messages,
+    prepare_request_messages = options.prepare_request_messages,
     session_state = options.session_state,
     on_accept = options.on_accept,
     report = options.report,
@@ -495,6 +462,7 @@ local function default_continuation(options)
     context = options.context,
     execute_tool = options.execute_tool,
     get_steering_messages = options.get_steering_messages,
+    prepare_request_messages = options.prepare_request_messages,
     model_options = options.model_options,
     report = options.report,
     on_event = options.on_event,
@@ -508,6 +476,7 @@ end
 function M.new(opts)
   local state = opts.state
   local config = opts.config
+  local component = opts.compaction_component or require("neoagent.compaction").for_config(config.compaction)
   local selection = state.request_selection
   local lifecycle = {}
   ---@type fun(prompt: string, claim?: Neoagent.SteeringClaim, id?: integer): Neoagent.AgentRun?, Neoagent.Error?
@@ -578,7 +547,10 @@ function M.new(opts)
     local pending = {}
     local order = {}
     for _, message in ipairs(messages) do
-      if message.role == "assistant" then
+      if message.role == "compactionSummary" or message.role == "compactionCheckpoint" then
+        pending = {}
+        order = {}
+      elseif message.role == "assistant" then
         for _, block in ipairs(message.content or {}) do
           if block.type == "toolCall" then
             pending[block.id] = block
@@ -608,54 +580,42 @@ function M.new(opts)
         if not ok then
           return nil, err
         end
+        pending[id] = nil
       end
     end
     return true
   end
 
-  ---@return Neoagent.CompactionSettings?
-  local function compaction_settings()
-    local selected = config.compaction
-    local model = selection:model()
-    if selected == false or not model then
-      return nil
-    end
-    return require("neoagent.compaction").settings(selected, model.context_window)
+  -- Recovery and manual operations construct the same semantic request inputs
+  -- that Chat and the Loop provide at the inference gate.
+  ---@param system_prompt? string
+  ---@param tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
+  ---@param model_options? Neoagent.StreamOverrides
+  ---@return Neoagent.CompactionRequest
+  local function compaction_request(system_prompt, tools, model_options)
+    local call = request_preparation.copy(model_options or {})
+    call._preparation = request_preparation.new()
+    call.files = state.session:files()
+    call.file_cache = state.session:file_cache()
+    call.thinking_level = selection:thinking_level()
+    call.request_context =
+      require("neoagent.api.request_context").resolve({ session_id = state.session:id() }, call.request_context)
+    return { system_prompt = system_prompt, tools = tool_schema.definitions(tools), model_options = call }
   end
 
-  ---@return boolean
-  local function needs_compaction()
-    local settings = compaction_settings()
-    if not settings or not settings.auto then
-      return false
-    end
-    local messages, message_err = state.session:context_messages()
-    if not messages then
-      error(message_err, 0)
-    end
-    local estimate = require("neoagent.compaction").estimate_context(messages)
-    return require("neoagent.compaction").should_compact(
-      estimate.tokens,
-      assert(selection:model()).context_window or 0,
-      settings
-    )
-  end
-
-  ---@return Neoagent.CompactionPreparation?, Neoagent.Error?
-  local function prepare_compaction()
-    local settings = compaction_settings()
-    if not settings then
-      return nil
-    end
-    local closed, close_err = close_unmatched_calls()
-    if not closed then
-      return nil, close_err
-    end
-    local path, path_err = state.session:path()
-    if not path then
-      return nil, path_err
-    end
-    return require("neoagent.compaction").prepare(path, settings)
+  ---@param request Neoagent.CompactionRequest
+  ---@param force? boolean
+  ---@param messages? Neoagent.RequestMessage[]
+  ---@return Neoagent.CompactionEvaluation?, Neoagent.Error?, Neoagent.CompactionPlanningOptions?
+  ---@async
+  local function evaluate_compaction(request, force, messages)
+    return require("neoagent.agent.checkpoint").evaluate({
+      session = state.session,
+      model = selection:model(),
+      component = component,
+      configured = config.compaction,
+      request = request,
+    }, force, messages)
   end
 
   ---@param activity Neoagent.AgentActivity
@@ -837,71 +797,103 @@ function M.new(opts)
   ---@async
   ---@param outer Neoagent.AgentRun
   ---@param activity Neoagent.AgentActivity
+  ---@param request Neoagent.CompactionRequest
   ---@param reason string
   ---@param instructions string?
-  ---@param preparation Neoagent.CompactionPreparation?
+  ---@param inputs Neoagent.CompactionPlanningOptions?
   ---@return_overload Neoagent.CompactionResult, nil, true
   ---@return_overload nil, Neoagent.Error?, false
-  local function run_compaction(outer, activity, reason, instructions, preparation)
-    local prepare_err
-    if not preparation then
-      preparation, prepare_err = prepare_compaction()
-    end
-    if not preparation then
-      return nil, prepare_err, false
-    end
-    set_phase(activity, "compacting")
-    state.pending_events = {}
-    state.inference_stats = nil
-    if current(activity) and not state.destroyed then
-      opts.publish({ type = "event", event = {
-        type = "compaction_start",
-        reason = reason,
-      } })
-      opts.update_context()
-    end
-    local selected = opts.compaction_run or require("neoagent.compaction").run
-    ---@type Neoagent.AgentCompactionOptions
-    local call = {
-      preparation = preparation,
-      model = assert(selection:model()),
-      model_options = {
-        files = state.session:files(),
-        file_cache = state.session:file_cache(),
-        request_opts = require("neoagent.thinking").request_opts(selection:model(), selection:thinking_level()),
-      },
+  local function run_compaction(outer, activity, request, reason, instructions, inputs)
+    local result, err, started = require("neoagent.agent.checkpoint").run({
+      session = state.session,
+      model = selection:model(),
+      component = component,
+      configured = config.compaction,
+      request = request,
+      parent = outer,
+      inputs = inputs,
       instructions = instructions,
       reason = reason,
-      session = state.session,
       report = report_callback,
-    }
-    local result = await_operation(outer, activity, selected, call, "compaction Run")
-
-    if result.ok then
-      local appended, append_err = state.session:append_compaction({
-        summary = result.summary,
-        first_kept_entry_id = result.first_kept_entry_id,
-        tokens_before = result.tokens_before,
-      })
-      if not appended then
-        result = failed_result(append_err, "compaction")
-      end
-    end
-    if result.ok then
-      local projected, projection_err = state.session:context_messages()
-      if projected then
-        result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
+      close_unmatched_calls = close_unmatched_calls,
+      is_current = function()
+        return current(activity) and not state.destroyed
+      end,
+      on_start = function()
+        set_phase(activity, "compacting")
+        state.pending_events = {}
+        state.inference_stats = nil
         if current(activity) and not state.destroyed then
-          opts.publish_messages(opts.transcript_messages(state.session))
+          opts.publish({ type = "event", event = { type = "compaction_start", reason = reason } })
+          opts.update_context()
         end
-      else
-        result = failed_result(projection_err, "compaction")
-      end
+      end,
+      execute = function(call)
+        return await_operation(outer, activity, opts.compaction_run or component.run, call, "compaction Run")
+      end,
+      on_commit = function()
+        activity.compaction_epoch = (activity.compaction_epoch or 0) + 1
+      end,
+      publish_messages = function()
+        opts.publish_messages(opts.transcript_messages(state.session))
+      end,
+    })
+    if not started then
+      return nil, err, false
     end
     state.live_usage = nil
     retain_completed_inference_stats(state)
     publish_compaction(activity, reason, result)
     return result, nil, true
+  end
+
+  ---@async
+  ---@param parent Neoagent.AgentRun
+  ---@param owner Neoagent.AgentActivity
+  ---@param request Neoagent.CompactionRequest
+  ---@return Neoagent.RequestMessage[]?, Neoagent.Error?
+  local function prepare_context(parent, owner, request)
+    local messages, message_err = state.session:context_messages()
+    if not messages then
+      return nil, util.normalize_error(message_err, "session")
+    end
+    ---@type Neoagent.Model
+    local model = assert(selection:model())
+    local compatible, compatibility_err = require("neoagent.model").compatible_context(model, messages)
+    if not compatible then
+      return nil, compatibility_err
+    end
+    if component.require_native and type(model.compact) ~= "function" then
+      return nil, util.error("compaction", "Profile requires a compatible Model with native compaction")
+    end
+    local evaluation, err, inputs = evaluate_compaction(request, false, messages)
+    if err then
+      return nil, err
+    end
+    if not evaluation or not evaluation.needed then
+      return messages
+    end
+    local compacted, planning_err = run_compaction(parent, owner, request, "threshold", nil, inputs)
+    if not compacted then
+      return nil, planning_err or util.error("compaction", "Required compaction has no valid cut point")
+    end
+    if not compacted.ok then
+      return nil, compacted.error
+    end
+    async.yield()
+    set_phase(owner, "running")
+    local refreshed, projection_err = state.session:context_messages()
+    if not refreshed then
+      return nil, util.normalize_error(projection_err, "session")
+    end
+    evaluation, err = evaluate_compaction(request, false, refreshed)
+    if err then
+      return nil, err
+    end
+    if evaluation and evaluation.needed then
+      return nil, util.error("compaction", "Context still exceeds the request limit after compaction")
+    end
+    return refreshed
   end
 
   ---@param result Neoagent.AgentRunResult
@@ -933,7 +925,7 @@ function M.new(opts)
     state.inference_stats = nil
     ---@type Neoagent.AgentInteractionOptions
     local call = vim.tbl_extend("force", {}, base)
-    call.model_options = util.copy(base.model_options)
+    call.model_options = request_preparation.copy(base.model_options)
     call.model_options.retry_attempt = retry_attempt
     local selected = continuing and default_continuation or (opts.interaction or default_interaction)
     local result = await_operation(outer, activity, selected, call, "interaction Run", function()
@@ -1017,32 +1009,26 @@ function M.new(opts)
   ---@return Neoagent.AgentRunResult
   local function interaction_pipeline(outer, activity, base)
     local overflow_retried = false
-    local uncompacted_length_continued = false
     local stream_retries = 0
 
-    if needs_compaction() then
-      local compacted, _, started = run_compaction(outer, activity, "threshold")
-      if started and not compacted.ok then
-        return compacted
-      end
-    end
-    if outer:is_cancelled() then
-      return cancelled_result()
-    end
     local done = run_interaction(outer, activity, base, false, stream_retries)
 
     while true do
       if outer:is_cancelled() then
         return cancelled_result()
       end
-      if not overflow_retried and is_context_overflow(done) then
+      if not overflow_retried and not (done.error and done.error.retry_exhausted) and is_context_overflow(done) then
         overflow_retried = true
         local abandoned, abandon_err = abandon_failed_message()
         if not abandoned then
           return completion_failure(abandon_err)
         end
-        local compacted, _, started = run_compaction(outer, activity, "overflow")
+        local request = compaction_request(base.system_prompt, base.tools or {}, base.model_options)
+        local compacted, compaction_err, started = run_compaction(outer, activity, request, "overflow")
         if not started then
+          if compaction_err and compaction_err.kind == "cancelled" then
+            return failed_result(compaction_err)
+          end
           return done
         end
         if not compacted.ok then
@@ -1053,22 +1039,17 @@ function M.new(opts)
         end
         done = run_interaction(outer, activity, base, true, stream_retries)
       elseif is_length_limited(done) then
-        local compacted_context = false
-        if needs_compaction() then
-          local compacted, _, started = run_compaction(outer, activity, "threshold")
-          if started and not compacted.ok then
-            if compacted.error and compacted.error.kind == "cancelled" then
-              return compacted
-            end
+        if activity.last_length_epoch == (activity.compaction_epoch or 0) then
+          local request = compaction_request(base.system_prompt, base.tools or {}, base.model_options)
+          local evaluation, budget_err = evaluate_compaction(request, false)
+          if budget_err then
+            return failed_result(budget_err, "compaction")
+          end
+          if not evaluation or not evaluation.needed then
             return done
           end
-          compacted_context = started
         end
-        if not compacted_context and uncompacted_length_continued then
-          return done
-        elseif not compacted_context then
-          uncompacted_length_continued = true
-        end
+        activity.length_continuation = true
         done = run_interaction(outer, activity, base, true, stream_retries)
       else
         local retry_settings = config.retry
@@ -1102,12 +1083,6 @@ function M.new(opts)
           end
           done = run_interaction(outer, activity, base, true, stream_retries)
         else
-          if needs_compaction() then
-            local compacted, _, started = run_compaction(outer, activity, "threshold")
-            if started and not compacted.ok and compacted.error and compacted.error.kind == "cancelled" then
-              return compacted
-            end
-          end
           return done
         end
       end
@@ -1283,7 +1258,6 @@ function M.new(opts)
       ---@type Neoagent.Model
       local model = assert(selection:model())
       local thinking_level = selection:thinking_level()
-      local request_opts = require("neoagent.thinking").request_opts(model, thinking_level)
       ---@type Neoagent.AgentInteractionOptions
       local base = {
         session = state.session,
@@ -1303,7 +1277,7 @@ function M.new(opts)
         session_state = selection:snapshot({ persisted = true }),
         report = opts.notify,
         model_options = {
-          request_opts = request_opts,
+          thinking_level = thinking_level,
           files = state.session:files(),
           file_cache = state.session:file_cache(),
         },
@@ -1329,6 +1303,31 @@ function M.new(opts)
           return true
         end
         return { util.copy(message.message) }, acknowledge
+      end
+      ---@async
+      base.prepare_request_messages = function(_, model_options)
+        local parent = assert(async.current(), "request preparation requires an active Run")
+        local owner = assert(base.activity)
+        local prepared_context, messages, prepare_err = pcall(prepare_context, parent, owner, {
+          system_prompt = model_options.system_prompt,
+          tools = model_options.tools or {},
+          model_options = model_options,
+        })
+        if not prepared_context or not messages then
+          local err = util.normalize_error(prepared_context and prepare_err or messages, "model")
+          if err.kind == "compaction" then
+            err.operation = "compaction"
+          end
+          return nil, err
+        end
+        return messages,
+          nil,
+          function()
+            if owner.length_continuation then
+              owner.last_length_epoch = owner.compaction_epoch or 0
+              owner.length_continuation = nil
+            end
+          end
       end
       local closed, close_err = close_unmatched_calls()
       if not closed then
@@ -1475,16 +1474,10 @@ function M.new(opts)
       opts.notify(err.message, vim.log.levels.WARN)
       return nil, err
     end
-    local preparation, prepare_err = prepare_compaction()
-    if not preparation then
-      pcall(release)
-      local err = prepare_err or util.error("compaction", "Nothing to compact")
-      opts.notify(err.message, vim.log.levels.WARN)
-      return nil, err
-    end
     local outer = install_activity("manual_compaction", release, function(run, activity)
-      local result = run_compaction(run, activity, "manual", instructions, preparation)
-      return assert(result)
+      local request = compaction_request(opts.system_prompt("", state.toolset.tools), state.toolset.tools)
+      local result, err = run_compaction(run, activity, request, "manual", instructions)
+      return result or failed_result(err or util.error("compaction", "Nothing to compact"), "compaction")
     end)
     return outer
   end

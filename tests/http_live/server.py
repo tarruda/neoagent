@@ -2,6 +2,14 @@
 import json
 import select
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The wire fixture needs only its numeric loopback address, not DNS.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
 server.daemon_threads = True
 print(json.dumps({"port": server.server_port}), flush=True)
 try:

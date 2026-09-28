@@ -2275,6 +2275,58 @@ describe("neoagent Applet View composition", function()
     assert.are.equal("message:entry-b:user", assert(value.transcript.blocks[2]).key)
   end)
 
+  it("keeps reused provider Tool ids distinct across a checkpoint", function()
+    local value = view()
+    value:set_messages({
+      { _neoagent_entry_id = "old-call", role = "assistant", content = { {
+        type = "toolCall", id = "reused", name = "inspect", arguments = { file = "old" },
+      } } },
+      { _neoagent_entry_id = "old-result", role = "toolResult", toolCallId = "reused",
+        toolName = "inspect", content = { { type = "text", text = "old evidence" } } },
+      { _neoagent_entry_id = "checkpoint", role = "compactionCheckpoint", tokens_before = 10, created_at = 1 },
+      { _neoagent_entry_id = "new-call", role = "assistant", content = { {
+        type = "toolCall", id = "reused", name = "inspect", arguments = { file = "new" },
+      } } },
+      { _neoagent_entry_id = "new-result", role = "toolResult", toolCallId = "reused",
+        toolName = "inspect", content = { { type = "text", text = "new evidence" } } },
+    })
+    local old = assert(value.transcript.blocks[1])
+    local new = assert(value.transcript.blocks[3])
+    assert.are.equal("message:old-call:tool:1", old.key)
+    assert.are.equal("message:new-call:tool:1", new.key)
+    assert.are.equal("old evidence", require("neoagent.util").text_content(assert(old.message).content))
+    assert.are.equal("new evidence", require("neoagent.util").text_content(assert(new.message).content))
+    assert.are.equal(new, value.transcript.calls.reused)
+  end)
+
+  it("routes a live reused Tool id to its new journal card", function()
+    local value = view()
+    value:set_messages({
+      { _neoagent_entry_id = "old-call", role = "assistant", content = { {
+        type = "toolCall", id = "reused", name = "inspect", arguments = {},
+      } } },
+      { _neoagent_entry_id = "old-result", role = "toolResult", toolCallId = "reused",
+        content = { { type = "text", text = "old evidence" } } },
+      { _neoagent_entry_id = "checkpoint", role = "compactionCheckpoint", tokens_before = 10, created_at = 1 },
+    })
+    local old = assert(value.transcript.blocks[1])
+    local call = { type = "toolCall", id = "reused", name = "inspect", arguments = {} }
+    value:apply({ type = "tool_call_delta", index = 0, name = "inspect", arguments_delta = "{}" })
+    local pending = assert(value.transcript.blocks[3])
+    value:apply({ type = "message_end", message = { _neoagent_entry_id = "new-call", role = "assistant",
+      content = { call } } })
+    value:apply({ type = "tool_start", call = call })
+    value:apply({ type = "tool_end", call = call, message = { role = "toolResult", toolCallId = "reused",
+      content = { { type = "text", text = "new evidence" } } } })
+    local new = assert(value.transcript.blocks[3])
+    assert.are.equal("message:old-call:tool:1", old.key)
+    assert.are.equal("message:new-call:tool:1", new.key)
+    assert.are.equal(pending, new)
+    assert.are.equal(3, #value.transcript.blocks)
+    assert.are.equal("old evidence", require("neoagent.util").text_content(assert(old.message).content))
+    assert.are.equal("new evidence", require("neoagent.util").text_content(assert(new.message).content))
+  end)
+
   it("resolves custom Hosts and restores pending input presentations on reopen", function()
     local resolved = config.setup({
       ui = {

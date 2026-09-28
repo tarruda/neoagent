@@ -136,11 +136,11 @@ function M.read(storage, file_id, maximum)
 end
 
 ---@param storage? Neoagent.FileSource
----@param messages Neoagent.Message[]
+---@param messages Neoagent.RequestMessage[]
 ---@return true?, Neoagent.Error?
 function M.check_messages(storage, messages)
   for _, message in ipairs(messages) do
-    if type(message.content) == "table" then
+    if message.role ~= "nativeCompaction" and type(message.content) == "table" then
       for _, block in ipairs(message.content) do
         if block.type == "image" then
           if not M.valid(storage) then

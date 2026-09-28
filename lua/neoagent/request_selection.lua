@@ -18,18 +18,22 @@ local M = {}
 ---@field thinking_level? Neoagent.ThinkingLevel|vim.NIL
 
 ---@class Neoagent.RequestSelectionOptions
+---@field required_api? string
 ---@field config Neoagent.SelectionConfig
 ---@field auth? Neoagent.AuthManager
 ---@field runtimes? Neoagent.ProviderRuntimes
 ---@field request_context? Neoagent.SelectionIdentity
+---@field checkpoint_identity? fun(): Neoagent.NativeContextIdentity?, Neoagent.Error?
 ---@field workspace? Neoagent.WorkspacePreferences
 ---@field initial_selection? Neoagent.InitialSelection
 
 ---@class Neoagent.RequestSelection
+---@field required_api? string
 ---@field config Neoagent.SelectionConfig
 ---@field auth? Neoagent.AuthManager
 ---@field runtimes Neoagent.ProviderRuntimes
 ---@field request_context Neoagent.SelectionIdentity
+---@field checkpoint_identity? fun(): Neoagent.NativeContextIdentity?, Neoagent.Error?
 ---@field defaults Neoagent.WorkspacePreferences
 ---@field workspace Neoagent.WorkspacePreferences
 ---@field initial? Neoagent.InitialSelection
@@ -74,6 +78,22 @@ local function initial_thinking(self, selected)
   end
 end
 
+---@param runtimes Neoagent.ProviderRuntimes
+---@param selected Neoagent.ModelSelection
+---@param required_api? string
+---@return boolean?
+function M.api_compatible(runtimes, selected, required_api)
+  if not required_api then
+    return true
+  end
+  local runtime = runtimes[selected.provider]
+  local model = runtime and runtime.catalog:snapshot().models[selected.model]
+  if not model then
+    return nil
+  end
+  return (model.api or runtime.definition.api) == required_api
+end
+
 ---@param opts Neoagent.RequestSelectionOptions
 ---@return Neoagent.RequestSelection
 function RequestSelection.new(opts)
@@ -87,12 +107,18 @@ function RequestSelection.new(opts)
     opts.request_context == nil or type(opts.request_context) == "table" or type(opts.request_context) == "function",
     "RequestSelection request_context must be a table or function"
   )
+  assert(
+    opts.checkpoint_identity == nil or type(opts.checkpoint_identity) == "function",
+    "RequestSelection checkpoint_identity must be a function"
+  )
   local self = setmetatable({
     config = opts.config,
+    required_api = opts.required_api,
     auth = opts.auth,
     runtimes = opts.runtimes or {},
     request_context = type(opts.request_context) == "function" and opts.request_context
       or util.copy(opts.request_context or {}),
+    checkpoint_identity = opts.checkpoint_identity,
     defaults = {
       default_model = util.copy(opts.config.default_model),
       default_thinking_level = opts.config.default_thinking_level,
@@ -173,6 +199,19 @@ end
 function RequestSelection:bind(selected, model, preferred)
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
   model = model_contract.assert(model, "RequestSelection resolved Model")
+  if self.required_api and model.api ~= self.required_api then
+    error(util.error("model", "Profile requires a Model using " .. self.required_api), 0)
+  end
+  if self.checkpoint_identity then
+    local identity, identity_err = self.checkpoint_identity()
+    if identity_err then
+      error(util.normalize_error(identity_err, "session"), 0)
+    end
+    local compatible, compatibility_err = model_contract.compatible_context_identity(model, identity)
+    if not compatible then
+      error(compatibility_err, 0)
+    end
+  end
   local selected_value = util.copy(selected)
   local thinking_value =
     thinking.clamp(model, preferred or self.thinking_value or self:preferences().default_thinking_level)
@@ -185,9 +224,15 @@ end
 
 ---@param selected Neoagent.ModelSelection
 ---@param preferred? Neoagent.ThinkingLevel
----@return Neoagent.ModelSelection
+---@return Neoagent.ModelSelection?, Neoagent.Error?
 function RequestSelection:stage(selected, preferred)
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
+  if M.api_compatible(self.runtimes, selected, self.required_api) == false then
+    if self.model_value == nil and same_model(self.selected, selected) then
+      self:clear(true)
+    end
+    return nil, util.error("model", "Profile requires a Model using " .. assert(self.required_api))
+  end
   if preferred == nil then
     preferred = initial_thinking(self, selected)
   end
@@ -212,6 +257,12 @@ function RequestSelection:resolve(selected, preferred)
   selected = selected or self:candidate()
   if not selected then
     return nil, util.error("model", "No default_model is configured")
+  end
+  if M.api_compatible(self.runtimes, selected, self.required_api) == false then
+    if self.model_value == nil and same_model(self.selected, selected) then
+      self:clear(true)
+    end
+    return nil, util.error("model", "Profile requires a Model using " .. assert(self.required_api))
   end
   if preferred == nil then
     preferred = initial_thinking(self, selected)

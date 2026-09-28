@@ -257,6 +257,97 @@ describe("neoagent provider service", function()
     assert.is_true(exclusive:finish())
   end)
 
+  it("retains native Model compaction through the provider lease wrapper", function()
+    local value = service({})
+    local model = require("tests.helpers.fake_model").new()
+    model.max_output_tokens = 4096
+    ---@param opts Neoagent.NativeCompactionOptions
+    ---@return Neoagent.Run<Neoagent.NativeCompactionResult, Neoagent.ModelEvent>
+    function model:compact(opts)
+      return async.run(function()
+        assert.are.same({}, opts.messages)
+        local exclusive = provider_service.begin_operation(value, { mutating = true })
+        assert.is_nil(exclusive)
+        return { ok = true, item = {
+          role = "nativeCompaction", api = "fake", provider = "fake", model = "fake",
+          id = "item", encrypted_content = "cipher",
+        } }
+      end)
+    end
+    local wrapped = require("neoagent.provider_model").wrap(model, value)
+    assert.are.equal(4096, wrapped.max_output_tokens)
+    local result = wait(assert(wrapped.compact)(wrapped, { messages = {} }))
+    assert.is_true(result.ok)
+    assert.are.equal("cipher", assert(result.item).encrypted_content)
+    local exclusive = assert(provider_service.begin_operation(value, { mutating = true }))
+    assert.is_true(exclusive:finish())
+  end)
+
+  it("budgets authenticated request layers while holding a shared provider lease", function()
+    local value = service({})
+    local auth = require("neoagent.auth")
+    local key = require("neoagent.auth.api_key").new({
+      name = "Synthetic key",
+      request_opts = function()
+        assert.is_nil((provider_service.begin_operation(value, { mutating = true })))
+        return { body = { instructions = string.rep("instructions ", 1000) } }
+      end,
+    })
+    local storage = require("tests.helpers.auth_manager").store({
+      key = { type = "api_key", key = "synthetic-key" },
+    })
+    local manager = auth.new({ methods = { key = key }, store = storage })
+    local model = require("neoagent.api.openai_responses").new({
+      provider = "test", model = "test", base_url = "https://example.test", context_window = 1000,
+      transport = { request = function() error("estimation must not send an inference request") end },
+    })
+    local wrapped = require("neoagent.provider_model").wrap(manager:wrap(model, "key"), value)
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Continue" }))
+    local evaluation = wait(async.run(function()
+      return require("tests.helpers.compaction")(require("neoagent.compaction").local_component, {
+        model = wrapped, configured = {}, path = assert(session:path()), messages = assert(session:context_messages()),
+      })
+    end))
+    assert.matches("leave no room", assert(evaluation.error).message)
+    assert.is_true(evaluation.needed)
+    assert.is_true(evaluation.tokens > evaluation.input_limit)
+    local exclusive = assert(provider_service.begin_operation(value, { mutating = true }))
+    assert.is_true(exclusive:finish())
+  end)
+
+  it("releases request estimation leases after failure or cancellation", function()
+    for _, failure in ipairs({ "failure", "cancelled" }) do
+      local value = service({})
+      local model = require("tests.helpers.fake_model").new()
+      local entered, cancelled = false, false
+      ---@async
+      function model:estimate_request()
+        assert.is_nil((provider_service.begin_operation(value, { mutating = true })))
+        entered = true
+        if failure == "failure" then
+          error(util.error("model", "Could not shape request"), 0)
+        end
+        return async.await(function()
+          return function() cancelled = true end
+        end)
+      end
+      local wrapped = require("neoagent.provider_model").wrap(model, value)
+      local run = async.run(function()
+        return assert(wrapped.estimate_request)(wrapped, { messages = {} })
+      end)
+      assert(vim.wait(1000, function() return entered end))
+      if failure == "cancelled" then run:cancel() end
+      local result = wait(run)
+      assert(type(result) == "table")
+      assert.is_false(result.ok)
+      assert.are.equal(failure == "cancelled" and "cancelled" or "model", result.error.kind)
+      assert.are.equal(failure == "cancelled", cancelled)
+      local exclusive = assert(provider_service.begin_operation(value, { mutating = true }))
+      assert.is_true(exclusive:finish())
+    end
+  end)
+
   it("rejects forged operation tokens and releases startup failures", function()
     local value = service({
       work = {

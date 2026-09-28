@@ -1021,7 +1021,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(vim.wait(1000, function() return #applet:agents() == 2 end, 5))
     local duplicate = assert(applet:active_agent())
     assert.are.equal("neo", duplicate:profile_id())
-    assert.are.equal(models.selected, duplicate:get_model())
+    assert.are.equal(models.selected, rawget(assert(duplicate:get_model()), "_model"))
     assert.are_not.equal(assert(source):get_session():id(), duplicate:get_session():id())
     assert.are.same(source_snapshot.entries, duplicate:get_session():entries())
     assert.are.equal(source_snapshot.leaf_id, duplicate:get_session():leaf_id())
@@ -1036,7 +1036,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(vim.wait(1000, function() return #applet:agents() == 3 end, 5))
     local chat = assert(applet:active_agent())
     assert.are.equal("chat", chat:profile_id())
-    assert.are.equal(models.default, chat:get_model())
+    assert.are.equal(models.default, rawget(assert(chat:get_model()), "_model"))
     assert.are.equal("selected", assert(assert(chat:get_session():state()).model).model)
     assert.are.same(source_snapshot.entries, chat:get_session():entries())
     assert.are.same(source_snapshot, assert(source):get_session():snapshot())
@@ -1272,7 +1272,7 @@ describe("neoagent Agent-owned Applets", function()
         and agent:profile_id() == "chat"
     end, 5))
     local chat = assert(applet:active_agent())
-    assert.are.equal(models.target, chat:get_model())
+    assert.are.equal(models.target, rawget(assert(chat:get_model()), "_model"))
     assert.are.equal("source", assert(assert(chat:get_session():state()).model).model)
     assert.are.same(settings_before, assert(settings:load()))
 
@@ -1280,7 +1280,7 @@ describe("neoagent Agent-owned Applets", function()
         return entry.type == "message" and entry.message.role == "user"
       end))
     assert(chat:branch(source_user.id))
-    assert.are.equal(models.target, chat:get_model())
+    assert.are.equal(models.target, rawget(assert(chat:get_model()), "_model"))
 
     submit("target turn")
     assert(vim.wait(1000, function() return not chat:is_running() end, 5))
@@ -1486,6 +1486,36 @@ describe("neoagent Agent-owned Applets", function()
     assert.is_false(assert(applet:profile("chat")).config.sandbox.enabled)
     assert.is_false(assert(applet:profile("neo")).config.sandbox.enabled)
     assert.are.same({}, applet:agents())
+  end)
+
+  it("stages Codex draft sandbox controls and binds the selected state", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "ready" } }) } })
+    model.api = "openai-codex-responses"
+    model.compact = function()
+      error("unexpected native compaction")
+    end
+    setup(model, {
+      providers = { fake = { api = "openai-codex-responses", base_url = "https://example.test",
+        models = { test = {} } } },
+      _apis = { ["openai-codex-responses"] = function() return model end },
+    })
+    assert(applet:new("codex"))
+    assert.are.equal("codex", assert(applet:foreground_applet()).profile)
+    assert.is_false(neoagent.sandbox_info().enabled)
+    assert.is_true(assert(neoagent.set_sandbox_enabled(true)).enabled)
+    assert.is_true(neoagent.sandbox_info().enabled)
+    assert.is_false(assert(neoagent.set_sandbox_enabled(false)).enabled)
+    assert.is_false(neoagent.sandbox_info().enabled)
+    assert.is_true(assert(neoagent.set_sandbox_enabled(true)).enabled)
+    assert(applet:send("bind the selected sandbox"))
+    assert(vim.wait(1000, function()
+      local agent = applet:agents()[1]
+      local record = agent and applet:record(agent)
+      return record and record.draft_rollback == nil
+    end, 5))
+    local agent = assert(applet:agents()[1])
+    assert.are.equal("codex", agent:profile_id())
+    assert.is_true(assert(assert(applet:record(agent)).metadata.sandbox).status.enabled)
   end)
 
   it("does not commit one Neo draft's sandbox choice into its Profile", function()

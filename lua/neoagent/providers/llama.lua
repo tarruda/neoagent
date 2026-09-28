@@ -1,3 +1,4 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local model_definitions = require("neoagent.providers.llama.definitions")
 local llama_catalog = require("neoagent.providers.llama.catalog")
@@ -285,19 +286,16 @@ function M.new(opts, resources)
     model_definitions.collect(opts.catalog and opts.catalog.additions)
   local service_opts = validate_service_opts(opts.service_opts)
   local report = resources.report or function() end
-  local dashboard = provider_state.new(
-    {
-      blocks = {
-        {
-          type = "field",
-          label = "Endpoint",
-          value = display_server_url,
-          level = connection_level,
-        },
+  local dashboard = provider_state.new({
+    blocks = {
+      {
+        type = "field",
+        label = "Endpoint",
+        value = display_server_url,
+        level = connection_level,
       },
     },
-    { report = report }
-  )
+  }, { report = report })
 
   ---@return Neoagent.ProviderBlock[]
   local function state_blocks()
@@ -668,21 +666,50 @@ function M.new(opts, resources)
   function service:wrap_model(model)
     model = require("neoagent.model").assert(model, "llama.cpp input Model")
     local router_id = definitions[model.id] and definitions[model.id].router_id or model.id
-    local wrapped = {
-      api = model.api,
-      provider = model.provider,
-      id = model.id,
-      input = util.copy(model.input),
-      context_window = model.context_window,
-      thinking = util.copy(model.thinking),
-      timeout_ms = model.timeout_ms,
-    }
+    local wrapped = assert(require("neoagent.model").capabilities(model))
+    ---@generic T: Neoagent.RequestOptions
+    ---@param opts T
+    ---@return T
+    local function prepare_call(opts)
+      return request_preparation.reuse(wrapped, opts, function()
+        local call = request_preparation.copy(opts)
+        local status = known_model_status(router_id)
+        if
+          call.timeout_ms == nil
+          and type(model.timeout_ms) == "number"
+          and model.timeout_ms > 0
+          and status ~= "loaded"
+          and status ~= "sleeping"
+        then
+          call.timeout_ms = false
+        end
+        if router_id ~= model.id then
+          local request_opts = call.request_opts
+          if type(request_opts) == "function" then
+            call.request_opts = function(context)
+              local selected_context = util.copy(context)
+              selected_context.request.body = util.deep_merge(context.request.body, { model = router_id })
+              return alias_request(request_opts(selected_context), router_id)
+            end
+          else
+            call.request_opts = alias_request(request_opts, router_id)
+          end
+        end
+        return call
+      end)
+    end
+    if model.estimate_request then
+      ---@param opts Neoagent.RequestOptions
+      ---@param operation? "compact"
+      ---@async
+      function wrapped:estimate_request(opts, operation)
+        return model:estimate_request(prepare_call(opts), operation)
+      end
+    end
     ---@param opts Neoagent.StreamOptions
     ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function wrapped:stream(opts)
       opts = opts or {}
-      local has_timeout_override = opts.timeout_ms ~= nil
-      local timeout = has_timeout_override and opts.timeout_ms or model.timeout_ms
       return async.run(
         ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
         ---@return Neoagent.ModelResult
@@ -690,19 +717,7 @@ function M.new(opts, resources)
           next_request_id = next_request_id + 1
           local request_id = next_request_id
           local status = known_model_status(router_id)
-          local inner = util.copy(opts)
-          if router_id ~= model.id then
-            local request_opts = inner.request_opts
-            if type(request_opts) == "function" then
-              inner.request_opts = function(context)
-                local selected_context = util.copy(context)
-                selected_context.request.body = util.deep_merge(context.request.body, { model = router_id })
-                return alias_request(request_opts(selected_context), router_id)
-              end
-            else
-              inner.request_opts = alias_request(request_opts, router_id)
-            end
-          end
+          local inner = prepare_call(opts)
           local generating = false
           request_progress[request_id] = {
             type = "progress",
@@ -731,15 +746,6 @@ function M.new(opts, resources)
             run:emit(event)
           end
           inner.on_done = nil
-          if
-            not has_timeout_override
-            and type(timeout) == "number"
-            and timeout > 0
-            and status ~= "loaded"
-            and status ~= "sleeping"
-          then
-            inner.timeout_ms = false
-          end
           local ok, result = pcall(function()
             return model:stream(inner):await()
           end)
@@ -761,8 +767,6 @@ function M.new(opts, resources)
         }
       )
     end
-    wrapped._llama_service = service
-    wrapped._llama_router_id = router_id
     return require("neoagent.model").assert(wrapped, "llama.cpp Model wrapper")
   end
 

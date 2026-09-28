@@ -5,7 +5,9 @@ local files = require("neoagent.files")
 local M = {}
 
 ---@class Neoagent.ImageRequest
----@field stream fun(transport: Neoagent.HttpClient, plan: Neoagent.RequestPlan, dependencies: Neoagent.StreamOptions, options: Neoagent.RequestStreamOptions): Neoagent.Run<Neoagent.HttpResult, nil>
+---@field stream fun(transport: Neoagent.HttpClient, plan: Neoagent.RequestPlan, dependencies: Neoagent.RequestDependencies, options: Neoagent.RequestStreamOptions): Neoagent.Run<Neoagent.HttpResult, nil>
+
+---@alias Neoagent.RequestDependencies Neoagent.StreamOptions|Neoagent.NativeCompactionOptions
 
 ---@class Neoagent.RequestStreamOptions
 ---@field on_event fun(value: Neoagent.JsonValue)
@@ -24,12 +26,13 @@ end
 
 ---@param transport Neoagent.HttpClient
 ---@param plan Neoagent.RequestPlan
----@param dependencies Neoagent.StreamOptions
+---@param dependencies Neoagent.RequestDependencies
 ---@param options Neoagent.RequestStreamOptions
 ---@param images? Neoagent.ImageRequest
 ---@return Neoagent.Run<Neoagent.HttpResult, nil>
 function M.send(transport, plan, dependencies, options, images)
   return async.run(function()
+    require("neoagent.api.request_preparation").validate_execution(dependencies, plan)
     local published, err = files.check_messages(dependencies.files, plan.messages)
     if not published then
       error(err, 0)

@@ -12,6 +12,24 @@ local function stored_entry(id)
 end
 
 describe("neoagent.session", function()
+  it("propagates unavailable journal paths without inventing context or checkpoints", function()
+    local session = assert(Session.new())
+    assert(session:append({ role = "user", content = "History" }))
+    local failure = { kind = "session", message = "Journal path unavailable" }
+    session.path = function() return nil, failure end
+    local messages, err = session:context_messages()
+    assert.is_nil(messages)
+    assert.are.equal(failure, err)
+    messages, err = session:preview_compaction({ summary = "Summary", tokens_before = 1 })
+    assert.is_nil(messages)
+    assert.are.equal(failure, err)
+    local identity
+    identity, err = session:checkpoint_identity()
+    assert.is_nil(identity)
+    assert.are.equal(failure, err)
+    assert.are.equal(1, #session:entries())
+  end)
+
   it("rejects branches and compactions targeting unknown entries", function()
     local session = assert(Session.new())
     local ok, err = session:move_to("missing")
@@ -125,6 +143,28 @@ describe("neoagent.session", function()
     assert.is_nil(ok)
     assert.matches("unsupported message state field", tostring(assert(err).detail))
     assert.are.equal(2, #session:entries())
+  end)
+
+  it("restores a manually compacted Model from its native checkpoint", function()
+    local session = assert(Session.new())
+    local _, _, previous = session:append({ role = "user", content = "Earlier request" }, {
+      model = { provider = "codex", model = "model-a" }, thinking_level = "high",
+    })
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "Earlier answer" } },
+      provider = "codex", model = "model-a" }))
+    local _, _, checkpoint = session:append_compaction({
+      native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+        model = "model-b", encrypted_content = "synthetic-checkpoint" },
+      retained_users = {}, tokens_before = 100,
+    })
+    assert(checkpoint)
+    assert.are.same({ provider = "codex", model = "model-b" }, assert(session:state()).model)
+    assert.are.equal("high", assert(session:state()).thinking_level)
+    assert(session:move_to(assert(previous).id))
+    assert.are.same({ provider = "codex", model = "model-a" }, assert(session:state()).model)
+    assert(session:move_to(checkpoint.id))
+    assert.are.same({ provider = "codex", model = "model-b" }, assert(session:state()).model)
+    assert.are.same(assert(session:state()), require("neoagent.session_tree").state(assert(session:path())))
   end)
 
   it("clears thinking state only through an explicit tombstone", function()
@@ -477,7 +517,9 @@ describe("neoagent.session", function()
     assert.are.equal("left", assert(assert(assert(session:messages()[2]).content)[1]).text)
     local context = assert(session:context_messages())
     assert.are.equal("one", assert(context[1]).content)
-    assert.are.equal("left", assert(assert(context[2]).content[1]).text)
+    local second = assert(context[2])
+    assert(second.role == "assistant")
+    assert.are.equal("left", assert(assert(second.content)[1]).text)
     assert.are.equal(5, #session:entries())
   end)
 
@@ -518,6 +560,125 @@ describe("neoagent.session", function()
     assert.matches("Entry not found", assert(err).message)
   end)
 
+  it("retains native checkpoints as opaque context across Session storage and resume", function()
+    local directory = vim.fn.tempname()
+    local store = require("neoagent.storage").new({ directory = directory, cwd = directory })
+    local session = assert(Session.new({ store = store }))
+    assert(session:append({ role = "user", content = "earlier" }))
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "work" } } }))
+    local _, _, recent = session:append({ role = "user", content = "continue" })
+    local native = {
+      role = "nativeCompaction", api = "openai-codex-responses",
+      provider = "openai-codex", model = "gpt-test",
+      encrypted_content = "synthetic-encrypted-payload", id = "compaction-1",
+    }
+    assert(session:append_compaction({
+      native = native,
+      retained_users = { { entry_id = assert(recent).id } }, tokens_before = 100,
+    }))
+    local context = assert(session:context_messages())
+    assert.are.equal("continue", assert(context[1]).content)
+    assert.are.same(native, context[2])
+    local transcript = session:messages()
+    assert.are.equal("compactionCheckpoint", assert(transcript[#transcript]).role)
+    assert.is_nil(rawget(assert(transcript[#transcript]), "summary"))
+    assert.is_nil(rawget(assert(transcript[#transcript]), "native"))
+    assert.is_nil(rawget(assert(transcript[#transcript]), "encrypted_content"))
+    local rejected, reject_err = session:append_compaction({
+      summary = "fabricated summary", native = native,
+      retained_users = { { entry_id = assert(recent).id } }, tokens_before = 100,
+    })
+    assert.is_nil(rejected)
+    assert.matches("cannot contain a summary", tostring(assert(reject_err).detail))
+
+    local reopened_store = assert(require("neoagent.storage").open(
+      store:metadata().path,
+      store:workspace_storage()
+    ))
+    local reopened = assert(Session.new({ store = reopened_store }))
+    assert.are.same(context, assert(reopened:context_messages()))
+    assert.are.equal(4, #reopened:entries())
+    vim.fn.delete(directory, "rf")
+  end)
+
+  it("projects selected user requests before a native checkpoint without replaying tool history", function()
+    local session = assert(Session.new())
+    local _, _, first = session:append({ role = "user", content = "Original requirement" })
+    local _, _, assistant = session:append({ role = "assistant", content = { {
+      type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+    } }, stopReason = "toolUse" })
+    assert(session:append({
+      role = "toolResult", toolCallId = "inspect-1", toolName = "inspect",
+      content = { { type = "text", text = string.rep("large output ", 100) } },
+    }))
+    local _, _, recent = session:append({ role = "user", content = "Latest requirement" })
+    local native = {
+      role = "nativeCompaction", api = "openai-codex-responses",
+      provider = "openai-codex", model = "gpt-test", encrypted_content = "synthetic-ciphertext",
+    }
+    for _, ids in ipairs({
+      { assert(assistant).id },
+      { assert(recent).id, assert(first).id },
+      { assert(first).id, assert(first).id },
+      { "missing" },
+    }) do
+      local saved, err = session:append_compaction({
+        native = native,
+        retained_users = vim.tbl_map(function(id) return { entry_id = id } end, ids), tokens_before = 500,
+      })
+      assert.is_nil(saved)
+      assert.matches("native compaction retained", tostring(assert(err).detail))
+    end
+    for _, retained in ipairs({
+      { entry_id = assert(first).id, text_chars = -1 },
+      { entry_id = assert(first).id, text_chars = 1.5 },
+      { entry_id = assert(first).id, unsupported = true },
+      { entry_id = "unsafe\nentry" },
+    }) do
+      local saved, err = session:append_compaction({ native = native,
+        retained_users = { retained }, tokens_before = 500 })
+      assert.is_nil(saved)
+      assert.matches("native compaction retained", tostring(assert(err).detail))
+    end
+    assert(session:append_compaction({
+      native = native,
+      retained_users = { { entry_id = assert(first).id }, { entry_id = assert(recent).id } }, tokens_before = 500,
+    }))
+    assert.are.same({ "user", "user", "nativeCompaction" }, vim.tbl_map(function(message)
+      return message.role
+    end, assert(session:context_messages())))
+    assert.are.equal("Latest requirement", assert(assert(session:context_messages())[2]).content)
+    assert.are.equal(5, #session:entries())
+    local replaced, replace_err = session:append_compaction({
+      summary = "Unsafe local summary", first_kept_entry_id = assert(recent).id, tokens_before = 10,
+    })
+    assert.is_nil(replaced)
+    assert.matches("encrypted checkpoint", tostring(assert(replace_err).detail))
+    assert.are.equal("nativeCompaction", assert(assert(session:context_messages())[3]).role)
+  end)
+
+  it("persists a native checkpoint with no retained user requests", function()
+    local directory = vim.fn.tempname()
+    local store = require("neoagent.storage").new({ directory = directory, cwd = directory })
+    local session = assert(Session.new({ store = store }))
+    assert(session:append({ role = "user", content = string.rep("large prompt ", 200) }))
+    local native = {
+      role = "nativeCompaction", api = "openai-codex-responses",
+      provider = "openai-codex", model = "gpt-test", encrypted_content = "synthetic-ciphertext",
+    }
+    assert(session:append_compaction({
+      native = native,
+      retained_users = {}, tokens_before = 500,
+    }))
+    assert.are.same({ native }, assert(session:context_messages()))
+    local reopened_store = assert(require("neoagent.storage").open(
+      store:metadata().path, store:workspace_storage()
+    ))
+    local reopened = assert(Session.new({ store = reopened_store }))
+    assert.are.same({ native }, assert(reopened:context_messages()))
+    vim.fn.delete(directory, "rf")
+  end)
+
   it("rejects protected compaction fields identically with a Store", function()
     for _, field in ipairs({ "type", "id", "parent_id", "created_at" }) do
       local directory = vim.fn.tempname()
@@ -554,6 +715,27 @@ describe("neoagent.session", function()
       assert.matches("protected field " .. field, tostring(assert(memory_err).detail))
       vim.fn.delete(directory, "rf")
     end
+  end)
+
+  it("persists a local checkpoint with no retained suffix", function()
+    local directory = vim.fn.tempname()
+    local store = require("neoagent.storage").new({ directory = directory, cwd = directory })
+    local session = assert(Session.new({ store = store }))
+    assert(session:append({ role = "user", content = "Question" }))
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "Answer" } } }))
+    assert(session:append_compaction({ summary = "Question and answer", tokens_before = 100 }))
+    local context = assert(session:context_messages())
+    assert.are.equal(1, #context)
+    assert.matches("Question and answer", assert(assert(assert(assert(context[1]).content)[1]).text))
+    assert.are.equal(3, #session:messages())
+
+    local reopened_store = assert(require("neoagent.storage").open(
+      store:metadata().path, store:workspace_storage()
+    ))
+    local reopened = assert(Session.new({ store = reopened_store }))
+    assert.are.same(context, assert(reopened:context_messages()))
+    assert.are.equal(3, #reopened:messages())
+    vim.fn.delete(directory, "rf")
   end)
 
   it("delegates the optional tree API to a capable store", function()

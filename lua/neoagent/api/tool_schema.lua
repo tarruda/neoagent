@@ -2,6 +2,21 @@ local util = require("neoagent.util")
 
 local M = {}
 
+-- Model-facing definitions never retain executable or presentation state.
+---@param tools Neoagent.ToolDefinition[]
+---@return Neoagent.ToolDefinition[]
+function M.definitions(tools)
+  local result = {}
+  for _, tool in ipairs(tools) do
+    result[#result + 1] = {
+      name = tool.name,
+      description = tool.description,
+      input_schema = util.copy(tool.input_schema),
+    }
+  end
+  return result
+end
+
 ---@alias Neoagent.SchemaType 'array'|'boolean'|'integer'|'null'|'number'|'object'|'string'
 
 ---@class Neoagent.ToolSchema

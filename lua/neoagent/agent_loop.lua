@@ -1,9 +1,27 @@
+local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local semantic_message = require("neoagent.semantic_message")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
 local M = {}
+
+---@param model Neoagent.Model
+---@param messages unknown
+---@param files? Neoagent.Files
+---@return Neoagent.RequestMessage[]?, Neoagent.Error?
+function M.validate_request_messages(model, messages, files)
+  local normalized, message_err = semantic_message.normalize_request_list(messages)
+  if not normalized then
+    return nil, util.error("context", "Invalid prepared request messages", message_err)
+  end
+  local compatible, compatibility_err = require("neoagent.model").compatible_context(model, normalized)
+  if not compatible then
+    return nil, util.normalize_error(compatibility_err, "model")
+  end
+  require("neoagent.model").require_files({ messages = normalized, files = files })
+  return normalized
+end
 
 ---@class Neoagent.Tool<C>: Neoagent.ToolDefinition
 ---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
@@ -40,6 +58,8 @@ local M = {}
 ---@alias Neoagent.MessageCommit fun(message: Neoagent.Message): boolean?, unknown?, Neoagent.ObservedMessage?
 ---@alias Neoagent.SteeringAcknowledgement fun(committed: boolean, observation?: Neoagent.ObservedMessage)
 ---@alias Neoagent.SteeringMessages fun(): Neoagent.UserMessage[], Neoagent.SteeringAcknowledgement?
+---@alias Neoagent.RequestAcknowledgement fun()
+---@alias Neoagent.PrepareRequestMessages async fun(messages: Neoagent.RequestMessage[], options: Neoagent.StreamOptions): Neoagent.RequestMessage[]?, Neoagent.Error?, Neoagent.RequestAcknowledgement?
 
 ---@class Neoagent.MessageEndEvent
 ---@field type "message_end"
@@ -80,18 +100,19 @@ local M = {}
 
 ---@class Neoagent.AgentLoopOptions<C>: Neoagent.RunOptions<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
 ---@field model Neoagent.Model
----@field messages Neoagent.Message[]
+---@field messages Neoagent.RequestMessage[]
 ---@field system_prompt? string
 ---@field tools? Neoagent.Tool<C>[]
 ---@field execute_tool? Neoagent.ToolExecutor<C>
 ---@field context? C
 ---@field model_options? Neoagent.StreamOverrides
 ---@field get_steering_messages? Neoagent.SteeringMessages
+---@field prepare_request_messages? Neoagent.PrepareRequestMessages
 ---@field commit_message Neoagent.MessageCommit
 
 ---@class Neoagent.PreparedAgentLoop<C>: Neoagent.RunOptions<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
 ---@field model Neoagent.Model
----@field messages Neoagent.Message[]
+---@field messages Neoagent.RequestMessage[]
 ---@field system_prompt? string
 ---@field context? C
 ---@field commit_message Neoagent.MessageCommit
@@ -101,6 +122,7 @@ local M = {}
 ---@field execute_tool Neoagent.ToolExecutor<C>
 ---@field model_options Neoagent.StreamOverrides
 ---@field get_steering_messages Neoagent.SteeringMessages
+---@field prepare_request_messages? Neoagent.PrepareRequestMessages
 
 ---@generic C
 ---@param tool Neoagent.Tool<C>
@@ -139,21 +161,6 @@ local tool_fields = {
   current = true,
   render = true,
 }
-
----@generic C
----@param tools Neoagent.Tool<C>[]
----@return Neoagent.ToolDefinition[]
-local function schemas(tools)
-  local result = {}
-  for _, tool in ipairs(tools) do
-    result[#result + 1] = {
-      name = tool.name,
-      description = tool.description,
-      input_schema = util.copy(tool.input_schema),
-    }
-  end
-  return result
-end
 
 ---@generic C
 ---@param tools Neoagent.Tool<C>[]
@@ -209,14 +216,11 @@ end
 function M.prepare(opts)
   opts = opts or {}
   assert(type(opts.model) == "table" and type(opts.model.stream) == "function", "model is required")
-  local messages, message_err = semantic_message.normalize_list(opts.messages)
-  assert(messages, message_err)
   assert(opts.system_prompt == nil or type(opts.system_prompt) == "string", "system_prompt must be a string")
   assert(opts.model_options == nil or object(opts.model_options), "model_options must be an object")
-  require("neoagent.model").require_files({
-    messages = messages,
-    files = opts.model_options and opts.model_options.files,
-  })
+  local messages, message_err =
+    M.validate_request_messages(opts.model, opts.messages, opts.model_options and opts.model_options.files)
+  assert(messages, message_err)
   assert(opts.on_event == nil or type(opts.on_event) == "function", "on_event must be a function")
   assert(opts.on_done == nil or type(opts.on_done) == "function", "on_done must be a function")
   assert(opts.report == nil or type(opts.report) == "function", "report must be a function")
@@ -225,18 +229,23 @@ function M.prepare(opts)
     return {}
   end
   assert(type(steering) == "function", "get_steering_messages must be a function")
+  assert(
+    opts.prepare_request_messages == nil or type(opts.prepare_request_messages) == "function",
+    "prepare_request_messages must be a function"
+  )
   local toolset = M.validate_toolset(opts.tools or {}, opts.execute_tool)
   return {
     model = opts.model,
     messages = messages,
     system_prompt = opts.system_prompt,
     tools = toolset.tools,
-    tool_schemas = schemas(toolset.tools),
+    tool_schemas = tool_schema.definitions(toolset.tools),
     tool_lookup = toolset.lookup,
     execute_tool = toolset.execute_tool,
     context = opts.context,
     model_options = util.copy(opts.model_options or {}),
     get_steering_messages = steering,
+    prepare_request_messages = opts.prepare_request_messages,
     commit_message = opts.commit_message,
     on_event = opts.on_event,
     on_done = opts.on_done,
@@ -268,6 +277,30 @@ local function tool_calls(message)
     end
   end
   return result
+end
+
+---@param message Neoagent.AssistantMessage
+---@return boolean
+local function has_visible_text(message)
+  return util.trim(util.text_content(message.content)) ~= ""
+end
+
+---@param message Neoagent.AssistantMessage
+---@return boolean
+local function thinking_only_stop(message)
+  if message.stopReason ~= "stop" or has_visible_text(message) then
+    return false
+  end
+  local has_thinking = false
+  for _, block in ipairs(message.content) do
+    if
+      block.type == "thinking"
+      and (block.thinking ~= "" or block.thinkingSignature and block.thinkingSignature ~= "" or block.redacted)
+    then
+      has_thinking = true
+    end
+  end
+  return has_thinking
 end
 
 ---@param err unknown
@@ -316,20 +349,23 @@ function M.run(opts)
       local last_message
       ---@type table<string, boolean>
       local seen_calls = {}
-      ---@type table<string, string>
-      local pending_calls = {}
-      for _, message in ipairs(working) do
-        if message.role == "assistant" then
-          for _, block in ipairs(message.content) do
-            if block.type == "toolCall" then
-              seen_calls[block.id] = true
-              pending_calls[block.id] = block.name
+      local retrying_thinking_stop = false
+      local recovering_model = false
+      ---@param messages Neoagent.RequestMessage[]
+      local function call_ids(messages)
+        local ids = {}
+        for _, message in ipairs(messages) do
+          if message.role == "assistant" then
+            for _, block in ipairs(message.content) do
+              if block.type == "toolCall" then
+                ids[block.id] = true
+              end
             end
           end
-        elseif message.role == "toolResult" then
-          pending_calls[message.toolCallId] = nil
         end
+        return ids
       end
+      seen_calls = call_ids(working)
 
       ---@param message unknown
       ---@param expected_role "assistant"|"user"|"toolResult"
@@ -361,11 +397,8 @@ function M.run(opts)
           for _, block in ipairs(normalized.content) do
             if block.type == "toolCall" then
               seen_calls[block.id] = true
-              pending_calls[block.id] = block.name
             end
           end
-        elseif normalized.role == "toolResult" then
-          pending_calls[normalized.toolCallId] = nil
         end
         working[#working + 1] = normalized
         generated[#generated + 1] = normalized
@@ -464,134 +497,8 @@ function M.run(opts)
         }
       end
 
-      while true do
-        local model_opts = util.copy(prepared.model_options)
-        ---@cast model_opts Neoagent.StreamOptions
-        model_opts.messages = util.copy(working)
-        model_opts.system_prompt = prepared.system_prompt
-        model_opts.tools = util.copy(prepared.tool_schemas)
-        model_opts.on_event = function(event)
-          run:emit(event)
-        end
-        local model_run = prepared.model:stream(model_opts)
-        local model_result = model_run:await()
-        if not model_result.ok then
-          if model_result.message then
-            local commit_err, candidate
-            last_message, commit_err, candidate = commit(model_result.message, "assistant", "model")
-            if not last_message then
-              return commit_failure(candidate, commit_err)
-            end
-          end
-          return {
-            ok = false,
-            new_messages = generated,
-            message = last_message,
-            error = model_result.error,
-          }
-        end
-
-        local commit_err, candidate
-        last_message, commit_err, candidate = commit(model_result.message, "assistant", "model")
-        if not last_message then
-          return commit_failure(candidate, commit_err)
-        end
-        ---@cast last_message Neoagent.AssistantMessage
-        local calls = tool_calls(last_message)
-        for _, call in ipairs(calls) do
-          run:emit({ type = "tool_start", call = util.copy(call) })
-          ---@type Neoagent.ToolResult
-          local result
-          local tool = lookup[call.name]
-          if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
-            result = error_result(util.error("tool", call.argumentsError))
-          elseif not tool then
-            result = error_result(util.error("tool", "Unknown tool: " .. tostring(call.name)))
-          else
-            local valid_arguments, arguments_error, arguments = validate_arguments(tool, call.arguments)
-            if not valid_arguments then
-              result = error_result(util.error("tool", arguments_error))
-            else
-              local active = true
-              ---@param update Neoagent.ToolResult
-              local function on_update(update)
-                if not active or run:is_cancelled() or run:is_done() then
-                  return
-                end
-                local valid, normalized = pcall(validate_tool_result, update, true)
-                if valid then
-                  run:emit({ type = "tool_update", call = util.copy(call), result = util.copy(normalized) })
-                end
-              end
-              ---@type Neoagent.ToolContext<C>
-              local ctx = {
-                model = prepared.model,
-                run = run,
-                execute_tool = execute,
-                context = prepared.context,
-                call = util.copy(call),
-                on_update = on_update,
-              }
-              ctx.call.arguments = util.copy(arguments)
-              local executed, value = pcall(function()
-                return execute(tool, util.copy(arguments), ctx)
-              end)
-              active = false
-              if executed then
-                local valid, normalized = pcall(validate_tool_result, value)
-                if valid then
-                  -- Returning a final result acknowledges completed work.
-                  -- Commit it before cancellation stops further observation.
-                  result = normalized
-                elseif run:is_cancelled() then
-                  error(async.cancelled_error, 0)
-                else
-                  result = error_result(normalized)
-                end
-              elseif run:is_cancelled() then
-                error(async.cancelled_error, 0)
-              else
-                local err = util.normalize_error(value, "tool")
-                if err.kind == "cancelled" then
-                  error(err, 0)
-                end
-                result = error_result(err)
-              end
-            end
-          end
-
-          ---@type Neoagent.ToolResultMessage
-          local message = {
-            role = "toolResult",
-            toolCallId = call.id,
-            toolName = call.name,
-            content = util.copy(result.content),
-            isError = result.isError == true or result.is_error == true,
-            timestamp = util.now_ms(),
-          }
-          if result.details ~= nil then
-            message.details = util.copy(result.details)
-          end
-          if result.execution ~= nil then
-            message.execution = util.copy(result.execution)
-          end
-          if result.usage ~= nil then
-            message.usage = util.copy(result.usage)
-          end
-          local committed
-          committed, commit_err, candidate = commit(message, "toolResult", "tool", function(observed)
-            ---@cast observed Neoagent.ObservedToolResultMessage
-            run:emit({
-              type = "tool_end",
-              call = util.copy(call),
-              message = util.copy(observed),
-            })
-          end)
-          if not committed then
-            return commit_failure(candidate, commit_err)
-          end
-        end
-
+      ---@return integer, Neoagent.AgentLoopFailure?
+      local function commit_steering()
         local steering, acknowledge = get_steering_messages()
         assert(type(steering) == "table" and util.is_list(steering), "get_steering_messages must return a list")
         assert(
@@ -603,48 +510,273 @@ function M.run(opts)
         local acknowledged = false
         ---@param committed boolean
         ---@param observation? Neoagent.ObservedMessage
-        ---@return boolean
-        local function settle_steering(committed, observation)
+        local function settle(committed, observation)
           if not acknowledge or acknowledged then
-            return true
+            return
           end
           acknowledged = true
           local ok, err = pcall(acknowledge, committed, observation)
           if not ok then
             error(util.normalize_error(err, "session"), 0)
           end
-          return true
         end
         for _, message in ipairs(steering) do
-          local called, committed
-          called, committed, commit_err, candidate = pcall(
+          local called, committed, commit_err, candidate = pcall(
             commit,
             message,
             "user",
             "message",
             nil,
             function(observation)
-              return settle_steering(true, observation)
+              settle(true, observation)
             end
           )
           if not called then
-            settle_steering(false)
+            settle(false)
             error(committed, 0)
           end
           if not committed then
-            settle_steering(false)
-            ---@cast commit_err Neoagent.Error
-            return commit_failure(candidate, commit_err)
+            settle(false)
+            return 0, commit_failure(candidate, util.normalize_error(commit_err, "session"))
           end
         end
+        return #steering
+      end
 
-        if #calls == 0 and #steering == 0 then
-          return {
-            ok = true,
-            new_messages = generated,
-            message = last_message,
-            text = util.text_content(last_message.content),
-          }
+      ---@async
+      ---@param model_opts Neoagent.StreamOptions
+      ---@return Neoagent.AgentLoopFailure?, Neoagent.RequestAcknowledgement?
+      local function prepare_request(model_opts)
+        model_opts.messages = util.copy(working)
+        local replacement, err, acknowledge =
+          assert(prepared.prepare_request_messages)(util.copy(working), request_preparation.copy(model_opts))
+        if run:is_cancelled() then
+          return commit_failure(nil, async.cancelled_error)
+        end
+        if not replacement then
+          return commit_failure(nil, util.normalize_error(err, "context"))
+        end
+        local normalized, message_err =
+          M.validate_request_messages(prepared.model, replacement, prepared.model_options.files)
+        if not normalized then
+          return commit_failure(nil, assert(message_err))
+        end
+        assert(
+          acknowledge == nil or type(acknowledge) == "function",
+          "prepare_request_messages acknowledgement must be a function"
+        )
+        working = normalized
+        seen_calls = call_ids(working)
+        return nil, acknowledge
+      end
+
+      while true do
+        local model_opts = request_preparation.copy(prepared.model_options)
+        ---@cast model_opts Neoagent.StreamOptions
+        model_opts._preparation = request_preparation.new()
+        model_opts.system_prompt = prepared.system_prompt
+        model_opts.tools = util.copy(prepared.tool_schemas)
+        local acknowledge
+        if prepared.prepare_request_messages then
+          local _, steering_err = commit_steering()
+          if steering_err then
+            return steering_err
+          end
+          if run:is_cancelled() then
+            return commit_failure(nil, async.cancelled_error)
+          end
+          local prepare_err
+          prepare_err, acknowledge = prepare_request(model_opts)
+          if prepare_err then
+            return prepare_err
+          end
+          local additional, additional_err = commit_steering()
+          if additional_err then
+            return additional_err
+          end
+          if additional > 0 then
+            prepare_err, acknowledge = prepare_request(model_opts)
+            if prepare_err then
+              return prepare_err
+            end
+          end
+        end
+        if run:is_cancelled() then
+          return commit_failure(nil, async.cancelled_error)
+        end
+        model_opts.messages = util.copy(working)
+        model_opts.on_event = function(event)
+          run:emit(event)
+        end
+        if acknowledge then
+          acknowledge()
+          if run:is_cancelled() then
+            return commit_failure(nil, async.cancelled_error)
+          end
+        end
+        local model_run = prepared.model:stream(model_opts)
+        local model_result = require("neoagent.model").await_result(model_run)
+        if not model_result.ok then
+          if model_result.message then
+            local commit_err, candidate
+            last_message, commit_err, candidate = commit(model_result.message, "assistant", "model")
+            if not last_message then
+              return commit_failure(candidate, commit_err)
+            end
+          end
+          local recovery = model_result.recovery
+          if not recovery or recovering_model or not model_result.message or run:is_cancelled() then
+            return {
+              ok = false,
+              new_messages = generated,
+              message = last_message,
+              error = assert(model_result.error),
+            }
+          end
+          assert(type(recovery.warning) == "string", "Model recovery warning must be a string")
+          run:emit({ type = "warning", message = recovery.warning })
+          local committed, commit_err, candidate = commit(recovery.message, "user", "recovery")
+          if not committed then
+            return commit_failure(candidate, commit_err)
+          end
+          recovering_model = true
+        else
+          local commit_err, candidate
+          last_message, commit_err, candidate = commit(model_result.message, "assistant", "model")
+          if not last_message then
+            return commit_failure(candidate, commit_err)
+          end
+          ---@cast last_message Neoagent.AssistantMessage
+          local calls = tool_calls(last_message)
+          if
+            recovering_model
+            and #calls == 0
+            and not has_visible_text(last_message)
+            and last_message.stopReason ~= "length"
+          then
+            return commit_failure(
+              last_message,
+              util.error("model", "Model recovery produced no visible answer or tool call")
+            )
+          end
+          recovering_model = false
+          for _, call in ipairs(calls) do
+            run:emit({ type = "tool_start", call = util.copy(call) })
+            ---@type Neoagent.ToolResult
+            local result
+            local tool = lookup[call.name]
+            if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
+              result = error_result(util.error("tool", call.argumentsError))
+            elseif not tool then
+              result = error_result(util.error("tool", "Unknown tool: " .. tostring(call.name)))
+            else
+              local valid_arguments, arguments_error, arguments = validate_arguments(tool, call.arguments)
+              if not valid_arguments then
+                result = error_result(util.error("tool", arguments_error))
+              else
+                local active = true
+                ---@param update Neoagent.ToolResult
+                local function on_update(update)
+                  if not active or run:is_cancelled() or run:is_done() then
+                    return
+                  end
+                  local valid, normalized = pcall(validate_tool_result, update, true)
+                  if valid then
+                    run:emit({ type = "tool_update", call = util.copy(call), result = util.copy(normalized) })
+                  end
+                end
+                ---@type Neoagent.ToolContext<C>
+                local ctx = {
+                  model = prepared.model,
+                  run = run,
+                  execute_tool = execute,
+                  context = prepared.context,
+                  call = util.copy(call),
+                  on_update = on_update,
+                }
+                ctx.call.arguments = util.copy(arguments)
+                local executed, value = pcall(function()
+                  return execute(tool, util.copy(arguments), ctx)
+                end)
+                active = false
+                if executed then
+                  local valid, normalized = pcall(validate_tool_result, value)
+                  if valid then
+                    -- Returning a final result acknowledges completed work.
+                    -- Commit it before cancellation stops further observation.
+                    result = normalized
+                  elseif run:is_cancelled() then
+                    error(async.cancelled_error, 0)
+                  else
+                    result = error_result(normalized)
+                  end
+                elseif run:is_cancelled() then
+                  error(async.cancelled_error, 0)
+                else
+                  local err = util.normalize_error(value, "tool")
+                  if err.kind == "cancelled" then
+                    error(err, 0)
+                  end
+                  result = error_result(err)
+                end
+              end
+            end
+
+            ---@type Neoagent.ToolResultMessage
+            local message = {
+              role = "toolResult",
+              toolCallId = call.id,
+              toolName = call.name,
+              content = util.copy(result.content),
+              isError = result.isError == true or result.is_error == true,
+              timestamp = util.now_ms(),
+            }
+            if result.details ~= nil then
+              message.details = util.copy(result.details)
+            end
+            if result.execution ~= nil then
+              message.execution = util.copy(result.execution)
+            end
+            if result.usage ~= nil then
+              message.usage = util.copy(result.usage)
+            end
+            local committed
+            committed, commit_err, candidate = commit(message, "toolResult", "tool", function(observed)
+              ---@cast observed Neoagent.ObservedToolResultMessage
+              run:emit({
+                type = "tool_end",
+                call = util.copy(call),
+                message = util.copy(observed),
+              })
+            end)
+            if not committed then
+              return commit_failure(candidate, commit_err)
+            end
+          end
+
+          local count, steering_failure = commit_steering()
+          if steering_failure then
+            return steering_failure
+          end
+          if retrying_thinking_stop then
+            if #calls == 0 and not has_visible_text(last_message) and last_message.stopReason ~= "length" then
+              return commit_failure(last_message, util.error("model", "Model stopped during reasoning after one retry"))
+            end
+            retrying_thinking_stop = false
+          end
+          if #calls == 0 and thinking_only_stop(last_message) then
+            retrying_thinking_stop = true
+          end
+          if #calls == 0 and count == 0 then
+            if not retrying_thinking_stop then
+              return {
+                ok = true,
+                new_messages = generated,
+                message = last_message,
+                text = util.text_content(last_message.content),
+              }
+            end
+          end
         end
       end
     end,

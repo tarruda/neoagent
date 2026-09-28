@@ -384,6 +384,7 @@ end
 ---@field applet? Neoagent.NeoagentApplet
 ---@field draft? Neoagent.AgentApplet
 ---@field config? Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@field label? string
 
 ---@param create_draft boolean?
 ---@return Neoagent.SandboxTarget
@@ -400,7 +401,7 @@ local function sandbox_target(create_draft)
   local selected = applet:selected_applet()
   local profile_id = selected and selected.profile or applet.default_profile
   local profile = profile_id and applet:profile(profile_id) or nil
-  if not profile or profile.id ~= "neo" then
+  if not profile or not profile.sandbox_controls then
     return {}
   end
   if not selected then
@@ -417,6 +418,7 @@ local function sandbox_target(create_draft)
     applet = applet,
     draft = selected,
     config = configured,
+    label = profile.label,
   }
 end
 
@@ -436,7 +438,8 @@ function M.set_sandbox_enabled(enabled)
       end
       local status = { enabled = enabled, active = false }
       M.notify(
-        enabled and "sandbox will be enabled for the next Neo Agent" or "sandbox disabled; tools execute on the host",
+        enabled and "sandbox will be enabled for the next " .. assert(target.label) .. " Agent"
+          or "sandbox disabled; tools execute on the host",
         vim.log.levels.INFO
       )
       return status
