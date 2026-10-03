@@ -21,6 +21,16 @@ Update this guide when the development workflow or a hard invariant changes.
 - Keep bundled effects in their Tool modules with explicit dependencies.
   Tools do not select their execution location. Parent-only Tools stay out
   of RPC.
+- Keep the local subprocess API independent of sandboxing, RPC, Tools, and UI.
+  Process supervision uses Neovim/libuv and the native process helpers; it
+  does not introduce an interpreter or a per-target worker process.
+  Retained spawning requires an explicit scope that owns failed-start cleanup.
+  WorkerLeases share native pipe ownership with local handles. Failed native
+  worker startup returns its lease; readiness and cleanup remain independently
+  observable. Driver state observation must not wait for process or I/O completion.
+  Native PTYs share bounded stream ownership with pipes. The macOS fork child
+  must only perform prepared native setup and exec or _exit; it must never
+  return to editor execution or run inherited hooks or finalizers.
 - Keep Tool worker dependencies free of Agent, Session, provider,
   authentication, Applet, and UI modules.
 - Support metered and subscription access when the provider documents a
@@ -39,7 +49,8 @@ Architecture is the canonical ownership reference. Changes must preserve:
   credential refresh cannot authorize unbudgeted request content.
 - Cancellation through Models, tools, child Runs, provider leases, and
   deferred destruction; completion and disposal once; stale callbacks unable
-  to mutate newer state.
+  to mutate newer state. Detached cleanup retains a diagnostic recipient after
+  Run completion.
 - Tool-free Sessions and fixed Profile, Workspace, and Session identity per
   Agent, with one independent activity lifecycle.
 - Local compaction never replaces encrypted native context. Native checkpoints
