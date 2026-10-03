@@ -6,7 +6,7 @@ local M = {}
 ---@param callbacks Neoagent.SubprocessCallbacks
 ---@return Neoagent.SubprocessDriver
 function M.new(spec, env, callbacks)
-  local name = ({ Linux = "linux", OSX = "darwin" })[jit.os]
+  local name = ({ Linux = "linux", OSX = "darwin", Windows = "windows" })[jit.os]
   if not name then
     error(validate.error("pty_unavailable", "Unsupported native PTY platform: " .. jit.os), 0)
   end

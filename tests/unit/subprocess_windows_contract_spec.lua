@@ -4,6 +4,66 @@ local helper = require("tests.helpers.subprocess")
 -- Exercise Lua boundary decisions with native services injected internally.
 -- Actual Windows lookup and Unicode mapping run in tests/windows.
 describe("Windows subprocess boundary rules", function()
+  it("releases reserved console work when native Job creation fails", function()
+    local subprocess = require("neoagent.subprocess_common")
+    local pty = require("neoagent.subprocess.pty")
+    local trees = require("neoagent.process.windows")
+    local native = require("ffi")
+    local module = "neoagent.subprocess.windows_pty"
+    local original_module, original_ffi = package.loaded[module], package.loaded.ffi
+    local original_pty, original_tree, new_work = pty.new, trees.new, vim.uv.new_work
+    local owner = subprocess.scope()
+    ---@type table<integer, uv.luv_work_ctx_t>
+    local contexts = setmetatable({}, { __mode = "v" })
+    local created = 0
+    local ok, failure = pcall(function()
+      -- Only availability is checked before the injected Job allocation
+      -- failure. Keep the real FFI allocation and real luv work context.
+      package.loaded.ffi = setmetatable({
+        cdef = function() end,
+        load = function()
+          return {
+            CreatePseudoConsole = function()
+              error("unexpected terminal allocation")
+            end,
+          }
+        end,
+      }, { __index = native })
+      package.loaded[module] = nil
+      pty.new = require(module).new
+      package.loaded.ffi = original_ffi
+      trees.new = function()
+        return nil, "injected Job allocation failure"
+      end
+      vim.uv.new_work = function(work, completed)
+        local context = new_work(work, completed)
+        created = created + 1
+        contexts[created] = context
+        return context
+      end
+      assert.are.equal(
+        "process_start",
+        helper.failure(function()
+          owner:spawn(helper.spec("unused", { stdio = { kind = "pty", columns = 80, rows = 24 } }))
+        end).code
+      )
+      assert.are.equal(1, created)
+    end)
+    package.loaded.ffi, package.loaded[module] = original_ffi, original_module
+    pty.new, trees.new, vim.uv.new_work = original_pty, original_tree, new_work
+    owner:close("test finished")
+    assert.is_true(helper.complete(function()
+      return owner:wait(2000)
+    end))
+    assert.is_true(ok, vim.inspect(failure))
+    assert.is_true(
+      vim.wait(1000, function()
+        collectgarbage("collect")
+        return next(contexts) == nil
+      end, 10),
+      "failed PTY startup retained its console work context"
+    )
+  end)
 
   it("observes a pipe's native exit before a delayed completion callback", function()
     local windows = require("neoagent.process.windows")
@@ -211,4 +271,189 @@ describe("Windows subprocess boundary rules", function()
     assert.is_true(ok, vim.inspect(err))
   end)
 
+  for _, case in ipairs({
+    {
+      description = "preserves an unpaired UTF-16 surrogate during executable selection",
+      program = "C:/tools/helper\237\160\128.exe",
+      path = "",
+      expected = "C:/tools/helper\237\160\128.exe",
+    },
+    {
+      description = "selects a dangling executable link before a later working PATH candidate",
+      program = "helper",
+      path = "C:/dangling;C:/bin",
+      no_cwd = "1",
+      expected = "C:/dangling/helper.exe",
+    },
+    {
+      description = "preserves native separators in an extended executable path",
+      program = [[\\?\C:\tools\helper.exe]],
+      path = "",
+      expected = [[\\?\C:\tools\helper.exe]],
+    },
+    {
+      description = "joins an extended PATH directory with native separators",
+      program = "helper",
+      path = [[\\?\C:\tools]],
+      no_cwd = "1",
+      expected = [[\\?\C:\tools\helper.exe]],
+    },
+    {
+      description = "keeps a junction-backed cwd lexical during executable lookup",
+      program = "../bin/helper.exe",
+      path = "",
+      resolved_cwd = "D:/physical/project",
+      expected = "C:/work/../bin/helper.exe",
+    },
+    {
+      description = "rejects a lone dot instead of selecting a hidden executable",
+      program = ".",
+      path = "",
+      failure = "process_start",
+    },
+    {
+      description = "appends an executable extension without duplicating a trailing dot",
+      program = "helper.",
+      path = "",
+      expected = "C:/work/helper.exe",
+    },
+    {
+      description = "honors an empty native cwd-search opt-out",
+      program = "helper",
+      path = "C:/bin",
+      no_cwd = "",
+      expected = "C:/bin/helper.exe",
+    },
+    {
+      description = "preserves drive-relative PATH entries",
+      program = "helper",
+      path = "C:",
+      no_cwd = "1",
+      expected = "C:/work/helper.exe",
+    },
+    {
+      description = "roots a drive-less absolute command in the requested cwd drive",
+      program = "/bin/helper.exe",
+      path = "",
+      expected = "C:/bin/helper.exe",
+    },
+    {
+      description = "preserves an explicit different drive's relative command",
+      program = "D:helper.exe",
+      path = "",
+      expected = "D:helper.exe",
+    },
+    {
+      description = "consumes an unmatched double quote through the end of PATH",
+      program = "helper",
+      path = '"C:/missing;C:/bin',
+      no_cwd = "1",
+      failure = "process_start",
+    },
+    {
+      description = "consumes an unmatched single quote through the end of PATH",
+      program = "helper",
+      path = "'C:/missing;C:/bin",
+      no_cwd = "1",
+      failure = "process_start",
+    },
+  }) do
+    it(case.description, function()
+      local regular = assert(vim.uv.fs_stat(vim.fn.exepath(jit.os == "Windows" and "cmd.exe" or "sh")))
+      local platform, no_cwd = jit.os, vim.uv.os_getenv("NoDefaultCurrentDirectoryInExePath")
+      local realpath, stat, exepath = vim.uv.fs_realpath, vim.uv.fs_stat, vim.fn.exepath
+      local native = require("ffi")
+      local module = "neoagent.subprocess.windows_executable"
+      local original_module, original_ffi = package.loaded[module], package.loaded.ffi
+      vim.uv.fs_realpath = function(path)
+        return case.resolved_cwd or path
+      end
+      vim.uv.fs_stat = function(path)
+        if path == [[\\?\C:\tools\helper.exe]] then
+          return regular
+        end
+        path = path:gsub("\\", "/")
+        if
+          vim.tbl_contains({
+            "C:/work/helper.exe",
+            "C:/work/../bin/helper.exe",
+            "D:/physical/project/../bin/helper.exe",
+            "D:helper.exe",
+            "C:/work/helper..exe",
+            "C:/bin/helper.exe",
+            "C:/helper.exe",
+            "C:/work/.com",
+            "C:/work/.exe",
+            "C:/tools/helper\237\160\128.exe",
+          }, path)
+        then
+          return regular
+        end
+      end
+      vim.fn.exepath = function(path)
+        return path
+      end
+      jit.os = "Windows"
+      if case.no_cwd then
+        assert(vim.uv.os_setenv("NoDefaultCurrentDirectoryInExePath", case.no_cwd))
+      else
+        vim.env.NoDefaultCurrentDirectoryInExePath = nil
+      end
+      local ok, err = pcall(function()
+        package.loaded.ffi = setmetatable({
+          load = function()
+            return {
+              GetFileAttributesW = function(buffer)
+                ---@type Neoagent.WindowsWideString
+                local units = buffer
+                local parts = {}
+                for index = 0, assert(native.sizeof(units)) / 2 - 1 do
+                  local unit = units[index]
+                  if unit == 0 then
+                    break
+                  end
+                  parts[#parts + 1] = unit == 0xd800 and "\237\160\128" or string.char(unit)
+                end
+                local path = table.concat(parts)
+                if path:gsub("\\", "/") == "C:/dangling/helper.exe" then
+                  return 0x400 -- FILE_ATTRIBUTE_REPARSE_POINT, without DIRECTORY.
+                end
+                return vim.uv.fs_stat(path) and 0 or 0xffffffff
+              end,
+            }
+          end,
+        }, { __index = native })
+        package.loaded[module] = nil
+        local executable = require(module)
+        package.loaded.ffi = original_ffi
+        local function resolve()
+          return executable.resolve({
+            argv = { case.program },
+            cwd = "C:/work",
+            stdio = { kind = "pty", columns = 80, rows = 24 },
+          }, { PATH = case.path })
+        end
+        if case.failure then
+          assert.are.equal(case.failure, helper.failure(resolve).code)
+        else
+          local selected = resolve()
+          local expected = assert(case.expected)
+          if expected:sub(1, 4) == [[\\?\]] then
+            assert.are.equal(expected, selected)
+          else
+            assert.are.equal(expected, (selected:gsub("\\", "/")))
+          end
+        end
+      end)
+      package.loaded.ffi, package.loaded[module] = original_ffi, original_module
+      jit.os = platform
+      if no_cwd then
+        assert(vim.uv.os_setenv("NoDefaultCurrentDirectoryInExePath", no_cwd))
+      else
+        vim.env.NoDefaultCurrentDirectoryInExePath = nil
+      end
+      vim.uv.fs_realpath, vim.uv.fs_stat, vim.fn.exepath = realpath, stat, exepath
+      assert.is_true(ok, vim.inspect(err))
+    end)
+  end
 end)
