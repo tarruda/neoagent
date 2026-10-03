@@ -67,6 +67,9 @@ local managed = setmetatable({}, { __mode = "k" })
 ---@field _drain_scheduled? boolean
 ---@field _diagnostics Neoagent.AsyncDiagnostic[]
 ---@field _diagnostic_listeners table<fun(diagnostic: Neoagent.AsyncDiagnostic), boolean>
+---@field _diagnostic_holds integer
+---@field _diagnostic_releases fun()[]
+---@field _diagnostic_parents table<Neoagent.Run<unknown, unknown>, boolean>
 ---@field _listeners fun(result: Neoagent.RunResult<T>)[]
 ---@field _cancel_handlers Neoagent.CancelHandler[]
 ---@field _inactive_cancel_handlers integer
@@ -139,6 +142,24 @@ function Run._subscribe_diagnostics(self, listener)
     active = false
     self._diagnostic_listeners[listener] = nil
     return true
+  end
+end
+
+-- Native cleanup can outlive a cancelled coroutine. Its producer retains
+-- diagnostic forwarding separately, then releases it when cleanup settles.
+---@param self Neoagent.Run<unknown, unknown>
+---@return fun() Release this producer once after its final diagnostic.
+function Run._retain_diagnostics(self)
+  self._diagnostic_holds = self._diagnostic_holds + 1
+  return function()
+    self._diagnostic_holds = self._diagnostic_holds - 1
+    if self._diagnostic_holds == 0 then
+      local releases = self._diagnostic_releases
+      self._diagnostic_releases = {}
+      for _, release in ipairs(releases) do
+        release()
+      end
+    end
   end
 end
 
@@ -363,24 +384,31 @@ function Run.await(self)
     parent._children[self] = true
     self._parents[parent] = true
   end
-  local remove_diagnostic_listener
-  if parent ~= self and self._report == nil then
-    remove_diagnostic_listener = self:_subscribe_diagnostics(function(diagnostic)
+  if parent ~= self and self._report == nil and not self._diagnostic_parents[parent] then
+    self._diagnostic_parents[parent] = true
+    local release_parent = parent:_retain_diagnostics()
+    local remove_listener = self:_subscribe_diagnostics(function(diagnostic)
       parent:_record_diagnostic(diagnostic)
+    end)
+    local function release()
+      remove_listener()
+      self._diagnostic_parents[parent] = nil
+      release_parent()
+    end
+    self:_listen(function()
+      if self._diagnostic_holds == 0 then
+        release()
+      else
+        self._diagnostic_releases[#self._diagnostic_releases + 1] = release
+      end
     end)
   end
   if parent._cancelled then
     self:cancel()
-    if remove_diagnostic_listener then
-      self:_listen(remove_diagnostic_listener)
-    end
     error(cancelled_error, 0)
   end
   return M.await(function(done)
     self:_listen(function(result)
-      if remove_diagnostic_listener then
-        remove_diagnostic_listener()
-      end
       done.resolve(result)
     end)
     return function()
@@ -599,6 +627,9 @@ function M.run(fn, opts)
     _callback_head = 1,
     _diagnostics = {},
     _diagnostic_listeners = {},
+    _diagnostic_holds = 0,
+    _diagnostic_releases = {},
+    _diagnostic_parents = {},
     _listeners = {},
     _cancel_handlers = {},
     _inactive_cancel_handlers = 0,
