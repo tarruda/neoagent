@@ -199,9 +199,9 @@ describe("neoagent sandbox Tool RPC selection", function()
                 assert(request.on_stdout)(protocol.encode(message))
               end,
               dependencies = {
-                process = function()
-                  return { code = code, signal = signal, stdout = "", stderr = "", output = "", timed_out = false }
-                end,
+                subprocesses = require("tests.helpers.subprocess").stub(function()
+                  return require("tests.helpers.subprocess").result({ code = code, signal = signal })
+                end),
               },
             })
             local decoder = protocol.decoder(function(message)
@@ -396,13 +396,15 @@ describe("neoagent sandbox Tool RPC selection", function()
               request.on_stdout(protocol.encode(message))
             end,
             dependencies = {
-              process = function(_, opts)
-                local emit = assert(assert(opts).on_output)
-                emit(string.rep("ordinary diagnostic\n", 200), true, "", "", "")
-                emit("permission ", true, "", "", "")
-                emit("denied: synthetic private path\n", true, "", "", "")
-                return { code = 2, signal = 0, stdout = "", stderr = "", output = "", timed_out = false }
-              end,
+              subprocesses = require("tests.helpers.subprocess").stub(function(_, opts)
+                local function emit(data)
+                  assert(opts.on_output)({ stream = "stderr", data = data })
+                end
+                emit(string.rep("ordinary diagnostic\n", 200))
+                emit("permission ")
+                emit("denied: synthetic private path\n")
+                return require("tests.helpers.subprocess").result({ code = 2 })
+              end),
             },
           })
           local decoder = protocol.decoder(function(message)

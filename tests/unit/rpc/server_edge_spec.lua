@@ -4,6 +4,7 @@ local codec = require("neoagent.rpc.codec")
 local limits = require("neoagent.rpc.tool_limits")
 local protocol = require("neoagent.rpc.protocol")
 local util = require("neoagent.util")
+local subprocess = require("tests.helpers.subprocess")
 
 ---@param options Neoagent.RpcServerOptions & {dispatch?: async fun(name: string, payload: unknown, call: Neoagent.ToolOperationCall, options: Neoagent.ToolDependencyOverrides): Neoagent.ToolResult}
 ---@return Neoagent.RpcServer
@@ -58,7 +59,7 @@ end
 
 describe("neoagent Tool RPC server edge cases", function()
   it("fails the connection without acknowledging requests when command cleanup cannot settle", function()
-    local process = require("neoagent.process")
+    local process = require("neoagent.subprocess_common")
     local original_scope = process.scope
     local events = {}
     local active_server
@@ -99,14 +100,11 @@ describe("neoagent Tool RPC server edge cases", function()
         events[#events + 1] = message
       end,
       dependencies = {
-        process = function(argv, opts)
-          local output = argv[1] == "rg" and "edit.txt:1:new\n" or "edit.txt\n"
-          assert(opts and opts.on_output)(output, false, "", "", output)
-          return {
-            code = 0, signal = 0, stdout = "", stderr = "",
-            output = "", timed_out = false,
-          }
-        end,
+        subprocesses = subprocess.stub(function(spec, opts)
+          local output = spec.argv[1] == "rg" and "edit.txt:1:new\n" or "edit.txt\n"
+          assert(opts.on_output)({ stream = "stdout", data = output })
+          return subprocess.result()
+        end),
       },
     })
     active_server:receive({
@@ -165,22 +163,18 @@ describe("neoagent Tool RPC server edge cases", function()
         events[#events + 1] = message
       end,
       dependencies = {
-        process = function(_, opts)
-          local emit = assert(opts and opts.on_output)
-          emit("credential=private-value\n" .. string.rep("a", 16 * 1024) .. "permission ", false, "", "", "")
-          emit("denied\n", false, "", "", "")
+        subprocesses = subprocess.stub(function(_, opts)
+          local function emit(data)
+            assert(opts.on_output)({ stream = "stdout", data = data })
+          end
+          emit("credential=private-value\n" .. string.rep("a", 16 * 1024) .. "permission ")
+          emit("denied\n")
           emit("x" .. string.rep("\255", 1000)
             .. string.rep("\195\169", 3500)
-            .. string.rep("x", 128 * 1024), false, "", "", "")
-          return {
-            code = 1,
-            signal = 0,
-            stdout = "",
-            stderr = "",
-            output = "",
-            timed_out = false,
-          }
-        end,
+            .. string.rep("x", 128 * 1024))
+          return subprocess.result({
+            code = 1 })
+        end),
       },
     })
     active_server:receive({
@@ -227,12 +221,11 @@ describe("neoagent Tool RPC server edge cases", function()
           events[#events + 1] = message
         end,
         dependencies = {
-          process = function(_, opts)
-            local emit = assert(opts and opts.on_output)
-            emit("sandbox.txt:1:permission denied\n", false, "", "", "")
-            emit("missing input: No such file or directory\n", true, "", "", "")
-            return { code = 2, signal = 0, stdout = "", stderr = "", output = "", timed_out = false }
-          end,
+          subprocesses = subprocess.stub(function(_, opts)
+            assert(opts.on_output)({ stream = "stdout", data = "sandbox.txt:1:permission denied\n" })
+            assert(opts.on_output)({ stream = "stderr", data = "missing input: No such file or directory\n" })
+            return subprocess.result({ code = 2 })
+          end),
         },
       })
       active_server:receive({

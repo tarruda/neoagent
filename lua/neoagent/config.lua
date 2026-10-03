@@ -5,6 +5,7 @@ local alibaba_token_plan_auth = require("neoagent.auth.alibaba_token_plan")
 local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 local provider_auth = require("neoagent.provider_auth")
+local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TIMEOUT_MS / 1000
 
 ---@class Neoagent.ConfiguredPromptContext: Neoagent.SystemPromptContext
 ---@field session Neoagent.Session
@@ -400,8 +401,10 @@ local function validate(opts)
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
   assert(
     opts.shell_timeout == false
-      or type(opts.shell_timeout) == "number" and opts.shell_timeout > 0 and opts.shell_timeout < math.huge,
-    "shell_timeout must be false or a positive finite number"
+      or type(opts.shell_timeout) == "number"
+        and opts.shell_timeout > 0
+        and opts.shell_timeout <= MAX_SHELL_TIMEOUT_SECONDS,
+    "shell_timeout must be false or a positive number no greater than " .. MAX_SHELL_TIMEOUT_SECONDS .. " seconds"
   )
   require("neoagent.sandbox.settings").validate(opts.sandbox)
   assert(

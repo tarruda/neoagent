@@ -65,4 +65,12 @@ function M.result(values)
   }
 end
 
+---@param run async fun(spec: Neoagent.SubprocessSpec, options: Neoagent.SubprocessRunOptions): Neoagent.SubprocessResult
+---@return Neoagent.ToolSubprocesses
+function M.stub(run)
+  return {
+    run = run,
+  }
+end
+
 return M

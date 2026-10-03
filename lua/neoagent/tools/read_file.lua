@@ -35,7 +35,7 @@ local identities = require("neoagent.tools.identities")
 
 ---@class Neoagent.ReadFileDependencies
 ---@field fs Neoagent.ToolFilesystem
----@field process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field subprocesses Neoagent.ToolSubprocesses
 ---@field executable fun(name: string): boolean
 ---@field artifact_publisher fun(call: Neoagent.ToolOperationCall): Neoagent.ToolArtifactPublisher
 
@@ -44,14 +44,10 @@ local identities = require("neoagent.tools.identities")
 local function dependencies(options)
   options = options or {}
   local fs = options.fs
-  local process = options.process
   local executable = options.executable
   local artifact_publisher = options.artifact_publisher
   if fs == nil then
     fs = require("neoagent.fs")
-  end
-  if process == nil then
-    process = require("neoagent.process").run
   end
   if executable == nil then
     executable = common.executable
@@ -60,12 +56,11 @@ local function dependencies(options)
     artifact_publisher = common.artifact_publisher
   end
   assert(type(fs) == "table", "Tool filesystem is required")
-  assert(type(process) == "function", "Tool process runner is required")
   assert(type(executable) == "function", "Tool executable lookup is required")
   assert(type(artifact_publisher) == "function", "Tool artifact publisher is required")
   return {
     fs = fs,
-    process = process,
+    subprocesses = common.subprocesses(options.subprocesses),
     executable = executable,
     artifact_publisher = artifact_publisher,
   }
@@ -255,11 +250,16 @@ end
 ---@param max_capture_bytes integer
 ---@return string
 local function process_magick(data, request, deps, operation, arguments, max_capture_bytes)
-  local result = deps.process(magick_command(request, operation, arguments), {
-    stdin = data,
+  local result = deps.subprocesses.run({
+    argv = magick_command(request, operation, arguments),
+    cwd = assert(vim.uv.cwd()),
+    environment = common.process_environment(),
+    stdio = { kind = "pipes", stdin = "open" },
     timeout_ms = IMAGE_TIMEOUT_MS,
     kill_grace_ms = 100,
-    max_capture_bytes = max_capture_bytes,
+  }, {
+    input = { chunks = { data }, close = true, allow_early_close = true },
+    capture = { max_bytes = max_capture_bytes },
   })
   if result.timed_out then
     error("ImageMagick timed out")

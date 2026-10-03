@@ -6,7 +6,7 @@ local identities = require("neoagent.tools.identities")
 
 ---@class Neoagent.ShellDependencies
 ---@field fs Neoagent.ToolFilesystem
----@field process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field subprocesses Neoagent.ToolSubprocesses
 ---@field hrtime fun(): number
 
 ---@param options? Neoagent.ToolDependencyOverrides
@@ -14,28 +14,25 @@ local identities = require("neoagent.tools.identities")
 local function dependencies(options)
   options = options or {}
   local fs = options.fs
-  local process = options.process
   local hrtime = options.hrtime
   if fs == nil then
     fs = require("neoagent.fs")
-  end
-  if process == nil then
-    process = require("neoagent.process").run
   end
   if hrtime == nil then
     hrtime = vim.uv.hrtime
   end
   assert(type(fs) == "table", "Tool filesystem is required")
-  assert(type(process) == "function", "Tool process runner is required")
   assert(type(hrtime) == "function", "Tool clock is required")
   return {
     fs = fs,
-    process = process,
+    subprocesses = common.subprocesses(options.subprocesses),
     hrtime = hrtime,
   }
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 300
+local MAX_TIMEOUT_MS = require("neoagent.subprocess.validate").MAX_TIMEOUT_MS
+local MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000
 local ESCAPE = "\27"
 
 ---@class Neoagent.ShellOptions
@@ -69,7 +66,7 @@ end
 ---@param value unknown
 ---@return boolean
 local function valid_timeout(value)
-  return type(value) == "number" and value > 0 and value < math.huge
+  return type(value) == "number" and value > 0 and value <= MAX_TIMEOUT_SECONDS
 end
 
 ---@param value unknown
@@ -90,6 +87,7 @@ local function validate_request(value)
   local result = { argv = argv }
   if value.timeout_ms ~= nil then
     result.timeout_ms = common.integer(value.timeout_ms, "shell timeout_ms")
+    assert(result.timeout_ms <= MAX_TIMEOUT_MS, "shell timeout_ms must not exceed " .. MAX_TIMEOUT_MS)
   end
   return common.request(result, "shell request")
 end
@@ -101,7 +99,7 @@ local function prepare(arguments, settings)
   local command = common.require_string(arguments, "command")
   local timeout = arguments.timeout
   if timeout ~= nil and not valid_timeout(timeout) then
-    error("timeout must be a positive finite number")
+    error("timeout must be a positive number no greater than " .. MAX_TIMEOUT_SECONDS .. " seconds")
   end
   if timeout == nil then
     timeout = settings.default_timeout
@@ -293,12 +291,16 @@ local function run(request, call, dependencies)
   local capture = output_capture(dependencies.fs)
   ---@type number
   local last_update = 0
-  local result = dependencies.process(request.argv, {
-    capture = false,
+  local result = dependencies.subprocesses.run({
+    argv = request.argv,
     cwd = call.workspace.cwd,
+    environment = common.process_environment(),
+    stdio = { kind = "pipes" },
     timeout_ms = request.timeout_ms,
-    on_output = function(data)
-      capture.append(data)
+  }, {
+    capture = false,
+    on_output = function(event)
+      capture.append(event.data)
       local now = dependencies.hrtime()
       if now - last_update >= 100 * 1000 * 1000 then
         last_update = now
@@ -370,13 +372,14 @@ local function new(options)
   end
   assert(
     default_timeout == false or valid_timeout(default_timeout),
-    "shell default_timeout must be false or a positive finite number"
+    "shell default_timeout must be false or a positive number no greater than " .. MAX_TIMEOUT_SECONDS .. " seconds"
   )
   ---@type Neoagent.ShellSettings
   local settings = { default_timeout = default_timeout }
   local deps = dependencies()
   local timeout_description = default_timeout == false and "Optional positive timeout in seconds"
     or "Positive timeout in seconds. Defaults to " .. default_timeout
+  timeout_description = timeout_description .. ". Maximum " .. MAX_TIMEOUT_SECONDS .. " seconds"
   local tool = {
     name = "shell",
     description = "Run a shell command in the workspace cwd. Returns combined text output, escaping non-text bytes and keeping the most recent 2,000 lines or 50 KiB.",

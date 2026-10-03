@@ -697,21 +697,24 @@ describe("neoagent sandbox platform adapters", function()
     end
     assert.is_true(found_launcher, "macOS discarded the Neovim launcher arguments")
 
-    local process_module = require("neoagent.process")
+    local process_module = require("neoagent.subprocess_common")
     local original_run = process_module.run
     cleanup(function() process_module.run = original_run end)
     for _, recovered in ipairs({ 0, 17 }) do
+      local removed_cwd = root .. "/removed-tool-directory"
+      assert(fs.mkdirp(removed_cwd))
       local recovery
-      process_module.run = function(command, opts)
-        local encoded = assert(assert(opts).env).NEOAGENT_MACOS_SANDBOX_SPEC
+      process_module.run = function(spec)
+        require("neoagent.subprocess.validate").spec(spec)
+        local encoded = assert(spec.environment).set.NEOAGENT_MACOS_SANDBOX_SPEC
         assert.is_string(encoded)
         ---@cast encoded string
         recovery = vim.json.decode(encoded)
-        assert.are.equal(executable_path(assert(vim.env.NEOAGENT_NVIM)), command[1])
-        return { code = recovered, signal = 0, stdout = "", stderr = "", output = "", timed_out = false }
+        assert.are.equal(executable_path(assert(vim.env.NEOAGENT_NVIM)), spec.argv[1])
+        return require("tests.helpers.subprocess").result({ code = recovered })
       end
       local failed = macos.start_worker({
-        argv = { "/bin/sh", "-c", "true" }, cwd = root,
+        argv = { "/bin/sh", "-c", "true" }, cwd = removed_cwd,
         env = {}, profile = active_profile,
       }, {
         fs = fs, nvim = vim.env.NEOAGENT_NVIM, sandbox_exec = "/bin/true",
@@ -719,6 +722,7 @@ describe("neoagent sandbox platform adapters", function()
       })
       local failed_request = captured or error("failed macOS request was not captured")
       local failed_specification = vim.json.decode(failed_request.env.NEOAGENT_MACOS_SANDBOX_SPEC)
+      assert.are.equal(0, vim.fn.delete(removed_cwd, "d"))
       failed_request.on_exit({ code = 137, signal = 9, stderr = "" })
       assert.are.same({ mode = "cleanup", scope = failed_specification.scope }, recovery)
       assert.is_not_nil(failed:wait().error)

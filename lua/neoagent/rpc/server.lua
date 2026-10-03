@@ -30,7 +30,7 @@ local util = require("neoagent.util")
 ---@class Neoagent.RpcServer
 ---@field _send fun(message: table)
 ---@field _dependencies Neoagent.ToolDependencyOverrides
----@field _processes Neoagent.ProcessScope
+---@field _processes Neoagent.SubprocessScope
 ---@field _state "waiting_open"|"open"|"closed"|"failed"
 ---@field _call_id? string
 ---@field _context? {workspace: Neoagent.ToolWorkspace, denial_keywords: string[]}
@@ -101,7 +101,7 @@ local function stop(self, reason)
     end
   end
   self._incoming = nil
-  self._processes:close()
+  self._processes:close("Tool worker stopped")
 end
 
 ---@param self Neoagent.RpcServer
@@ -149,7 +149,7 @@ local function start_request(self, message)
     fail(self, "Tool RPC request order is invalid")
   end
   self._last_request = message.request_id
-  local processes = require("neoagent.process").scope()
+  local processes = require("neoagent.subprocess_common").scope()
   self._processes = processes
   ---@type Neoagent.RpcServerRequest
   local active = {
@@ -196,36 +196,39 @@ local function start_request(self, message)
     end,
   }
   local dependency_options = util.copy(self._dependencies)
-  local process = dependency_options.process
-  if not process then
-    ---@async
-    process = function(command, options)
-      return processes:run(command, options)
-    end
-  end
+  local subprocesses = dependency_options.subprocesses
+    or {
+      ---@async
+      run = function(spec, options)
+        return processes:run(spec, options)
+      end,
+    }
   local observe = policy_output_observer(active, context.denial_keywords)
-  dependency_options.process = function(command, options)
-    local selected = util.copy(options or {})
-    local on_output = selected.on_output
-    selected.on_output = function(data, is_stderr, stdout, stderr, output)
-      -- Search stdout contains matched file content and names, not diagnostics.
-      -- Shell commands may report failures on either stream.
-      if observe and (is_stderr or active.method == "shell") then
-        observe(data, is_stderr)
+  dependency_options.subprocesses = {
+    ---@async
+    run = function(spec, options)
+      local selected = util.copy(options)
+      local on_output = selected.on_output
+      selected.on_output = function(event)
+        -- Search stdout contains matched file content and names, not diagnostics.
+        -- Shell commands may report failures on either stream.
+        if observe and (event.stream == "stderr" or active.method == "shell") then
+          observe(event.data, event.stream == "stderr")
+        end
+        if on_output then
+          on_output(event)
+        end
       end
-      if on_output then
-        on_output(data, is_stderr, stdout, stderr, output)
+      local result = subprocesses.run(spec, selected)
+      -- Preserve native status before the Tool turns a failure into text.
+      -- The parent decides whether these observations establish a denial.
+      if result.code ~= 0 then
+        active.policy = active.policy or {}
+        active.policy.process_exit = { code = result.code, signal = result.signal }
       end
-    end
-    local result = process(command, selected)
-    -- Preserve native status before the Tool turns a failure into text.
-    -- The parent decides whether these observations establish a denial.
-    if result.code ~= 0 then
-      active.policy = active.policy or {}
-      active.policy.process_exit = { code = result.code, signal = result.signal }
-    end
-    return result
-  end
+      return result
+    end,
+  }
   dependency_options.artifact_publisher = function()
     return publisher
   end
@@ -237,7 +240,7 @@ local function start_request(self, message)
       if self._active ~= active then
         return
       end
-      processes:close()
+      processes:close("Tool request finished")
       async.run(function()
         processes:wait(PROCESS_CLEANUP_MS)
       end, {
@@ -401,7 +404,7 @@ function Server:receive(message)
       fail(self, "Tool RPC cannot close with an active request")
     end
     self._state = "closed"
-    self._processes:close()
+    self._processes:close("Tool connection closed")
     send(self, { type = "closed", call_id = assert(self._call_id) })
   else
     fail(self, "Tool RPC message is invalid in the worker")
@@ -437,7 +440,7 @@ local function new(opts, selected_dispatch)
   local server = setmetatable({
     _send = opts.send,
     _dependencies = util.copy(opts.dependencies or {}),
-    _processes = require("neoagent.process").scope(),
+    _processes = require("neoagent.subprocess_common").scope(),
     _dispatch = selected_dispatch or dispatch,
     _state = "waiting_open",
     _last_request = 0,

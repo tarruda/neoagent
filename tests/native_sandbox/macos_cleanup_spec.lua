@@ -1,7 +1,7 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
-local process = require("neoagent.process")
+local process = require("neoagent.subprocess_common")
 
 describe("macOS sandbox cleanup", function()
   local native_test = jit.os == "OSX" and it or pending
@@ -54,11 +54,19 @@ dofile(%q)
     local command = require("neoagent.process.nvim").command()
     vim.list_extend(command, { "--headless", "--noplugin", "-u", "NONE", "-i", "NONE", "-n", "-l", wrapper })
     local run = async.run(function()
-      return process.run(command, {
+      return process.run({
+        argv = command,
+        cwd = root,
+        stdio = { kind = "pipes" },
         timeout_ms = 10000,
-        env = { NEOAGENT_MACOS_SANDBOX_SPEC = vim.json.encode({
+        environment = {
+          inherit = true,
+          set = { NEOAGENT_MACOS_SANDBOX_SPEC = vim.json.encode({
           mode = "cleanup", scope = "neoagent.sandbox." .. vim.fn.sha256(root):sub(1, 32),
-        }) },
+        }),
+          },
+        },
+      }, { capture = { max_bytes = 64 * 1024 },
       })
     end)
     assert(vim.wait(15000, function() return run:is_done() end, 5))

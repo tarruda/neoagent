@@ -4,7 +4,7 @@ local truncate = require("neoagent.tools.truncate")
 local identities = require("neoagent.tools.identities")
 
 ---@class Neoagent.FindDependencies
----@field process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field subprocesses Neoagent.ToolSubprocesses
 
 ---@class Neoagent.FindRequest
 ---@field pattern string
@@ -16,13 +16,8 @@ local identities = require("neoagent.tools.identities")
 ---@return Neoagent.FindDependencies
 local function dependencies(options)
   options = options or {}
-  local process = options.process
-  if process == nil then
-    process = require("neoagent.process").run
-  end
-  assert(type(process) == "function", "Tool process runner is required")
   return {
-    process = process,
+    subprocesses = common.subprocesses(options.subprocesses),
   }
 end
 
@@ -64,15 +59,19 @@ end
 ---@return Neoagent.ToolResult
 local function run(request, _call, dependencies)
   local search = request.resolved_path
-  local result, captured, captured_stderr = common.capture_process(dependencies.process, {
-    "fd",
-    "--hidden",
-    "--glob",
-    "--",
-    request.pattern,
-    ".",
+  local result, captured, captured_stderr = common.capture_process(dependencies.subprocesses, {
+    argv = {
+      "fd",
+      "--hidden",
+      "--glob",
+      "--",
+      request.pattern,
+      ".",
+    },
+    cwd = search,
+    environment = common.process_environment(),
+    stdio = { kind = "pipes" },
   }, {
-    process = { cwd = search },
     stdout = {
       max_lines = request.limit,
       max_bytes = truncate.MAX_BYTES,
