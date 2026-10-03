@@ -10,6 +10,7 @@ local M = {}
 ---@field create fun(): Neoagent.WindowsProcessHandle?, string?
 ---@field open fun(pid: integer): Neoagent.WindowsProcessHandle?, string?
 ---@field assign fun(job: Neoagent.WindowsProcessHandle, process: Neoagent.WindowsProcessHandle): true?, string?
+---@field running fun(process: Neoagent.WindowsProcessHandle): boolean?, string?
 ---@field terminate fun(job: Neoagent.WindowsProcessHandle, code: integer): true?, string?
 ---@field close fun(handle: Neoagent.WindowsProcessHandle)
 
@@ -20,6 +21,7 @@ local M = {}
 ---  SetInformationJobObject: (fun(job: Neoagent.WindowsProcessHandle, class: integer, limits: Neoagent.WindowsJobLimits, size: integer): integer),
 ---  OpenProcess: (fun(access: integer, inherit: integer, pid: integer): Neoagent.WindowsProcessHandle?),
 ---  AssignProcessToJobObject: (fun(job: Neoagent.WindowsProcessHandle, process: Neoagent.WindowsProcessHandle): integer),
+---  WaitForSingleObject: (fun(process: Neoagent.WindowsProcessHandle, timeout: integer): integer),
 ---  TerminateJobObject: (fun(job: Neoagent.WindowsProcessHandle, code: integer): integer),
 ---  CloseHandle: (fun(handle: Neoagent.WindowsProcessHandle): integer),
 ---}
@@ -36,6 +38,7 @@ local M = {}
 ---@class Neoagent.WindowsProcessTree
 ---@field backend Neoagent.WindowsProcessBackend
 ---@field job Neoagent.WindowsProcessHandle
+---@field process? Neoagent.WindowsProcessHandle
 ---@field closed? boolean
 ---@field attached? boolean
 local Tree = {}
@@ -168,6 +171,7 @@ void * __stdcall CreateJobObjectW(void *, const unsigned short *);
 int __stdcall SetInformationJobObject(void *, int, void *, unsigned long);
 void * __stdcall OpenProcess(unsigned long, int, unsigned long);
 int __stdcall AssignProcessToJobObject(void *, void *);
+unsigned long __stdcall WaitForSingleObject(void *, unsigned long);
 int __stdcall TerminateJobObject(void *, unsigned int);
 int __stdcall CloseHandle(void *);
 unsigned long __stdcall GetLastError(void);
@@ -195,7 +199,7 @@ unsigned long __stdcall GetLastError(void);
       return job
     end,
     open = function(pid)
-      local handle = kernel.OpenProcess(bit.bor(0x0001, 0x0100), 0, pid)
+      local handle = kernel.OpenProcess(bit.bor(0x0001, 0x0100, 0x100000), 0, pid)
       if handle == nil then
         return nil, failure()
       end
@@ -206,6 +210,15 @@ unsigned long __stdcall GetLastError(void);
         return nil, failure()
       end
       return true
+    end,
+    running = function(process)
+      local status = kernel.WaitForSingleObject(process, 0)
+      if status == 0 then
+        return false
+      elseif status == 0x102 then
+        return true
+      end
+      return nil, failure()
     end,
     terminate = function(job, code)
       if kernel.TerminateJobObject(job, code) == 0 then
@@ -230,17 +243,39 @@ function Tree:attach(pid)
   if type(pid) ~= "number" or pid <= 0 then
     return true
   end
+  if self.attached then
+    return nil, "process tree already has a root"
+  end
   local process, open_err = self.backend.open(pid)
   if not process then
     return nil, open_err
   end
   local assigned, assign_err = self.backend.assign(self.job, process)
-  self.backend.close(process)
   if not assigned then
+    self.backend.close(process)
     return nil, assign_err
   end
+  -- Retain the root's native identity until this owner releases the Job.
+  self.process = process
   self.attached = true
   return true
+end
+
+-- A native launcher can assign the Job atomically in CreateProcessW and
+-- transfer its already-open process handle without reopening a cached PID.
+---@param process Neoagent.WindowsProcessHandle
+function Tree:adopt(process)
+  assert(not self.closed and not self.attached, "process tree already has an owner")
+  self.process = process
+  self.attached = true
+end
+
+---@return boolean?, string?
+function Tree:running()
+  if self.closed or self.process == nil then
+    return false
+  end
+  return self.backend.running(self.process)
 end
 
 ---@param code? integer
@@ -262,6 +297,10 @@ function Tree:close(terminate)
     self:terminate(125)
   end
   self.closed = true
+  if self.process ~= nil then
+    self.backend.close(self.process)
+    self.process = nil
+  end
   self.backend.close(self.job)
   self.job = nil
 end

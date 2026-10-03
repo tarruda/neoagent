@@ -197,10 +197,27 @@ local function environment(spec)
     TEMP = M.temporary_root(),
     TMP = M.temporary_root(),
   }
+  -- libuv otherwise imports these names from the host despite clear_env.
+  -- The runtime needs only its explicit bootstrap variables and Windows
+  -- directory. The restricted target has its own separately filtered env.
+  for _, name in ipairs({
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOGONSERVER",
+    "PATH",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "WINDIR",
+  }) do
+    values[name] = ""
+  end
   for _, name in ipairs({ "SystemRoot", "WINDIR" }) do
     local value = vim.uv.os_getenv(name)
     if type(value) == "string" and value ~= "" then
-      values[name] = value
+      values[name:upper()] = value
     end
   end
   return values

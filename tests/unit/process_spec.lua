@@ -213,6 +213,10 @@ describe("neoagent process runner", function()
         calls[#calls + 1] = "assign:" .. tostring(job) .. ":" .. tostring(child)
         return true
       end,
+      running = function(process)
+        assert.are.equal("process", process)
+        return true
+      end,
       terminate = function(job, code)
         calls[#calls + 1] = "terminate:" .. tostring(job) .. ":" .. code
         return true
@@ -220,18 +224,24 @@ describe("neoagent process runner", function()
       close = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) end,
     }
     local tree = assert(require("neoagent.process.windows").new({ backend = backend }))
+    assert.is_false(tree:running())
     assert.is_false(tree:terminate(15))
     assert(tree:attach(0))
     assert(tree:attach(42))
+    assert.is_true(tree:running())
+    local replaced, replace_err = tree:attach(43)
+    assert.is_nil(replaced)
+    assert.are.equal("process tree already has a root", replace_err)
     assert.is_true(tree:terminate(15))
     tree:close(true)
+    assert.is_false(tree:running())
     local attached, attach_err = tree:attach(42)
     assert.is_nil(attached)
     assert.are.equal("process tree is closed", attach_err)
     tree:close(true)
     assert.are.same({
-      "create", "open:42", "assign:job:process", "close:process",
-      "terminate:job:15", "terminate:job:125", "close:job",
+      "create", "open:42", "assign:job:process",
+      "terminate:job:15", "terminate:job:125", "close:process", "close:job",
     }, calls)
   end)
 
@@ -394,7 +404,7 @@ describe("neoagent process runner", function()
         return 1
       end,
       OpenProcess = function(access, inherit, pid)
-        assert.are.equal(0x0101, access)
+        assert.are.equal(0x100101, access)
         assert.are.equal(0, inherit)
         assert.are.equal(43, pid)
         calls[#calls + 1] = "open"
@@ -404,6 +414,11 @@ describe("neoagent process runner", function()
         assert.are.same({ "job", "process" }, { job, child })
         calls[#calls + 1] = "assign"
         return 1
+      end,
+      WaitForSingleObject = function(process, timeout)
+        assert.are.same({ "process", 0 }, { process, timeout })
+        calls[#calls + 1] = "query"
+        return 0x102
       end,
       TerminateJobObject = function(job, code)
         assert.are.same({ "job", 125 }, { job, code })
@@ -416,10 +431,11 @@ describe("neoagent process runner", function()
       native = { ffi = ffi --[[@as Neoagent.WindowsProcessFfi]], kernel = kernel },
     }))
     assert(tree:attach(43))
+    assert.is_true(tree:running())
     tree:close(true)
     assert.are.same({
-      "create", "configure", "open", "assign", "close:process",
-      "terminate", "close:job",
+      "create", "configure", "open", "assign", "query",
+      "terminate", "close:process", "close:job",
     }, calls)
   end)
 
@@ -449,6 +465,9 @@ describe("neoagent process runner", function()
       end,
       AssignProcessToJobObject = function()
         return mode == "assign" and 0 or 1
+      end,
+      WaitForSingleObject = function()
+        return mode == "query" and 0xffffffff or mode == "exited" and 0 or 0x102
       end,
       TerminateJobObject = function()
         return mode == "terminate" and 0 or 1
@@ -486,6 +505,14 @@ describe("neoagent process runner", function()
     mode = "terminate"
     tree = assert(create())
     assert(tree:attach(42))
+    assert.is_true(tree:running())
+    mode = "exited"
+    assert.is_false(tree:running())
+    mode = "query"
+    local running, query_err = tree:running()
+    assert.is_nil(running)
+    assert.are.equal("Win32 error 5", query_err)
+    mode = "terminate"
     assert.is_false(tree:terminate())
     tree:close()
   end)

@@ -10,7 +10,6 @@ local M = {}
 
 ---@return table<string, string>
 function M.environment()
-  local source = vim.fn.environ()
   local result = {}
   for _, name in ipairs({
     "PATH",
@@ -26,9 +25,19 @@ function M.environment()
     "COMSPEC",
     "PATHEXT",
     "VIMRUNTIME",
+    -- libuv requires these ambient Windows values to be specified when an
+    -- exact environment is requested. Keep the host worker fixture explicit.
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOGONSERVER",
+    "SYSTEMDRIVE",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
   }) do
-    if type(source[name]) == "string" and source[name] ~= "" then
-      result[name] = source[name]
+    local value = vim.uv.os_getenv(name)
+    if value ~= nil then
+      result[name] = value
     end
   end
   return result

@@ -106,7 +106,7 @@ def install_types(name, url, digest, included):
         staging.rename(destination)
 
 
-def correct_luv_lstat():
+def correct_luv_types():
     # The pinned LuaCATS declaration incorrectly types a path as a descriptor.
     # https://github.com/luvit/luv/blob/master/docs/docs.md#uvfs_lstatpath-callback
     path = ROOT / ".deps/typecheck/luv/library/uv.lua"
@@ -119,6 +119,28 @@ def correct_luv_lstat():
 function uv.fs_lstat(path) end"""
     corrected = original.replace("path                  integer", "path                  string")
     corrected = corrected.replace("fun(path:integer", "fun(path:string")
+    correct_definition(path, original, corrected)
+
+    # luv's spawn options consume an array of NAME=value strings; uid/gid are
+    # optional integer arguments (src/process.c: luv_spawn). Keep these fixes
+    # reproducible in CI rather than editing the generated declarations locally.
+    path = ROOT / ".deps/typecheck/luv/library/types.lua"
+    correct_definition(path, "---@field env table<string, string>", "---@field env? string[]")
+    correct_definition(path, "---@field uid string", "---@field uid? integer")
+    correct_definition(path, "---@field gid string", "---@field gid? integer")
+    # Native luv exports the same uv table to standalone Lua states, including
+    # libuv worker threads where Neovim's vim global is unavailable.
+    (path.parent / "luv.lua").write_text("---@meta\n---@type uv\nlocal uv\nreturn uv\n")
+    # luv_spawn returns handle/pid on success or nil/message/error-name via
+    # luv_error on failure (luv src/process.c and src/util.c).
+    path = ROOT / ".deps/typecheck/luv/library/uv.lua"
+    original = """---@return uv.uv_process_t proc
+---@return integer         pid
+function uv.spawn(path, options, on_exit) end"""
+    corrected = """---@return uv.uv_process_t? proc
+---@return integer|uv.error.message pid_or_error
+---@return uv.error.name? err_name
+function uv.spawn(path, options, on_exit) end"""
     correct_definition(path, original, corrected)
 
 
@@ -165,7 +187,7 @@ def main():
                      f"function internal.{assertion}(value, message) end")
         correct_definition(ROOT / ".deps/typecheck/luassert/library/luassert.lua",
                            original, corrected)
-    correct_luv_lstat()
+    correct_luv_types()
     # v0.10.2 forwards clear_env directly to uv.spawn, which accepts a list.
     correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_system.lua",
         "--- @field env? table<string,string|number>\n",

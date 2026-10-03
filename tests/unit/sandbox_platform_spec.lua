@@ -974,7 +974,7 @@ describe("neoagent sandbox platform adapters", function()
             return completed_worker(opts)
         end,
         })
-      local err = assert(lease:wait().error)
+      local err = assert(lease:wait().cleanup_error)
       assert.matches("Could not clean native sandbox resources", err.message)
       if replacement == "directory" then
         assert.are.equal("directory",
@@ -1686,6 +1686,24 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal(60000, spec.admission_timeout_ms)
     assert.is_true(vim.list_contains(spec.runner.read_roots, "C:\\Repo"))
 
+    -- Exercise the real launch-environment boundary, including ambient keys
+    -- that libuv would otherwise add to this deliberately sparse bootstrap.
+    local platform, getenv = jit.os, vim.uv.os_getenv
+    local module = "neoagent.subprocess.windows_environment"
+    local previous = package.loaded[module]
+    jit.os = "Windows"
+    package.loaded[module] = { key = string.upper }
+    vim.uv.os_getenv = function() return "ambient-value" end
+    local accepted, failure = pcall(function()
+      local environment = require("neoagent.subprocess.environment")
+      local selected = environment.normalize({ inherit = false, set = assert(captured).env })
+      environment.for_pipes(selected)
+      assert.are.equal("", selected.USERPROFILE)
+      assert.are.equal("", selected.USERNAME)
+    end)
+    jit.os, vim.uv.os_getenv, package.loaded[module] = platform, getenv, previous
+    assert.is_true(accepted, vim.inspect(failure))
+
     local denied_profile = windows_profile()
     denied_profile.filesystem.entries[#denied_profile.filesystem.entries + 1] = {
       path = "C:\\Repo\\bootstrap",
@@ -1937,7 +1955,7 @@ describe("neoagent sandbox platform adapters", function()
         error("Windows probe environment was not provided")
       end
       ---@cast opts.env table<string, string>
-      inherited_root = opts.env.SystemRoot
+      inherited_root = opts.env.SYSTEMROOT
       return {
         wait = function()
           return {

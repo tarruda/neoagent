@@ -606,9 +606,10 @@ function RpcConnection:eof(result)
     return
   end
   local state = self._state
+  local failure = result.error or result.cleanup_error
   if state == "closed" then
-    if result.error then
-      fail(self, util.normalize_error(result.error, "protocol"))
+    if failure then
+      fail(self, util.normalize_error(failure, "protocol"))
     elseif result.code ~= 0 then
       fail(self, util.error("protocol", "RPC peer failed during shutdown", result.stderr))
     end
@@ -616,14 +617,14 @@ function RpcConnection:eof(result)
   end
   local starting = state == "new" or state == "waiting_ready" or state == "opening"
   local terminal_received = state == "request" and self._active and self._active.terminal_received == true
-  if state == "closing" and self._close_received and not result.error and result.code == 0 then
+  if state == "closing" and self._close_received and not failure and result.code == 0 then
     return
   end
   local function reject(err)
     fail(self, err)
   end
-  if result.error then
-    local cause = util.normalize_error(result.error, "protocol")
+  if failure then
+    local cause = util.normalize_error(failure, "protocol")
     if state == "cancelling" then
       reject(util.error("cancelled", "RPC request cancelled"))
     elseif starting or terminal_received then

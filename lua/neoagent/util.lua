@@ -283,6 +283,15 @@ function M.error(kind, message, detail)
   return err
 end
 
+---@param failure Neoagent.Error
+---@param cause? Neoagent.Error
+---@return Neoagent.Error
+function M.with_cause(failure, cause)
+  local result = M.copy(failure)
+  rawset(result, "cause", M.copy(cause))
+  return result
+end
+
 ---@param value string
 ---@param maximum integer
 ---@return string prefix

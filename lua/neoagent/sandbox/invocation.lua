@@ -13,12 +13,33 @@ local WORKER_EXIT_GRACE_MS = 10000
 ---@field lease Neoagent.WorkerLease
 ---@field timer? uv.uv_timer_t
 ---@field disposed boolean
+---@field opened boolean
+---@field report fun(error?: Neoagent.Error)
 ---@field cleanup? Neoagent.Run<Neoagent.WorkerResult, unknown>
 local Invocation = {}
 Invocation.__index = Invocation
 
 ---@type table<Neoagent.SandboxInvocation, boolean>
 local pending_invocations = {}
+
+-- Publish the invocation to its caller before awaiting either admission or RPC
+-- readiness. A failed open still has the same completion recipient.
+---@async
+---@param context Neoagent.JsonObject
+function Invocation:open(context)
+  if self.lease.wait_ready then
+    self.lease:wait_ready()
+  end
+  self.connection:open(context)
+  self.opened = true
+end
+
+---@param err? Neoagent.Error
+function Invocation:complete(err)
+  self:stop_timer()
+  pending_invocations[self] = nil
+  self.report(err)
+end
 
 function Invocation:stop_timer()
   local timer = self.timer
@@ -74,9 +95,10 @@ function Invocation:retain(cancelling)
     on_done = function(value)
       if value.ok == false then
         self:dispose("restricted Tool worker cleanup failed")
+        self:complete(value.error)
+      else
+        self:complete(value.cleanup_error)
       end
-      self:stop_timer()
-      pending_invocations[self] = nil
     end,
   })
 end
@@ -93,30 +115,39 @@ end
 
 ---@async
 ---@param reason string
+---@return Neoagent.Error?
 function Invocation:abort(reason)
   self.connection:abort()
   self:dispose(reason)
   local run = async.current()
   if not run or run:is_cancelled() then
     self:retain(false)
+    return run and async.cancelled_error or nil
   else
-    local waited = pcall(self.lease.wait, self.lease)
+    local waited, value = pcall(self.lease.wait, self.lease)
     if not waited then
       self:retain(false)
+      return util.normalize_error(value, "sandbox_unavailable")
     end
+    self:complete(value.cleanup_error)
+    return value.cleanup_error
   end
 end
 
 ---@async
+---@param operation_failed boolean
 ---@return Neoagent.Error?
-function Invocation:close()
+function Invocation:close(operation_failed)
+  if not self.opened or operation_failed and self.connection:is_failed() then
+    return self:abort("restricted Tool worker admission or operation failed")
+  end
   local closed, close_err = pcall(self.connection.close, self.connection)
   if not closed then
     local err = util.normalize_error(close_err, "protocol")
     if err.kind == "cancelled" then
       self:cancel("restricted Tool worker shutdown cancellation did not settle")
     else
-      self:abort("restricted Tool worker failed to close")
+      return self:abort("restricted Tool worker failed to close") or err
     end
     return err
   end
@@ -126,9 +157,9 @@ function Invocation:close()
     self:retain(false)
     return util.normalize_error(value, "sandbox_unavailable")
   end
-  self:stop_timer()
-  if value.error then
-    return util.normalize_error(value.error, "sandbox_unavailable")
+  self:complete(value.cleanup_error)
+  if value.cleanup_error or value.error then
+    return util.normalize_error(value.cleanup_error or value.error, "sandbox_unavailable")
   end
   if value.code ~= 0 then
     return util.error("protocol", "Tool worker failed during shutdown", value.stderr ~= "" and value.stderr or nil)
@@ -145,7 +176,26 @@ end
 ---@param lease Neoagent.WorkerLease
 ---@return Neoagent.SandboxInvocation
 function M.new(connection, lease)
-  return setmetatable({ connection = connection, lease = lease, disposed = false }, Invocation)
+  local run = async.current()
+  local release = run and run:_retain_diagnostics()
+  return setmetatable({
+    connection = connection,
+    lease = lease,
+    disposed = false,
+    opened = false,
+    report = function(err)
+      if run and err then
+        local message = err.message
+        if err.detail then
+          message = message .. ": " .. util.safe_message(err.detail)
+        end
+        run:_diagnose("dispose", message)
+      end
+      if release then
+        release()
+      end
+    end,
+  }, Invocation)
 end
 
 return M

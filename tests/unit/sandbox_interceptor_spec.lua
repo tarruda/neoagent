@@ -532,6 +532,16 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.is_false(failed_value.ok)
     assert.are.equal("configured executor failed", assert(failed_value.error).message)
     assert.are.equal(0, starts)
+
+    execute = interceptor(root, platform):wrap(function()
+      error(util.error("cancelled", "policy evaluation cancelled"), 0)
+    end)
+    local cancelled = async.run(function()
+      return execute(restricted_tool(), { path = "policy.txt", content = "must not run" }, context(root))
+    end)
+    assert(vim.wait(1000, function() return cancelled:is_done() end))
+    assert.are.equal("cancelled", assert(assert(cancelled:result()).error).kind)
+    assert.are.equal(0, starts)
   end)
 
   it("opens a remote worker only for a sandbox-eligible tool", function()
@@ -685,6 +695,104 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal(1, child_state.waited)
     assert.are.equal(1, cancelled_remote.aborted)
   end)
+
+  for _, cancelled in ipairs({ false, true }) do
+    it(
+      "reports native failed-admission cleanup through the Tool boundary with cancellation=" .. tostring(cancelled),
+      function()
+        if jit.os ~= "Linux" then
+          pending("Linux sandbox staging ownership")
+          return
+        end
+        package.loaded["neoagent.rpc.connection"] = original_remote
+        local root = temporary_root()
+        local spawn, rmdir = vim.uv.spawn, vim.uv.fs_rmdir
+        local staging
+        ---@type Neoagent.AwaitCallbacks<true>?
+        local cleanup_waiter
+        local diagnostics = {}
+        local filesystem = vim.tbl_extend("force", fs, {
+          create_temp_directory = function(prefix, parent)
+            staging = assert(fs.create_temp_directory(prefix, parent))
+            roots[#roots + 1] = staging
+            return staging
+          end,
+        })
+        local execute = interceptor(root, {
+          name = "linux",
+          start_worker = function(request, services)
+            services.fs = filesystem
+            vim.uv.spawn = function()
+              return nil, "startup denied", "EACCES"
+            end
+            local started, lease = pcall(require("neoagent.sandbox.linux").start_worker, request, services)
+            vim.uv.spawn = spawn
+            assert(started, vim.inspect(lease))
+            live_children[#live_children + 1] = lease
+            return lease
+          end,
+        }):wrap()
+        ---@async
+        local function deny_staging(path)
+          if path == staging then
+            async.await(function(done)
+              cleanup_waiter = done
+            end)
+            return nil, "EACCES: staging removal denied", "EACCES"
+          end
+          return rmdir(path)
+        end
+        vim.uv.fs_rmdir = deny_staging
+        -- Awaiting the Tool Run also verifies that diagnostic forwarding survives
+        -- cancellation of both the Tool coroutine and its parent observer.
+        local run = async.run(function()
+          return async
+            .run(function()
+              return execute(restricted_tool(), { path = "file", content = "value" }, context(root))
+            end)
+            :await()
+        end, {
+          report = function(diagnostic)
+            diagnostics[#diagnostics + 1] = diagnostic
+          end,
+        })
+        local checked, check_err = pcall(function()
+          assert(vim.wait(1000, function()
+            return cleanup_waiter ~= nil
+          end))
+          if cancelled then
+            run:cancel()
+            assert(vim.wait(1000, function()
+              return run:is_done()
+            end))
+          end
+          assert(cleanup_waiter).resolve(true)
+          if cancelled then
+            assert(
+              vim.wait(1000, function()
+                return #diagnostics > 0
+              end),
+              "detached cleanup has no diagnostic recipient"
+            )
+            assert.matches("clean native sandbox resources", diagnostics[1].message, 1, true)
+            assert.matches("staging removal denied", diagnostics[1].message, 1, true)
+          else
+            local value = wait(run)
+            assert.matches("Could not start worker", value.content[1].text, 1, true)
+            assert.is_true(value.execution.sandbox.cleanup_failed)
+            assert.matches("clean native sandbox resources", value.content[2].text, 1, true)
+            assert.matches("staging removal denied", value.content[2].text, 1, true)
+          end
+        end)
+        if cleanup_waiter then
+          cleanup_waiter.resolve(true)
+        end
+        vim.uv.spawn, vim.uv.fs_rmdir = spawn, rmdir
+        run:cancel()
+        assert.is_true(checked, tostring(check_err))
+      end
+    )
+  end
 
   it("preserves bounded worker startup diagnostics in sandbox results", function()
     local root = temporary_root()
@@ -1918,7 +2026,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local cancelled_value = assert(cancelled:result())
     assert.are.equal("done", assert(cancelled_value.content)[1].text)
     assert.is_true(assert(assert(cancelled_value.execution).sandbox).cleanup_unobserved)
-    assert.are.equal("cancelled", assert(assert(cancelled_value.execution).sandbox).kind)
+    assert.are.equal("cancelled", assert(assert(cancelled_value.execution).sandbox).cleanup_kind)
 
     active_child = child()
     remote({ open = function()

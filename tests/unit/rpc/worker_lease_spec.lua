@@ -1,339 +1,301 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
+local helper = require("tests.helpers.subprocess")
+local pipes = require("neoagent.subprocess.pipe")
+local workers = require("neoagent.rpc.worker_lease")
 local util = require("neoagent.util")
 
-local process_module = jit.os == "Windows" and "neoagent.process.windows" or "neoagent.process.posix"
-local original_process_tree = package.loaded[process_module]
-local original_lease = package.loaded["neoagent.rpc.worker_lease"]
-local original_system = vim.system
-local original_has = vim.fn.has
+local native_new, new_timer = pipes.new, vim.uv.new_timer
 
----@class Neoagent.TestSandboxTreeState
----@field attached? boolean
----@field closed integer
----@field signals integer[]
----@field terminate_result? boolean
+describe("worker lease ownership", function()
+  ---@type Neoagent.SubprocessCallbacks
+  local events
+  ---@type Neoagent.WorkerLease[]
+  local leases
+  ---@type string[]
+  local actions
+  local allocated, disposed
+  ---@type fun()?
+  local start_action
+  ---@type fun()?
+  local kill_action
+  local write_fails, close_fails
 
----@class Neoagent.TestSandboxProcessState
----@field callbacks Neoagent.TestSandboxProcessCallbacks[]
----@field killed integer[]
----@field writes unknown[]
-
----@class Neoagent.TestSandboxProcessCallbacks
----@field opts vim.SystemOpts
----@field on_exit fun(result: vim.SystemCompleted)
----@field process Neoagent.TestSandboxSystem
-
----@class Neoagent.TestSandboxSystem
----@field pid integer
----@field write fun(self: Neoagent.TestSandboxSystem, value?: string)
----@field kill fun(self: Neoagent.TestSandboxSystem, signal: integer)
-
----@param configure? fun(tree: Neoagent.TestSandboxTreeState)
----@return table, Neoagent.TestSandboxTreeState[]
-local function process_trees(configure)
-  local states = {}
-  local module = { detach = false }
-  module.new = function()
-    local state = { attached = true, closed = 0, signals = {} }
-    if configure then
-      configure(state)
-    end
-    states[#states + 1] = state
-    local tree = {
-      attach = function(_, _)
-        return state.attached, state.attached and nil or "attach denied"
-      end,
-      terminate = function(_, signal)
-        state.signals[#state.signals + 1] = signal
-        return state.terminate_result == true
-      end,
-      close = function()
-        state.closed = state.closed + 1
-      end,
-    }
-    return tree
-  end
-  return module, states
-end
-
----@param tree_module table
----@return table
-local function load_child(tree_module)
-  package.loaded[process_module] = tree_module
-  package.loaded["neoagent.rpc.worker_lease"] = nil
-  return require("neoagent.rpc.worker_lease")
-end
-
----@return Neoagent.TestSandboxProcessState
-local function fake_processes()
-  ---@type Neoagent.TestSandboxProcessState
-  local state = { callbacks = {}, killed = {}, writes = {} }
-  vim.system = function(_, opts, on_exit)
-    if not opts then error("missing process options") end
-    if not on_exit then error("missing process exit callback") end
-    local process = {
-      pid = #state.callbacks + 100,
-      write = function(_, value)
-        state.writes[#state.writes + 1] = value == nil and false or value
-      end,
-      kill = function(_, signal)
-        state.killed[#state.killed + 1] = signal
-      end,
-    }
-    state.callbacks[#state.callbacks + 1] = { opts = opts, on_exit = on_exit, process = process }
-    return process
-  end
-  return state
-end
-
----@param callback (fun(err: string?, data: string?)|false)?
----@param err? string
----@param data? string
-local function stream(callback, err, data)
-  if type(callback) ~= "function" then
-    error("expected stream callback")
-  end
-  callback(err, data)
-end
-
----@param child_module table
----@param overrides? table
----@return Neoagent.WorkerLease
-local function start(child_module, overrides)
-  return child_module.start(vim.tbl_extend("force", {
-    argv = { "worker" },
-    cwd = "/workspace",
-    env = { PATH = "/bin" },
-    kill_grace_ms = 0,
-  }, overrides or {}))
-end
-
-describe("neoagent worker process lease", function()
-  after_each(function()
-    vim.system = original_system
-    vim.fn.has = original_has
-    package.loaded[process_module] = original_process_tree
-    package.loaded["neoagent.rpc.worker_lease"] = original_lease
-  end)
-
-  it("launches with an explicitly empty environment", function()
-    local tree_module = process_trees()
-    local child_module = load_child(tree_module)
-    local processes = fake_processes()
-    local child = start(child_module, { env = {} })
-    local callbacks = assert(processes.callbacks[1])
-    assert.are.same({}, callbacks.opts.env)
-    assert.is_true(callbacks.opts.clear_env)
-    callbacks.on_exit({ code = 0, signal = 0, stdout = "", stderr = "" })
-    assert.are.equal(0, child:wait().code)
-  end)
-
-  it("streams, waits, closes stdin, and terminates the complete process tree", function()
-    local tree_module, trees = process_trees()
-    local child_module = load_child(tree_module)
-    local processes = fake_processes()
-    local stdout, stderr, exits = {}, {}, {}
-    local child = start(child_module, {
-      on_stdout = function(data)
-        stdout[#stdout + 1] = data
-      end,
-      on_stderr = function(data)
-        stderr[#stderr + 1] = data
-      end,
-      on_exit = function(result)
-        exits[#exits + 1] = result
-      end,
-    })
-    local callbacks = processes.callbacks[1] or error("missing process callbacks")
-    stream(callbacks.opts.stdout, nil, "out\0")
-    stream(callbacks.opts.stderr, nil, "err")
-    local wrote = child:write("input")
-    assert.is_true(wrote)
-    local closed = child:close_stdin()
-    assert.is_true(closed)
-    closed = child:close_stdin()
-    assert.is_true(closed)
-    local written, write_err = child:write("late")
-    assert.is_nil(written)
-    assert.matches("stdin is closed", assert(write_err).message)
-    callbacks.on_exit({ code = 0, signal = 0, stdout = "", stderr = "" })
-    assert.are.same({ "out\0" }, stdout)
-    assert.are.same({ "err" }, stderr)
-    assert.are.equal("err", child:wait().stderr)
-    assert.are.equal(1, #exits)
-    child:dispose("test complete")
-    child:dispose("test complete")
-
-    local terminating = start(child_module)
-    terminating:terminate("cancelled")
-    local terminating_tree = trees[2] or error("missing terminating tree")
-    assert(vim.wait(1000, function()
-      return #terminating_tree.signals == 2
-    end))
-    assert.are.same({ 15, 9 }, terminating_tree.signals)
-    assert.are.same({ 15, 9 }, processes.killed)
-    assert(processes.callbacks[2]).on_exit({ code = 0, signal = 9, stdout = "", stderr = "" })
-    terminating:dispose("test complete")
-
-    local waiting = start(child_module)
-    local run = async.run(function()
-      return waiting:wait()
-    end)
-    run:cancel()
-    local waiting_tree = trees[3] or error("missing waiting tree")
-    assert(vim.wait(1000, function()
-      return run:is_done()
-    end))
-    assert.are.same({}, waiting_tree.signals)
-    waiting:dispose("test complete")
-    assert.are.equal(15, waiting_tree.signals[1])
-    assert(processes.callbacks[3]).on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
-
-    local unsettled = start(child_module)
-    unsettled:dispose("test complete")
-    assert.are.equal(15, (trees[4] or error("missing unsettled tree")).signals[1])
-    assert(processes.callbacks[4]).on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
-  end)
-
-  it("force-reaps an unresponsive disposed process lease once", function()
-    local tree_module, trees = process_trees()
-    local child_module = load_child(tree_module)
-    local processes = fake_processes()
-    local exits = 0
-    local child = start(child_module, {
-      reap_grace_ms = 0,
-      on_exit = function() exits = exits + 1 end,
-    })
-    local waiting = async.run(function()
-      return child:wait()
-    end)
-
-    child:dispose("test forced reaping")
-
-    assert(vim.wait(1000, function() return waiting:is_done() end, 5))
-    local result = assert(waiting:result())
-    assert.are.equal("worker_exit", assert(result.error).kind)
-    assert.are.same({ 15, 9 }, assert(trees[1]).signals)
-    assert.are.same({ 15, 9 }, processes.killed)
-    assert.are.equal(1, assert(trees[1]).closed)
-    assert.are.equal(1, exits)
-    child:dispose("ignored duplicate disposal")
-    assert(processes.callbacks[1]).on_exit({ code = 0, signal = 9, stdout = "", stderr = "" })
-    assert.are.equal(1, exits)
-  end)
-
-  it("contains stream, write, startup, supervision, and early-exit failures", function()
-    local tree_module, trees = process_trees()
-    local child_module = load_child(tree_module)
-    local processes = fake_processes()
-
-    local quiet = start(child_module)
-    local quiet_callbacks = processes.callbacks[1] or error("missing quiet callbacks")
-    stream(quiet_callbacks.opts.stdout, nil, "ignored")
-    stream(quiet_callbacks.opts.stderr, nil, string.rep("e", 20000))
-    stream(quiet_callbacks.opts.stdout, "read failed", nil)
-    stream(quiet_callbacks.opts.stderr, "read failed", nil)
-    assert.are.equal(15, (trees[1] or error("missing quiet tree")).signals[1])
-    quiet_callbacks.on_exit({ code = 0, signal = 9, stdout = "", stderr = "" })
-    assert.are.equal(137, quiet:wait().code)
-    quiet_callbacks.on_exit({ code = 0, signal = 0, stdout = "", stderr = "" })
-    quiet:dispose("test complete")
-
-    local failing_write = start(child_module)
-    local write_callbacks = processes.callbacks[2] or error("missing write callbacks")
-    write_callbacks.process.write = function()
-      error("write exploded")
-    end
-    local written, write_err = failing_write:write("bytes")
-    assert.is_nil(written)
-    assert.matches("write exploded", tostring(assert(write_err).detail))
-    local closed, close_err = failing_write:close_stdin()
-    assert.is_nil(closed)
-    assert.matches("write exploded", tostring(assert(close_err).detail))
-    failing_write:dispose("test complete")
-    assert(processes.callbacks[2]).on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
-
-    local callback_child = start(child_module, {
-      on_stdout = function()
-        error("stdout consumer exploded")
-      end,
-    })
-    local callback_callbacks = processes.callbacks[3] or error("missing callback callbacks")
-    stream(callback_callbacks.opts.stdout, nil, "output")
-    assert.are.equal(15, (trees[3] or error("missing callback tree")).signals[1])
-    callback_child:dispose("test complete")
-    callback_callbacks.on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
-
-    vim.system = function(_, opts, on_exit)
-      stream(opts and opts.stdout, nil, "early")
-      if not on_exit then error("missing exit callback") end
-      on_exit({ code = 0, signal = 0, stdout = "", stderr = "" })
+  before_each(function()
+    leases, actions = {}, {}
+    allocated, disposed = 0, 0
+    start_action, write_fails, close_fails = nil, false, false
+    kill_action = nil
+    pipes.new = function(_, _, callbacks)
+      events = callbacks
+      allocated = allocated + 1
       return {
-        pid = 500,
-        write = function() end,
-        kill = function() end,
+        start = function()
+          if start_action then
+            start_action()
+          end
+          return true
+        end,
+        observe = function(done) done(true) end,
+        cleanup_ms = 20,
+        write = function(bytes)
+          if write_fails then error("write failed") end
+          actions[#actions + 1] = bytes
+          return true
+        end,
+        close_stdin = function()
+          if close_fails then error("close failed") end
+          actions[#actions + 1] = "eof"
+          return true
+        end,
+        flush = function() return true end,
+        writable = function() return true end,
+        resize = function() error("not a terminal") end,
+        stop = function()
+          actions[#actions + 1] = "term"
+          return true
+        end,
+        kill = function()
+          actions[#actions + 1] = "kill"
+          if kill_action then kill_action() end
+          return true
+        end,
+        dispose = function()
+          disposed = disposed + 1
+        end,
       }
     end
-    local early = start(child_module, {
-      on_stdout = function()
-        error("early callback exploded")
-      end,
-    })
-    assert.are.equal(0, early:wait().code)
-    early:dispose("test complete")
-
-    vim.system = function()
-      error("spawn exploded")
-    end
-    local spawned, spawn_err = pcall(start, child_module)
-    assert.is_false(spawned)
-    local spawn_failure = util.normalize_error(spawn_err)
-    assert.are.equal("worker_start", spawn_failure.kind)
-    assert.matches("spawn exploded", tostring(spawn_failure.detail))
-
-    local unattached_module = process_trees(function(tree)
-      tree.attached = false
-    end)
-    child_module = load_child(unattached_module)
-    processes = fake_processes()
-    local attached, attach_err = pcall(start, child_module)
-    assert.is_false(attached)
-    assert.matches("Could not supervise", util.normalize_error(attach_err).message)
-    assert.are.same({ 9 }, processes.killed)
-
-    local missing_tree = { detach = false, new = function()
-      return nil, "tree unavailable"
-    end }
-    child_module = load_child(missing_tree)
-    local supervised, supervise_err = pcall(start, child_module)
-    assert.is_false(supervised)
-    assert.matches("process supervisor", util.normalize_error(supervise_err).message)
   end)
 
-  it("encodes environments for each supported Neovim generation", function()
-    local tree_module = process_trees()
-    local child_module = load_child(tree_module)
-    local processes = fake_processes()
-    local supports_map = true
-    vim.fn.has = function(feature)
-      if feature == "nvim-0.12" then
-        return supports_map and 1 or 0
-      end
-      return original_has(feature)
+  after_each(function()
+    vim.uv.new_timer = new_timer
+    for _, lease in ipairs(leases) do
+      lease:dispose("test finished")
     end
-    local current = start(child_module, { env = { Z = "last", A = "first" } })
-    local current_callbacks = processes.callbacks[1] or error("missing current environment callbacks")
-    assert.are.same({ Z = "last", A = "first" }, current_callbacks.opts.env)
+    if events then
+      events.exited(0, 9)
+      events.closed()
+    end
+    for _, lease in ipairs(leases) do
+      helper.complete(function() return lease:wait() end)
+    end
+    pipes.new = native_new
+  end)
 
-    supports_map = false
-    local legacy = start(child_module, { env = { Z = "last", A = "first" } })
-    local legacy_callbacks = processes.callbacks[2] or error("missing legacy environment callbacks")
-    assert.are.same({ "A=first", "Z=last" }, legacy_callbacks.opts.env)
+  ---@param overrides? {reap_grace_ms?: integer, on_stdout?: fun(bytes: string), on_stderr?: fun(bytes: string), on_exit?: fun(result: Neoagent.WorkerResult)}
+  ---@return Neoagent.WorkerLease
+  local function start(overrides)
+    overrides = overrides or {}
+    local lease = workers.start({
+      argv = { "worker" }, cwd = assert(vim.uv.cwd()), env = {},
+      kill_grace_ms = 0, reap_grace_ms = overrides.reap_grace_ms or 20,
+      on_stdout = overrides.on_stdout,
+      on_stderr = overrides.on_stderr,
+      on_exit = overrides.on_exit,
+    })
+    leases[#leases + 1] = lease
+    return lease
+  end
 
-    current:dispose("test complete")
-    current_callbacks.on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
-    legacy:dispose("test complete")
-    legacy_callbacks.on_exit({ code = 0, signal = 15, stdout = "", stderr = "" })
+  it("drains output before notifying waiters and disposes native ownership once", function()
+    local stdout, stderr, exits = {}, {}, {}
+    local lease = start({
+      on_stdout = function(bytes) stdout[#stdout + 1] = bytes end,
+      on_stderr = function(bytes) stderr[#stderr + 1] = bytes end,
+      on_exit = function(result) exits[#exits + 1] = result end,
+    })
+    assert.is_true(assert(lease.wait_ready)(lease))
+    assert.is_true((lease:write("input")))
+    assert.is_true((lease:close_stdin()))
+    assert.is_true((lease:close_stdin()))
+    assert.are.same({ "input", "eof" }, actions)
+    assert.is_nil((lease:write("late")))
+    local wait = async.run(function() return lease:wait() end)
+    events.exited(0, 0)
+    assert.is_false(wait:is_done())
+    events.output("stdout", "out\0")
+    events.output("stderr", string.rep("e", 20000))
+    events.closed()
+    assert.are.equal(0, helper.wait(wait).code)
+    assert.are.same({ "out\0" }, stdout)
+    assert.are.equal(20000, #stderr[1])
+    assert.are.equal(16384, #lease:wait().stderr)
+    assert.are.equal(1, #exits)
+    assert.are.equal(1, disposed)
+    lease:dispose("duplicate")
+    events.closed()
+    events.exited(23, 0)
+    events.output("stdout", "late output")
+    assert.are.same({ "out\0" }, stdout)
+    assert.are.equal(0, lease:wait().code)
+    assert.are.equal(1, disposed)
+  end)
+
+  it("bounds remaining output cleanup when disposed after observing native exit", function()
+    local lease = start({ reap_grace_ms = 20 })
+    events.exited(23, 0)
+    lease:dispose("owner ended after exit")
+    local result = helper.complete(function() return lease:wait() end)
+    assert.are.equal(23, result.code)
+    assert.is_nil(result.error)
+    assert.are.equal("worker_exit", assert(result.cleanup_error).kind)
+    assert.are.same({ "kill" }, actions)
+  end)
+
+  it("accepts native completion during the final tree signal exactly once", function()
+    kill_action = function() events.closed() end
+    local lease = start()
+    events.exited(23, 0)
+    assert.are.equal(23, lease:wait().code)
+    assert.are.equal(1, disposed)
+    assert.are.same({ "kill" }, actions)
+  end)
+
+  it("normalizes exact worker environments before handing them to the native driver", function()
+    local platform = jit.os
+    local module = "neoagent.subprocess.windows_environment"
+    local previous = package.loaded[module]
+    package.loaded[module] = { key = string.upper }
+    jit.os = "Windows"
+    local capture = pipes.new
+    local selected
+    pipes.new = function(spec, env, callbacks, limits)
+      selected = env
+      return capture(spec, env, callbacks, limits)
+    end
+    local ok, err = pcall(function()
+      local lease = workers.start({
+        argv = { "worker" }, cwd = assert(vim.uv.cwd()),
+        env = { SystemRoot = "C:\\Windows", Marker = "exact" }, clear_env = true,
+      })
+      leases[#leases + 1] = lease
+      assert.are.same({ SYSTEMROOT = "C:\\Windows", MARKER = "exact" }, selected)
+      events.exited(0, 0)
+      events.closed()
+      assert.are.equal(0, helper.complete(function() return lease:wait() end).code)
+    end)
+    jit.os, package.loaded[module] = platform, previous
+    assert.is_true(ok, vim.inspect(err))
+  end)
+
+  it("keeps the worker alive when a waiter is cancelled and reserves stop timers", function()
+    local lease = start()
+    local wait = async.run(function() return lease:wait() end)
+    wait:cancel()
+    helper.wait(wait)
+    assert.are.same({}, actions)
+    vim.uv.new_timer = function() error("no more native timers") end
+    lease:dispose("owner ended")
+    -- The stop request must use its reserved timer. Neovim's own vim.wait may
+    -- allocate a timer, so end allocation injection before observing escalation.
+    vim.uv.new_timer = new_timer
+    assert(vim.wait(1000, function() return actions[#actions] == "kill" end, 5))
+    assert.are.same({ "eof", "term", "kill" }, actions)
+    events.exited(0, 9)
+    events.closed()
+    assert.are.equal(137, helper.complete(function() return lease:wait() end).code)
+  end)
+
+  it("reports missing native completion without fabricating an exit status", function()
+    local exits = 0
+    local lease = start({ reap_grace_ms = 0, on_exit = function() exits = exits + 1 end })
+    lease:dispose("unresponsive worker")
+    local result = helper.complete(function() return lease:wait() end)
+    assert.are.equal("worker_exit", assert(result.cleanup_error).kind)
+    assert.is_nil(result.code)
+    assert.is_nil(result.signal)
+    assert.are.equal(1, disposed)
+    events.exited(0, 9)
+    events.closed()
+    assert.are.equal(1, exits)
+    assert.is_nil(lease:wait().code)
+  end)
+
+  it("retains failed startup until allocated native resources close", function()
+    start_action = function() error("native startup failed") end
+    ---@type Neoagent.WorkerResult[]
+    local observed = {}
+    local lease = start({ on_exit = function(result) observed[#observed + 1] = result end })
+    local readiness = helper.complete(function() return assert(lease.wait_ready)(lease) end)
+    assert.is_false(readiness.ok)
+    local err = assert(readiness.error)
+    assert.are.equal("worker_start", err.kind)
+    assert.are.equal(0, #observed)
+    assert.is_nil((lease:write("input after failed startup")))
+    lease:dispose("failed startup caller ended")
+    local waited = async.run(function() return lease:wait() end)
+    assert.is_false(waited:is_done())
+    events.closed()
+    assert.are.equal("worker_start", assert(helper.wait(waited).error).kind)
+    assert.are.equal("worker_start", assert(assert(observed[1]).error).kind)
+    assert.are.equal(1, disposed)
+  end)
+
+  it("settles early native completion after startup publishes its driver", function()
+    start_action = function()
+      events.output("stderr", "early")
+      events.exited(7, 0)
+      events.closed()
+    end
+    local lease = start({ on_exit = function() error("observer failed") end })
+    assert.are.equal(7, lease:wait().code)
+    assert.are.equal("early", lease:wait().stderr)
+    assert.are.equal(1, disposed)
+  end)
+
+  it("rejects startup before allocating a driver when timer reservation fails", function()
+    local allocations = 0
+    vim.uv.new_timer = function()
+      allocations = allocations + 1
+      if allocations == 2 then return nil end
+      return new_timer()
+    end
+    local lease = start()
+    local readiness = helper.complete(function() return assert(lease.wait_ready)(lease) end)
+    assert.is_false(readiness.ok)
+    local err = assert(readiness.error)
+    assert.are.equal("worker_start", err.kind)
+    assert.are.equal("worker_start", assert(lease:wait().error).kind)
+    assert.are.equal(0, allocated)
+  end)
+
+  for _, failure in ipairs({ "output", "input", "read", "write", "close" }) do
+    it("retains cleanup after " .. failure .. " failure", function()
+      local lease = start({ on_stdout = function() error("observer failed") end })
+      if failure == "output" then
+        events.output("stdout", "bytes")
+      elseif failure == "input" then
+        assert(events.input_failed)()
+      elseif failure == "read" then
+        events.failed("process_stream", "read failed")
+      elseif failure == "write" then
+        write_fails = true
+        local wrote, err = lease:write("bytes")
+        assert.is_nil(wrote)
+        assert.are.equal("protocol", assert(err).kind)
+      else
+        close_fails = true
+        local closed, err = lease:close_stdin()
+        assert.is_nil(closed)
+        assert.are.equal("protocol", assert(err).kind)
+        lease:dispose("close failed")
+      end
+      events.exited(0, 15)
+      events.closed()
+      local result = helper.complete(function() return lease:wait() end)
+      assert.are.equal(143, result.code)
+      if failure ~= "write" and failure ~= "close" then
+        assert.are.equal("worker_exit", assert(result.error).kind)
+      end
+      assert.are.equal(1, disposed)
+    end)
+  end
+
+  it("preserves the operation failure when native cleanup also fails", function()
+    local lease = start()
+    events.failed("process_stream", "initial read failure")
+    local result = helper.complete(function() return lease:wait() end)
+    assert.matches("cleanup did not settle", assert(result.cleanup_error).message, 1, true)
+    assert.are.equal("initial read failure", assert(result.error).message)
   end)
 end)

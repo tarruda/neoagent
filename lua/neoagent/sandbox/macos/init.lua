@@ -224,7 +224,7 @@ function M.start_worker(request, services)
     on_stderr = request.on_stderr,
     on_exit = request.on_exit,
     cleanup = function(result)
-      if result.code == 0 and not result.error then
+      if result.code == 0 and not result.error and not result.cleanup_error then
         return true
       end
       local recovered = require("neoagent.process").run(argv, {
