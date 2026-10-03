@@ -128,7 +128,9 @@ function M.spec(value)
       "Pipe stdin must be closed or open"
     )
   else
-    check(false, "Process stdio kind must be pipes")
+    M.fields(value.stdio, { kind = true, columns = true, rows = true }, "PTY stdio")
+    check(value.stdio.kind == "pty", "Process stdio kind must be pipes or pty")
+    M.dimensions(value.stdio.columns, value.stdio.rows)
   end
   check(
     value.timeout_ms == nil or M.integer(value.timeout_ms, 1, M.MAX_TIMEOUT_MS),

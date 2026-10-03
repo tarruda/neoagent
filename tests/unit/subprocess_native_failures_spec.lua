@@ -191,7 +191,7 @@ describe("subprocess native failures", function()
     assert.are.equal(0, observed)
   end)
 
-  for _, kind in ipairs({ "pipes" }) do
+  for _, kind in ipairs({ "pipes", "pty" }) do
     it("terminates the " .. kind .. " leader when its process group cannot be signalled", function()
       vim.uv.kill = function(pid, signal)
         if pid < 0 then
@@ -363,6 +363,58 @@ describe("subprocess native failures", function()
     )
   end)
 
+  it("rejects native PTY allocation failures without publishing a handle", function()
+    local selected = helper.spec("unused", { stdio = { kind = "pty", columns = 80, rows = 24 } })
+    vim.uv.new_pipe = function()
+      error("native allocation failed")
+    end
+    assert.are.equal(
+      "process_start",
+      helper.failure(function()
+        owner:spawn(selected)
+      end).code
+    )
+    vim.uv.new_pipe = new_pipe
+    assert.is_true(helper.complete(function()
+      return owner:wait(1000)
+    end))
+    selected.argv = { "/neoagent-missing-pty-command" }
+    assert.are.equal(
+      "process_start",
+      helper.failure(function()
+        owner:spawn(selected)
+      end).code
+    )
+  end)
+
+  for _, throws in ipairs({ false, true }) do
+    it("reports native PTY write rejection with throwing=" .. tostring(throws), function()
+      local handle = owner:spawn(helper.spec("exec sleep 10", {
+        stdio = { kind = "pty", columns = 80, rows = 24 },
+      }))
+      vim.uv.write = function()
+        if throws then
+          error("closed native stream")
+        end
+        return nil, "EPIPE"
+      end
+      assert.are.equal(
+        "stdin_closed",
+        helper.failure(function()
+          handle:write("bytes")
+        end).code
+      )
+      assert.is_false(handle:state().stdin_writable)
+      assert.are.equal("running", handle:state().phase)
+      handle:terminate("native input failed")
+      assert.are.equal(
+        "native input failed",
+        helper.complete(function()
+          return handle:wait()
+        end).termination_reason
+      )
+    end)
+  end
 
   it("rejects an invalid scope wait without dropping active targets", function()
     local handle = owner:spawn(helper.spec("sleep 10"))

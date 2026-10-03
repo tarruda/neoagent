@@ -3,6 +3,7 @@ local util = require("neoagent.util")
 local validate = require("neoagent.subprocess.validate")
 local environment = require("neoagent.subprocess.environment")
 local pipe = require("neoagent.subprocess.pipe")
+local pty = require("neoagent.subprocess.pty")
 local cleanup = require("neoagent.subprocess.cleanup")
 
 local M = {}
@@ -352,7 +353,7 @@ function Owned:start()
         self:fail(validate.error(code, message))
       end,
     }
-    local driver = pipe.new(self.spec, self.env, callbacks)
+    local driver = (self.spec.stdio.kind == "pty" and pty or pipe).new(self.spec, self.env, callbacks)
     self.kill_timer = assert(vim.uv.new_timer())
     return driver
   end)
@@ -473,7 +474,7 @@ function M.new(spec, observer, on_cleanup, capture)
           or self.terminating and "terminating"
           or "running",
         stdin_writable = available and self.driver ~= nil and self.driver.writable(),
-        resize_supported = false,
+        resize_supported = available and spec.stdio.kind == "pty",
         terminal = util.copy(self.outcome),
         failure = util.copy(self.failure or self.cleanup_error or self.disposal),
       }

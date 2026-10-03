@@ -16,6 +16,28 @@ describe("subprocess call boundary", function()
     end))
   end)
 
+  it("rejects Windows PTY dimensions outside signed native coordinates before allocation", function()
+    local platform = jit.os
+    local pty = require("neoagent.subprocess.pty")
+    local original = pty.new
+    local attempted = false
+    pty.new = function()
+      attempted = true
+      error("unexpected native allocation")
+    end
+    jit.os = "Windows"
+    local ok, err = pcall(function()
+      for _, size in ipairs({ { 32768, 24 }, { 80, 32768 }, { 65535, 65535 } }) do
+        local failure = helper.failure(function()
+          owner:spawn(helper.spec("unused", { stdio = { kind = "pty", columns = size[1], rows = size[2] } }))
+        end)
+        assert.are.equal("invalid_terminal_size", failure.code)
+      end
+    end)
+    jit.os, pty.new = platform, original
+    assert.is_true(ok, vim.inspect(err))
+    assert.is_false(attempted)
+  end)
 
   it("rejects invalid specs before creating a process", function()
     local original = pipe.new

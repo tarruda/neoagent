@@ -200,7 +200,13 @@ Before completion:
 - Run `make typecheck` when changing Lua code or type-check configuration.
 - Check documentation against the reader needs above; edit only where needed.
 - Require 100% shipped Lua line coverage, with zero missed lines rather
-  than a rounded percentage. Every file under `lua/applet/`, `lua/neoagent/`,
+  than a rounded percentage. The sole exception is the marked hook-free
+  critical section and child routine in `subprocess/fork_exec.lua`: macOS
+  fork/exec suspends Lua hooks there, so LuaCov cannot observe execution.
+  Keep the native macOS startup, failure, cancellation, and cleanup regressions;
+  their behavior remains required even though these lines have no counters.
+  Code before hook suspension and after restoration remains in the line gate.
+  Every file under `lua/applet/`, `lua/neoagent/`,
   and `plugin/` must appear, including files normal tests do not load.
   CI merges native Linux, macOS, and Windows counters before enforcing the
   requirement; run platform-specific tests on their actual host.
