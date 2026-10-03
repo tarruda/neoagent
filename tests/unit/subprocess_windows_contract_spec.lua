@@ -122,6 +122,38 @@ describe("Windows subprocess boundary rules", function()
     assert.is_true(ok, vim.inspect(err))
   end)
 
+  it("rejects failed native environment normalization before acquiring resources", function()
+    local subprocess = require("neoagent.subprocess_common")
+    local native = require("ffi")
+    local module = "neoagent.subprocess.windows_environment"
+    local previous, platform = package.loaded[module], jit.os
+    local owner = subprocess.scope()
+    package.loaded.ffi = setmetatable({
+      load = function()
+        return {
+          LCMapStringW = function()
+            return 0
+          end,
+        }
+      end,
+    }, { __index = native })
+    package.loaded[module] = nil
+    local loaded, load_error = pcall(require, module)
+    package.loaded.ffi = native
+    jit.os = "Windows"
+    local ok, failure = pcall(helper.failure, function()
+      assert.is_true(loaded, vim.inspect(load_error))
+      local selected = helper.spec("unused")
+      selected.environment = { inherit = false, set = { MARKER = "value" } }
+      owner:spawn(selected)
+    end)
+    jit.os, package.loaded[module] = platform, previous
+    owner:close("test complete")
+    assert.is_true(ok, vim.inspect(failure))
+    assert.are.equal("process_validation", failure.code)
+    assert.is_true(owner:is_settled())
+  end)
+
   it("uses native name equivalence for inherited overrides and duplicate rejection", function()
     local platform, inherited = jit.os, vim.env["éVAR"]
     local module = "neoagent.subprocess.windows_environment"

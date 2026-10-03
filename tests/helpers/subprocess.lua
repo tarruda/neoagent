@@ -48,4 +48,21 @@ function M.failure(fn)
   return require("neoagent.util").normalize_error(err)
 end
 
+---@param values? {code?: integer, signal?: integer, stdout?: string, stderr?: string, output?: string, timed_out?: boolean}
+---@return Neoagent.SubprocessResult
+function M.result(values)
+  values = values or {}
+  return {
+    code = values.code or 0,
+    signal = values.signal or 0,
+    timed_out = values.timed_out or false,
+    started_at_ns = 0,
+    finished_at_ns = 1,
+    duration_ms = 0.000001,
+    stdout = values.stdout or "",
+    stderr = values.stderr or "",
+    output = values.output or "",
+  }
+end
+
 return M

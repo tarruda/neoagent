@@ -3,7 +3,7 @@ local codec = require("neoagent.rpc.codec")
 local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
-local process = require("neoagent.process")
+local process = require("neoagent.subprocess_common")
 
 ---@generic T, E
 ---@param run Neoagent.Run<T, E>
@@ -15,10 +15,16 @@ local function wait(run, timeout)
 end
 
 ---@param command string[]
----@param opts? Neoagent.ProcessOptions
----@return Neoagent.RunResult<Neoagent.ProcessResult>
+---@param opts? Neoagent.SubprocessRunOptions
+---@return Neoagent.RunResult<Neoagent.SubprocessResult>
 local function run(command, opts)
-  return wait(async.run(function() return process.run(command, opts) end))
+  opts = opts or { capture = { max_bytes = 1024 * 1024 } }
+  return wait(async.run(function() return process.run(
+      {
+        argv = command,
+        cwd = assert(vim.uv.cwd()),
+        stdio = { kind = "pipes", stdin = opts.input and "open" or "closed" },
+      }, opts) end))
 end
 
 describe("neoagent Windows process runner", function()
@@ -85,9 +91,9 @@ describe("neoagent Windows process runner", function()
     assert.is_not.equal("", python)
     local bytes = "\0one\r\ntwo\n\255\0"
     local command = '"' .. python .. '" -c "import sys; '
-      .. 'data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); '
+      .. "data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); "
       .. 'sys.stderr.buffer.write(data)"'
-    local result = run({ "cmd.exe", "/d", "/s", "/c", command }, { stdin = bytes })
+    local result = run({ "cmd.exe", "/d", "/s", "/c", command }, { capture = { max_bytes = 1024 }, input = { chunks = { bytes }, close = true } })
     assert.are.equal(0, result.code, vim.inspect(result))
     assert.are.equal(bytes, result.stdout)
     assert.are.equal(bytes, result.stderr)
@@ -97,7 +103,7 @@ describe("neoagent Windows process runner", function()
     local python = vim.fn.exepath("python")
     assert.is_not.equal("", python)
     local command = '"' .. python .. '" -c "import sys; '
-      .. 'data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); '
+      .. "data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); "
       .. 'sys.stderr.buffer.write(data)"'
     local output, errors = {}, {}
     local child = require("neoagent.rpc.worker_lease").start({
@@ -184,9 +190,15 @@ describe("neoagent Windows process runner", function()
 
     local active = async.run(function()
       return process.run({
-        "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+          argv = {
+            "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass", "-File", parent,
-      }, { kill_grace_ms = 0 })
+      },
+          cwd = assert(root),
+          stdio = { kind = "pipes" },
+          kill_grace_ms = 0,
+        },
+        { capture = false })
     end)
     local child_started = vim.wait(20000, function()
       return vim.uv.fs_stat(started) ~= nil
