@@ -64,7 +64,9 @@ if vim.env.NEOAGENT_COVERAGE == "1" then
   package.path = root .. "/.deps/coverage-native/cluacov/src/?.lua;" .. package.path
   package.cpath = root .. "/.deps/coverage-native/lib/?.so;" .. package.cpath
   local runner = require("luacov.runner")
-  runner(dofile(vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
+  local config = dofile(vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua"))
+  runner(config)
+  require("tests.helpers.work_coverage").install(config)
   vim.api.nvim_create_autocmd("VimLeavePre", {
     once = true,
     callback = function() runner.shutdown() end,

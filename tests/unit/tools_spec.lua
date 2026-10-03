@@ -36,20 +36,23 @@ local function filesystem(overrides)
 end
 
 ---@param values {code: integer, signal?: integer, stdout?: string, stderr?: string, output?: string, timed_out?: boolean}
----@return Neoagent.ProcessResult
+---@return Neoagent.SubprocessResult
 local function process_result(values)
   return {
     code = values.code, signal = values.signal or 0,
     stdout = values.stdout or "", stderr = values.stderr or "",
     output = values.output or (values.stdout or "") .. (values.stderr or ""),
     timed_out = values.timed_out or false,
+    started_at_ns = 0,
+    finished_at_ns = 1,
+    duration_ms = 0.000001,
   }
 end
 
----@param options Neoagent.ProcessOptions?
+---@param options Neoagent.SubprocessRunOptions?
 ---@param data string
 local function emit(options, data)
-  assert(assert(options).on_output)(data, false, "", "", "")
+  assert(assert(options).on_output)({ stream = "stdout", data = data })
 end
 
 ---@class Neoagent.TestToolCapabilities
@@ -59,12 +62,12 @@ end
 
 ---@param workspace Neoagent.Workspace
 ---@param updates? Neoagent.ToolResult[]
----@param capabilities? {fs?: Neoagent.TestToolFilesystemOverrides, process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult), observe_output?: fun(output: string)}
+---@param capabilities? {fs?: Neoagent.TestToolFilesystemOverrides, run?: (fun(spec: Neoagent.SubprocessSpec, opts: Neoagent.SubprocessRunOptions): Neoagent.SubprocessResult), observe_output?: fun(output: string)}
 ---@return Neoagent.TestToolCapabilities
 local function ctx(workspace, updates, capabilities)
   local dependencies = capabilities and {
     fs = capabilities.fs and filesystem(capabilities.fs) or nil,
-    process = capabilities.process,
+    subprocesses = capabilities.run and { run = capabilities.run } or nil,
     observe_output = capabilities.observe_output,
   } or nil
   return {
@@ -424,7 +427,7 @@ describe("neoagent bundled tools", function()
       execute(require("neoagent.tools.find").new(), {
         pattern = "x",
       }, ctx(workspace, nil, {
-        process = function()
+        run = function()
           return process_result({ code = 1, stdout = "", stderr = "not a directory" })
         end,
       }))
@@ -461,8 +464,9 @@ describe("neoagent bundled tools", function()
       end,
     }
     local commands = {}
-    local injected_process = function(command, opts)
-      commands[#commands + 1] = { command = command, opts = opts }
+    local injected_run = function(spec, opts)
+      local command = spec.argv
+      commands[#commands + 1] = { command = command, spec = spec, opts = opts }
       if command[1] == "rg" then
         return process_result({ code = 1, signal = 0, stdout = "", stderr = "", output = "" })
       elseif command[1] == "fd" then
@@ -488,7 +492,7 @@ describe("neoagent bundled tools", function()
     end
     local context = ctx(workspace, nil, {
       fs = injected_fs,
-      process = injected_process,
+      run = injected_run,
     })
 
     local read = execute(require("neoagent.tools.read_file").new(), {
@@ -538,7 +542,8 @@ describe("neoagent bundled tools", function()
         require("neoagent.tools.shell").new(), {
           command = "echo ok",
         }, ctx(workspace, nil, {
-          process = function(argv, opts)
+          run = function(spec, opts)
+            local argv = spec.argv
             command = argv
             emit(opts, "ok")
             return process_result({ code = 0, signal = 0 })
@@ -563,15 +568,16 @@ describe("neoagent bundled tools", function()
     local png = "\137PNG\r\n\26\ninjected"
     local converted = "\137PNG\r\n\26\nconverted"
     local calls = {}
-    local process = function(command, opts)
-      calls[#calls + 1] = { command = command, opts = opts }
+    local run = function(spec, opts)
+      local command = spec.argv
+      calls[#calls + 1] = { command = command, spec = spec, opts = opts }
       if command[2] == "identify" then
         return process_result({
           code = 0,
           signal = 0,
-          stdout = opts.stdin == png and "3000 1000" or "2000 667",
+          stdout = assert(opts.input).chunks[1] == png and "3000 1000" or "2000 667",
           stderr = "",
-          output = opts.stdin == png and "3000 1000" or "2000 667",
+          output = assert(opts.input).chunks[1] == png and "3000 1000" or "2000 667",
         })
       end
       return process_result({
@@ -591,7 +597,7 @@ describe("neoagent bundled tools", function()
           return png
         end,
       },
-      process = process,
+      run = run,
     }))
     vim.env.PATH = old_path
 
@@ -601,9 +607,9 @@ describe("neoagent bundled tools", function()
     for _, call in ipairs(calls) do
       assert.are.equal("magick", call.command[1])
       assert.is_truthy(call.command[#call.command]:find(":-", 1, true))
-      assert.is_truthy(call.opts.stdin)
-      assert.are.equal(30000, call.opts.timeout_ms)
-      assert.is_not_nil(call.opts.max_capture_bytes)
+      assert.is_truthy(call.opts.input)
+      assert.are.equal(30000, call.spec.timeout_ms)
+      assert.is_not_nil(call.opts.capture)
       local command = table.concat(call.command, " ")
       assert.matches("%-limit memory 128MiB", command)
       assert.matches("%-limit map 256MiB", command)
@@ -628,7 +634,7 @@ describe("neoagent bundled tools", function()
     assert.is_truthy((assert(text):find(
       "constructor input is an ordinary options table", 1, true)))
     assert.is_nil((assert(text):find(
-      "neoagent.new(require(\"neoagent.config\").get()", 1, true)))
+      'neoagent.new(require("neoagent.config").get()', 1, true)))
     assert.matches("Tools and execution", (assert(text)))
     assert.matches("Runtime policies and UI", (assert(text)))
     assert.matches("architecture.md", (assert(text)))
@@ -869,7 +875,7 @@ describe("neoagent bundled tools", function()
     local old_path = vim.env.PATH
     vim.env.PATH = root
     local process_ok, process_err = pcall(execute, read.new(), { path = "image.png" },
-      ctx(workspace, nil, { process = function()
+      ctx(workspace, nil, { run = function()
         return process_result({ code = 0, timed_out = true })
       end }))
     vim.env.PATH = old_path
@@ -932,7 +938,8 @@ describe("neoagent bundled tools", function()
     ok, err = pcall(execute,
       read.new({ max_image_output_bytes = 16 }),
       { path = "image.png" }, ctx(workspace, nil, {
-        process = function(argv)
+        run = function(spec)
+          local argv = spec.argv
           if argv[2] == "identify" then
             return process_result({ code = 0, stdout = "10 10", stderr = "" })
           end
@@ -965,13 +972,17 @@ describe("neoagent bundled tools", function()
     assert(vim.uv.fs_chmod(magick, 493))
     local old_path = vim.env.PATH
     vim.env.PATH = root .. ":" .. old_path
-    ---@type Neoagent.ProcessOptions?
+    ---@type Neoagent.SubprocessRunOptions?
     local seen_options
+    ---@type Neoagent.SubprocessSpec?
+    local seen_spec
     local identify_output = "100 100"
     local identify_code = 0
     local capability = {
-      process = function(argv, opts)
+      run = function(spec, opts)
+        local argv = spec.argv
         seen_options = opts
+        seen_spec = spec
         if argv[2] == "identify" then
           return process_result({
             code = identify_code,
@@ -1000,8 +1011,8 @@ describe("neoagent bundled tools", function()
 
     assert.is_false(pixel_ok)
     assert.matches("image dimensions exceed 9999 pixels", tostring(pixel_err))
-    assert.are.equal(30000, assert(seen_options).timeout_ms)
-    assert.is_not_nil(assert(seen_options).max_capture_bytes)
+    assert.are.equal(30000, assert(seen_spec).timeout_ms)
+    assert.is_not_nil(assert(seen_options).capture)
     assert.is_false(payload_ok)
     assert.matches("image output exceeds 8 bytes", tostring(payload_err))
     assert.is_false(inspect_ok)
@@ -1018,7 +1029,7 @@ describe("neoagent bundled tools", function()
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
       "#!" .. shebang_shell(),
-      "if [ \"$1\" = identify ]; then",
+      'if [ "$1" = identify ]; then',
       "  input=$(cat)",
       "  case \"$input\" in *converted*) printf '2000 667' ;; *) printf '3000 1000' ;; esac",
       "  exit 0",
@@ -1054,12 +1065,12 @@ describe("neoagent bundled tools", function()
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
       "#!" .. shebang_shell(),
-      "if [ \"$1\" = identify ]; then",
+      'if [ "$1" = identify ]; then',
       "  input=$(cat)",
       "  case \"$input\" in *bounded*) printf '1600 1600' ;; *) printf '3000 3000' ;; esac",
       "  exit 0",
       "fi",
-      "case \" $* \" in",
+      'case " $* " in',
       "  *' -quality '*) printf 'bounded jpeg' ;;",
       "  *) dd if=/dev/zero bs=3600000 count=1 2>/dev/null ;;",
       "esac",
@@ -1183,22 +1194,22 @@ describe("neoagent bundled tools", function()
     roots[#roots + 1] = root
     local cases = {
       {
-        before = 'keep “exact”  \nchange “this”\n',
+        before = "keep “exact”  \nchange “this”\n",
         edits = { { oldText = 'change "this"', newText = "replacement" } },
-        after = 'keep “exact”  \nreplacement\n',
+        after = "keep “exact”  \nreplacement\n",
       },
       {
-        before = 'const text = “hello”; // keep “comment”  \n',
-        edits = { { oldText = '“hello” ', newText = '“world”' } },
-        after = 'const text = “world”; // keep “comment”  \n',
+        before = "const text = “hello”; // keep “comment”  \n",
+        edits = { { oldText = "“hello” ", newText = "“world”" } },
+        after = "const text = “world”; // keep “comment”  \n",
       },
       {
-        before = '“keep” first  \n  “second”\nlast “keep”  \n',
+        before = "“keep” first  \n  “second”\nlast “keep”  \n",
         edits = {
           { oldText = 'first\n  "second"', newText = "joined" },
           { oldText = "last", newText = "LAST" },
         },
-        after = '“keep” joined\nLAST “keep”  \n',
+        after = "“keep” joined\nLAST “keep”  \n",
       },
       {
         before = 'pick "one"\npick “one”\nchange “this”\n',
@@ -1206,15 +1217,15 @@ describe("neoagent bundled tools", function()
           { oldText = 'pick "one"', newText = "picked" },
           { oldText = 'change "this"', newText = "changed" },
         },
-        after = 'picked\npick “one”\nchanged\n',
+        after = "picked\npick “one”\nchanged\n",
       },
       {
-        before = 'keep 😀\n“start”\n\nwith\194\160space — end  ',
+        before = "keep 😀\n“start”\n\nwith\194\160space — end  ",
         edits = {
           { oldText = '"start"', newText = "start" },
           { oldText = "with space - end", newText = "finish" },
         },
-        after = 'keep 😀\nstart\n\nfinish  ',
+        after = "keep 😀\nstart\n\nfinish  ",
       },
     }
     for _, case in ipairs(cases) do
@@ -1231,7 +1242,7 @@ describe("neoagent bundled tools", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local path = root .. "/edit.txt"
-    local before = '“one”  \ntwo'
+    local before = "“one”  \ntwo"
     assert(fs.write_all(path, before, "w"))
     for _, edits in ipairs({
       { { oldText = "\t", newText = "insert" } },
@@ -1474,7 +1485,7 @@ describe("neoagent bundled tools", function()
       fs = {
         create_temp = function() return nil, "spill disabled" end,
       },
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, full_output)
         return process_result({ code = 1 })
       end,
@@ -1492,8 +1503,8 @@ describe("neoagent bundled tools", function()
     roots[#roots + 1] = root
     local timeouts = {}
     local context = ctx(workspace, nil, {
-      process = function(_, opts)
-        timeouts[#timeouts + 1] = assert(opts).timeout_ms
+      run = function(spec)
+        timeouts[#timeouts + 1] = spec.timeout_ms
         return process_result({ code = 0, signal = 0 })
       end,
     })
@@ -1507,14 +1518,63 @@ describe("neoagent bundled tools", function()
     local unbounded = -1
     execute(shell.new({ default_timeout = false }), { command = "unbounded" },
       ctx(workspace, nil, {
-        process = function(_, opts)
-          unbounded = assert(opts).timeout_ms
+        run = function(spec)
+          unbounded = spec.timeout_ms
           return process_result({ code = 0, signal = 0 })
         end,
       }))
 
     assert.are.same({ 300000, 2500, 1 }, timeouts)
     assert.is_nil(unbounded)
+  end)
+
+  it("rejects shell defaults beyond the subprocess timeout range", function()
+    local shell = require("neoagent.tools.shell")
+    for _, timeout in ipairs({ 2147483.648, 30 * 24 * 60 * 60 }) do
+      assert.has_error(function()
+        shell.new({ default_timeout = timeout })
+      end)
+    end
+  end)
+
+  it("rejects oversized shell request timeouts before calling its execution dependency", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local invoked = false
+    local tool = require("neoagent.tools.shell").new()
+    local context = ctx(workspace, nil, {
+      run = function()
+        invoked = true
+        return process_result({ code = 0 })
+      end,
+    })
+    assert.has_error(function()
+      execute(tool, { command = "ignored", timeout = 2147483.648 }, context)
+    end)
+    assert.is_false(invoked)
+  end)
+
+  it("runs shell commands with the largest supported default and request timeout", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local shell = require("neoagent.tools.shell")
+    for _, result in ipairs({
+      execute(shell.new({ default_timeout = 2147483.647 }), { command = "printf bounded" }, ctx(workspace)),
+      execute(shell.new(), { command = "printf bounded", timeout = 2147483.647 }, ctx(workspace)),
+    }) do
+      assert.is_false(result.isError)
+      assert.are.equal("bounded", result_text(result))
+    end
+  end)
+
+  it("rejects oversized shell timeouts in prepared worker requests", function()
+    local shell = require("neoagent.tools.shell")
+    assert.has_error(function()
+      shell.validate_request({ argv = { "sh", "-c", "true" }, timeout_ms = 2147483648 })
+    end)
+    assert.are.equal(2147483647, shell.validate_request({
+      argv = { "sh", "-c", "true" }, timeout_ms = 2147483647,
+    }).timeout_ms)
   end)
 
   it("escapes non-text shell bytes in updates and the final result", function()
@@ -1524,7 +1584,7 @@ describe("neoagent bundled tools", function()
     local result = execute(require("neoagent.tools.shell").new(), {
       command = "ignored",
     }, ctx(workspace, updates, {
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, "plain\0\27\255\195(tail\n")
         return process_result({ code = 0, signal = 0 })
       end,
@@ -1550,7 +1610,7 @@ describe("neoagent bundled tools", function()
     local result = execute(require("neoagent.tools.shell").new(), {
       command = "ignored",
     }, ctx(workspace, updates, {
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, ansi)
         return process_result({ code = 2, signal = 0 })
       end,
@@ -1577,7 +1637,7 @@ describe("neoagent bundled tools", function()
     local ok, result = pcall(execute, require("neoagent.tools.shell").new(), {
       command = "ignored",
     }, ctx(workspace, nil, {
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, original)
         return process_result({ code = 0, signal = 0 })
       end,
@@ -1635,7 +1695,7 @@ describe("neoagent bundled tools", function()
       end,
     }
     local expected = {}
-    local injected_process = function(_, opts)
+    local injected_run = function(_, opts)
       assert.is_false(opts.capture)
       for index = 1, 2101 do
         local chunk = tostring(index) .. "\n"
@@ -1655,7 +1715,7 @@ describe("neoagent bundled tools", function()
       command = "ignored",
     }, ctx(workspace, nil, {
       fs = injected_fs,
-      process = injected_process,
+      run = injected_run,
     }))
 
     assert.is_false(result.isError)
@@ -1680,7 +1740,7 @@ describe("neoagent bundled tools", function()
         end,
         write_all = function() return nil, failure end,
       }
-      local injected_process = function(_, opts)
+      local injected_run = function(_, opts)
         assert.is_false(opts.capture)
         emit(opts, string.rep("x", 120 * 1024 - 5) .. "\27[31m")
         return process_result({
@@ -1696,7 +1756,7 @@ describe("neoagent bundled tools", function()
         command = "ignored",
       }, ctx(workspace, nil, {
         fs = injected_fs,
-        process = injected_process,
+        run = injected_run,
       }))
 
       assert.is_false(result.isError)
@@ -1724,7 +1784,7 @@ describe("neoagent bundled tools", function()
     local ansi_timeout = execute(require("neoagent.tools.shell").new(), {
       command = "ignored",
     }, ctx(workspace, nil, {
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, "\27[31mwaiting\27[0m")
         return process_result({ code = 124, signal = 15, timed_out = true })
       end,
@@ -1813,10 +1873,10 @@ describe("neoagent bundled tools", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local ok, err = pcall(execute, require("neoagent.tools.grep").new(),
-      { pattern = "needle" }, ctx(workspace, nil, { process = function(_, opts)
+      { pattern = "needle" }, ctx(workspace, nil, { run = function(_, opts)
         assert(opts)
         assert(opts.on_output)
-        opts.on_output("rg denied\n", true, "", "", "")
+        opts.on_output({ stream = "stderr", data = "rg denied\n" })
         return process_result({ code = 2 })
       end }))
     assert.is_false(ok)
@@ -1827,7 +1887,8 @@ describe("neoagent bundled tools", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local calls = 0
-    local process = function(command, opts)
+    local run = function(spec, opts)
+      local command = spec.argv
       calls = calls + 1
       assert.is_false(opts.capture)
       assert.is_function(opts.on_output)
@@ -1839,7 +1900,7 @@ describe("neoagent bundled tools", function()
       end
       return process_result({ code = 0, signal = 0, stdout = "", stderr = "", output = "" })
     end
-    local context = ctx(workspace, nil, { process = process })
+    local context = ctx(workspace, nil, { run = run })
 
     local grep = execute(require("neoagent.tools.grep").new(), {
       pattern = "result", limit = 2,
@@ -1863,7 +1924,7 @@ describe("neoagent bundled tools", function()
     local result = execute(require("neoagent.tools.grep").new(), {
       pattern = "result",
     }, ctx(workspace, nil, {
-      process = function(_, opts)
+      run = function(_, opts)
         emit(opts, "")
         emit(opts, "file.lua:1:" .. string.rep("x", 3000) .. "\n")
         return process_result({ code = 0 })

@@ -37,6 +37,77 @@ local function exited(code, signal)
 end
 
 describe("neoagent native sandbox relay lease", function()
+  it("preserves host cleanup separately from an earlier protocol failure", function()
+    local util = require("neoagent.util")
+    local relay = relay_lease.new({
+      cleanup = function()
+        return nil, "staging removal denied"
+      end,
+    })
+    relay:attach(base_child())
+    relay:feed("\0\0\0\1\255")
+    local admitted, admission_error = pcall(relay.wait_ready, relay)
+    assert.is_false(admitted)
+    local native_error = util.error("worker_exit", "native child reap failed", "errno=10")
+    relay:host_exited({ stderr = "", cleanup_error = native_error })
+    local result = relay:wait()
+    local cleanup = assert(result.cleanup_error)
+    assert.are.same(native_error, rawget(cleanup, "cause"))
+    assert.are.equal("staging removal denied", cleanup.detail)
+    assert.are.same(admission_error, result.error)
+  end)
+
+  it("preserves unknown exit status when native cleanup fails", function()
+    local relay = relay_lease.new()
+    relay:feed(ready())
+    relay:host_exited({ stderr = "", cleanup_error = require("neoagent.util").error("worker_exit", "Cleanup did not settle") })
+    local result = relay:wait()
+    assert.is_not_nil(result.cleanup_error)
+    assert.is_nil(result.code)
+    assert.is_nil(result.signal)
+  end)
+
+  it("preserves the observed target exit when later cleanup fails", function()
+    local relay = relay_lease.new({ cleanup = function() return nil, "cleanup failed" end })
+    relay:feed(ready() .. exited(143, 15))
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    local result = relay:wait()
+    assert.is_not_nil(result.cleanup_error)
+    assert.are.equal(143, result.code)
+    assert.are.equal(15, result.signal)
+  end)
+
+  for _, throws in ipairs({ false, true }) do
+    it("preserves cleanup failure after protocol failure with throwing=" .. tostring(throws), function()
+      local failures, exits = {}, {}
+      local relay = relay_lease.new({
+        cleanup = function()
+          if throws then
+            error("staging cleanup denied", 0)
+          end
+          return nil, "staging cleanup denied"
+        end,
+        on_failure = function(err) failures[#failures + 1] = err end,
+        on_exit = function(result) exits[#exits + 1] = result end,
+      })
+      relay:attach(base_child())
+      relay:feed("\0\0\0\1\255")
+      local ready, readiness_error = pcall(relay.wait_ready, relay)
+      assert.is_false(ready)
+      relay:host_exited({ code = 0, signal = 0, stderr = "" })
+      local result = relay:wait()
+      local failure = assert(result.cleanup_error)
+      assert.are.equal("Could not clean native sandbox resources", failure.message)
+      assert.are.equal("staging cleanup denied", failure.detail)
+      assert.are.same(readiness_error, result.error)
+      assert.are.same({ readiness_error }, failures)
+      assert.are.same({ result }, exits)
+      local still_failed, still_error = pcall(relay.wait_ready, relay)
+      assert.is_false(still_failed)
+      assert.are.same(readiness_error, still_error)
+    end)
+  end
+
   it("discards stdout when only a stderr observer is installed", function()
     local stderr = {}
     local relay = relay_lease.new({
@@ -136,6 +207,32 @@ describe("neoagent native sandbox relay lease", function()
     end)
     if resume then resume() end
     observer:cancel()
+    assert.is_true(checked, tostring(failure))
+  end)
+
+  it("retains protocol failures received while native cleanup is pending", function()
+    ---@type fun()?
+    local resume
+    local failures = {}
+    local relay = relay_lease.new({
+      cleanup = function()
+        return async.await(function(done) resume = function() done.resolve(true) end end)
+      end,
+      on_failure = function(err) failures[#failures + 1] = err end,
+    })
+    relay:attach(base_child())
+    relay:feed(ready() .. exited())
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    local checked, failure = pcall(function()
+      assert.is_function(resume)
+      relay:feed(ready())
+      assert(resume)()
+      assert.are.equal(1, #failures)
+      local waiting = async.run(function() return relay:wait() end)
+      assert(vim.wait(1000, function() return waiting:is_done() end))
+      assert.are.same(failures[1], assert(waiting:result()).error)
+    end)
+    if resume then resume() end
     assert.is_true(checked, tostring(failure))
   end)
 
@@ -310,7 +407,7 @@ describe("neoagent native sandbox relay lease", function()
       local relay = relay_lease.new({ cleanup = cleanup })
       relay:feed(ready() .. exited())
       relay:host_exited({ code = 0, signal = 0, stderr = "" })
-      assert.matches("Could not clean", assert(relay:wait().error).message)
+      assert.matches("Could not clean", assert(relay:wait().cleanup_error).message)
     end
 
     local callback = relay_lease.new({

@@ -1,6 +1,4 @@
 local bit = require("bit")
-local util = require("neoagent.util")
-local command_line = require("neoagent.process.windows_command")
 
 local M = {}
 -- Handles are opaque values: only the owning native backend interprets them.
@@ -10,6 +8,7 @@ local M = {}
 ---@field create fun(): Neoagent.WindowsProcessHandle?, string?
 ---@field open fun(pid: integer): Neoagent.WindowsProcessHandle?, string?
 ---@field assign fun(job: Neoagent.WindowsProcessHandle, process: Neoagent.WindowsProcessHandle): true?, string?
+---@field running fun(process: Neoagent.WindowsProcessHandle): boolean?, string?
 ---@field terminate fun(job: Neoagent.WindowsProcessHandle, code: integer): true?, string?
 ---@field close fun(handle: Neoagent.WindowsProcessHandle)
 
@@ -20,6 +19,7 @@ local M = {}
 ---  SetInformationJobObject: (fun(job: Neoagent.WindowsProcessHandle, class: integer, limits: Neoagent.WindowsJobLimits, size: integer): integer),
 ---  OpenProcess: (fun(access: integer, inherit: integer, pid: integer): Neoagent.WindowsProcessHandle?),
 ---  AssignProcessToJobObject: (fun(job: Neoagent.WindowsProcessHandle, process: Neoagent.WindowsProcessHandle): integer),
+---  WaitForSingleObject: (fun(process: Neoagent.WindowsProcessHandle, timeout: integer): integer),
 ---  TerminateJobObject: (fun(job: Neoagent.WindowsProcessHandle, code: integer): integer),
 ---  CloseHandle: (fun(handle: Neoagent.WindowsProcessHandle): integer),
 ---}
@@ -36,98 +36,13 @@ local M = {}
 ---@class Neoagent.WindowsProcessTree
 ---@field backend Neoagent.WindowsProcessBackend
 ---@field job Neoagent.WindowsProcessHandle
+---@field process? Neoagent.WindowsProcessHandle
 ---@field closed? boolean
 ---@field attached? boolean
 local Tree = {}
 Tree.__index = Tree
 ---@type table<Neoagent.WindowsProcessFfi, boolean>
 local declared = {}
-
----@param callback fun(err?: string, data?: string)
----@return fun(job: integer, data: string[])
-local function output_callback(callback)
-  return function(_, data)
-    if #data == 1 and data[1] == "" then
-      callback(nil, nil)
-      return
-    end
-    local parts = {}
-    for index, line in ipairs(data) do
-      -- Channel callbacks split LF into list items and encode NUL as LF
-      -- within each item. Undo both transformations before publishing bytes.
-      parts[index] = line:gsub("\n", "\0")
-    end
-    callback(nil, table.concat(parts, "\n"))
-  end
-end
-
----@param command string[]
----@param opts Neoagent.ProcessSpawnOptions
----@param on_exit fun(result: vim.SystemCompleted)
----@return Neoagent.ProcessChild|vim.SystemObj
-function M.spawn(command, opts, on_exit)
-  local argv = command_line.prepare_cmd(command)
-  if not argv then
-    return vim.system(command, opts, on_exit)
-  end
-  -- jobstart uses Windows verbatim arguments specifically for cmd.exe.
-  -- vim.system applies CRT escaping, which changes cmd's quote syntax.
-  local environment = opts.env
-  if environment and util.is_list(environment) then
-    local entries = environment
-    ---@cast entries string[]
-    environment = {}
-    for _, entry in ipairs(entries) do
-      local name, value = entry:match("^([^=]+)=(.*)$")
-      environment[assert(name)] = assert(value)
-    end
-  end
-  local job = vim.fn.jobstart(argv, {
-    cwd = opts.cwd,
-    env = environment,
-    clear_env = opts.clear_env,
-    detach = opts.detach,
-    stdin = opts.stdin and "pipe" or "null",
-    on_stdout = output_callback(opts.stdout),
-    on_stderr = output_callback(opts.stderr),
-    on_exit = function(_, code)
-      on_exit({ code = code, signal = 0 })
-    end,
-  })
-  assert(job > 0, "Could not start cmd.exe job")
-  local pid = vim.fn.jobpid(job)
-  ---@param input? string|string[]
-  local function write(input)
-    if input == nil then
-      vim.fn.chanclose(job, "stdin")
-      return
-    end
-    if type(input) == "table" then
-      input = table.concat(input, "\n") .. (#input > 0 and "\n" or "")
-    end
-    vim.api.nvim_chan_send(job, input)
-  end
-  if opts.stdin and opts.stdin ~= true then
-    local sent, err = pcall(function()
-      write(opts.stdin)
-      write(nil)
-    end)
-    if not sent then
-      pcall(vim.fn.jobstop, job)
-      error(err, 0)
-    end
-  end
-  return {
-    pid = pid,
-    write = function(_, input)
-      write(input)
-    end,
-    kill = function()
-      -- The job retains the process handle, avoiding a signal to a reused PID.
-      vim.fn.jobstop(job)
-    end,
-  }
-end
 
 ---@param opts? Neoagent.WindowsProcessNativeOptions
 ---@return Neoagent.WindowsProcessBackend
@@ -168,6 +83,7 @@ void * __stdcall CreateJobObjectW(void *, const unsigned short *);
 int __stdcall SetInformationJobObject(void *, int, void *, unsigned long);
 void * __stdcall OpenProcess(unsigned long, int, unsigned long);
 int __stdcall AssignProcessToJobObject(void *, void *);
+unsigned long __stdcall WaitForSingleObject(void *, unsigned long);
 int __stdcall TerminateJobObject(void *, unsigned int);
 int __stdcall CloseHandle(void *);
 unsigned long __stdcall GetLastError(void);
@@ -195,7 +111,7 @@ unsigned long __stdcall GetLastError(void);
       return job
     end,
     open = function(pid)
-      local handle = kernel.OpenProcess(bit.bor(0x0001, 0x0100), 0, pid)
+      local handle = kernel.OpenProcess(bit.bor(0x0001, 0x0100, 0x100000), 0, pid)
       if handle == nil then
         return nil, failure()
       end
@@ -206,6 +122,15 @@ unsigned long __stdcall GetLastError(void);
         return nil, failure()
       end
       return true
+    end,
+    running = function(process)
+      local status = kernel.WaitForSingleObject(process, 0)
+      if status == 0 then
+        return false
+      elseif status == 0x102 then
+        return true
+      end
+      return nil, failure()
     end,
     terminate = function(job, code)
       if kernel.TerminateJobObject(job, code) == 0 then
@@ -230,17 +155,39 @@ function Tree:attach(pid)
   if type(pid) ~= "number" or pid <= 0 then
     return true
   end
+  if self.attached then
+    return nil, "process tree already has a root"
+  end
   local process, open_err = self.backend.open(pid)
   if not process then
     return nil, open_err
   end
   local assigned, assign_err = self.backend.assign(self.job, process)
-  self.backend.close(process)
   if not assigned then
+    self.backend.close(process)
     return nil, assign_err
   end
+  -- Retain the root's native identity until this owner releases the Job.
+  self.process = process
   self.attached = true
   return true
+end
+
+-- A native launcher can assign the Job atomically in CreateProcessW and
+-- transfer its already-open process handle without reopening a cached PID.
+---@param process Neoagent.WindowsProcessHandle
+function Tree:adopt(process)
+  assert(not self.closed and not self.attached, "process tree already has an owner")
+  self.process = process
+  self.attached = true
+end
+
+---@return boolean?, string?
+function Tree:running()
+  if self.closed or self.process == nil then
+    return false
+  end
+  return self.backend.running(self.process)
 end
 
 ---@param code? integer
@@ -262,6 +209,10 @@ function Tree:close(terminate)
     self:terminate(125)
   end
   self.closed = true
+  if self.process ~= nil then
+    self.backend.close(self.process)
+    self.process = nil
+  end
   self.backend.close(self.job)
   self.job = nil
 end
@@ -277,7 +228,5 @@ function M.new(opts)
   end
   return setmetatable({ backend = backend, job = job }, Tree)
 end
-
-M.detach = false
 
 return M

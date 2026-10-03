@@ -5,9 +5,28 @@ local composition = require("neoagent.sandbox.composition")
 local fake_model = require("tests.helpers.fake_model")
 local fs = require("neoagent.fs")
 local platform_dispatch = require("neoagent.sandbox.platform")
-local process = require("neoagent.process")
 local tools_module = require("neoagent.tools")
 local Workspace = require("neoagent.workspace")
+
+---@param request Neoagent.WorkerRequest
+---@param observe fun(pid: integer)
+---@return Neoagent.WorkerLease
+local function observed_worker(request, observe)
+  local spawn = vim.uv.spawn
+  vim.uv.spawn = function(file, options, callback)
+    local process, pid, err = spawn(file, options, callback)
+    if process then
+      observe(process:get_pid())
+    end
+    return process, pid, err
+  end
+  local ok, lease = pcall(require("neoagent.rpc.worker_lease").start, request)
+  vim.uv.spawn = spawn
+  if not ok then
+    error(lease, 0)
+  end
+  return lease
+end
 
 local platform, dispatch_status = platform_dispatch.select()
 local status = dispatch_status
@@ -556,7 +575,7 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.01)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.ProcessWorkerLease?
+      ---@type Neoagent.WorkerLease?
       local child
       ---@type Neoagent.WorkerLease?
       local lease
@@ -574,7 +593,9 @@ describe("neoagent shared sandbox contract", function()
       }, {
         platform = selected_platform, status = status,
         start_worker = function(request)
-          child = require("neoagent.rpc.worker_lease").start(request) --[[@as Neoagent.ProcessWorkerLease]]
+          child = observed_worker(request, function(pid)
+            guardian_pid = pid
+          end)
           return child
         end,
       })
@@ -591,8 +612,7 @@ describe("neoagent shared sandbox contract", function()
           return vim.uv.fs_stat(started) ~= nil or run:is_done()
         end, 10))
         assert.is_false(run:is_done(), vim.inspect(run:result()))
-        guardian_pid = assert(child)._process.pid
-        assert(fs.write_all(target, tostring(guardian_pid)))
+        assert(fs.write_all(target, tostring(assert(guardian_pid))))
         assert(vim.wait(10000, function()
           return vim.uv.fs_stat(outcome) ~= nil or run:is_done()
         end, 10))
@@ -627,7 +647,7 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.05)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.ProcessWorkerLease?
+      ---@type Neoagent.WorkerLease?
       local child
       ---@type Neoagent.WorkerLease?
       local lease
@@ -640,12 +660,16 @@ describe("neoagent shared sandbox contract", function()
       })
       ---@type integer?
       local command_pid
+      ---@type integer?
+      local worker_pid
       local options = composition.compose({ tools = { shell } }, {
         enabled = true, profile = profile,
       }, {
         platform = selected_platform, status = status,
         start_worker = function(request)
-          child = require("neoagent.rpc.worker_lease").start(request) --[[@as Neoagent.ProcessWorkerLease]]
+          child = observed_worker(request, function(pid)
+            worker_pid = pid
+          end)
           return child
         end,
       })
@@ -663,7 +687,7 @@ describe("neoagent shared sandbox contract", function()
         end, 10))
         assert.is_false(run:is_done(), vim.inspect(run:result()))
         assert(command_pid)
-        assert(vim.uv.kill(assert(child)._process.pid, 17)) -- SIGSTOP on Darwin.
+        assert(vim.uv.kill(assert(worker_pid), 17)) -- SIGSTOP on Darwin.
         run:cancel()
         assert(vim.wait(10000, function() return run:is_done() end, 10))
         wait(async.run(function() return assert(lease):wait() end), 10000)
@@ -679,7 +703,7 @@ describe("neoagent shared sandbox contract", function()
       run:cancel()
       if child then
         child:dispose("forced supervisor scenario teardown")
-        pcall(vim.uv.kill, child._process.pid, 19) -- SIGCONT on Darwin.
+        pcall(vim.uv.kill, assert(worker_pid), 19) -- SIGCONT on Darwin.
       end
       if command_pid then
         pcall(vim.uv.kill, -command_pid, 9)

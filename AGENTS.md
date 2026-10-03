@@ -21,6 +21,16 @@ Update this guide when the development workflow or a hard invariant changes.
 - Keep bundled effects in their Tool modules with explicit dependencies.
   Tools do not select their execution location. Parent-only Tools stay out
   of RPC.
+- Keep the local subprocess API independent of sandboxing, RPC, Tools, and UI.
+  Process supervision uses Neovim/libuv and the native process helpers; it
+  does not introduce an interpreter or a per-target worker process.
+  Retained spawning requires an explicit scope that owns failed-start cleanup.
+  WorkerLeases share native pipe ownership with local handles. Failed native
+  worker startup returns its lease; readiness and cleanup remain independently
+  observable. Driver state observation must not wait for process or I/O completion.
+  Native PTYs share bounded stream ownership with pipes. The macOS fork child
+  must only perform prepared native setup and exec or _exit; it must never
+  return to editor execution or run inherited hooks or finalizers.
 - Keep Tool worker dependencies free of Agent, Session, provider,
   authentication, Applet, and UI modules.
 - Support metered and subscription access when the provider documents a
@@ -39,7 +49,8 @@ Architecture is the canonical ownership reference. Changes must preserve:
   credential refresh cannot authorize unbudgeted request content.
 - Cancellation through Models, tools, child Runs, provider leases, and
   deferred destruction; completion and disposal once; stale callbacks unable
-  to mutate newer state.
+  to mutate newer state. Detached cleanup retains a diagnostic recipient after
+  Run completion.
 - Tool-free Sessions and fixed Profile, Workspace, and Session identity per
   Agent, with one independent activity lifecycle.
 - Local compaction never replaces encrypted native context. Native checkpoints
@@ -115,6 +126,8 @@ Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
 Coverage also requires a C compiler (`CC`, or `cc`) for CLuaCov on Linux or
 macOS; `make coverage-deps` installs it. Windows collection uses LuaCov alone.
+The test bootstrap also instruments libuv worker Lua states and records their
+actual execution in separate per-thread counter files.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 The large inline-image integration regressions require ImageMagick's `magick`
 on `PATH`; they are skipped when it is unavailable. Native macOS CI installs
@@ -200,7 +213,13 @@ Before completion:
 - Run `make typecheck` when changing Lua code or type-check configuration.
 - Check documentation against the reader needs above; edit only where needed.
 - Require 100% shipped Lua line coverage, with zero missed lines rather
-  than a rounded percentage. Every file under `lua/applet/`, `lua/neoagent/`,
+  than a rounded percentage. The sole exception is the marked hook-free
+  critical section and child routine in `subprocess/fork_exec.lua`: macOS
+  fork/exec suspends Lua hooks there, so LuaCov cannot observe execution.
+  Keep the native macOS startup, failure, cancellation, and cleanup regressions;
+  their behavior remains required even though these lines have no counters.
+  Code before hook suspension and after restoration remains in the line gate.
+  Every file under `lua/applet/`, `lua/neoagent/`,
   and `plugin/` must appear, including files normal tests do not load.
   CI merges native Linux, macOS, and Windows counters before enforcing the
   requirement; run platform-specific tests on their actual host.

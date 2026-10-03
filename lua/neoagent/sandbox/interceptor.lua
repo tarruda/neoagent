@@ -255,7 +255,7 @@ end
 ---@param profile Neoagent.SandboxProfile
 ---@param call Neoagent.ToolOperationCall
 ---@return Neoagent.SandboxInvocation
-local function open_worker(self, profile, call)
+local function create_worker(self, profile, call)
   local prepared, launch = pcall(function()
     local worker_module = require("neoagent.rpc.worker")
     local worker = worker_module.worker_file()
@@ -322,34 +322,6 @@ local function open_worker(self, profile, call)
   ---@cast lease Neoagent.WorkerLease
   connection:attach(lease)
   invocation = invocation_module.new(connection, lease)
-  local admitted, admission_err = pcall(function()
-    if lease.wait_ready then
-      lease:wait_ready()
-    end
-  end)
-  if not admitted then
-    local err = util.normalize_error(admission_err, "sandbox_unavailable")
-    if err.kind == "cancelled" then
-      invocation:cancel("restricted Tool worker admission cancelled")
-      error(err, 0)
-    end
-    invocation:abort("restricted Tool worker failed platform admission")
-    error(err, 0)
-  end
-  local opened, open_err = pcall(
-    connection.open,
-    connection,
-    require("neoagent.rpc.codec").encode_context(call, { denial_keywords = DENIAL_KEYWORDS })
-  )
-  if not opened then
-    local err = util.normalize_error(open_err, "worker_start")
-    if err.kind == "cancelled" then
-      invocation:cancel("restricted Tool worker opening cancelled")
-      error(err, 0)
-    end
-    invocation:abort("restricted Tool worker failed to open")
-    error(err, 0)
-  end
   return invocation
 end
 
@@ -406,7 +378,8 @@ function Interceptor:wrap(next_execute)
       local read_only, timeout_ms
       request_value, read_only, timeout_ms = policy:authorize(method, request_value, operation_call)
       if not invocation then
-        invocation = open_worker(self, profile, call)
+        invocation = create_worker(self, profile, call)
+        invocation:open(require("neoagent.rpc.codec").encode_context(call, { denial_keywords = DENIAL_KEYWORDS }))
       end
       ran_restricted = true
       local timed_out = false
@@ -477,18 +450,22 @@ function Interceptor:wrap(next_execute)
       invocation:cancel("restricted Tool invocation cancellation did not settle")
       error(execution_err, 0)
     end
-    local cleanup_error = invocation:close()
+    local cleanup_error = invocation:close(execution_err ~= nil)
     if execution_err then
-      return sandbox_error(execution_err, profile, self._platform.name, ran_restricted, policy_evidence)
+      value = sandbox_error(execution_err, profile, self._platform.name, ran_restricted, policy_evidence)
     end
     ---@cast value Neoagent.ToolResult
     local operation_denied = denied_result(value, self._platform.name, policy_evidence)
     if cleanup_error then
       local unobserved = cleanup_error.kind == "cancelled"
-      value = result.cleanup(value, cleanup_error.message, {
+      local message = cleanup_error.message
+      if cleanup_error.detail then
+        message = message .. ": " .. bounded(cleanup_error.detail)
+      end
+      value = result.cleanup(value, message, {
         backend = self._platform.name,
         profile = profile.id,
-        kind = cleanup_error.kind,
+        cleanup_kind = cleanup_error.kind,
         ran_restricted = ran_restricted,
         unavailable = not unobserved or nil,
         cleanup_failed = not unobserved or nil,

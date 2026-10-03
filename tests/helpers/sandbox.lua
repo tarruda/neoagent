@@ -3,7 +3,12 @@ local async = require("neoagent.async")
 local M = {}
 local leases = {}
 
----@class Neoagent.TestSandboxCommandOptions: Neoagent.ProcessOptions, Neoagent.SandboxCheckServices
+---@class Neoagent.TestSandboxCommandOptions: Neoagent.SandboxCheckServices
+---@field stdin? string
+---@field capture? boolean
+---@field timeout_ms? integer
+---@field kill_grace_ms? integer
+---@field on_output? fun(data: string, is_stderr: boolean, stdout: string, stderr: string, output: string)
 ---@field profile Neoagent.SandboxProfile
 ---@field os? string
 ---@field env table<string, string>
@@ -11,10 +16,18 @@ local leases = {}
 
 -- Native enforcement scenarios exercise the launcher's streaming lease.
 -- Tool scenarios use the interceptor and real Tool RPC server separately.
+---@class Neoagent.TestSandboxCommandResult
+---@field code integer
+---@field signal integer
+---@field stdout string
+---@field stderr string
+---@field output string
+---@field timed_out boolean
+
 ---@async
 ---@param argv string[]
 ---@param opts Neoagent.TestSandboxCommandOptions
----@return Neoagent.ProcessResult
+---@return Neoagent.TestSandboxCommandResult
 function M.execute(argv, opts)
   local platform = assert(require("neoagent.sandbox.platform").select(opts.os))
   local paths = platform.paths or require("neoagent.sandbox.path").posix
@@ -91,8 +104,8 @@ function M.execute(argv, opts)
     error(value.error, 0)
   end
   return {
-    code = value.code,
-    signal = value.signal,
+    code = assert(value.code, "native worker exit status was not observed"),
+    signal = assert(value.signal, "native worker exit signal was not observed"),
     stdout = stdout,
     stderr = stderr,
     output = output,

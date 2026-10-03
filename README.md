@@ -8,6 +8,11 @@ and multiple providers. Its Lua APIs also support headless use.
 Requirements: Neovim 0.10+, curl 7.76+, `rg`, and `fd`. Bundled terminal images
 use the Kitty graphics protocol.
 
+Bundled command tools require Linux (x86, x64, ARM, or ARM64), macOS (x64 or
+ARM64), or Windows. Run `:checkhealth neoagent` to check platform support and
+dependencies. Optional PTYs have additional requirements described in
+`:help neoagent-subprocess`.
+
 ## Setup
 
 Choose a model and map a key:

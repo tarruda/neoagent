@@ -16,11 +16,30 @@ local M = {}
 
 ---@class Neoagent.ToolDependencyOverrides
 ---@field fs? Neoagent.ToolFilesystem
----@field process? async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field subprocesses? Neoagent.ToolSubprocesses
 ---@field executable? fun(name: string): boolean
 ---@field hrtime? fun(): number
 ---@field artifact_publisher? fun(call: Neoagent.ToolOperationCall): Neoagent.ToolArtifactPublisher
 ---@field fingerprint? fun(data: string): string
+
+---@class Neoagent.ToolSubprocesses
+---@field run async fun(spec: Neoagent.SubprocessSpec, options: Neoagent.SubprocessRunOptions): Neoagent.SubprocessResult
+
+---@param value? Neoagent.ToolSubprocesses
+---@return Neoagent.ToolSubprocesses
+function M.subprocesses(value)
+  value = value or require("neoagent.subprocess_common")
+  assert(type(value) == "table" and type(value.run) == "function", "Tool subprocesses are required")
+  return { run = value.run }
+end
+
+---@return Neoagent.SubprocessEnvironment
+function M.process_environment()
+  local environment = require("neoagent.subprocess.environment").normalize()
+  environment.NVIM = vim.v.servername
+  environment.NVIM_LISTEN_ADDRESS = nil
+  return { inherit = false, set = environment }
+end
 
 ---@class Neoagent.ToolArtifactPublisher
 ---@field put async fun(data: string): Neoagent.LocalFile?, Neoagent.Error?
@@ -45,7 +64,6 @@ local M = {}
 ---@class Neoagent.ToolProcessCaptureOptions
 ---@field stdout Neoagent.ToolLineCaptureOptions
 ---@field stderr? Neoagent.ToolLineCaptureOptions
----@field process? Neoagent.ProcessOptions
 
 M.object = validation.object
 M.fields = validation.fields
@@ -369,27 +387,27 @@ function M.line_capture(options)
 end
 
 ---@async
----@param process async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
----@param command string[]
+---@param subprocesses Neoagent.ToolSubprocesses
+---@param spec Neoagent.SubprocessSpec
 ---@param options Neoagent.ToolProcessCaptureOptions
----@return Neoagent.ProcessResult, Neoagent.ToolLineCaptureResult, Neoagent.ToolLineCaptureResult
-function M.capture_process(process, command, options)
+---@return Neoagent.SubprocessResult, Neoagent.ToolLineCaptureResult, Neoagent.ToolLineCaptureResult
+function M.capture_process(subprocesses, spec, options)
   local stdout = M.line_capture(assert(options.stdout, "stdout capture options are required"))
   local stderr = M.line_capture(options.stderr or {
     max_lines = 100,
     max_bytes = 50 * 1024,
     max_line_bytes = 50 * 1024 + 1,
   })
-  local process_options = util.copy(options.process or {})
-  process_options.capture = false
-  process_options.on_output = function(data, is_stderr)
-    if is_stderr then
-      stderr.append(data)
-    else
-      stdout.append(data)
-    end
-  end
-  local result = process(command, process_options)
+  local result = subprocesses.run(spec, {
+    capture = false,
+    on_output = function(event)
+      if event.stream == "stderr" then
+        stderr.append(event.data)
+      else
+        stdout.append(event.data)
+      end
+    end,
+  })
   return result, stdout.finish(false), stderr.finish(false)
 end
 

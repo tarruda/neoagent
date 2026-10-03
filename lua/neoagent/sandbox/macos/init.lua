@@ -224,15 +224,16 @@ function M.start_worker(request, services)
     on_stderr = request.on_stderr,
     on_exit = request.on_exit,
     cleanup = function(result)
-      if result.code == 0 and not result.error then
+      if result.code == 0 and not result.error and not result.cleanup_error then
         return true
       end
-      local recovered = require("neoagent.process").run(argv, {
-        env = runtime_environment({ mode = "cleanup", scope = scope }),
-        clear_env = true,
+      local recovered = require("neoagent.subprocess_common").run({
+        argv = argv,
+        cwd = "/",
+        environment = { inherit = false, set = runtime_environment({ mode = "cleanup", scope = scope }) },
+        stdio = { kind = "pipes" },
         timeout_ms = 10000,
-        max_capture_bytes = 16 * 1024,
-      })
+      }, { capture = { max_bytes = 16 * 1024 } })
       if recovered.code ~= 0 then
         return nil, "macOS sandbox cleanup did not complete"
       end

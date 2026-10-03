@@ -1,206 +1,6 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
-local fs = require("neoagent.fs")
-local process = require("neoagent.process")
 
----@generic T
----@param fn async fun(run: Neoagent.Run<T, nil>): T
----@param timeout? integer
----@return Neoagent.RunResult<T>
-local function complete(fn, timeout)
-  local run = async.run(fn)
-  assert(vim.wait(timeout or 3000, function() return run:is_done() end, 5))
-  return (assert(run:result()))
-end
-
----@param marker string
----@return string
-local function descendant_command(marker)
-  return "(trap '' TERM; sleep 0.2; printf survived > "
-    .. vim.fn.shellescape(marker)
-    .. ") </dev/null >/dev/null 2>&1 & wait"
-end
-
----@param marker string
----@return boolean
-local function descendant_survived(marker)
-  vim.wait(500, function() return vim.uv.fs_stat(marker) ~= nil end, 5)
-  local survived = vim.uv.fs_stat(marker) ~= nil
-  vim.fn.delete(marker)
-  return survived
-end
-
-describe("neoagent process runner", function()
-  it("clears the ambient environment when requested", function()
-    local saved = vim.env.NEOAGENT_PROCESS_SECRET
-    vim.env.NEOAGENT_PROCESS_SECRET = "hidden"
-    local completed = complete(function()
-      return process.run({
-        "sh", "-c", "printf '%s:%s' \"${SAFE-unset}\" \"${NEOAGENT_PROCESS_SECRET-unset}\"",
-      }, {
-        clear_env = true,
-        env = { SAFE = "visible" },
-      })
-    end)
-    vim.env.NEOAGENT_PROCESS_SECRET = saved
-    assert.are.equal(0, completed.code)
-    assert.are.equal("visible:unset", completed.stdout)
-  end)
-
-  it("passes a list environment to legacy Neovim process spawning", function()
-    local tree_module = jit.os == "Windows"
-      and "neoagent.process.windows" or "neoagent.process.posix"
-    local original_tree = package.loaded[tree_module]
-    local original_process = package.loaded["neoagent.process"]
-    local original_system = vim.system
-    local original_has = vim.fn.has
-    ---@type table<string, string|number>|string[]|nil
-    local environment
-    local ok, completed = pcall(function()
-      package.loaded[tree_module] = {
-        detach = false,
-        new = function()
-          return {
-            attach = function() return true end,
-            close = function() end,
-          }
-        end,
-      }
-      package.loaded["neoagent.process"] = nil
-      vim.fn.has = function(feature)
-        if feature == "nvim-0.12" then return 0 end
-        return original_has(feature)
-      end
-      vim.system = function(_, options, on_exit)
-        if not options or not on_exit then
-          error("process options and completion callback are required")
-        end
-        environment = options.env
-        vim.schedule(function()
-          on_exit({ code = 0, signal = 0 })
-        end)
-        return { pid = 42, kill = function() end } --[[@as vim.SystemObj]]
-      end
-      return complete(function()
-        return require("neoagent.process").run({ "true" }, {
-          clear_env = true,
-          env = { SAFE = "visible" },
-        })
-      end)
-    end)
-    vim.system = original_system
-    vim.fn.has = original_has
-    package.loaded[tree_module] = original_tree
-    package.loaded["neoagent.process"] = original_process
-    assert(ok, completed)
-    assert.are.same({ "SAFE=visible" }, environment)
-    ---@cast completed Neoagent.ProcessResult
-    assert.are.equal(0, completed.code)
-  end)
-
-  it("streams output without retaining it when capture is disabled", function()
-    ---@type { data: string, is_stderr: boolean }[]
-    local chunks = {}
-    local completed = complete(function()
-      return process.run({
-        "sh", "-c", "printf out; printf err >&2",
-      }, {
-        capture = false,
-        on_output = function(data, is_stderr)
-          chunks[#chunks + 1] = { data = data, is_stderr = is_stderr }
-        end,
-      })
-    end)
-    assert.are.equal(0, completed.code)
-    assert.are.equal("", completed.stdout)
-    assert.are.equal("", completed.stderr)
-    assert.are.equal("", completed.output)
-    local streams = { stdout = "", stderr = "" }
-    for _, chunk in ipairs(chunks) do
-      local stream = chunk.is_stderr and "stderr" or "stdout"
-      streams[stream] = streams[stream] .. chunk.data
-    end
-    assert.are.equal("out", streams.stdout)
-    assert.are.equal("err", streams.stderr)
-  end)
-
-  it("bounds retained process output", function()
-    local completed = complete(function()
-      return process.run({
-        "sh", "-c", "printf 12; printf 345 >&2",
-      }, {
-        max_capture_bytes = 4,
-      })
-    end)
-    assert.is_false(completed.ok)
-    assert.matches("exceeded 4 bytes", assert(completed.error).message)
-    assert.are.equal("output_limit", rawget(assert(completed.error), "code"))
-  end)
-
-  it("escalates timed-out TERM-resistant processes to KILL", function()
-    local completed = complete(function()
-      return process.run({
-        "sh", "-c", "trap '' TERM; while :; do sleep 1; done",
-      }, {
-        -- The timeout leaves the spawned shell time to install its TERM trap.
-        timeout_ms = 500,
-        kill_grace_ms = 20,
-      })
-    end)
-    assert.is_true(completed.timed_out)
-    assert.are.equal(137, completed.code)
-
-    completed = complete(function()
-      return process.run({
-        "sh", "-c", "trap '' TERM; while :; do sleep 1; done",
-      }, {
-        timeout_ms = 500,
-        kill_grace_ms = 0,
-      })
-    end)
-    assert.is_true(completed.timed_out)
-    assert.are.equal(137, completed.code)
-  end)
-
-  it("terminates descendants after a timeout", function()
-    local marker = vim.fn.tempname()
-    local completed = complete(function()
-      return process.run({ "sh", "-c", descendant_command(marker) }, {
-        timeout_ms = 50,
-        kill_grace_ms = 20,
-      })
-    end)
-    assert.is_true(completed.timed_out)
-    assert.is_false(descendant_survived(marker))
-  end)
-
-  it("terminates descendants after explicit cancellation", function()
-    local marker = vim.fn.tempname()
-    local run = async.run(function()
-      return process.run({ "sh", "-c", descendant_command(marker) }, {
-        kill_grace_ms = 20,
-      })
-    end)
-    vim.defer_fn(function() run:cancel() end, 50)
-    assert(vim.wait(3000, function() return run:is_done() end, 5))
-    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
-    assert.is_false(descendant_survived(marker))
-  end)
-
-  it("closes a POSIX process tree only once", function()
-    local signals = {}
-    local tree = require("neoagent.process.posix").new({
-      kill = function(pid, signal)
-        signals[#signals + 1] = { pid, signal }
-        return 0
-      end,
-    })
-    assert(tree:attach(42))
-    tree:close(true)
-    tree:close(true)
-    assert.are.same({ { -42, 9 } }, signals)
-    assert.is_false(tree:terminate(15))
-  end)
+describe("native process helpers", function()
 
   it("owns Windows process descendants through a kill-on-close job", function()
     ---@type string[]
@@ -213,6 +13,10 @@ describe("neoagent process runner", function()
         calls[#calls + 1] = "assign:" .. tostring(job) .. ":" .. tostring(child)
         return true
       end,
+      running = function(process)
+        assert.are.equal("process", process)
+        return true
+      end,
       terminate = function(job, code)
         calls[#calls + 1] = "terminate:" .. tostring(job) .. ":" .. code
         return true
@@ -220,153 +24,25 @@ describe("neoagent process runner", function()
       close = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) end,
     }
     local tree = assert(require("neoagent.process.windows").new({ backend = backend }))
+    assert.is_false(tree:running())
     assert.is_false(tree:terminate(15))
     assert(tree:attach(0))
     assert(tree:attach(42))
+    assert.is_true(tree:running())
+    local replaced, replace_err = tree:attach(43)
+    assert.is_nil(replaced)
+    assert.are.equal("process tree already has a root", replace_err)
     assert.is_true(tree:terminate(15))
     tree:close(true)
+    assert.is_false(tree:running())
     local attached, attach_err = tree:attach(42)
     assert.is_nil(attached)
     assert.are.equal("process tree is closed", attach_err)
     tree:close(true)
     assert.are.same({
-      "create", "open:42", "assign:job:process", "close:process",
-      "terminate:job:15", "terminate:job:125", "close:job",
+      "create", "open:42", "assign:job:process",
+      "terminate:job:15", "terminate:job:125", "close:process", "close:job",
     }, calls)
-  end)
-
-  it("preserves cmd syntax and binary streams through the verbatim job launcher", function()
-    local windows = require("neoagent.process.windows")
-    local original_jobstart, original_jobpid = vim.fn.jobstart, vim.fn.jobpid
-    local original_send, original_close = vim.api.nvim_chan_send, vim.fn.chanclose
-    local original_stop, original_system = vim.fn.jobstop, vim.system
-    ---@type string[]?
-    local launched
-    ---@class Neoagent.TestWindowsJobOptions
-    ---@field cwd? string
-    ---@field env? table<string, string|number>
-    ---@field clear_env? boolean
-    ---@field stdin string
-    ---@field on_stdout fun(job: integer, data: string[])
-    ---@field on_stderr fun(job: integer, data: string[])
-    ---@field on_exit fun(job: integer, code: integer)
-    ---@type Neoagent.TestWindowsJobOptions?
-    local options
-    ---@type vim.SystemCompleted?
-    local completion
-    local stdout, stderr, inputs, closed = {}, {}, {}, {}
-    local killed
-    local job_id = 7
-    vim.fn.jobstart = function(command, opts)
-      launched = command
-      options = opts --[[@as Neoagent.TestWindowsJobOptions]]
-      return job_id
-    end
-    vim.fn.jobpid = function(job)
-      assert.are.equal(7, job)
-      return 42
-    end
-    vim.api.nvim_chan_send = function(job, bytes)
-      assert.are.equal(7, job)
-      inputs[#inputs + 1] = bytes
-    end
-    vim.fn.chanclose = function(job, stream)
-      closed[#closed + 1] = { job, stream }
-      return 1
-    end
-    vim.fn.jobstop = function(job)
-      killed = job
-      return 1
-    end
-    vim.system = function(command)
-      launched = command
-      return { pid = 99 } --[[@as vim.SystemObj]]
-    end
-    local ok, err = pcall(function()
-      local command = { "cmd.exe", "/d", "/s", "/c", 'echo "quoted" & exit /b 7' }
-      ---@type Neoagent.ProcessSpawnOptions
-      local spawn_options = {
-        cwd = "C:/work&space", clear_env = true, env = { SAFE = "value" },
-        stdin = "input\0bytes\n",
-        stdout = function(_, bytes)
-          stdout[#stdout + 1] = bytes
-        end,
-        stderr = function(_, bytes)
-          stderr[#stderr + 1] = bytes
-        end,
-      }
-      local process = windows.spawn(command, spawn_options, function(value) completion = value end)
-      assert.are.same({ "cmd.exe", "/d", "/s", "/c", '"echo "quoted" & exit /b 7"' }, launched)
-      assert.are.equal('echo "quoted" & exit /b 7', command[5])
-      local selected_options = assert(options)
-      assert.are.equal("C:/work&space", selected_options.cwd)
-      assert.are.same({ SAFE = "value" }, assert(options).env)
-      assert.is_true(assert(options).clear_env)
-      assert.are.equal("pipe", assert(options).stdin)
-      assert.are.same({ "input\0bytes\n" }, inputs)
-      assert.are.same({ { 7, "stdin" } }, closed)
-      assert(options).on_stdout(7, { "one\ntwo", "three" })
-      assert(options).on_stdout(7, { "", "tail" })
-      assert(options).on_stdout(7, { "" })
-      assert(options).on_stderr(7, { "error\nbyte", "" })
-      assert(options).on_stderr(7, { "" })
-      assert(options).on_exit(7, 7)
-      assert.are.equal("one\0two\nthree\ntail", table.concat(stdout))
-      assert.are.equal("error\0byte\n", table.concat(stderr))
-      assert.are.same({ code = 7, signal = 0 }, completion)
-      process:kill(9)
-      assert.are.equal(7, killed)
-
-      for _, input in ipairs({ { "one", "two" }, {}, true }) do
-        spawn_options.stdin = input
-        spawn_options.env = { "SAFE=list=value" }
-        windows.spawn(command, spawn_options, function() end)
-        assert.are.same({ SAFE = "list=value" }, assert(options).env)
-      end
-      assert.are.same({ "input\0bytes\n", "one\ntwo\n", "" }, inputs)
-      assert.are.equal(3, #closed)
-      spawn_options.stdin = true
-      local retained = windows.spawn(command, spawn_options, function() end)
-      retained:write("later\0bytes\n")
-      retained:write({ "last", "lines" })
-      retained:write(nil)
-      assert.are.same({ "input\0bytes\n", "one\ntwo\n", "", "later\0bytes\n", "last\nlines\n" }, inputs)
-      assert.are.equal(4, #closed)
-      spawn_options.stdin = nil
-      spawn_options.env = nil
-      windows.spawn(command, spawn_options, function() end)
-      assert.are.equal("null", assert(options).stdin)
-      assert.is_nil(assert(options).env)
-
-      local alias = { "cmd", "/d", "/s", "/c", 'echo "quoted" & exit /b 7' }
-      assert.are.equal(42, windows.spawn(alias, spawn_options, function() end).pid)
-      assert.are.same({ "cmd", "/d", "/s", "/c", '"echo "quoted" & exit /b 7"' }, launched)
-
-      for _, direct in ipairs({
-        { "powershell.exe", "-Command", 'Write-Output "quoted"' },
-        { "cmd.exe", "/c" },
-        { "cmd.exe", "/c", "echo", "separate" },
-        { "cmd.exe", "/d" },
-      }) do
-        assert.are.equal(99, windows.spawn(direct, spawn_options, function() end).pid)
-        assert.are.same(direct, launched)
-      end
-      killed = nil
-      spawn_options.stdin = "input"
-      vim.api.nvim_chan_send = function() error("stdin failed") end
-      local sent, send_err = pcall(windows.spawn, command, spawn_options, function() end)
-      assert.is_false(sent)
-      assert.matches("stdin failed", tostring(send_err), 1, true)
-      assert.are.equal(7, killed)
-      job_id = -1
-      local started, start_err = pcall(windows.spawn, command, spawn_options, function() end)
-      assert.is_false(started)
-      assert.matches("Could not start cmd.exe job", tostring(start_err), 1, true)
-    end)
-    vim.fn.jobstart, vim.fn.jobpid = original_jobstart, original_jobpid
-    vim.api.nvim_chan_send, vim.fn.chanclose = original_send, original_close
-    vim.fn.jobstop, vim.system = original_stop, original_system
-    assert.is_true(ok, tostring(err))
   end)
 
   it("configures the native Windows process Job boundary", function()
@@ -394,7 +70,7 @@ describe("neoagent process runner", function()
         return 1
       end,
       OpenProcess = function(access, inherit, pid)
-        assert.are.equal(0x0101, access)
+        assert.are.equal(0x100101, access)
         assert.are.equal(0, inherit)
         assert.are.equal(43, pid)
         calls[#calls + 1] = "open"
@@ -404,6 +80,11 @@ describe("neoagent process runner", function()
         assert.are.same({ "job", "process" }, { job, child })
         calls[#calls + 1] = "assign"
         return 1
+      end,
+      WaitForSingleObject = function(process, timeout)
+        assert.are.same({ "process", 0 }, { process, timeout })
+        calls[#calls + 1] = "query"
+        return 0x102
       end,
       TerminateJobObject = function(job, code)
         assert.are.same({ "job", 125 }, { job, code })
@@ -416,10 +97,11 @@ describe("neoagent process runner", function()
       native = { ffi = ffi --[[@as Neoagent.WindowsProcessFfi]], kernel = kernel },
     }))
     assert(tree:attach(43))
+    assert.is_true(tree:running())
     tree:close(true)
     assert.are.same({
-      "create", "configure", "open", "assign", "close:process",
-      "terminate", "close:job",
+      "create", "configure", "open", "assign", "query",
+      "terminate", "close:process", "close:job",
     }, calls)
   end)
 
@@ -449,6 +131,9 @@ describe("neoagent process runner", function()
       end,
       AssignProcessToJobObject = function()
         return mode == "assign" and 0 or 1
+      end,
+      WaitForSingleObject = function()
+        return mode == "query" and 0xffffffff or mode == "exited" and 0 or 0x102
       end,
       TerminateJobObject = function()
         return mode == "terminate" and 0 or 1
@@ -486,104 +171,15 @@ describe("neoagent process runner", function()
     mode = "terminate"
     tree = assert(create())
     assert(tree:attach(42))
+    assert.is_true(tree:running())
+    mode = "exited"
+    assert.is_false(tree:running())
+    mode = "query"
+    local running, query_err = tree:running()
+    assert.is_nil(running)
+    assert.are.equal("Win32 error 5", query_err)
+    mode = "terminate"
     assert.is_false(tree:terminate())
     tree:close()
-  end)
-
-  it("reports process supervisor, spawn, and attachment setup failures", function()
-    local tree_module = jit.os == "Windows"
-      and "neoagent.process.windows" or "neoagent.process.posix"
-    local original_tree = package.loaded[tree_module]
-    local original_process = package.loaded["neoagent.process"]
-    local original_system = vim.system
-    ---@class Neoagent.TestProcessSupervisor
-    ---@field attach? fun(self: Neoagent.TestProcessSupervisor, pid: integer): true?, string?
-    ---@field close? fun(self: Neoagent.TestProcessSupervisor, force?: boolean)
-    ---@param tree { detach: boolean, spawn?: function, new: fun(): Neoagent.TestProcessSupervisor?, string? }
-    ---@return { run: async fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult }
-    local function runner(tree)
-      package.loaded[tree_module] = tree
-      package.loaded["neoagent.process"] = nil
-      return require("neoagent.process")
-    end
-    local ok, err = pcall(function()
-      local failed = complete(function()
-        return runner({
-          detach = false,
-          new = function() return nil, "supervisor failed" end,
-        }).run({ "true" })
-      end)
-      assert.is_false(failed.ok)
-      assert.matches("Failed to create process supervisor", assert(failed.error).message)
-
-      local closed
-      vim.system = function()
-        error("spawn failed")
-      end
-      for _, spawn in ipairs({ false, function() error("platform spawn failed") end }) do
-        closed = nil
-        failed = complete(function()
-          return runner({
-            detach = false,
-            spawn = spawn or nil,
-            new = function()
-              return {
-                close = function(_, force) closed = force end,
-              }
-            end,
-          }).run({ "true" })
-        end)
-        assert.is_false(failed.ok)
-        assert.matches("Failed to start process", assert(failed.error).message)
-        assert.is_true(closed)
-      end
-
-      local killed
-      closed = nil
-      vim.system = function()
-        return {
-          pid = 42,
-          kill = function(_, signal) killed = signal end,
-        } --[[@as vim.SystemObj]]
-      end
-      failed = complete(function()
-        return runner({
-          detach = false,
-          new = function()
-            return {
-              attach = function() return nil, "attach failed" end,
-              close = function(_, force) closed = force end,
-            }
-          end,
-        }).run({ "true" })
-      end)
-      assert.is_false(failed.ok)
-      assert.matches("Failed to supervise process tree", assert(failed.error).message)
-      assert.are.equal(9, killed)
-      assert.is_true(closed)
-    end)
-    vim.system = original_system
-    package.loaded[tree_module] = original_tree
-    package.loaded["neoagent.process"] = original_process
-    assert(ok, tostring(err))
-  end)
-
-  it("reports stdout and stderr stream read failures", function()
-    local original_system = vim.system
-    for _, stream in ipairs({ "stdout", "stderr" }) do
-      vim.system = function(_, options)
-        local callback = assert(options)[stream]
-        assert(type(callback) == "function")
-        callback("stream failed", nil)
-        return { kill = function() end } --[[@as vim.SystemObj]]
-      end
-      local completed = complete(function()
-        return process.run({ "true" })
-      end)
-      assert.is_false(completed.ok)
-      assert.are.equal("tool", assert(completed.error).kind)
-      assert.matches("Failed reading process " .. stream, assert(completed.error).message)
-    end
-    vim.system = original_system
   end)
 end)

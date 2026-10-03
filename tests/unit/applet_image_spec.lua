@@ -612,7 +612,7 @@ describe("Applet images", function()
       }
       return count
     end
-    package.loaded.ffi = fake_ffi
+    package.loaded.ffi = setmetatable(fake_ffi, { __index = require("ffi") })
     package.loaded["applet.image.transport"] = nil
     vim.api.nvim_ui_send = nil
     vim.api.nvim_list_uis = function()
@@ -707,7 +707,7 @@ describe("Applet images", function()
     local list_uis, get_chan_info =
       vim.api.nvim_list_uis, vim.api.nvim_get_chan_info
     local closed
-    package.loaded.ffi = {
+    package.loaded.ffi = setmetatable({
       cdef = function() end,
       C = {
         open = function() return -1 end,
@@ -719,7 +719,7 @@ describe("Applet images", function()
           return 0x800
         end,
       },
-    }
+    }, { __index = require("ffi") })
     package.loaded["applet.image.transport"] = nil
     vim.api.nvim_ui_send = nil
     vim.api.nvim_list_uis = function() return {} end
@@ -744,7 +744,7 @@ describe("Applet images", function()
       vim.wait(20)
       assert.is_false(fired)
 
-      package.loaded.ffi = {
+      package.loaded.ffi = setmetatable({
         cdef = function() end,
         C = {
           open = function() return 13 end,
@@ -753,7 +753,7 @@ describe("Applet images", function()
           end,
           close = function(descriptor) closed = descriptor end,
         },
-      }
+      }, { __index = loaded_ffi })
       package.loaded["applet.image.transport"] = nil
       vim.api.nvim_list_uis = function()
         return { { chan = 8, stdin_tty = true, stdout_tty = true } }
@@ -803,11 +803,11 @@ describe("Applet images", function()
     local dimensions = {
       ws_row = 48, ws_col = 120, ws_xpixel = 1920, ws_ypixel = 960,
     }
-    package.loaded.ffi = {
+    package.loaded.ffi = setmetatable({
       cdef = function() end,
       new = function() return { [0] = dimensions } end,
       C = { ioctl = function() return 0 end },
-    }
+    }, { __index = require("ffi") })
     package.loaded["applet.image.cell_size"] = nil
     local ok, err = pcall(function()
       local cell_size = require("applet.image.cell_size")

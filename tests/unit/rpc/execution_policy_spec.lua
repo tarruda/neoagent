@@ -145,28 +145,19 @@ describe("Tool worker execution policy", function()
     assert.is_true(executed, tostring(failure))
   end)
 
-  it("keeps the platform command encoder when the worker supplies process execution", function()
-    local module = jit.os == "Windows" and "neoagent.process.windows" or "neoagent.process.posix"
-    local saved_tree = package.loaded[module]
-    local saved_process = package.loaded["neoagent.process"]
-    local saved_system = vim.system
+  it("runs shell requests through the local pipe driver", function()
+    local pipe = require("neoagent.subprocess.pipe")
+    local original_new = pipe.new
     local root = vim.fn.tempname()
     assert(fs.mkdirp(root))
-    local encoded = false
+    ---@type Neoagent.SubprocessSpec?
+    local launched
     local executed, failure = pcall(function()
-      package.loaded[module] = {
-        detach = false,
-        new = function()
-          return { attach = function() return true end, close = function() end }
-        end,
-        spawn = function(_, _, on_exit)
-          encoded = true
-          vim.schedule(function() on_exit({ code = 0, signal = 0 }) end)
-          return { pid = 123, kill = function() end }
-        end,
-      }
-      package.loaded["neoagent.process"] = nil
-      vim.system = function() error("platform command encoder was bypassed") end
+      pipe.new = function(spec, env, callbacks)
+        launched = spec
+        return original_new(spec, env, callbacks) end
+      local argv = jit.os == "Windows" and { "cmd.exe", "/d", "/s", "/c", 'echo "quoted value"' }
+        or { "sh", "-c", [[printf '"quoted value"']] }
       ---@type table?
       local response
       local server = require("neoagent.rpc.server").new({
@@ -174,20 +165,23 @@ describe("Tool worker execution policy", function()
           if message.type == "response" or message.type == "request_error" then response = message end
         end,
       })
-      server:receive({ type = "open", call_id = "encoder", context = { workspace = { root = root, cwd = root } } })
+      server:receive({ type = "open", call_id = "local", context = { workspace = { root = root, cwd = root } } })
       server:receive({
-        type = "request", call_id = "encoder", request_id = 1, method = "shell",
-        payload = { argv = { "cmd.exe", "/d", "/s", "/c", 'echo "quoted value"' } },
+        type = "request", call_id = "local", request_id = 1, method = "shell",
+        payload = { argv = argv },
       })
       assert(vim.wait(3000, function() return response ~= nil end))
-      assert.is_true(encoded, "worker bypassed the platform command encoder")
+      local started = assert(launched)
+      assert.are.same(argv, started.argv)
+      assert.are.equal(root, started.cwd)
+      assert.are.equal("pipes", started.stdio.kind)
       local terminal = response or error("missing worker response")
       assert.are.equal("response", terminal.type)
-      server:receive({ type = "close", call_id = "encoder" })
+      assert.matches('"quoted value"', terminal.value.content[1].text, 1, true)
+      server:receive({ type = "close", call_id = "local" })
+      assert.is_true(server:is_quiescent())
     end)
-    package.loaded[module] = saved_tree
-    package.loaded["neoagent.process"] = saved_process
-    vim.system = saved_system
+    pipe.new = original_new
     vim.fn.delete(root, "rf")
     assert.is_true(executed, tostring(failure))
   end)

@@ -21,7 +21,7 @@ end
 
 ---@param argv string[]
 ---@param opts Neoagent.TestSandboxCommandOptions
----@return Neoagent.ProcessResult
+---@return Neoagent.TestSandboxCommandResult
 local function run(argv, opts)
   return wait(async.run(function()
     return require("tests.helpers.sandbox").execute(argv, opts)

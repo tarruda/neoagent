@@ -47,6 +47,9 @@ The Agent Loop receives the Model, messages, tools, executor, context,
 steering, and commit function as explicit dependencies. The message owner
 commits authoritative state before the loop starts work that depends on it.
 Cancellation propagates through Models, tools, child Runs, and provider use.
+Detached resource cleanup retains diagnostic forwarding through awaiting Runs
+until cleanup is observed, independently of coroutine completion. It releases
+those reporting links after its final diagnostic.
 Before a cancelled activity finishes, the Agent reconciles committed Tool
 results with its Views, message hooks, and file-buffer refreshes.
 
@@ -131,12 +134,30 @@ in results and committed messages. Sandbox policy owns `execution.sandbox`.
 
 `RpcConnection` owns communication with the worker. `WorkerLease` owns the
 worker process and native sandbox resources. Their lifetimes are independent
-of individual requests. The interceptor owns both for each invocation and
+of individual requests. Process WorkerLeases and local handles share the pipe
+driver's native creation, stream handling, signalling, and reaping. The lease
+owns protocol delivery, its cooperative shutdown grace, and cleanup observation.
+Worker request validation precedes native ownership. After native startup is
+attempted, the caller always receives a lease: readiness reports startup failure,
+and completion observes cleanup independently. Sandbox relays own their staging
+resources until that completion, including failed startup. Adapters clean staging
+directly only when the request is rejected before native ownership begins.
+Lease completion reports operation and cleanup errors as independent fields;
+readiness keeps the original startup or admission failure. Relays preserve host
+cleanup errors alongside their own staging cleanup failures. The interceptor
+retains the invocation before awaiting admission, so failed startup and completed
+Tool results both receive cleanup notices. Diagnostic forwarding remains alive
+until detached cleanup completes, even when its observing Run is cancelled.
+Both owners share drain-deadline enforcement. Delayed editor delivery can grant
+one final drain interval; continuing output cannot renew cleanup indefinitely.
+The lease publishes completion after output drains; native exit status remains
+absent when cleanup fails before exit can be observed.
+The interceptor owns both for each invocation and
 completes cleanup independently of Run cancellation. Received results still
-undergo validation when observation is cancelled. The worker waits for each
-request's launched commands and signals their process groups before
-acknowledging completion or cancellation. On POSIX, descendants can leave
-those groups; complete descendant containment belongs to the native lease.
+undergo validation when observation is cancelled. The worker closes and settles
+each request's local process scope before acknowledging completion or
+cancellation. Local process controls have the pipe/PTY limits described below;
+complete descendant containment belongs to the native lease.
 Reusing a Tool connection does not establish that earlier descendants have
 stopped. The one-shot interceptor ends the connection and retains the native
 lease until cleanup settles, including detached cleanup after cancellation.
@@ -157,6 +178,49 @@ it never overrides explicit filesystem denials. Profiles are resolved per
 invocation, while activation status reports native platform availability.
 
 Project instructions and skills are Agent inputs governed by Workspace trust.
+
+## Local subprocesses
+
+`neoagent.subprocess_common` supplies local process scopes and synchronous runs.
+It depends on local pipe/PTY drivers and their native ownership,
+independently of Tools, sandboxing, RPC, Agents, Sessions, providers, and UI.
+Targets inherit the authority of their execution process. Placement remains
+with the composition that invokes the Tool.
+
+A handle owns input, output delivery, its lifetime deadline, termination,
+completion, and cleanup. Retained spawning requires a scope created before
+startup. That scope owns handles for the caller's lifetime and retains cleanup
+failures even when startup returns no handle. The Tool RPC server supplies a
+request-owned scope. Cancelling a handle waiter only removes that observer.
+Cancelling a synchronous run or closing a scope disposes its targets, while
+internal ownership retains cleanup until settlement.
+Operation failure, disposal, and cleanup failure remain separately observable.
+Completed handle state retains any observed exit status even when cleanup fails.
+Completion follows output delivery and native resource settlement.
+Observing native exit begins bounded cleanup independently of exit-status
+delivery. The status may arrive while output drains; an unavailable status
+cannot leave cleanup unbounded or become a fabricated process outcome.
+
+`run()` uses a private scope and composes the same spawn operation with initial
+input, bounded or disabled capture, and waiting. Bundled Tools own their text
+conversion, truncation, spill files, progress updates, and result formatting.
+Drivers own startup acknowledgement, native identity, signalling, reaping, and
+non-waiting state observation. Root exit, output drain, and native finalization
+are distinct facts. A drained driver still requires disposal to release retained
+child identity; finalization can fail independently of the operation outcome.
+The native owner retains an unreaped child after reporting a cleanup failure.
+
+Pipes and native PTYs share bounded pending writes and output delivery. PTYs
+use platform APIs through LuaJIT FFI, without a terminal UI, interpreter
+dependency, or supervisor process. POSIX drivers retain a waitable child until
+the final original-group signal. Windows PTYs assign a Job atomically during
+creation and retain native process identity. Owners arbitrate deadlines and
+results; drivers observe exit independently of stream or console cleanup.
+Blocking Windows console resize and release run serially on a libuv worker.
+The driver coalesces pending resize requests, prioritizes release, and retains
+ownership through completion or beyond a reported cleanup deadline.
+Platform requirements, terminal behavior, and the remaining POSIX descendant
+containment boundary are documented in the [API reference](doc/neoagent.txt).
 
 ## Sessions and persistence
 

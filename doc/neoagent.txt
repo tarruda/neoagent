@@ -17,6 +17,7 @@ CONTENTS                                                        *neoagent-conten
 4. UI                                                          |neoagent-ui|
    Renderers                                          |neoagent-renderers|
 5. Core APIs                                              |neoagent-core-api|
+   Local subprocesses                                 |neoagent-subprocess|
 6. Tools and sessions                               |neoagent-composition|
    Context compaction                              |neoagent-compaction|
 
@@ -1167,7 +1168,9 @@ A Run supports: >lua
 Callbacks run on Neovim's main loop and completion occurs once. Callback and
 cancellation-handler failures leave the primary result unchanged and appear as
 bounded diagnostics. `neoagent.async.run()` accepts an optional diagnostic
-reporter.
+reporter. Awaiting a child forwards its diagnostics unless it has its own
+reporter. Detached cleanup from `subprocess.run()` retains that forwarding
+through cleanup observation, even after the cancelled Runs complete.
 
 `neoagent.async.await(start)` gives `start` completion callbacks and expects an
 optional cancellation function. A producer that transfers a resource may call
@@ -1269,6 +1272,178 @@ may set `login_label` and `logout_label` for those actions.
 Use `manager:wrap(model, id, { optional = true })` when the Model can run with
 an ambient credential.
 
+LOCAL SUBPROCESSES                                         *neoagent-subprocess*
+
+`neoagent.subprocess_common` starts a process locally, under the caller's
+existing authority. It supplies `run(spec, options)` and `scope()`. Retained
+processes are started with `scope:spawn(spec, observer?)`. It requires no Tool,
+sandbox, RPC connection, or terminal buffer.
+Native process ownership supports Linux, macOS, and Windows. Other hosts are
+rejected before native process creation with `process_supervision`.
+
+Use `run()` inside a `neoagent.async` Run for synchronous command execution: >lua
+
+  local subprocess = require("neoagent.subprocess_common")
+  local result = subprocess.run({
+    argv = { "git", "status", "--short" },
+    cwd = "/path/to/project",
+    stdio = { kind = "pipes" },
+    timeout_ms = 10000,
+  }, { capture = { max_bytes = 65536 } })
+<
+`argv` is a non-empty list of NUL-free strings, passed as separate arguments
+without shell parsing. Specify a shell explicitly for shell command syntax.
+Native executable behavior still applies: Linux with glibc interprets executable
+text without a shebang through `/bin/sh` in both stdio modes. Other native
+launchers can reject that format. Use an explicit interpreter for portable
+script execution.
+`cwd` must be a directory.
+Unknown fields are rejected. `environment = { inherit = true, set = {} }` is
+the default; `inherit = false` selects an exact environment. Values are strings.
+Windows names are case-insensitive and duplicate names are rejected.
+Windows paths, arguments, and environment strings use libuv's WTF-8 encoding,
+which preserves unpaired UTF-16 surrogates returned by native Windows APIs.
+Windows drive-directory entries such as `=C:` are accepted in explicit
+environment snapshots; other names cannot contain `=`.
+Both stdio modes resolve executables against the requested cwd and PATH.
+POSIX launches preserve PATH fallback after execution errors that the platform
+treats as a missing candidate, including a missing shebang interpreter.
+On POSIX, a bare PTY executable name requires
+PATH in the target environment; otherwise startup raises `pty_unavailable`.
+Use an explicit executable path when omitting PATH. This avoids guessing
+libc-specific default search paths; pipes retain their native defaults.
+Windows searches cwd first unless NoDefaultCurrentDirectoryInExePath exists
+in Neovim's environment, even with an empty value, then searches PATH,
+including quoted directory names and drive-relative entries such as `C:`.
+It tries executable names using libuv's .com/.exe rules, independently of
+PATHEXT. Native PTYs pass the selected file as an explicit application name,
+including when its path contains spaces.
+
+Pipe stdin defaults to closed. Use `{ kind = "pipes", stdin = "open" }` for
+writable input. Run options can provide
+`input = { chunks = { "first", "second" }, close = true }`; bytes are sent
+exactly, without added newlines. `capture` is required: `false` retains no output,
+while `{ max_bytes = N }` bounds aggregate output and raises `output_limit` if
+exceeded. `on_output(event)` receives `{ stream, data }`, with raw string bytes
+and stream `stdout`, `stderr`, or `pty`. The observer must return promptly and
+must not yield. A raised error or yield fails the operation and kills its tree.
+Output observers run after `scope:spawn()` returns its handle. On macOS,
+startup may service other editor callbacks while waiting for native execution;
+scope ownership remains active throughout that wait.
+
+Input delivery is strict by default. For commands that intentionally consume
+only a prefix, set `input.allow_early_close = true`. The run then waits for the
+process outcome despite closed stdin; the caller must still validate its exit
+and output. This does not suppress cancellation, deadlines, or process errors.
+
+For a longer-lived target, create a scope with `subprocess.scope()` and keep
+the handle returned by `scope:spawn(spec, observer?)`. Close the scope when
+its owner ends. The scope retains cleanup failures even when startup throws
+without returning a handle; observe them through `scope:wait(timeout_ms)`.
+Handle methods are:
+
+  state()                   Copied phase, control availability, and outcome.
+  write(bytes)              Accept at most 64 KiB in one call.
+  close_stdin()             Close pipe input after accepted writes; idempotent.
+  flush()                   Await accepted native writes and requested close.
+  resize(columns, rows)     Request a PTY size within its native coordinate range.
+  terminate(reason)         Request tree termination; idempotent.
+  wait()                    Await a copied outcome; multiple waiters allowed.
+  wait_cleanup()            Await cleanup independently of the outcome.
+  dispose(reason)           End ownership and initiate forced cleanup.
+
+Waiting methods run inside a managed async Run. Cancelling one `wait()`,
+`flush()`, or `wait_cleanup()` removes only that waiter. Cancelling `run()`
+disposes its target. Pending input is bounded to 1 MiB and 64 writes;
+`input_limit` means the caller should flush before retrying. Successful writes
+acknowledge local acceptance, not consumption by the target. Flush waits for
+native write completion; it does not prove application-level consumption.
+Output reads pause while one delivery per stream awaits the editor, so delayed
+callbacks cannot accumulate an unbounded driver output queue.
+
+`timeout_ms` is a positive integer lifetime deadline of at most 2147483647
+milliseconds, independent of waiters. `kill_grace_ms` defaults to 1000 and
+accepts 0 through 60000. POSIX termination sends TERM to the owned group,
+then KILL after that grace. Windows terminates the owned Job; it has no
+equivalent graceful POSIX signal. Disposal requests forced termination immediately.
+Termination timers
+run in libuv context. Cleanup remains owned after caller cancellation, and
+its bounded drain interval starts when Neovim can service editor callbacks.
+Observing native exit starts bounded cleanup even if the exit status is still
+pending. Cleanup expiry raises `process_cleanup`; it does not mark an exited
+target as timed out or invent an exit code. Output delayed by editor delivery
+can receive one final drain interval. Later output cannot renew this allowance.
+
+An outcome contains `code`, `signal`, `timed_out`, `started_at_ns`,
+`finished_at_ns`, `duration_ms`, and optional `termination_reason`. Non-zero
+exit is an ordinary outcome. A numeric signal uses code `128 + signal`.
+`run()` adds `stdout`, `stderr`, and callback-ordered `output`. Spawn, stream,
+observer, and cleanup failures raise structured errors with stable codes;
+they do not invent exit statuses. Disposal rejects outcome waiters with
+`process_disposed` unless an earlier operation failed. `wait_cleanup()` only
+rejects cleanup failures. After cleanup observation finishes, `state().terminal`
+retains any observed exit outcome even when operation, disposal, or cleanup
+fails. `wait()` still raises the failure. State and outcomes expose no native
+identifiers.
+
+`scope:run()` and `scope:spawn()` use the same spec. `scope:close(reason)`
+disposes its live handles and rejects new work. `scope:is_settled()` means
+cleanup observation has finished, possibly unsuccessfully. It does not prove
+that all processes are gone. `scope:wait(timeout_ms)` reports any cleanup
+failure; its own wait timeout raises `process_cleanup` while detached cleanup
+continues.
+
+PTYs use `{ kind = "pty", columns = 80, rows = 24 }`. Output combines both
+streams and terminal modes govern echo, line endings, and control bytes.
+Creation and resize require integer dimensions from 1 through 32767 on Windows
+or 65535 on POSIX; larger values raise `invalid_terminal_size` before native calls.
+`close_stdin()` is unsupported. Native PTYs support write completion, resize,
+exit observation, and output drain independently of Neovim's job API. Startup
+failures raise `process_start`; successfully executed targets returning 122 or
+127 retain those ordinary exit outcomes. POSIX outcomes retain the native signal.
+PTY data is transported as bytes; terminal settings can still transform input
+or output. Configure the target's terminal mode when exact binary transport
+is required, or use pipes.
+
+Linux PTYs require glibc or musl with posix_spawn session and working-directory
+support. Windows PTYs require ConPTY (Windows 10 version 1809 or later).
+Unavailable platform support raises `pty_unavailable`, without falling back
+to pipes. Console resize and release on Windows run serially on a libuv worker
+so they cannot block the editor's deadline callbacks or race each other.
+`resize()` acknowledges acceptance; while a resize is pending, only the latest
+subsequent size is retained. A native resize failure fails the operation with
+`process_terminal`. Native resize acceptance does not establish when the
+target application has processed its size change.
+
+macOS PTYs use a short LuaJIT FFI path between fork and exec. This path suspends
+ordinary Lua hooks and garbage collection and avoids JIT execution in the child.
+An active sampling profiler or an external C debug hook that cannot be restored
+causes `process_start` before forking. Execution acknowledgement is bounded to
+five seconds. The post-fork path depends on libSystem's fork handling and the
+LuaJIT build; native macOS validation remains required for this backend.
+
+PTY environments are exact after normalization; no TERM or NVIM value is added.
+Set TERM explicitly when the target needs a particular terminal description.
+On Windows, libuv supplies missing system variables for pipes.
+An exact environment must explicitly set each of these that exists in the
+parent: HOMEDRIVE, HOMEPATH, LOGONSERVER, PATH, SYSTEMDRIVE, SYSTEMROOT, TEMP,
+USERDOMAIN, USERNAME, USERPROFILE, and WINDIR. Missing required keys raise
+`process_validation`; values can be empty strings. POSIX pipes and native PTYs
+have no native environment additions.
+
+POSIX supervision supports Linux x86, x64, ARM, and ARM64, and macOS x64 and
+ARM64. Other native ABIs are rejected before spawning.
+Supervision covers the target's original process group and retains
+the leader's waitable identity until the final group signal. Descendants can
+leave that group through job control or detachment. Original-group descendants
+remain signalable after leader exit. Windows PTYs assign their Job atomically
+during creation; pipe Job assignment follows libuv creation and has a
+corresponding startup race. Complete restricted descendant
+containment belongs to the outer native sandbox lease. Retained interactive
+Tool sessions need stronger POSIX containment before promising ownership of
+arbitrary descendants. Their capacity policy must account for failed cleanup
+separately from completed cleanup observation.
+
 ===============================================================================
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
 
@@ -1301,7 +1476,8 @@ supported `input_schema` vocabulary before this function runs.
 `details` is Tool-owned JSON data. Executors may add an `execution` JSON object;
 both are retained in Session messages. Sandbox policy owns `execution.sandbox`.
 `cleanup_failed` reports a cleanup error; `cleanup_unobserved` means cancellation
-stopped the wait while cleanup continued independently. Neither changes a
+stopped the wait while cleanup continued independently. `cleanup_kind` classifies
+that cleanup outcome separately from the operation's `kind`. Neither changes a
 completed Tool's success or failure. `cleanup_notice` is the one-based index
 of the explanation in `content`, displayed alongside the Tool's ordinary
 preview and sent to the Model. The content block owns the notice text.
@@ -1339,9 +1515,15 @@ edit can have incomplete effects; inspect the file before retrying.
 
 The bundled shell Tool uses the parent Neovim's shell settings and the
 Workspace cwd. It accepts a command and optional timeout, which defaults to
-300 seconds; `shell_timeout = false` disables that default. Restricted shell
-calls also enforce finite timeouts in the parent, with a short allowance for
-command termination and response delivery if the worker becomes unresponsive.
+300 seconds; `shell_timeout = false` disables that default. Explicit timeouts
+and numeric defaults must be positive and at most 2147483.647 seconds.
+Restricted shell calls also enforce finite timeouts in the parent, with a
+short allowance for command termination and response delivery if the worker
+becomes unresponsive.
+
+Command-backed Tools set `NVIM` to the executing editor's server address and
+omit `NVIM_LISTEN_ADDRESS`. A restricted worker with no server supplies an
+empty address. The local subprocess API itself inherits the OS environment.
 
 `write_file` and `edit_file` replace regular files, preserve existing modes,
 reject symbolic links, and request mode `0644` for new files.

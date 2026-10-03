@@ -966,6 +966,21 @@ describe("neoagent configuration and model resolution", function()
     assert.is_not.matches("key failed", assert(err).message)
   end)
 
+  it("rejects unsupported shell deadlines before publishing configuration", function()
+    local maximum = 2147483647 / 1000
+    assert.are.equal(maximum, config.setup({ shell_timeout = maximum }).shell_timeout)
+    for _, seconds in ipairs({ maximum + 0.001, 30 * 24 * 60 * 60 }) do
+      assert.has_error(function()
+        config.resolve({ shell_timeout = seconds })
+      end)
+      assert.has_error(function()
+        config.setup({ shell_timeout = seconds })
+      end)
+      assert.are.equal(maximum, config.get().shell_timeout)
+    end
+    assert.is_false(config.setup({ shell_timeout = false }).shell_timeout)
+  end)
+
   it("validates geometry and configured identifiers", function()
     assert.are.equal(300, config.setup({}).shell_timeout)
     assert.are.equal(12.5, config.setup({ shell_timeout = 12.5 }).shell_timeout)

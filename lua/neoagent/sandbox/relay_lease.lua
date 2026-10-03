@@ -78,6 +78,9 @@ function Relay:wait_ready()
   if self._failure then
     error(self._failure, 0)
   end
+  if self._base and self._base.wait_ready then
+    self._base:wait_ready()
+  end
   if self._ready then
     return true
   end
@@ -120,6 +123,11 @@ end
 ---@async
 local function finish(self)
   assert(self._host_result and not self._result, "native sandbox relay completion state is invalid")
+  -- A host that failed to start cannot send a protocol terminal event. Keep
+  -- that native failure instead of replacing it with the missing frame.
+  if self._host_result.error and not self._failure then
+    record_failure(self, util.copy(self._host_result.error))
+  end
   local terminal, finish_err = self._decoder:finish()
   if not terminal and not self._failure then
     record_failure(self, util.error("sandbox_unavailable", "Invalid native sandbox protocol", finish_err))
@@ -145,20 +153,30 @@ local function finish(self)
       )
     )
   end
+  local cleanup_error = self._host_result.cleanup_error
   if self._opts.cleanup then
     local called, cleaned, cleanup_err = pcall(self._opts.cleanup, util.copy(self._host_result))
-    if not called and not self._failure then
-      record_failure(self, util.error("sandbox_unavailable", "Could not clean native sandbox resources", cleaned))
-    elseif not cleaned and not self._failure then
-      record_failure(self, util.error("sandbox_unavailable", "Could not clean native sandbox resources", cleanup_err))
+    if not called or not cleaned then
+      ---@type unknown
+      local detail = cleanup_err
+      if not called then
+        detail = cleaned
+      end
+      cleanup_error = util.with_cause(
+        util.error("sandbox_unavailable", "Could not clean native sandbox resources", detail),
+        cleanup_error
+      )
     end
   end
+  -- Cleanup can yield while protocol failures still arrive. Readiness retains
+  -- the first operation failure; completion also accounts for cleanup failure.
   local exit = terminal and terminal.type == "exit" and terminal or nil
   self._result = {
-    code = self._failure and 125 or (exit and exit.code or self._host_result.code),
+    code = exit and exit.code or self._host_result.code,
     signal = exit and exit.signal or self._host_result.signal,
     stderr = self._stderr ~= "" and self._stderr or self._host_result.stderr,
     error = self._failure,
+    cleanup_error = cleanup_error,
   }
   local waiters = self._waiters
   self._waiters = {}

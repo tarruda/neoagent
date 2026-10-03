@@ -40,6 +40,16 @@ local function curl()
   end
 end
 
+local function check_processes()
+  -- Windows pipes use libuv and Job Objects independently of optional ConPTY.
+  local failure = jit.os ~= "Windows" and require("neoagent.subprocess.posix_child").platform_error() or nil
+  if failure then
+    vim.health.error(failure.message .. "; local command tools are unavailable")
+  else
+    vim.health.ok("local subprocess platform is supported: " .. jit.os .. "/" .. jit.arch)
+  end
+end
+
 local function check_configuration()
   local configured = require("neoagent.config").get()
   ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
@@ -135,6 +145,7 @@ function M.check()
   else
     vim.health.error("Neovim 0.10 or newer is required")
   end
+  check_processes()
   curl()
   executable("rg")
   executable("fd")
