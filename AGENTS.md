@@ -115,6 +115,8 @@ Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
 Coverage also requires a C compiler (`CC`, or `cc`) for CLuaCov on Linux or
 macOS; `make coverage-deps` installs it. Windows collection uses LuaCov alone.
+The test bootstrap also instruments libuv worker Lua states and records their
+actual execution in separate per-thread counter files.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 The large inline-image integration regressions require ImageMagick's `magick`
 on `PATH`; they are skipped when it is unavailable. Native macOS CI installs

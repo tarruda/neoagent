@@ -10,6 +10,8 @@
 ---@field includeuntestedfiles? boolean
 
 ---@class LuaCov.Runner
+---@field initialized boolean
+---@field debug_hook fun(event: string, line: integer)
 ---@overload fun(configuration?: string|LuaCov.Configuration)
 local runner = {}
 
@@ -17,6 +19,12 @@ local runner = {}
 function runner.init(configuration) end
 
 function runner.shutdown() end
+
+function runner.resume() end
+
+function runner.pause() end
+
+function runner.save_stats() end
 
 ---@param configuration? string|LuaCov.Configuration
 function runner.run_report(configuration) end
