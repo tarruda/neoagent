@@ -52,6 +52,21 @@ local flags = 1 + 4 + (jit.os == "OSX" and 0x20 or 0x1000000) -- WNOHANG | WEXIT
 ---@field terminate fun(force: boolean): boolean
 ---@field close fun()
 
+-- Inspect the native ABI without allocating a watcher or child owner.
+---@return Neoagent.Error?
+function M.platform_error()
+  if jit.os ~= "Linux" and jit.os ~= "OSX" then
+    return validate.error("process_supervision", "Unsupported native process platform: " .. jit.os)
+  end
+  -- siginfo_t and wait constants are architecture ABIs. In particular, Linux
+  -- MIPS swaps si_errno/si_code; admitting it with this layout corrupts exits.
+  local supported = jit.os == "Linux" and { x86 = true, x64 = true, arm = true, arm64 = true }
+    or { x64 = true, arm64 = true }
+  if not supported[jit.arch] then
+    return validate.error("process_supervision", "Unsupported native process ABI: " .. jit.os .. "/" .. jit.arch)
+  end
+end
+
 -- uv_close transfers reaping responsibility to the caller on POSIX. The
 -- driver closes its uv_process_t without yielding after spawn, then observes
 -- this child with WNOWAIT. Its PID stays reserved through the last group
@@ -59,15 +74,9 @@ local flags = 1 + 4 + (jit.os == "OSX" and 0x20 or 0x1000000) -- WNOHANG | WEXIT
 ---@param callbacks Neoagent.SubprocessCallbacks
 ---@return Neoagent.PosixChild
 function M.new(callbacks)
-  if jit.os ~= "Linux" and jit.os ~= "OSX" then
-    error(validate.error("process_supervision", "Unsupported native process platform: " .. jit.os), 0)
-  end
-  -- siginfo_t and wait constants are architecture ABIs. In particular, Linux
-  -- MIPS swaps si_errno/si_code; admitting it with this layout corrupts exits.
-  local supported = jit.os == "Linux" and { x86 = true, x64 = true, arm = true, arm64 = true }
-    or { x64 = true, arm64 = true }
-  if not supported[jit.arch] then
-    error(validate.error("process_supervision", "Unsupported native process ABI: " .. jit.os .. "/" .. jit.arch), 0)
+  local failure = M.platform_error()
+  if failure then
+    error(failure, 0)
   end
   local info = ffi.new("NeoagentChildInfo") --[[@as Neoagent.ChildInfo]]
   local watcher = vim.uv.new_signal()

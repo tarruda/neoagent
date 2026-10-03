@@ -103,9 +103,9 @@ end
 ---@param callbacks Neoagent.SubprocessCallbacks
 ---@return Neoagent.SubprocessDriver
 function M.new(spec, env, callbacks)
-  local supported = { x86 = true, x64 = true, arm = true, arm64 = true }
-  if not supported[jit.arch] then
-    error(validate.error("pty_unavailable", "Unsupported Linux PTY ABI: " .. jit.arch), 0)
+  local failure = children.platform_error()
+  if failure then
+    error(validate.error("pty_unavailable", failure.message), 0)
   end
   local available = pcall(function()
     return C.posix_spawn_file_actions_addchdir_np
