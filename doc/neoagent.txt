@@ -584,10 +584,12 @@ A profile callback receives a copy of the default profile and tool context and
 returns the complete profile.
 
 `environment.clear = true` starts with an empty environment; `inherit` selects
-parent variables and `set` supplies explicit values. With `clear = false`,
-ambient variables are copied except editor connection variables and known or
-credential-like names (including key, token, secret, password, and credential
-segments). Explicit `inherit` or `set` entries opt these variables back in.
+parent variables and `set` supplies explicit values. Sandbox variable names
+must match `[A-Za-z_][A-Za-z0-9_]*`; other ambient names are omitted. With
+`clear = false`, ambient variables are copied except editor connection variables
+and known or credential-like names (including key, token, secret, password, and
+credential segments). Explicit `inherit` or `set` entries opt these variables
+back in.
 The worker always removes `NVIM`, `NVIM_LISTEN_ADDRESS`, and its private
 bootstrap variable before running Tools.
 

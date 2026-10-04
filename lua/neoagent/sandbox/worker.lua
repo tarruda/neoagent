@@ -35,6 +35,12 @@ function M.environment(profile, source, paths)
     end
   end
   local function allowed_ambient(name)
+    -- The sandbox profile and native bootstrap accept portable variable
+    -- names. Ambient Windows entries such as ProgramFiles(x86) and =C:
+    -- must not make an otherwise valid worker specification unlaunchable.
+    if not name:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+      return false
+    end
     local upper = name:upper()
     if upper == "NVIM" or upper == "NVIM_LISTEN_ADDRESS" or SENSITIVE_ENVIRONMENT[upper] then
       return false
