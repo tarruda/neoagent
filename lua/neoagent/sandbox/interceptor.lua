@@ -40,23 +40,6 @@ local DENIAL_KEYWORDS = {
   "failed to write file",
 }
 
-local SENSITIVE_ENVIRONMENT = {
-  ANTHROPIC_API_KEY = true,
-  AWS_ACCESS_KEY_ID = true,
-  AWS_SECRET_ACCESS_KEY = true,
-  BAILIAN_TOKEN_PLAN_API_KEY = true,
-  DEEPSEEK_API_KEY = true,
-  GIT_ASKPASS = true,
-  GPG_AGENT_INFO = true,
-  GOOGLE_APPLICATION_CREDENTIALS = true,
-  HF_TOKEN = true,
-  OPENAI_API_KEY = true,
-  OPENCODE_API_KEY = true,
-  SSH_ASKPASS = true,
-  SSH_AUTH_SOCK = true,
-  ZAI_API_KEY = true,
-}
-
 ---@param value unknown
 ---@return string
 local function bounded(value)
@@ -122,63 +105,6 @@ local function denied_result(value, platform, evidence)
     end
   end
   return false
-end
-
----@param profile Neoagent.SandboxProfile
----@param source table<string, string>
----@param paths Neoagent.SandboxPaths
----@return table<string, string>
-local function worker_environment(profile, source, paths)
-  local values = {}
-  local output_names = {}
-  local by_key = {}
-  local names = vim.tbl_keys(source)
-  table.sort(names)
-  for _, name in ipairs(names) do
-    local key = paths.environment_key(name)
-    if not by_key[key] then
-      by_key[key] = name
-    end
-  end
-  local function allowed_ambient(name)
-    local upper = name:upper()
-    if upper == "NVIM" or upper == "NVIM_LISTEN_ADDRESS" or SENSITIVE_ENVIRONMENT[upper] then
-      return false
-    end
-    local segmented = "_" .. upper:gsub("[^A-Z0-9]+", "_") .. "_"
-    for _, token in ipairs({ "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS" }) do
-      if segmented:find("_" .. token .. "_", 1, true) then
-        return false
-      end
-    end
-    return true
-  end
-  local function put(name, value)
-    local key = paths.environment_key(name)
-    local previous = output_names[key]
-    if previous and previous ~= name then
-      values[previous] = nil
-    end
-    values[name] = value
-    output_names[key] = name
-  end
-  if not profile.environment.clear then
-    for _, name in ipairs(names) do
-      if allowed_ambient(name) then
-        put(name, source[name])
-      end
-    end
-  end
-  for _, name in ipairs(profile.environment.inherit) do
-    local source_name = by_key[paths.environment_key(name)]
-    if source_name then
-      put(name, source[source_name])
-    end
-  end
-  for name, value in pairs(profile.environment.set) do
-    put(name, value)
-  end
-  return values
 end
 
 ---@param self Neoagent.SandboxInterceptor<unknown>
@@ -256,71 +182,28 @@ end
 ---@param call Neoagent.ToolOperationCall
 ---@return Neoagent.SandboxInvocation
 local function create_worker(self, profile, call)
-  local prepared, launch = pcall(function()
-    local worker_module = require("neoagent.rpc.worker")
-    local worker = worker_module.worker_file()
-    local nvim = worker_module.nvim_command(self._nvim)
-    local env = worker_environment(profile, self._environ(), self._paths)
-    env.NEOAGENT_WORKER_FILE = worker
-    local required = worker_module.bootstrap_paths(worker, nvim)
-    require("neoagent.sandbox.policy").require_read(profile, required, self._paths, "bootstrap")
-    return {
-      argv = worker_module.argv(nvim, worker),
-      bootstrap_paths = required,
-      env = env,
-    }
+  local invocation
+  local worker = require("neoagent.sandbox.worker")
+  local prepared, environment = pcall(function()
+    return worker.environment(profile, self._environ(), self._paths)
   end)
   if not prepared then
-    error(util.normalize_error(launch, "worker_start"), 0)
+    error(util.normalize_error(environment, "worker_start"), 0)
   end
-  ---@cast launch {argv: string[], bootstrap_paths: string[], env: table<string, string>}
-  ---@type Neoagent.SandboxInvocation?
-  local invocation
-  local connection = require("neoagent.rpc.connection").new({
+  local connection, lease = worker.start({
+    profile = profile,
+    platform = self._platform,
+    paths = self._paths,
+    services = self._services,
+    nvim = self._nvim,
+    cwd = call.workspace.cwd,
+    environment = environment,
     on_failure = function()
       if invocation then
         invocation:dispose("restricted Tool worker channel failed")
       end
     end,
   })
-  ---@type Neoagent.SandboxWorkerRequest
-  local request = {
-    argv = launch.argv,
-    cwd = call.workspace.cwd,
-    env = launch.env,
-    profile = profile,
-    bootstrap_paths = launch.bootstrap_paths,
-    on_stdout = function(data)
-      connection:feed(data)
-    end,
-    on_failure = function(err)
-      connection:abort(util.error("protocol", err.message, err.detail))
-    end,
-    on_exit = function(value)
-      connection:eof(value)
-    end,
-  }
-  local start_worker = self._platform.start_worker
-  assert(type(start_worker) == "function", "sandbox platform must start workers")
-  ---@cast start_worker fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerLease
-  local started, lease = pcall(function()
-    local value = start_worker(request, self._services)
-    assert(
-      type(value) == "table"
-        and type(value.write) == "function"
-        and type(value.close_stdin) == "function"
-        and type(value.terminate) == "function"
-        and type(value.wait) == "function"
-        and type(value.dispose) == "function",
-      "sandbox platform returned an invalid worker lease"
-    )
-    return value
-  end)
-  if not started then
-    error(util.normalize_error(lease, "sandbox_unavailable"), 0)
-  end
-  ---@cast lease Neoagent.WorkerLease
-  connection:attach(lease)
   invocation = invocation_module.new(connection, lease)
   return invocation
 end
