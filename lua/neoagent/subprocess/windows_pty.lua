@@ -105,6 +105,9 @@ function M.new(spec, env, callbacks)
   ---@type {columns: integer, rows: integer}?
   local pending_size
   local close_requested = false
+  local release = require("neoagent.subprocess.release").new(callbacks.released)
+  ---@type fun()?
+  local release_console, release_monitor
   ---@type {storage: ffi.cdata*, job?: Neoagent.ConsolePointers}?
   local attributes
   ---@type table<integer, boolean>
@@ -116,12 +119,17 @@ function M.new(spec, env, callbacks)
     exited = callbacks.exited,
     failed = callbacks.failed,
     input_failed = callbacks.input_failed,
+    released = release.retain(),
     closed = function()
       drained = true
       settled()
     end,
   })
   settled = function()
+    if disposed and tree and (exited or not tree.attached) then
+      tree:close(true)
+      tree = nil
+    end
     if console == nil and exited then
       -- luv roots the completion callback until the work context is collected.
       -- Break its reference back to this owner once no console needs it.
@@ -130,10 +138,13 @@ function M.new(spec, env, callbacks)
         notified = true
         if monitor and not monitor:is_closing() then
           monitor:stop()
-          monitor:close()
+          monitor:close(release_monitor)
         end
         vim.schedule(callbacks.closed)
       end
+    end
+    if disposed and not tree and console == nil then
+      release.close()
     end
   end
   local function service_console()
@@ -184,10 +195,11 @@ function M.new(spec, env, callbacks)
   local function dispose()
     disposed = true
     release_setup()
-    if tree then
-      tree:close(true)
+    if tree and tree.attached then
+      tree:terminate(9)
+    else
+      exited = true
     end
-    exited = true
     io.exited()
     io.dispose()
     close_console()
@@ -214,6 +226,7 @@ function M.new(spec, env, callbacks)
   end
   local function start()
     monitor = assert(vim.uv.new_timer())
+    release_monitor = release.retain()
     ---@param bytes string
     ---@param action "resize"|"close"
     ---@param columns integer
@@ -246,6 +259,7 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
         if success then
           console = nil
           console_bytes = nil
+          assert(release_console)()
         else
           callbacks.failed("process_cleanup", "Could not release native terminal")
         end
@@ -265,7 +279,7 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
     -- This timer also retains failed/unfinished console cleanup after the
     -- caller's bounded observation ends. No blocking native wait runs here.
     assert(monitor:start(20, 20, function()
-      if not disposed and tree and tree.attached then
+      if tree and tree.attached then
         local ok = pcall(running)
         if not ok then
           callbacks.failed("process_supervision", "Could not observe native PTY process state")
@@ -303,6 +317,7 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
     )
     check("terminal allocation", status >= 0, status)
     console = console_pointer[0]
+    release_console = release.retain()
     local length = ffi.new("size_t[1]") --[[@as Neoagent.ConsoleNumbers]]
     kernel.InitializeProcThreadAttributeList(nil, 2, 0, length)
     check("startup attributes", length[0] > 0)

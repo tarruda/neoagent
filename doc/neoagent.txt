@@ -1351,10 +1351,11 @@ Handle methods are:
   terminate(reason)         Request tree termination; idempotent.
   wait()                    Await a copied outcome; multiple waiters allowed.
   wait_cleanup()            Await cleanup independently of the outcome.
+  wait_release()            Await eventual native resource release.
   dispose(reason)           End ownership and initiate forced cleanup.
 
 Waiting methods run inside a managed async Run. Cancelling one `wait()`,
-`flush()`, or `wait_cleanup()` removes only that waiter. Cancelling `run()`
+`flush()`, `wait_cleanup()`, or `wait_release()` removes only that waiter. Cancelling `run()`
 disposes its target. Pending input is bounded to 1 MiB and 64 writes;
 `input_limit` means the caller should flush before retrying. Successful writes
 acknowledge local acceptance, not consumption by the target. Flush waits for
@@ -1400,6 +1401,14 @@ cleanup observation has finished, possibly unsuccessfully. It does not prove
 that all processes are gone. `scope:wait(timeout_ms)` reports any cleanup
 failure; its own wait timeout raises `process_cleanup` while detached cleanup
 continues.
+
+Native ownership can outlive failed cleanup observation. `state().released`
+and `wait_release()` observe eventual release independently; a successful
+release does not erase an earlier failure. `scope:is_released()` and
+`scope:wait_release(timeout_ms)` include failed starts that returned no handle.
+Owners that limit concurrent processes must reserve their capacity until
+release is confirmed. Release means owned native resources have closed, not
+that descendants outside the documented containment boundary have stopped.
 
 PTYs use `{ kind = "pty", columns = 80, rows = 24 }`. Output combines both
 streams and terminal modes govern echo, line endings, and control bytes.

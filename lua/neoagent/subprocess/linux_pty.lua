@@ -129,7 +129,15 @@ function M.new(spec, env, callbacks)
   -- complete launch allocation until all spawn attempts have finished.
   ---@type {argv: ffi.cdata*, env: ffi.cdata*, strings: string[][]}?
   local arguments
-  local io = streams.new(callbacks)
+  local release = require("neoagent.subprocess.release").new(callbacks.released)
+  local io = streams.new({
+    output = callbacks.output,
+    exited = callbacks.exited,
+    closed = callbacks.closed,
+    failed = callbacks.failed,
+    input_failed = callbacks.input_failed,
+    released = release.retain(),
+  })
   ---@type Neoagent.PosixChild?
   local child
   ---@type uv.uv_pipe_t?
@@ -164,6 +172,7 @@ function M.new(spec, env, callbacks)
       end
     end)
     io.dispose()
+    release.close()
     if not ok then
       error(err, 0)
     end
@@ -186,6 +195,7 @@ function M.new(spec, env, callbacks)
       end,
       output = callbacks.output,
       closed = callbacks.closed,
+      released = release.retain(),
       failed = callbacks.failed,
     })
     -- These master descriptors are never inherited by the target. The slave

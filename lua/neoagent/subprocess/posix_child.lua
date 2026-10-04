@@ -77,31 +77,48 @@ end
 function M.new(callbacks)
   local failure = M.platform_error()
   if failure then
+    callbacks.released()
     error(failure, 0)
   end
-  local info = ffi.new("NeoagentChildInfo") --[[@as Neoagent.ChildInfo]]
-  local watcher = vim.uv.new_signal()
-  if not watcher then
-    error(validate.error("process_supervision", "Could not allocate process watcher"), 0)
+  local ownership = require("neoagent.subprocess.release").new(callbacks.released)
+  local resources = {}
+  local function stop()
+    for resource, released in pairs(resources) do
+      if not resource:is_closing() then
+        resource:stop()
+        resource:close(released)
+      end
+    end
+    ownership.close()
   end
-  local allocated, retry = pcall(vim.uv.new_timer)
-  if not allocated or not retry then
-    watcher:close()
-    error(validate.error("process_supervision", "Could not allocate process reap timer"), 0)
+  local function retain(resource)
+    resources[resource] = ownership.retain()
+    return resource
   end
+  local allocation_error = validate.error("process_supervision", "Could not allocate process watcher")
+  local allocated, info, watcher, retry = pcall(function()
+    local info = ffi.new("NeoagentChildInfo") --[[@as Neoagent.ChildInfo]]
+    local watcher = vim.uv.new_signal()
+    if not watcher then
+      error(allocation_error, 0)
+    end
+    retain(watcher)
+    allocation_error = validate.error("process_supervision", "Could not allocate process reap timer")
+    local retry = vim.uv.new_timer()
+    if not retry then
+      error(allocation_error, 0)
+    end
+    retain(retry)
+    return info, watcher, retry
+  end)
+  if not allocated then
+    stop()
+    error(allocation_error, 0)
+  end
+  local watcher, retry = assert(watcher), assert(retry)
   ---@type integer?
   local pid
   local owned, exited, closing = false, false, false
-  local function stop()
-    if not watcher:is_closing() then
-      watcher:stop()
-      watcher:close()
-    end
-    if not retry:is_closing() then
-      retry:stop()
-      retry:close()
-    end
-  end
   ---@return Neoagent.Error?
   local function release()
     if not owned then

@@ -32,6 +32,7 @@ M.DEFAULT_ADMISSION_TIMEOUT_MS = 60 * 1000
 ---@field _stdin_closed boolean
 ---@field _dispose_reason? string
 ---@field _admission_timeout_ms integer
+---@field _cleanup_released boolean
 local Relay = {}
 Relay.__index = Relay
 
@@ -154,9 +155,11 @@ local function finish(self)
     )
   end
   local cleanup_error = self._host_result.cleanup_error
+  self._cleanup_released = true
   if self._opts.cleanup then
     local called, cleaned, cleanup_err = pcall(self._opts.cleanup, util.copy(self._host_result))
     if not called or not cleaned then
+      self._cleanup_released = false
       ---@type unknown
       local detail = cleanup_err
       if not called then
@@ -287,6 +290,23 @@ function Relay:wait()
   end)
 end
 
+function Relay:is_released()
+  return self._result ~= nil and self._cleanup_released and self._base ~= nil and self._base:is_released()
+end
+
+---@async
+---@return true
+function Relay:wait_release()
+  self:wait()
+  assert(self._base):wait_release()
+  if not self._cleanup_released then
+    -- Failed platform cleanup has no confirmed release. Keep capacity
+    -- quarantined; cancelling this observer does not abandon its owner.
+    return async.await(function() end)
+  end
+  return true
+end
+
 ---@param reason string
 function Relay:dispose(reason)
   assert(type(reason) == "string" and reason ~= "", "native sandbox worker disposal reason is required")
@@ -318,6 +338,7 @@ function M.new(opts)
     _ready_waiters = {},
     _stderr = "",
     _disposed = false,
+    _cleanup_released = false,
     _stdin_closed = false,
     _admission_timeout_ms = admission_timeout_ms,
   }, Relay)

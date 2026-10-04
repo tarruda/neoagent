@@ -82,6 +82,7 @@ describe("native Windows subprocess handles", function()
     assert.is_false(result.timed_out)
     assert.is_nil(result.termination_reason)
     assert.matches("INTERRUPTED", output, 1, true)
+    assert.is_true(helper.complete(function() return handle:wait_release() end))
   end)
 
   for _, startup_failure in ipairs({ false, true }) do
@@ -318,6 +319,10 @@ print('native-strings:ok', flush=True)
       assert.are.equal(0, result.code, vim.inspect(result))
       assert.is_false(result.timed_out)
       assert.is_nil(result.termination_reason)
+      assert.is_true(helper.complete(function()
+        return owner:wait_release(4000)
+      end))
+      assert.is_true(owner:is_released())
     end)
     vim.uv.spawn = spawn
     for _, complete in pairs(pending) do
@@ -360,6 +365,52 @@ print('native-strings:ok', flush=True)
     for _, deliver in pairs(pending) do
       deliver()
     end
+    assert.is_true(ok, vim.inspect(err))
+  end)
+
+  it("observes console release after a failed cleanup deadline", function()
+    local new_work = vim.uv.new_work
+    local pending = {}
+    vim.uv.new_work = function(work, completed)
+      return new_work(work, function(...)
+        local values = { ... }
+        pending[#pending + 1] = function()
+          completed(unpack(values))
+        end
+      end)
+    end
+    local ok, err = pcall(function()
+      local handle = owner:spawn(spec({ "cmd.exe", "/d", "/s", "/c", "exit 0" }, {
+        kind = "pty", columns = 80, rows = 24,
+      }))
+      local result = helper.complete(function()
+        return handle:wait()
+      end, 10000)
+      assert.are.equal("process_cleanup", assert(result.error).code)
+      assert.is_true(owner:is_settled())
+      assert.is_false(owner:is_released())
+      assert.is_false(handle:state().released)
+      assert.are.equal(1, #pending)
+      table.remove(pending, 1)()
+      assert.is_true(helper.complete(function()
+        return owner:wait_release(4000)
+      end))
+      assert.is_true(handle:state().released)
+      assert.are.equal("process_cleanup", assert(helper.complete(function()
+        return handle:wait_cleanup()
+      end).error).code)
+    end)
+    vim.uv.new_work = new_work
+    owner:close("release regression finished")
+    local released = vim.wait(5000, function()
+      while #pending > 0 do
+        table.remove(pending, 1)()
+      end
+      return owner:is_released()
+    end, 5)
+    -- The scope deliberately retains the observed failure after release.
+    owner = subprocess.scope()
+    assert.is_true(released)
     assert.is_true(ok, vim.inspect(err))
   end)
 

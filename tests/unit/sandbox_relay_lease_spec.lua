@@ -21,6 +21,8 @@ local function base_child()
     wait = function()
       return { code = 0, signal = 0, stderr = "" }
     end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function()
       state.closed = true
     end,
@@ -37,6 +39,48 @@ local function exited(code, signal)
 end
 
 describe("neoagent native sandbox relay lease", function()
+  it("keeps native release independent of completion and observer cancellation", function()
+    local helper = require("tests.helpers.subprocess")
+    local base = base_child()
+    local released = false
+    ---@type Neoagent.AwaitCallbacks<true>?
+    local release
+    base.is_released = function() return released end
+    base.wait_release = function()
+      return async.await(function(done) release = done end)
+    end
+    local relay = relay_lease.new()
+    relay:attach(base)
+    relay:feed(ready() .. exited())
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    assert.are.equal(0, relay:wait().code)
+    assert.is_false(relay:is_released())
+    local observing = async.run(function() return relay:wait_release() end)
+    assert.is_false(observing:is_done())
+    observing:cancel()
+    assert.are.equal("cancelled", assert(helper.wait(observing).error).kind)
+    observing = async.run(function() return relay:wait_release() end)
+    released = true
+    local observed = release or error("release observer was not installed")
+    observed.resolve(true)
+    assert.is_true(helper.wait(observing))
+    assert.is_true(relay:is_released())
+  end)
+
+  it("does not report native release as successful staging cleanup", function()
+    local helper = require("tests.helpers.subprocess")
+    local relay = relay_lease.new({ cleanup = function() return nil, "staging remains" end })
+    relay:attach(base_child())
+    relay:feed(ready() .. exited())
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    assert.is_not_nil(relay:wait().cleanup_error)
+    assert.is_false(relay:is_released())
+    local observing = async.run(function() return relay:wait_release() end)
+    assert.is_false(observing:is_done())
+    observing:cancel()
+    assert.are.equal("cancelled", assert(helper.wait(observing).error).kind)
+  end)
+
   it("preserves host cleanup separately from an earlier protocol failure", function()
     local util = require("neoagent.util")
     local relay = relay_lease.new({

@@ -209,6 +209,11 @@ non-waiting state observation. Root exit, output drain, and native finalization
 are distinct facts. A drained driver still requires disposal to release retained
 child identity; finalization can fail independently of the operation outcome.
 The native owner retains an unreaped child after reporting a cleanup failure.
+Eventual release is independently observable through handles, scopes, and
+WorkerLeases. Release follows native child reaping, stream closure, and pending
+console work; a failed cleanup observation does not release capacity. Scopes
+include failed startup before handle publication. Sandbox relays also require
+successful staging cleanup; an unconfirmed release remains quarantined.
 
 Pipes and native PTYs share bounded pending writes and output delivery. PTYs
 use platform APIs through LuaJIT FFI, without a terminal UI, interpreter

@@ -127,6 +127,8 @@ local function loopback_child(request)
     wait = function()
       return util.copy(result)
     end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function()
       if not closed then
         closed = true
