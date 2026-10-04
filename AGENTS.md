@@ -30,6 +30,7 @@ Update this guide when the development workflow or a hard invariant changes.
   observable. Driver state observation must not wait for process or I/O completion.
   Cleanup observation and eventual native release are independent. Retained
   capacity remains reserved until release, including failed startup.
+  Agents own retained sessions independently of activities and UI.
   Native PTYs share bounded stream ownership with pipes. The macOS fork child
   must only perform prepared native setup and exec or _exit; it must never
   return to editor execution or run inherited hooks or finalizers.

@@ -56,7 +56,7 @@ results with its Views, message hooks, and file-buffer refreshes.
 ## Agents and the top-level composition
 
 An Agent has fixed Profile, Workspace, and Session identity. It owns model and
-thinking selection, tools, steering, dialogs, and one activity lifecycle.
+thinking selection, tools, steering, dialogs, retained processes, and one activity lifecycle.
 Closing its UI does not transfer or end that ownership.
 
 Profiles declare eligible Model APIs. Selectors filter by this declaration;
@@ -81,6 +81,7 @@ Direct Agents remain outside this composition.
 | Provider Shell | top-level Applet | independent of Agent selection |
 | Profile draft | top-level Applet | until binding, replacement, or destruction |
 | Session and activity | Agent | bound to that Agent |
+| ProcessSessions | Agent | across activities and UI close, until Agent destruction |
 | Agent Applet and View | Agent | retained across UI close and reopen |
 | Pane | UI component | until component or owning mount destruction |
 | ImageSystem | View | shared by its image-capable Panes |
@@ -226,6 +227,34 @@ The driver coalesces pending resize requests, prioritizes release, and retains
 ownership through completion or beyond a reported cleanup deadline.
 Platform requirements, terminal behavior, and the remaining POSIX descendant
 containment boundary are documented in the [API reference](doc/neoagent.txt).
+
+## Retained process sessions
+
+`ProcessSessions` owns Agent-local IDs, provisional admission, retained
+controllers, serialized interactions, and bounded output. It is separate from
+the durable conversation Session and the reusable Agent Loop. Completing an
+activity or closing the UI preserves committed controllers; destroying the
+Agent disposes every provisional and committed controller.
+Controllers retain a composition-owned cleanup diagnostic recipient after
+Agent destruction. Reporting is independent of polling and cleanup observers; retained
+controllers do not keep the admitting Run as their diagnostic owner.
+
+Admission reserves capacity before native startup. Its caller must commit the
+handoff when publication of the result is accepted, or abort it. Cancelling
+the admitting Run before handoff disposes the target. Later poll cancellation
+ends observation while preserving the target. Initial waits and polls have
+observation budgets; the process lifetime deadline continues independently.
+Model-facing Tools and durable Tool-result handoff integration are separate work.
+
+A slot remains reserved until native release, including after failed startup
+or failed cleanup observation. Completed, released records alone are eligible
+for retention eviction. Pending output and previously returned history have
+separate byte and event bounds; excess old bytes are counted and discarded
+while native output continues draining. Text conversion retains incomplete
+UTF-8 per stream across polls. Raw bytes remain available to the caller.
+
+The manager receives a local `ProcessController` from its composition.
+The local controller owns a subprocess scope.
 
 ## Sessions and persistence
 

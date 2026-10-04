@@ -482,6 +482,7 @@ Agent methods include: >lua
   agent:get_model()
   agent:get_model_selection()
   agent:get_workspace()
+  agent:get_process_sessions()
   agent:get_toolset()
   agent:set_toolset(toolset)
   agent:config()
@@ -495,6 +496,8 @@ a turn while idle and queues steering while busy. `set_toolset()` replaces the
 
 `destroy()` cancels work and releases owned resources. A destroyed Agent
 rejects new work; caller-owned provider runtimes remain available.
+Retained process sessions survive `stop()` and UI close. Configure their
+limits with `runtime.process_sessions`; see |neoagent-process-sessions|.
 
 `agent:subscribe(callback)` publishes `messages`, `context`, `event`,
 `submission_accepted`, and `finish` updates with increasing revisions.
@@ -1458,8 +1461,79 @@ during creation; pipe Job assignment follows libuv creation and has a
 corresponding startup race. Complete restricted descendant
 containment belongs to the outer native sandbox lease. Retained interactive
 Tool sessions need stronger POSIX containment before promising ownership of
-arbitrary descendants. Their capacity policy must account for failed cleanup
-separately from completed cleanup observation.
+arbitrary descendants.
+
+RETAINED PROCESSES                                 *neoagent-process-sessions*
+
+`agent:get_process_sessions()` returns the Agent's retained-process owner.
+This programmatic infrastructure does not add model-facing background Tools.
+A standalone composition can create an owner with
+`require("neoagent.process_sessions").new(options[, on_cleanup])` and must
+close it itself. The optional cleanup observer receives each controller's
+first cleanup failure independently of caller cancellation or polling. Agents connect
+this observer to their diagnostic host, including after UI and Agent destruction.
+
+Limits are integer values: `capacity` defaults to 16 (1–64), `completed` to 32
+(1–256), and `output_bytes` to 65536 (1–262144). The byte budget applies
+separately to pending output and previously returned history. Each buffer
+also retains at most 128 events. Old bytes are discarded while reads continue;
+each result reports the exact `dropped_bytes` since its preceding collection.
+Live, provisional, and unreleased controllers reserve capacity. Only completed,
+released records can be evicted. Retained records and IDs are in memory only.
+
+In a managed Run, admit a target with the ordinary subprocess spec: >lua
+
+  local processes = agent:get_process_sessions()
+  local admission = processes:prepare({
+    argv = { "sh", "-c", "cat" },
+    cwd = vim.fn.getcwd(),
+    stdio = { kind = "pipes", stdin = "open" },
+    timeout_ms = 60000,
+  }, 100)
+  local result = admission.result
+  -- Accept publication of result before committing its handoff.
+  local id = admission.commit()
+  -- If publication fails, call admission.abort("publication failed") instead.
+  if id then
+    result = processes:interact(id, 100, { kind = "write", data = "hello\n" })
+  end
+<
+
+`prepare(spec, wait_ms[, controller_factory])` reserves ownership before
+startup. Its initial wait continues until completion or the observation budget.
+If complete, the result has no `session_id` and `commit()` returns nil. Otherwise
+the ID is provisional until commit. The publication owner must commit or abort
+each admission; finishing the calling Run alone does neither. Cancelling that
+Run before commit aborts the admission. Commit is the boundary a future Tool
+integration must connect to durable Tool-result acceptance.
+
+`interact(id, wait_ms[, control])` consumes only new output and can first send
+one control. `wait_ms` is 0–30000 for both methods and does not replace the
+process lifetime deadline. Polls wake on output or completion. Concurrent
+interactions fail with `process_session_busy`; cancelling a poll preserves
+the process and unread output. Controls are `{ kind = "write", data = bytes }`,
+`{ kind = "close_stdin" }`, `{ kind = "resize", columns = n, rows = n }`,
+`{ kind = "interrupt" }`, and `{ kind = "terminate", reason = text }`.
+Input writes accept at most 65536 bytes per request and retain native input
+bounds. Platform and terminal behavior follow |neoagent-subprocess|.
+Termination of a completed target and repeated acknowledged stdin closure
+succeed.
+
+Results contain `events` (raw stream bytes), incremental UTF-8 `text`,
+`dropped_bytes`, `done`, `released`, `stdin_writable`, `resize_supported`,
+and optional `outcome`, `error`, and `cleanup_error`. Incomplete UTF-8 is kept
+independently per stream; gaps and final invalid bytes are escaped, never joined
+across dropped output. `done` means bounded target cleanup observation has
+finished. `released` confirms resource
+release. Neither proves arbitrary POSIX descendant containment. `history(id)`
+copies the bounded raw output tail already returned to callers.
+
+`forget(id)` disposes a target and discards its record after release.
+`close(reason)` rejects new work and disposes every controller. `status()`
+reports `closed`, `reserved`, `completed`, `provisional`, `released`, and the
+first retained `cleanup_error`. Async `wait_cleanup(timeout_ms)` and
+`wait_release(timeout_ms)` wait independently with positive bounded deadlines.
+Cleanup failure remains observable even after eventual release succeeds.
 
 ===============================================================================
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
