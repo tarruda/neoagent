@@ -56,7 +56,7 @@ results with its Views, message hooks, and file-buffer refreshes.
 ## Agents and the top-level composition
 
 An Agent has fixed Profile, Workspace, and Session identity. It owns model and
-thinking selection, tools, steering, dialogs, and one activity lifecycle.
+thinking selection, tools, steering, dialogs, retained processes, and one activity lifecycle.
 Closing its UI does not transfer or end that ownership.
 
 Profiles declare eligible Model APIs. Selectors filter by this declaration;
@@ -81,6 +81,7 @@ Direct Agents remain outside this composition.
 | Provider Shell | top-level Applet | independent of Agent selection |
 | Profile draft | top-level Applet | until binding, replacement, or destruction |
 | Session and activity | Agent | bound to that Agent |
+| ProcessSessions | Agent | across activities and UI close, until Agent destruction |
 | Agent Applet and View | Agent | retained across UI close and reopen |
 | Pane | UI component | until component or owning mount destruction |
 | ImageSystem | View | shared by its image-capable Panes |
@@ -209,6 +210,11 @@ non-waiting state observation. Root exit, output drain, and native finalization
 are distinct facts. A drained driver still requires disposal to release retained
 child identity; finalization can fail independently of the operation outcome.
 The native owner retains an unreaped child after reporting a cleanup failure.
+Eventual release is independently observable through handles, scopes, and
+WorkerLeases. Release follows native child reaping, stream closure, and pending
+console work; a failed cleanup observation does not release capacity. Scopes
+include failed startup before handle publication. Sandbox relays also require
+successful staging cleanup; an unconfirmed release remains quarantined.
 
 Pipes and native PTYs share bounded pending writes and output delivery. PTYs
 use platform APIs through LuaJIT FFI, without a terminal UI, interpreter
@@ -221,6 +227,60 @@ The driver coalesces pending resize requests, prioritizes release, and retains
 ownership through completion or beyond a reported cleanup deadline.
 Platform requirements, terminal behavior, and the remaining POSIX descendant
 containment boundary are documented in the [API reference](doc/neoagent.txt).
+
+## Retained process sessions
+
+`ProcessSessions` owns Agent-local IDs, provisional admission, retained
+controllers, serialized interactions, and bounded output. It is separate from
+the durable conversation Session and the reusable Agent Loop. Completing an
+activity or closing the UI preserves committed controllers; destroying the
+Agent disposes every provisional and committed controller.
+Controllers retain a composition-owned cleanup diagnostic recipient after
+Agent destruction, including for worker cleanup that finishes after target
+completion. Reporting is independent of polling and cleanup observers; retained
+controllers do not keep the admitting Run as their diagnostic owner.
+
+Admission reserves capacity before native startup. Its caller must commit the
+handoff when publication of the result is accepted, or abort it. Cancelling
+the admitting Run before handoff disposes the target. Later poll cancellation
+ends observation while preserving the target. Initial waits and polls have
+observation budgets; the process lifetime deadline continues independently.
+Model-facing Tools and durable Tool-result handoff integration are separate work.
+
+A slot remains reserved until native release, including after failed startup
+or failed cleanup observation. Completed, released records alone are eligible
+for retention eviction. Pending output and previously returned history have
+separate byte and event bounds; excess old bytes are counted and discarded
+while native output continues draining. Text conversion retains incomplete
+UTF-8 per stream across polls. Raw bytes remain available to the caller.
+
+The manager receives a concrete local or sandbox `ProcessController` from its
+composition. The local controller owns a subprocess scope. The sandbox
+controller captures the admitted profile and environment and owns an RPC
+connection and WorkerLease beyond individual requests. Its worker uses the
+same local controller and native API. Tool workers and process workers share
+framing and connection mechanics, while their request and target lifetimes
+remain separate. Neither worker loads Agent, Session, or UI state.
+
+Remote controls are acknowledged requests. Cancelling a poll interrupts its
+peer request while the independent transaction retains response validation
+and received output. The next interaction waits for bounded cancellation
+acknowledgement rather than the abandoned poll's observation budget.
+The worker independently reports cleanup completion and eventual target
+release. Those notifications determine target completion after earlier
+request output has been applied; worker shutdown does not delay that fact.
+Rejection before target construction reports completion with no retained
+native resources. The parent closes the worker after target release; capacity
+also requires release of the worker and its native sandbox resources. Owner
+disposal first asks the worker to dispose its target. Acknowledged termination
+and owner disposal share a parent deadline that includes the configured
+termination grace, native cleanup, and protocol delivery. Independent parent
+deadlines contain an unresponsive worker. After target completion, bounded
+liveness probes supervise the worker while it retries eventual release. A
+responsive worker continues retrying native cleanup. If the channel is lost
+without target-release acknowledgement, cleanup fails and capacity remains
+quarantined; worker exit alone cannot prove release of a separate POSIX process group.
+The local API's documented descendant containment boundary still applies.
 
 ## Sessions and persistence
 

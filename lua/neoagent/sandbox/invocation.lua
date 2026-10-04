@@ -174,16 +174,17 @@ end
 
 ---@param connection Neoagent.RpcConnection
 ---@param lease Neoagent.WorkerLease
+---@param on_cleanup? fun(error?: Neoagent.Error) Explicit recipient for ownership beyond the admitting Run.
 ---@return Neoagent.SandboxInvocation
-function M.new(connection, lease)
-  local run = async.current()
+function M.new(connection, lease, on_cleanup)
+  local run = not on_cleanup and async.current() or nil
   local release = run and run:_retain_diagnostics()
   return setmetatable({
     connection = connection,
     lease = lease,
     disposed = false,
     opened = false,
-    report = function(err)
+    report = on_cleanup or function(err)
       if run and err then
         local message = err.message
         if err.detail then

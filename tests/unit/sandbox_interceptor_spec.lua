@@ -132,6 +132,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local state = { terminated = {}, waited = 0, closed = 0 }
     ---@type Neoagent.WorkerLease
     local value = {
+      is_released = function() return true end,
+      wait_release = function() return true end,
       write = function()
         return true
       end,
@@ -961,6 +963,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       GITHUB_TOKEN = "inherited-token",
       OPENAI_API_KEY = "secret",
       USER_PASSWORD = "secret",
+      ["ProgramFiles(x86)"] = "C:\\Program Files (x86)",
+      ["=C:"] = "C:\\workspace",
     }
     local environment = {}
     local active_child = child()
@@ -994,6 +998,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.is_nil(environment.Mixed)
     assert.is_nil(environment.OPENAI_API_KEY)
     assert.is_nil(environment.USER_PASSWORD)
+    assert.is_nil(environment["ProgramFiles(x86)"])
+    assert.is_nil(environment["=C:"])
   end)
 
   it("resolves fixed compiled profiles only for registered restricted tools", function()
@@ -1337,6 +1343,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     }
     ---@type Neoagent.WorkerLease
     local lease = {
+      is_released = function() return true end,
+      wait_release = function() return true end,
       write = function() return true end,
       close_stdin = function() return true end,
       terminate = function() end,

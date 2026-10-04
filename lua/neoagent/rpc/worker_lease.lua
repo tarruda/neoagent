@@ -32,6 +32,8 @@ local M = {}
 ---@field terminate fun(self: Neoagent.WorkerLease, reason: string)
 ---@field wait async fun(self: Neoagent.WorkerLease): Neoagent.WorkerResult
 ---@field dispose fun(self: Neoagent.WorkerLease, reason: string)
+---@field is_released fun(self: Neoagent.WorkerLease): boolean
+---@field wait_release async fun(self: Neoagent.WorkerLease): true
 
 ---@class Neoagent.ProcessWorkerLease: Neoagent.WorkerLease
 ---@field _driver? Neoagent.SubprocessDriver
@@ -44,6 +46,8 @@ local M = {}
 ---@field _disposing boolean
 ---@field _starting boolean
 ---@field _driver_closed boolean
+---@field _released boolean
+---@field _release_waiters table<Neoagent.AwaitCallbacks<true>, boolean>
 ---@field _kill_timer? uv.uv_timer_t
 ---@field _cleanup? Neoagent.ProcessCleanupDeadline
 ---@field _kill_grace_ms integer
@@ -70,6 +74,33 @@ local function close_timer(timer)
   end
 end
 
+function Lease:_release()
+  self._released = true
+  local waiters = self._release_waiters
+  self._release_waiters = {}
+  for done in pairs(waiters) do
+    done.resolve(true)
+  end
+end
+
+function Lease:is_released()
+  return self._released
+end
+
+---@async
+function Lease:wait_release()
+  return async.await(function(done)
+    if self._released then
+      done.resolve(true)
+    else
+      self._release_waiters[done] = true
+    end
+    return function()
+      self._release_waiters[done] = nil
+    end
+  end)
+end
+
 ---@param failure? Neoagent.Error
 function Lease:_finish(failure)
   if self._result then
@@ -82,6 +113,8 @@ function Lease:_finish(failure)
   local closed, close_err = pcall(function()
     if self._driver then
       self._driver.dispose()
+    else
+      self:_release()
     end
   end)
   if not closed then
@@ -242,6 +275,8 @@ function M.start(request)
   ---@type Neoagent.ProcessWorkerLease
   local lease = setmetatable({
     _waiters = {},
+    _release_waiters = {},
+    _released = false,
     _stdin_closed = false,
     _terminating = false,
     _disposing = false,
@@ -300,6 +335,9 @@ function M.start(request)
         if not lease._starting then
           lease:_finish()
         end
+      end,
+      released = function()
+        lease:_release()
       end,
       failed = function(_, message)
         failed(message)

@@ -1,8 +1,4 @@
-local artifacts = require("neoagent.rpc.artifacts")
 local async = require("neoagent.async")
-local codec = require("neoagent.rpc.codec")
-local limits = require("neoagent.rpc.tool_limits")
-local methods = require("neoagent.rpc.methods")
 local protocol = require("neoagent.rpc.protocol")
 local util = require("neoagent.util")
 
@@ -13,12 +9,9 @@ local util = require("neoagent.util")
 ---@class Neoagent.RpcServerRequest
 ---@field id integer
 ---@field method string
----@field run? Neoagent.Run<Neoagent.ToolResult, unknown>
+---@field run? Neoagent.Run<table, unknown>
 ---@field cancelling boolean
 ---@field sequence integer
----@field update_count integer
----@field update_bytes integer
----@field policy? Neoagent.ToolRpcPolicyEvidence
 
 ---@class Neoagent.RpcServerIncomingRequest
 ---@field id integer
@@ -29,36 +22,32 @@ local util = require("neoagent.util")
 
 ---@class Neoagent.RpcServer
 ---@field _send fun(message: table)
----@field _dependencies Neoagent.ToolDependencyOverrides
----@field _processes Neoagent.SubprocessScope
+---@field _domain Neoagent.RpcServerDomain
 ---@field _state "waiting_open"|"open"|"closed"|"failed"
 ---@field _call_id? string
----@field _context? {workspace: Neoagent.ToolWorkspace, denial_keywords: string[]}
+---@field _deferred_events {name: string, value: table}[]
+---@field _event_sequence integer
 ---@field _last_request integer
 ---@field _completed_request? integer
 ---@field _active? Neoagent.RpcServerRequest
 ---@field _incoming? Neoagent.RpcServerIncomingRequest
 ---@field _failure? string
----@field _dispatch async fun(name: string, payload: unknown, call: Neoagent.ToolOperationCall, options: Neoagent.ToolDependencyOverrides): Neoagent.ToolResult
 local Server = {}
 Server.__index = Server
 
+---@class Neoagent.RpcServerOperation
+---@field execute async fun(): table
+---@field finish async fun(result: table): table
+
+---@class Neoagent.RpcServerDomain
+---@field error_kind string
+---@field open fun(context: unknown)
+---@field events fun(send: fun(name: string, value: table))
+---@field request fun(method: string, payload: unknown, emit: fun(name: string, value: table), cancelled: fun(): boolean): Neoagent.RpcServerOperation
+---@field close fun(reason: string)
+---@field is_quiescent fun(): boolean
+
 local M = {}
-
--- Leave half the acknowledgement window for relays and scheduled delivery.
-local PROCESS_CLEANUP_MS = math.floor(protocol.CANCEL_GRACE_MS / 2)
-
----@param name string
----@param payload unknown
----@param call Neoagent.ToolOperationCall
----@param options Neoagent.ToolDependencyOverrides
----@return Neoagent.ToolResult
----@async
-local function dispatch(name, payload, call, options)
-  local descriptor = methods.by_name[name]
-  assert(descriptor, "unknown Tool RPC method")
-  return descriptor.execute(payload, call, options)
-end
 
 ---@param self Neoagent.RpcServer
 ---@param message table
@@ -101,7 +90,7 @@ local function stop(self, reason)
     end
   end
   self._incoming = nil
-  self._processes:close("Tool worker stopped")
+  self._domain.close("RPC worker stopped")
 end
 
 ---@param self Neoagent.RpcServer
@@ -112,36 +101,6 @@ local function fail(self, reason)
   error(reason, 0)
 end
 
----@param active Neoagent.RpcServerRequest
----@param keywords string[]
----@return fun(output: string, is_stderr: boolean)?
-local function policy_output_observer(active, keywords)
-  if #keywords == 0 then
-    return nil
-  end
-  local lowered = {}
-  local overlap_bytes = 0
-  for index, keyword in ipairs(keywords) do
-    lowered[index] = keyword:lower()
-    overlap_bytes = math.max(overlap_bytes, #keyword - 1)
-  end
-  local overlaps = { [false] = "", [true] = "" }
-  return function(output, is_stderr)
-    if active.policy and active.policy.denial_output or output == "" then
-      return
-    end
-    local text = (overlaps[is_stderr] .. output):lower()
-    for index, keyword in ipairs(lowered) do
-      if text:find(keyword, 1, true) then
-        active.policy = active.policy or {}
-        active.policy.denial_output = assert(keywords[index])
-        return
-      end
-    end
-    overlaps[is_stderr] = overlap_bytes > 0 and text:sub(-overlap_bytes) or ""
-  end
-end
-
 ---@param self Neoagent.RpcServer
 ---@param message table
 local function start_request(self, message)
@@ -149,172 +108,93 @@ local function start_request(self, message)
     fail(self, "Tool RPC request order is invalid")
   end
   self._last_request = message.request_id
-  local processes = require("neoagent.subprocess_common").scope()
-  self._processes = processes
-  ---@type Neoagent.RpcServerRequest
-  local active = {
-    id = message.request_id,
-    method = message.method,
-    cancelling = false,
-    sequence = 0,
-    update_count = 0,
-    update_bytes = 0,
-  }
+  local active = { id = message.request_id, method = message.method, cancelling = false, sequence = 0 }
   self._active = active
-  local publisher = artifacts.publisher(function(event)
-    local value = util.copy(event)
-    value.type = nil
-    local name = event.type == "artifact_begin" and codec.events.artifact_begin
-      or event.type == "artifact_chunk" and codec.events.artifact_chunk
-      or codec.events.artifact_end
+  local operation = self._domain.request(message.method, message.payload, function(name, value)
     send_event(self, active, name, value)
+  end, function()
+    return self._active ~= active or active.cancelling or self._state == "failed"
   end)
-  local context = assert(self._context)
-  ---@type Neoagent.ToolOperationCall
-  local call = {
-    workspace = util.copy(context.workspace),
-    on_update = function(value)
-      if self._active ~= active or active.cancelling then
-        return
-      end
-      local valid = codec.update(value)
-      local encoded, bytes = pcall(vim.mpack.encode, valid)
-      if not encoded or type(bytes) ~= "string" then
-        error("Tool update could not be encoded", 0)
-      end
-      if
-        active.update_count + 1 > limits.MAX_UPDATE_COUNT
-        or active.update_bytes + #bytes > limits.MAX_UPDATE_BYTES
-      then
-        -- Updates are transient progress. Once their bounded transport budget
-        -- is exhausted, preserve the authoritative final Tool result.
-        return
-      end
-      active.update_count = active.update_count + 1
-      active.update_bytes = active.update_bytes + #bytes
-      send_event(self, active, codec.events.update, valid)
-    end,
-  }
-  local dependency_options = util.copy(self._dependencies)
-  local subprocesses = dependency_options.subprocesses
-    or {
-      ---@async
-      run = function(spec, options)
-        return processes:run(spec, options)
-      end,
-    }
-  local observe = policy_output_observer(active, context.denial_keywords)
-  dependency_options.subprocesses = {
-    ---@async
-    run = function(spec, options)
-      local selected = util.copy(options)
-      local on_output = selected.on_output
-      selected.on_output = function(event)
-        -- Search stdout contains matched file content and names, not diagnostics.
-        -- Shell commands may report failures on either stream.
-        if observe and (event.stream == "stderr" or active.method == "shell") then
-          observe(event.data, event.stream == "stderr")
-        end
-        if on_output then
-          on_output(event)
-        end
-      end
-      local result = subprocesses.run(spec, selected)
-      -- Preserve native status before the Tool turns a failure into text.
-      -- The parent decides whether these observations establish a denial.
-      if result.code ~= 0 then
-        active.policy = active.policy or {}
-        active.policy.process_exit = { code = result.code, signal = result.signal }
-      end
-      return result
-    end,
-  }
-  dependency_options.artifact_publisher = function()
-    return publisher
-  end
-  local run = async.run(function()
-    return self._dispatch(active.method, message.payload, call, dependency_options)
-  end, {
-    error_kind = "tool",
+  active.run = async.run(operation.execute, {
+    error_kind = self._domain.error_kind,
     on_done = function(result)
       if self._active ~= active then
         return
       end
-      processes:close("Tool request finished")
+      -- Request cleanup belongs to the domain and survives cancellation of
+      -- the request Run. The wire acknowledgement follows that cleanup.
       async.run(function()
-        processes:wait(PROCESS_CLEANUP_MS)
+        return { value = operation.finish(result) }
       end, {
-        on_done = function(cleaned)
-          if cleaned.ok == false then
+        on_done = function(finished)
+          if finished.ok == false then
             self._active = nil
-            stop(self, cleaned.error.message)
+            stop(self, finished.error.message)
             return
           end
           if self._state == "failed" then
             self._active = nil
             return
           end
+          local value = finished.value
           local completed, completion_err = pcall(function()
-            if
-              not active.cancelling
-              and active.policy
-              and (result.ok == false and result.error.kind ~= "cancelled" or result.isError)
-            then
-              send_event(self, active, codec.events.policy, active.policy)
-            end
             self._active = nil
             self._completed_request = active.id
-            if result.ok == false then
-              local err = result.error
+            if value.ok == false then
+              local err = value.error
               if active.cancelling or err.kind == "cancelled" then
-                send(self, {
-                  type = "cancelled",
-                  call_id = assert(self._call_id),
-                  request_id = active.id,
-                })
+                send(self, { type = "cancelled", call_id = assert(self._call_id), request_id = active.id })
                 return
               end
               local wire_error = {
-                kind = "tool",
+                kind = self._domain.error_kind,
                 message = util.safe_message(err.message, {
-                  fallback = "Tool operation failed",
+                  fallback = "RPC operation failed",
                   max_characters = protocol.MAX_ERROR_BYTES,
                   max_source_bytes = protocol.MAX_ERROR_BYTES,
                 }),
                 detail = err.detail ~= nil and util.safe_message(err.detail, {
-                  fallback = "Tool operation detail was unavailable",
+                  fallback = "RPC operation detail was unavailable",
                   max_characters = protocol.MAX_ERROR_BYTES,
                   max_source_bytes = protocol.MAX_ERROR_BYTES,
                 }) or nil,
               }
               local code = rawget(err, "code")
-              if type(code) == "string" and code ~= "" and #code <= 128 and util.is_valid_utf8(code) then
+              if type(code) == "string" and code:match("^[A-Za-z0-9_.:-]+$") and #code <= 128 then
                 wire_error.code = code
               end
-              send(self, {
-                type = "request_error",
-                call_id = assert(self._call_id),
-                request_id = active.id,
-                error = wire_error,
-              })
-              return
+              send(
+                self,
+                { type = "request_error", call_id = assert(self._call_id), request_id = active.id, error = wire_error }
+              )
+            else
+              send(self, { type = "response", call_id = assert(self._call_id), request_id = active.id, value = value })
             end
-            local response = {
-              type = "response",
-              call_id = assert(self._call_id),
-              request_id = active.id,
-              value = codec.result(result),
-            }
-            send(self, response)
           end)
           if not completed then
             stop(self, completion_err)
+          else
+            local events = self._deferred_events
+            self._deferred_events = {}
+            for _, event in ipairs(events) do
+              self._event_sequence = self._event_sequence + 1
+              local sent, err = pcall(send, self, {
+                type = "event",
+                call_id = assert(self._call_id),
+                sequence = self._event_sequence,
+                name = event.name,
+                value = event.value,
+              })
+              if not sent then
+                stop(self, err)
+                break
+              end
+            end
           end
         end,
       })
     end,
   })
-  active.run = run
 end
 
 ---@param self Neoagent.RpcServer
@@ -370,7 +250,7 @@ function Server:receive(message)
       fail(self, "Tool RPC expected an open message")
     end
     self._call_id = message.call_id
-    self._context = codec.decode_context(message.context)
+    self._domain.open(message.context)
     self._state = "open"
     send(self, { type = "opened", call_id = self._call_id })
     return
@@ -404,7 +284,7 @@ function Server:receive(message)
       fail(self, "Tool RPC cannot close with an active request")
     end
     self._state = "closed"
-    self._processes:close("Tool connection closed")
+    self._domain.close("RPC connection closed")
     send(self, { type = "closed", call_id = assert(self._call_id) })
   else
     fail(self, "Tool RPC message is invalid in the worker")
@@ -424,7 +304,7 @@ end
 
 ---@return boolean
 function Server:is_quiescent()
-  return self._active == nil and self._incoming == nil and self._processes:is_settled()
+  return self._active == nil and self._incoming == nil and self._domain.is_quiescent()
 end
 
 ---@return string?
@@ -433,18 +313,35 @@ function Server:failure()
 end
 
 ---@param opts Neoagent.RpcServerOptions
----@param selected_dispatch? async fun(name: string, payload: unknown, call: Neoagent.ToolOperationCall, options: Neoagent.ToolDependencyOverrides): Neoagent.ToolResult
+---@param domain Neoagent.RpcServerDomain
 ---@return Neoagent.RpcServer
-local function new(opts, selected_dispatch)
+local function new(opts, domain)
   assert(type(opts) == "table" and type(opts.send) == "function", "Tool RPC server send function is required")
   local server = setmetatable({
     _send = opts.send,
-    _dependencies = util.copy(opts.dependencies or {}),
-    _processes = require("neoagent.subprocess_common").scope(),
-    _dispatch = selected_dispatch or dispatch,
+    _domain = domain,
     _state = "waiting_open",
     _last_request = 0,
+    _event_sequence = 0,
+    _deferred_events = {},
   }, Server)
+  domain.events(function(name, value)
+    assert(server._state == "open", "RPC connection event requires an open connection")
+    if server._active then
+      -- Retained processes can report bounded cleanup and later release.
+      assert(#server._deferred_events < 2, "RPC connection completion was repeated")
+      server._deferred_events[#server._deferred_events + 1] = { name = name, value = value }
+      return
+    end
+    server._event_sequence = server._event_sequence + 1
+    send(server, {
+      type = "event",
+      call_id = assert(server._call_id),
+      sequence = server._event_sequence,
+      name = name,
+      value = value,
+    })
+  end)
   send(server, { type = "ready", marker = protocol.MARKER })
   return server
 end
@@ -452,7 +349,7 @@ end
 ---@param opts Neoagent.RpcServerOptions
 ---@return Neoagent.RpcServer
 function M.new(opts)
-  return new(opts)
+  return new(opts, require("neoagent.rpc.tool_server").new(util.copy(opts.dependencies or {})))
 end
 
 -- Internal dependency injection for behavioral tests. Production construction
@@ -462,7 +359,15 @@ end
 ---@return Neoagent.RpcServer
 function M._new(opts, selected_dispatch)
   assert(type(selected_dispatch) == "function", "Tool RPC test dispatcher must be a function")
-  return new(opts, selected_dispatch)
+  return new(opts, require("neoagent.rpc.tool_server").new(util.copy(opts.dependencies or {}), selected_dispatch))
+end
+
+-- Retained execution has its own connection lifetime; Tool request scopes
+-- keep their existing ownership in the separate Tool domain.
+---@param opts Neoagent.RpcServerOptions
+---@return Neoagent.RpcServer
+function M.process(opts)
+  return new(opts, require("neoagent.rpc.process_server").new())
 end
 
 return M

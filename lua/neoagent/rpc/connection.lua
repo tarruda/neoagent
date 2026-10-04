@@ -27,6 +27,7 @@ local next_call_id = 0
 ---@field sequence integer
 ---@field on_event? async fun(message: table)
 ---@field terminal_received boolean
+---@field cancel_sent? boolean
 ---@field cancel? fun()
 
 ---@class Neoagent.RpcQueuedMessage
@@ -178,7 +179,8 @@ end
 
 ---@param self Neoagent.RpcConnection
 ---@param request_id? integer
-local function begin_cancel(self, request_id)
+---@param retain_result? boolean Keep response validation with the live request coroutine.
+local function begin_cancel(self, request_id, retain_result)
   if self._state == "closed" or self._state == "failed" or self._state == "cancelling" then
     return
   end
@@ -198,11 +200,17 @@ local function begin_cancel(self, request_id)
     -- received result. Cancellation may stop its observer, not erase its input.
     return
   end
-  self._state = "cancelling"
+  if not retain_result then
+    self._state = "cancelling"
+  end
+  if active.cancel_sent then
+    return
+  end
+  active.cancel_sent = true
   self._cancel_timer = assert(vim.uv.new_timer())
   self._cancel_timer:start(protocol.CANCEL_GRACE_MS, 0, function()
     close_cancel_timer(self)
-    if self._state == "cancelling" then
+    if self._active == active and not active.terminal_received then
       fail(self, util.error("cancelled", "RPC request cancellation timed out"))
     end
   end)
@@ -753,7 +761,9 @@ function RpcConnection:wait_cancelled()
   if self._failure then
     raise_failure(self)
   end
-  if self._state ~= "cancelling" and not (self._active and self._active.terminal_received) then
+  if
+    self._state ~= "cancelling" and not (self._active and (self._active.terminal_received or self._active.cancel_sent))
+  then
     error("RPC connection has no cancelling request", 0)
   end
   return async.await(function(done)
@@ -804,6 +814,15 @@ function RpcCall:cancel(_reason)
     return
   end
   cancel_request(self._connection, self._request_id)
+end
+
+-- Ask the peer to stop, retaining a response that won the cancellation race.
+-- The caller must continue observing result(); the acknowledgement is bounded
+-- by the same cancellation deadline as detached cancellation.
+function RpcCall:interrupt()
+  if not self._run:is_done() then
+    begin_cancel(self._connection, self._request_id, true)
+  end
 end
 
 ---@param method string

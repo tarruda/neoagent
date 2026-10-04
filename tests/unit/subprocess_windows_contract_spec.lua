@@ -116,6 +116,7 @@ describe("Windows subprocess boundary rules", function()
       assert(vim.uv.os_environ()),
       {
         output = function() end,
+          released = function() end,
         exited = function() end,
         closed = function()
           closed = true

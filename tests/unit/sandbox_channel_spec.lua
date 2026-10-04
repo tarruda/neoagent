@@ -76,6 +76,8 @@ describe("sandbox channel failure ordering", function()
           end
           ---@type Neoagent.WorkerLease
           local base = {
+            is_released = function() return result ~= nil end,
+            wait_release = function(self) self:wait() return true end,
             write = function(_, bytes) decoder:feed(bytes) return true end,
             close_stdin = function()
               vim.schedule(function()

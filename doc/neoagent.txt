@@ -482,6 +482,7 @@ Agent methods include: >lua
   agent:get_model()
   agent:get_model_selection()
   agent:get_workspace()
+  agent:get_process_sessions()
   agent:get_toolset()
   agent:set_toolset(toolset)
   agent:config()
@@ -495,6 +496,8 @@ a turn while idle and queues steering while busy. `set_toolset()` replaces the
 
 `destroy()` cancels work and releases owned resources. A destroyed Agent
 rejects new work; caller-owned provider runtimes remain available.
+Retained process sessions survive `stop()` and UI close. Configure their
+limits with `runtime.process_sessions`; see |neoagent-process-sessions|.
 
 `agent:subscribe(callback)` publishes `messages`, `context`, `event`,
 `submission_accepted`, and `finish` updates with increasing revisions.
@@ -581,10 +584,12 @@ A profile callback receives a copy of the default profile and tool context and
 returns the complete profile.
 
 `environment.clear = true` starts with an empty environment; `inherit` selects
-parent variables and `set` supplies explicit values. With `clear = false`,
-ambient variables are copied except editor connection variables and known or
-credential-like names (including key, token, secret, password, and credential
-segments). Explicit `inherit` or `set` entries opt these variables back in.
+parent variables and `set` supplies explicit values. Sandbox variable names
+must match `[A-Za-z_][A-Za-z0-9_]*`; other ambient names are omitted. With
+`clear = false`, ambient variables are copied except editor connection variables
+and known or credential-like names (including key, token, secret, password, and
+credential segments). Explicit `inherit` or `set` entries opt these variables
+back in.
 The worker always removes `NVIM`, `NVIM_LISTEN_ADDRESS`, and its private
 bootstrap variable before running Tools.
 
@@ -1347,19 +1352,28 @@ Handle methods are:
   close_stdin()             Close pipe input after accepted writes; idempotent.
   flush()                   Await accepted native writes and requested close.
   resize(columns, rows)     Request a PTY size within its native coordinate range.
+  interrupt()               Send interrupt input or a native process interrupt.
   terminate(reason)         Request tree termination; idempotent.
   wait()                    Await a copied outcome; multiple waiters allowed.
   wait_cleanup()            Await cleanup independently of the outcome.
+  wait_release()            Await eventual native resource release.
   dispose(reason)           End ownership and initiate forced cleanup.
 
 Waiting methods run inside a managed async Run. Cancelling one `wait()`,
-`flush()`, or `wait_cleanup()` removes only that waiter. Cancelling `run()`
+`flush()`, `wait_cleanup()`, or `wait_release()` removes only that waiter. Cancelling `run()`
 disposes its target. Pending input is bounded to 1 MiB and 64 writes;
 `input_limit` means the caller should flush before retrying. Successful writes
 acknowledge local acceptance, not consumption by the target. Flush waits for
 native write completion; it does not prove application-level consumption.
 Output reads pause while one delivery per stream awaits the editor, so delayed
 callbacks cannot accumulate an unbounded driver output queue.
+
+`interrupt()` writes Ctrl-C to a PTY, where terminal input modes determine its
+effect. For POSIX pipes it sends SIGINT to the owned process group; it works
+even when stdin is closed. Windows pipes stop their Job because redirected
+processes have no portable console interrupt. Interruption does not arm a
+termination deadline or manufacture an exit status. A failed native signal
+raises `process_signal` while ownership remains active.
 
 `timeout_ms` is a positive integer lifetime deadline of at most 2147483647
 milliseconds, independent of waiters. `kill_grace_ms` defaults to 1000 and
@@ -1392,6 +1406,14 @@ cleanup observation has finished, possibly unsuccessfully. It does not prove
 that all processes are gone. `scope:wait(timeout_ms)` reports any cleanup
 failure; its own wait timeout raises `process_cleanup` while detached cleanup
 continues.
+
+Native ownership can outlive failed cleanup observation. `state().released`
+and `wait_release()` observe eventual release independently; a successful
+release does not erase an earlier failure. `scope:is_released()` and
+`scope:wait_release(timeout_ms)` include failed starts that returned no handle.
+Owners that limit concurrent processes must reserve their capacity until
+release is confirmed. Release means owned native resources have closed, not
+that descendants outside the documented containment boundary have stopped.
 
 PTYs use `{ kind = "pty", columns = 80, rows = 24 }`. Output combines both
 streams and terminal modes govern echo, line endings, and control bytes.
@@ -1441,8 +1463,95 @@ during creation; pipe Job assignment follows libuv creation and has a
 corresponding startup race. Complete restricted descendant
 containment belongs to the outer native sandbox lease. Retained interactive
 Tool sessions need stronger POSIX containment before promising ownership of
-arbitrary descendants. Their capacity policy must account for failed cleanup
-separately from completed cleanup observation.
+arbitrary descendants.
+
+RETAINED PROCESSES                                 *neoagent-process-sessions*
+
+`agent:get_process_sessions()` returns the Agent's retained-process owner.
+This programmatic infrastructure does not add model-facing background Tools.
+A standalone composition can create an owner with
+`require("neoagent.process_sessions").new(options[, on_cleanup])` and must
+close it itself. The optional cleanup observer receives each controller's
+first cleanup failure independently of caller cancellation or polling. Worker
+cleanup can report a failure after target completion. Agents connect
+this observer to their diagnostic host, including after UI and Agent destruction.
+
+Limits are integer values: `capacity` defaults to 16 (1–64), `completed` to 32
+(1–256), and `output_bytes` to 65536 (1–262144). The byte budget applies
+separately to pending output and previously returned history. Each buffer
+also retains at most 128 events. Old bytes are discarded while reads continue;
+each result reports the exact `dropped_bytes` since its preceding collection.
+Live, provisional, and unreleased controllers reserve capacity. Only completed,
+released records can be evicted. Retained records and IDs are in memory only.
+
+In a managed Run, admit a target with the ordinary subprocess spec: >lua
+
+  local processes = agent:get_process_sessions()
+  local admission = processes:prepare({
+    argv = { "sh", "-c", "cat" },
+    cwd = vim.fn.getcwd(),
+    stdio = { kind = "pipes", stdin = "open" },
+    timeout_ms = 60000,
+  }, 100)
+  local result = admission.result
+  -- Accept publication of result before committing its handoff.
+  local id = admission.commit()
+  -- If publication fails, call admission.abort("publication failed") instead.
+  if id then
+    result = processes:interact(id, 100, { kind = "write", data = "hello\n" })
+  end
+<
+
+`prepare(spec, wait_ms[, controller_factory])` reserves ownership before
+startup. Its initial wait continues until completion or the observation budget.
+If complete, the result has no `session_id` and `commit()` returns nil. Otherwise
+the ID is provisional until commit. The publication owner must commit or abort
+each admission; finishing the calling Run alone does neither. Cancelling that
+Run before commit aborts the admission. Commit is the boundary a future Tool
+integration must connect to durable Tool-result acceptance.
+
+`interact(id, wait_ms[, control])` consumes only new output and can first send
+one control. `wait_ms` is 0–30000 for both methods and does not replace the
+process lifetime deadline. Polls wake on output or completion. Concurrent
+interactions fail with `process_session_busy`; cancelling a poll preserves
+the process and unread output. A subsequent remote interaction waits for the
+cancelled request's bounded acknowledgement. Controls are `{ kind = "write", data = bytes }`,
+`{ kind = "close_stdin" }`, `{ kind = "resize", columns = n, rows = n }`,
+`{ kind = "interrupt" }`, and `{ kind = "terminate", reason = text }`.
+Input writes accept at most 65536 bytes per request and retain native input
+bounds. Platform and terminal behavior follow |neoagent-subprocess|.
+Termination of a completed target and repeated acknowledged stdin closure
+succeed without contacting a worker that has already shut down.
+
+Results contain `events` (raw stream bytes), incremental UTF-8 `text`,
+`dropped_bytes`, `done`, `released`, `stdin_writable`, `resize_supported`,
+and optional `outcome`, `error`, and `cleanup_error`. Incomplete UTF-8 is kept
+independently per stream; gaps and final invalid bytes are escaped, never joined
+across dropped output. `done` means bounded target cleanup observation has
+finished, independently of later worker shutdown. `released` confirms resource
+release. Neither proves arbitrary POSIX descendant containment. `history(id)`
+copies the bounded raw output tail already returned to callers.
+
+`forget(id)` disposes a target and discards its record after release.
+`close(reason)` rejects new work and disposes every controller. `status()`
+reports `closed`, `reserved`, `completed`, `provisional`, `released`, and the
+first retained `cleanup_error`. Async `wait_cleanup(timeout_ms)` and
+`wait_release(timeout_ms)` wait independently with positive bounded deadlines.
+Cleanup failure remains observable even after eventual release succeeds.
+
+For restricted placement, the owning composition creates a factory with
+`require("neoagent.sandbox.process_session").factory(options, context)` and
+passes it as the third admission argument. Options supply `profile`, `platform`,
+and the usual sandbox launch services. The factory captures the compiled
+profile and filtered environment; later interactions cannot change authority.
+It retains the existing native sandbox worker and calls the same local process
+implementation inside it. A cancelled RPC poll still owns its response so
+later output is preserved. Target release is acknowledged before orderly
+worker shutdown. Channel loss without that acknowledgement quarantines the
+capacity slot, even if the worker exits. Parent deadlines supervise requests,
+process lifetime, and acknowledged termination. A responsive worker can keep
+retrying native release after target completion; bounded liveness probes
+supervise that phase. These deadlines do not fabricate target exit or release.
 
 ===============================================================================
 6. TOOLS AND SESSIONS                                    *neoagent-composition*

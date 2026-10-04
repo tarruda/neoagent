@@ -40,7 +40,7 @@
 ---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
 ---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string
 
----@class Neoagent.SandboxExecutionServices<N = string>: Neoagent.SandboxCheckServices<N>
+---@class Neoagent.SandboxExecutionServices<N = string|string[]>: Neoagent.SandboxCheckServices<N>
 ---@field fs Neoagent.SandboxFilesystemService
 
 ---@class Neoagent.SandboxPlatforms<C = unknown>

@@ -129,6 +129,8 @@ local function completed_worker(opts)
       return result
     end,
     terminate = function() end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function() end,
     }
 end
@@ -562,6 +564,8 @@ describe("neoagent sandbox platform adapters", function()
           close_stdin = function() return true end,
           terminate = function() end,
           wait = function() return { code = 0, signal = 0, stderr = "" } end,
+          is_released = function() return true end,
+          wait_release = function() return true end,
           dispose = function() end,
         }
       end,
@@ -607,6 +611,8 @@ describe("neoagent sandbox platform adapters", function()
             wait = function()
               return { code = 0, signal = 0, stderr = "" }
             end,
+            is_released = function() return true end,
+            wait_release = function() return true end,
             dispose = function() end,
           }
         end,
@@ -639,6 +645,8 @@ describe("neoagent sandbox platform adapters", function()
       close_stdin = function() return true end,
       terminate = function() end,
       wait = function() return { code = 0, signal = 0, stderr = "" } end,
+      is_released = function() return true end,
+      wait_release = function() return true end,
       dispose = function() end,
     }
     local child = macos.start_worker({
@@ -1666,6 +1674,8 @@ describe("neoagent sandbox platform adapters", function()
       close_stdin = function() return true end,
       terminate = function() end,
       wait = function() return { code = 0, signal = 0, stderr = "" } end,
+      is_released = function() return true end,
+      wait_release = function() return true end,
       dispose = function() end,
     }
     local relay = windows.start_worker({
