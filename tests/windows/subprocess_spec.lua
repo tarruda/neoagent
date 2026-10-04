@@ -30,6 +30,26 @@ describe("native Windows subprocess handles", function()
     return { argv = argv, cwd = assert(vim.uv.cwd()), stdio = stdio or { kind = "pipes" }, timeout_ms = 10000 }
   end
 
+  it("stops redirected commands through their native Job when interrupted", function()
+    local output = ""
+    local handle = owner:spawn(spec({ "python", "-c", "import time; print('ready', flush=True); time.sleep(30)" }), {
+      on_output = function(event)
+        output = output .. event.data
+      end,
+    })
+    assert(vim.wait(5000, function()
+      return output:find("ready", 1, true) ~= nil
+    end, 5))
+    assert.is_false(handle:state().stdin_writable)
+    assert.is_true(handle:interrupt())
+    local result = helper.complete(function()
+      return handle:wait()
+    end)
+    assert.is_nil(result.error, vim.inspect(result))
+    assert.is_not.equal(0, result.code)
+    assert.is_false(result.timed_out)
+  end)
+
   it("binds all standard handles to ConPTY when the editor has redirected stdio", function()
     local result = helper.complete(function()
       return owner:run(spec({
@@ -39,6 +59,29 @@ describe("native Windows subprocess handles", function()
     end)
     assert.are.equal(0, result.code, vim.inspect(result))
     assert.matches("PTY_STDIO=111", assert(result.output), 1, true)
+  end)
+
+  it("delivers terminal interruption to a ConPTY command without terminating its owner", function()
+    local output = ""
+    local script = table.concat({
+      "import sys",
+      "print('READY', flush=True)",
+      "try:",
+      " sys.stdin.readline()",
+      "except KeyboardInterrupt:",
+      " print('INTERRUPTED', flush=True)",
+      " sys.exit(42)",
+    }, "\n")
+    local handle = owner:spawn(spec({ "python", "-u", "-c", script }, { kind = "pty", columns = 80, rows = 24 }), {
+      on_output = function(event) output = output .. event.data end,
+    })
+    assert(vim.wait(5000, function() return output:find("READY", 1, true) ~= nil end, 5))
+    assert.is_true(handle:interrupt())
+    local result = helper.complete(function() return handle:wait() end, 8000)
+    assert.are.equal(42, result.code, vim.inspect(result))
+    assert.is_false(result.timed_out)
+    assert.is_nil(result.termination_reason)
+    assert.matches("INTERRUPTED", output, 1, true)
   end)
 
   for _, startup_failure in ipairs({ false, true }) do

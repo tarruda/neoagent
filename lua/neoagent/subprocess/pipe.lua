@@ -24,6 +24,7 @@ local M = {}
 ---@field flush async fun(): true
 ---@field writable fun(): boolean
 ---@field resize fun(columns: integer, rows: integer): true
+---@field interrupt fun(): boolean Interrupt input or request a native process interrupt.
 ---@field stop fun(): boolean Request the backend's graceful stop sequence.
 ---@field kill fun(): boolean Request forced termination of owned native resources.
 ---@field dispose fun()
@@ -202,6 +203,14 @@ function M.new(spec, env, callbacks, input_limits)
     writable = io.writable,
     resize = function()
       error(validate.error("unsupported_control", "Pipe processes cannot be resized"), 0)
+    end,
+    interrupt = function()
+      if child then
+        return child.interrupt()
+      end
+      -- Windows redirected processes have no portable console interrupt.
+      -- Match the explicit stop behavior of their native Job owner.
+      return terminate(true)
     end,
     stop = function()
       return terminate(false)

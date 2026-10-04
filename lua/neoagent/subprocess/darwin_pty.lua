@@ -199,6 +199,9 @@ function M.new(spec, env, callbacks)
       error(validate.error("unsupported_control", "PTY stdin cannot be closed portably"), 0)
     end,
     resize = resize,
+    interrupt = function()
+      return io.write("\3")
+    end,
     stop = function()
       return terminate(false)
     end,

@@ -30,6 +30,7 @@ local M = {}
 ---@field close_stdin fun(self: Neoagent.SubprocessHandle): true
 ---@field flush async fun(self: Neoagent.SubprocessHandle): true
 ---@field resize fun(self: Neoagent.SubprocessHandle, columns: integer, rows: integer): true
+---@field interrupt fun(self: Neoagent.SubprocessHandle): true
 ---@field terminate fun(self: Neoagent.SubprocessHandle, reason: string): true
 ---@field wait async fun(self: Neoagent.SubprocessHandle): Neoagent.SubprocessOutcome
 ---@field wait_cleanup async fun(self: Neoagent.SubprocessHandle): true
@@ -511,6 +512,12 @@ function M.new(spec, observer, on_cleanup, capture)
     resize = function(_, columns, rows)
       validate.dimensions(columns, rows)
       return control(self).resize(columns, rows)
+    end,
+    interrupt = function()
+      if not control(self).interrupt() then
+        error(validate.error("process_signal", "Could not interrupt owned process"), 0)
+      end
+      return true
     end,
     terminate = function(_, reason)
       self:terminate(validate.reason(reason))

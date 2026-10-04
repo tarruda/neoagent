@@ -1347,6 +1347,7 @@ Handle methods are:
   close_stdin()             Close pipe input after accepted writes; idempotent.
   flush()                   Await accepted native writes and requested close.
   resize(columns, rows)     Request a PTY size within its native coordinate range.
+  interrupt()               Send interrupt input or a native process interrupt.
   terminate(reason)         Request tree termination; idempotent.
   wait()                    Await a copied outcome; multiple waiters allowed.
   wait_cleanup()            Await cleanup independently of the outcome.
@@ -1360,6 +1361,13 @@ acknowledge local acceptance, not consumption by the target. Flush waits for
 native write completion; it does not prove application-level consumption.
 Output reads pause while one delivery per stream awaits the editor, so delayed
 callbacks cannot accumulate an unbounded driver output queue.
+
+`interrupt()` writes Ctrl-C to a PTY, where terminal input modes determine its
+effect. For POSIX pipes it sends SIGINT to the owned process group; it works
+even when stdin is closed. Windows pipes stop their Job because redirected
+processes have no portable console interrupt. Interruption does not arm a
+termination deadline or manufacture an exit status. A failed native signal
+raises `process_signal` while ownership remains active.
 
 `timeout_ms` is a positive integer lifetime deadline of at most 2147483647
 milliseconds, independent of waiters. `kill_grace_ms` defaults to 1000 and

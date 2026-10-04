@@ -76,6 +76,9 @@ describe("subprocess ownership and terminal races", function()
         resize = function()
           return true
         end,
+        interrupt = function()
+          return true
+        end,
         stop = function()
           signals[#signals + 1] = "term"
           return true

@@ -49,6 +49,7 @@ local flags = 1 + 4 + (jit.os == "OSX" and 0x20 or 0x1000000) -- WNOHANG | WEXIT
 ---@class Neoagent.PosixChild
 ---@field attach fun(pid: integer)
 ---@field poll fun(): boolean
+---@field interrupt fun(): boolean
 ---@field terminate fun(force: boolean): boolean
 ---@field close fun()
 
@@ -167,18 +168,23 @@ function M.new(callbacks)
       0
     )
   end
+  local function signal(number)
+    if not owned then
+      return false
+    end
+    return vim.uv.kill(-assert(pid), number) ~= nil or vim.uv.kill(assert(pid), number) ~= nil
+  end
   return {
     attach = function(value)
       pid = value
       owned = true
     end,
     poll = poll,
+    interrupt = function()
+      return signal(2)
+    end,
     terminate = function(force)
-      if not owned then
-        return false
-      end
-      local signal = force and 9 or 15
-      return vim.uv.kill(-assert(pid), signal) ~= nil or vim.uv.kill(assert(pid), signal) ~= nil
+      return signal(force and 9 or 15)
     end,
     close = function()
       -- Native ownership outlives a reported cleanup failure. A running child

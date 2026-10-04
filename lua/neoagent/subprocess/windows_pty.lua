@@ -391,6 +391,9 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
       end
       return true
     end,
+    interrupt = function()
+      return io.write("\3")
+    end,
     stop = function()
       return terminate(false)
     end,
