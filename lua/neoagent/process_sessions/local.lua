@@ -65,9 +65,10 @@ end
 ---@param spec Neoagent.SubprocessSpec
 ---@param output_bytes integer
 ---@param on_cleanup? fun(error: Neoagent.Error)
+---@param on_released? fun()
 ---@return Neoagent.ProcessController
-function M.new(spec, output_bytes, on_cleanup)
-  local scope = require("neoagent.subprocess.scope").new()
+function M.new(spec, output_bytes, on_cleanup, on_released)
+  local scope = require("neoagent.subprocess.scope").new(on_released)
   local buffer = require("neoagent.process_sessions.buffer").new(output_bytes)
   ---@type Neoagent.SubprocessHandle?
   local handle

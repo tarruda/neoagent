@@ -89,7 +89,9 @@ end
 ---@field nvim? string|string[]
 ---@field cwd string
 ---@field environment table<string, string>
+---@field mode "tools"|"process"
 ---@field on_failure fun(error: Neoagent.Error)
+---@field on_event? fun(message: table)
 
 ---@param options Neoagent.SandboxWorkerLaunch
 ---@return Neoagent.RpcConnection, Neoagent.WorkerLease
@@ -100,6 +102,7 @@ function M.start(options)
     local nvim = worker_module.nvim_command(options.nvim)
     local env = util.copy(options.environment)
     env.NEOAGENT_WORKER_FILE = worker
+    env.NEOAGENT_WORKER_MODE = options.mode
     local required = worker_module.bootstrap_paths(worker, nvim)
     require("neoagent.sandbox.policy").require_read(options.profile, required, options.paths, "bootstrap")
     return { argv = worker_module.argv(nvim, worker), bootstrap_paths = required, env = env }
@@ -109,6 +112,7 @@ function M.start(options)
   end
   local connection = require("neoagent.rpc.connection").new({
     on_failure = options.on_failure,
+    on_event = options.on_event,
   })
   local started, lease = pcall(options.platform.start_worker, {
     argv = launch.argv,

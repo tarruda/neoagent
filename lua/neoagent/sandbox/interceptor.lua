@@ -198,6 +198,7 @@ local function create_worker(self, profile, call)
     nvim = self._nvim,
     cwd = call.workspace.cwd,
     environment = environment,
+    mode = "tools",
     on_failure = function()
       if invocation then
         invocation:dispose("restricted Tool worker channel failed")

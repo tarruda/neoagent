@@ -236,7 +236,8 @@ the durable conversation Session and the reusable Agent Loop. Completing an
 activity or closing the UI preserves committed controllers; destroying the
 Agent disposes every provisional and committed controller.
 Controllers retain a composition-owned cleanup diagnostic recipient after
-Agent destruction. Reporting is independent of polling and cleanup observers; retained
+Agent destruction, including for worker cleanup that finishes after target
+completion. Reporting is independent of polling and cleanup observers; retained
 controllers do not keep the admitting Run as their diagnostic owner.
 
 Admission reserves capacity before native startup. Its caller must commit the
@@ -253,8 +254,33 @@ separate byte and event bounds; excess old bytes are counted and discarded
 while native output continues draining. Text conversion retains incomplete
 UTF-8 per stream across polls. Raw bytes remain available to the caller.
 
-The manager receives a local `ProcessController` from its composition.
-The local controller owns a subprocess scope.
+The manager receives a concrete local or sandbox `ProcessController` from its
+composition. The local controller owns a subprocess scope. The sandbox
+controller captures the admitted profile and environment and owns an RPC
+connection and WorkerLease beyond individual requests. Its worker uses the
+same local controller and native API. Tool workers and process workers share
+framing and connection mechanics, while their request and target lifetimes
+remain separate. Neither worker loads Agent, Session, or UI state.
+
+Remote controls are acknowledged requests. Cancelling a poll interrupts its
+peer request while the independent transaction retains response validation
+and received output. The next interaction waits for bounded cancellation
+acknowledgement rather than the abandoned poll's observation budget.
+The worker independently reports cleanup completion and eventual target
+release. Those notifications determine target completion after earlier
+request output has been applied; worker shutdown does not delay that fact.
+Rejection before target construction reports completion with no retained
+native resources. The parent closes the worker after target release; capacity
+also requires release of the worker and its native sandbox resources. Owner
+disposal first asks the worker to dispose its target. Acknowledged termination
+and owner disposal share a parent deadline that includes the configured
+termination grace, native cleanup, and protocol delivery. Independent parent
+deadlines contain an unresponsive worker. After target completion, bounded
+liveness probes supervise the worker while it retries eventual release. A
+responsive worker continues retrying native cleanup. If the channel is lost
+without target-release acknowledgement, cleanup fails and capacity remains
+quarantined; worker exit alone cannot prove release of a separate POSIX process group.
+The local API's documented descendant containment boundary still applies.
 
 ## Sessions and persistence
 

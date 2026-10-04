@@ -30,7 +30,8 @@ Update this guide when the development workflow or a hard invariant changes.
   observable. Driver state observation must not wait for process or I/O completion.
   Cleanup observation and eventual native release are independent. Retained
   capacity remains reserved until release, including failed startup.
-  Agents own retained sessions independently of activities and UI.
+  Agents own retained sessions independently of activities and UI. Placement
+  remains with sandbox composition; uncertain remote release quarantines capacity.
   Native PTYs share bounded stream ownership with pipes. The macOS fork child
   must only perform prepared native setup and exec or _exit; it must never
   return to editor execution or run inherited hooks or finalizers.
@@ -131,6 +132,8 @@ Coverage also requires a C compiler (`CC`, or `cc`) for CLuaCov on Linux or
 macOS; `make coverage-deps` installs it. Windows collection uses LuaCov alone.
 The test bootstrap also instruments libuv worker Lua states and records their
 actual execution in separate per-thread counter files.
+Retained-process RPC tests instrument their child Neovim workers through a
+test-only bootstrap and collect each child's native execution counters.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 The large inline-image integration regressions require ImageMagick's `magick`
 on `PATH`; they are skipped when it is unavailable. Native macOS CI installs

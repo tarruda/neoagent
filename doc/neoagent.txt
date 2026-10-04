@@ -1472,7 +1472,8 @@ This programmatic infrastructure does not add model-facing background Tools.
 A standalone composition can create an owner with
 `require("neoagent.process_sessions").new(options[, on_cleanup])` and must
 close it itself. The optional cleanup observer receives each controller's
-first cleanup failure independently of caller cancellation or polling. Agents connect
+first cleanup failure independently of caller cancellation or polling. Worker
+cleanup can report a failure after target completion. Agents connect
 this observer to their diagnostic host, including after UI and Agent destruction.
 
 Limits are integer values: `capacity` defaults to 16 (1–64), `completed` to 32
@@ -1513,20 +1514,21 @@ integration must connect to durable Tool-result acceptance.
 one control. `wait_ms` is 0–30000 for both methods and does not replace the
 process lifetime deadline. Polls wake on output or completion. Concurrent
 interactions fail with `process_session_busy`; cancelling a poll preserves
-the process and unread output. Controls are `{ kind = "write", data = bytes }`,
+the process and unread output. A subsequent remote interaction waits for the
+cancelled request's bounded acknowledgement. Controls are `{ kind = "write", data = bytes }`,
 `{ kind = "close_stdin" }`, `{ kind = "resize", columns = n, rows = n }`,
 `{ kind = "interrupt" }`, and `{ kind = "terminate", reason = text }`.
 Input writes accept at most 65536 bytes per request and retain native input
 bounds. Platform and terminal behavior follow |neoagent-subprocess|.
 Termination of a completed target and repeated acknowledged stdin closure
-succeed.
+succeed without contacting a worker that has already shut down.
 
 Results contain `events` (raw stream bytes), incremental UTF-8 `text`,
 `dropped_bytes`, `done`, `released`, `stdin_writable`, `resize_supported`,
 and optional `outcome`, `error`, and `cleanup_error`. Incomplete UTF-8 is kept
 independently per stream; gaps and final invalid bytes are escaped, never joined
 across dropped output. `done` means bounded target cleanup observation has
-finished. `released` confirms resource
+finished, independently of later worker shutdown. `released` confirms resource
 release. Neither proves arbitrary POSIX descendant containment. `history(id)`
 copies the bounded raw output tail already returned to callers.
 
@@ -1536,6 +1538,20 @@ reports `closed`, `reserved`, `completed`, `provisional`, `released`, and the
 first retained `cleanup_error`. Async `wait_cleanup(timeout_ms)` and
 `wait_release(timeout_ms)` wait independently with positive bounded deadlines.
 Cleanup failure remains observable even after eventual release succeeds.
+
+For restricted placement, the owning composition creates a factory with
+`require("neoagent.sandbox.process_session").factory(options, context)` and
+passes it as the third admission argument. Options supply `profile`, `platform`,
+and the usual sandbox launch services. The factory captures the compiled
+profile and filtered environment; later interactions cannot change authority.
+It retains the existing native sandbox worker and calls the same local process
+implementation inside it. A cancelled RPC poll still owns its response so
+later output is preserved. Target release is acknowledged before orderly
+worker shutdown. Channel loss without that acknowledgement quarantines the
+capacity slot, even if the worker exits. Parent deadlines supervise requests,
+process lifetime, and acknowledged termination. A responsive worker can keep
+retrying native release after target completion; bounded liveness probes
+supervise that phase. These deadlines do not fabricate target exit or release.
 
 ===============================================================================
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
