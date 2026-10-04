@@ -89,6 +89,50 @@ describe("RPC cancellation boundaries", function()
     assert.is_true(completed, tostring(failure))
   end)
 
+  for _, reply in ipairs({ "cancelled", "response" }) do
+    it("retains request result ownership while interrupting a peer that returns " .. reply, function()
+      local cancellations = 0
+      local connection = connect(function(message, emit)
+        if message.type == "cancel" then
+          cancellations = cancellations + 1
+          emit({ type = reply, call_id = message.call_id, request_id = message.request_id,
+            value = reply == "response" and { output = "retained bytes" } or nil })
+        elseif message.type == "request" and message.method == "next" then
+          emit({ type = "response", call_id = message.call_id, request_id = message.request_id, value = {} })
+        end
+      end)
+      local request = connection:start_request("pending", {})
+      request:interrupt()
+      request:interrupt()
+      local result = wait(async.run(function() return request:result() end))
+      if reply == "response" then
+        assert.are.equal("retained bytes", result.output)
+      else
+        assert.are.equal("cancelled", assert(result.error).kind)
+      end
+      assert.are.equal(1, cancellations)
+      assert.is_true(wait(async.run(function()
+        connection:wait_cancelled()
+        connection:request("next", {})
+        return true
+      end)))
+    end)
+  end
+
+  it("bounds a peer interruption even while preserving its result observer", function()
+    local cancellations = 0
+    local connection = connect(function(message)
+      if message.type == "cancel" then cancellations = cancellations + 1 end
+    end)
+    local request = connection:start_request("pending", {})
+    request:interrupt()
+    request:interrupt()
+    local result = wait(async.run(function() return request:result() end))
+    assert.are.equal(1, cancellations)
+    assert.is_true(connection:is_failed())
+    assert.matches("cancellation timed out", assert(result.error).message, 1, true)
+  end)
+
   for _, progress in ipairs({ false, true }) do
     it("retains a received write result across cancellation with progress=" .. tostring(progress), function()
       local root = vim.fn.tempname()
