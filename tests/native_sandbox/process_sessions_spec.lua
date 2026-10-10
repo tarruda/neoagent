@@ -43,6 +43,7 @@ describe("native retained process authority", function()
     }
   end)
   after_each(function()
+    require("tests.helpers.sandbox").cleanup()
     if agent then agent:destroy(); agent = nil end
     owner:close("native test complete")
     helper.complete(function() return owner:wait_cleanup(15000) end, 20000)
@@ -71,6 +72,55 @@ describe("native retained process authority", function()
     assert.matches("DENIED", admission.result.text, 1, true)
     assert.is_nil((admission.result.text:find("LEAK", 1, true)))
     admission.commit()
+  end)
+
+  it("executes a restricted Tool while a retained target waits for input", function()
+    local tool = require("neoagent.tools.write_file").new()
+    local selected, _, _, runtime = require("neoagent.sandbox.composition").switchable({ tools = { tool } },
+      { enabled = true, profile = function() return profile end },
+      { platform = assert(platform), status = assert(status), nvim = vim.env.NEOAGENT_NVIM })
+    local context = {
+      workspace = require("neoagent.workspace").new({ root = root, cwd = root }),
+      files = require("neoagent.files.memory").new(), agent = "concurrent native authority",
+    }
+    local factory = runtime:process_factory({ context = context, process = {
+      argv = { jit.os == "Windows" and "python" or "python3", "-u", "-c", "input(); print('FINISHED')" },
+      cwd = root, stdio = { kind = "pipes", stdin = "open" }, timeout_ms = 60000,
+    } })
+    owner = sessions.new({ capacity = 1, output_bytes = 1024 }, nil, factory)
+    local admission = helper.success(function()
+      return helper.admit(owner, {
+        argv = { jit.os == "Windows" and "python" or "python3", "-u", "-c", "input(); print('FINISHED')" },
+        cwd = root, stdio = { kind = "pipes", stdin = "open" }, timeout_ms = 60000,
+      }, 0)
+    end, 30000)
+    local id = assert(admission.commit())
+    local model = require("tests.helpers.fake_model")
+    local completed = helper.wait(require("neoagent.agent_loop").run({
+      model = model.new({
+        { result = model.assistant({ { type = "toolCall", id = "write", name = "write_file",
+          arguments = { path = "tool-result", content = "written while target is retained" } } }, "toolUse") },
+        { result = model.assistant({}) },
+      }),
+      messages = {}, tools = selected.tools, execute_tool = selected.execute_tool,
+      context = context, commit_message = function() return true end,
+    }), 30000)
+    assert.is_true(completed.ok, vim.inspect(completed))
+    assert.are.equal("written while target is retained", fs.read(vim.fs.joinpath(root, "tool-result")))
+    assert.is_false(helper.success(function() return owner:interact(id, 0) end).done)
+    local response = helper.success(function()
+      return owner:interact(id, 5000, { kind = "write", data = "go\n" })
+    end, 10000)
+    local output = response.text
+    assert(vim.wait(15000, function()
+      if response.done then return true end
+      response = helper.success(function() return owner:interact(id, 100) end)
+      output = output .. response.text
+      return response.done
+    end, 10))
+    assert.is_nil(response.cleanup_error, vim.inspect(response))
+    assert.are.equal(0, assert(response.outcome).code, output)
+    assert.matches("FINISHED", output, 1, true)
   end)
 
   for _, terminal in ipairs({ false, true }) do

@@ -10,13 +10,14 @@ describe("native pipe admission ownership", function()
         or { vim.fn.exepath("sh"), "-c", "read line" }
       local closed, exited = false, false
       local restore_kill
-      trees.new = function()
-        if rejected == "allocation" then
-          return nil, "native Job allocation failed"
-        end
+      trees.new = function(options)
         return new_tree({
+          callbacks = options.callbacks,
           backend = {
             create = function()
+              if rejected == "allocation" then
+                return nil, "native Job allocation failed"
+              end
               return 1
             end,
             open = function()
@@ -33,6 +34,9 @@ describe("native pipe admission ownership", function()
             end,
             terminate = function()
               return nil, "native Job termination failed"
+            end,
+            empty = function()
+              return true
             end,
             close = function() end,
           },

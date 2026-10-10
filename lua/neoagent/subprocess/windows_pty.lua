@@ -126,15 +126,11 @@ function M.new(spec, env, callbacks)
     end,
   })
   settled = function()
-    if disposed and tree and (terminated or not tree.attached) then
-      tree:close(true)
-      tree = nil
-    end
     if console == nil and terminated then
       -- luv roots the completion callback until the work context is collected.
       -- Break its reference back to this owner once no console needs it.
       console_work = nil
-      if drained and not notified then
+      if drained and not notified and (not tree or tree.empty) then
         notified = true
         if monitor and not monitor:is_closing() then
           monitor:stop()
@@ -143,7 +139,7 @@ function M.new(spec, env, callbacks)
         vim.schedule(callbacks.closed)
       end
     end
-    if disposed and not tree and console == nil then
+    if disposed and console == nil then
       release.close()
     end
   end
@@ -195,10 +191,11 @@ function M.new(spec, env, callbacks)
   local function dispose()
     disposed = true
     release_setup()
-    if tree and tree.attached then
-      tree:terminate(9)
-    else
+    if not tree or not tree.attached then
       terminated = true
+    end
+    if tree then
+      tree:close()
     end
     io.exited()
     io.dispose()
@@ -293,7 +290,21 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
       end
       settled()
     end))
-    tree = assert(trees.new())
+    ---@type fun()?
+    local release_tree
+    tree = trees.new({
+      callbacks = {
+        empty = settled,
+        released = function()
+          assert(release_tree)()
+        end,
+        failed = function(message)
+          callbacks.failed("process_supervision", message)
+        end,
+      },
+    })
+    release_tree = release.retain()
+    assert(tree:start())
     local application = require("neoagent.subprocess.windows_executable").resolve(spec, env)
     local function pair(readable)
       -- ConPTY requires synchronous borrowed ends; libuv drives OVERLAPPED
@@ -366,8 +377,8 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
     )
     local failure = kernel.GetLastError()
     if created ~= 0 then
-      tree:adopt(info.process)
       kernel.CloseHandle(info.thread)
+      tree:adopt(info.process)
     end
     release_setup()
     check("execution", created ~= 0, failure)

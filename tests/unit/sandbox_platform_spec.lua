@@ -1596,6 +1596,80 @@ describe("neoagent sandbox platform adapters", function()
     }
   end
 
+  ---@return Neoagent.SandboxProfile
+  local function windows_temporary_profile()
+    windows_test_host()
+    local mkdirp = fs.mkdirp
+    fs.mkdirp = function() return true end
+    cleanup(function() fs.mkdirp = mkdirp end)
+    local selected = windows_profile()
+    local temporary = require("neoagent.sandbox.windows").temporary_root()
+    selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = temporary, access = "write" }
+    selected.environment.set = { TEMP = temporary, TMP = temporary, TMPDIR = temporary }
+    return selected
+  end
+
+  it("keeps absolute bootstrap denials when preparing managed Windows temporary storage", function()
+    local selected = windows_temporary_profile()
+    local windows = require("neoagent.sandbox.windows")
+    local denied = windows.paths.join(windows.temporary_root(), "private-runtime")
+    selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = denied, access = "deny" }
+    local compiled = windows.compile(selected)
+    local started = false
+    local ok, err = pcall(windows.start_worker, {
+      argv = { "C:\\Repo\\tool.exe" }, cwd = "C:\\Repo", env = {}, profile = compiled,
+      bootstrap_paths = { windows.paths.join(denied, "worker.lua") },
+    }, {
+      fs = fs, nvim = "C:\\Neovim\\bin\\nvim.exe",
+      start_worker = function()
+        started = true
+        error("bootstrap denial was bypassed")
+      end,
+    })
+    assert.is_false(started, "temporary preparation moved an absolute bootstrap denial")
+    assert.is_false(ok)
+    assert.matches("denies required bootstrap", structured_error(err).message)
+    assert.are.same({ denied }, compiled.windows.deny_read)
+  end)
+
+  for _, value in ipairs({ "", ".", "C:\\state\\.\\shared-tmp" }) do
+    it("preserves valid Windows temporary environment overrides: " .. vim.inspect(value), function()
+      local selected = windows_temporary_profile()
+      local windows = require("neoagent.sandbox.windows")
+      selected.environment.set.TMPDIR = value
+      local compiled = windows.compile(selected)
+      local environment = require("neoagent.sandbox.worker").environment(compiled, {}, windows.paths)
+      local expected = windows.paths.is_absolute(value) and environment.TEMP or value
+      assert.are.equal(expected, environment.TMPDIR)
+      assert.are.equal(environment.TEMP, environment.TMP)
+    end)
+  end
+
+  it("preserves an explicitly selected Windows temporary subdirectory", function()
+    local selected = windows_temporary_profile()
+    local windows = require("neoagent.sandbox.windows")
+    local temporary = windows.temporary_root()
+    selected.environment.set.TMP = windows.paths.join(temporary, "existing-cache")
+    local compiled = windows.compile(selected)
+    assert.are.same(selected.environment, compiled.environment)
+    assert.is_true(vim.list_contains(compiled.windows.write_roots, temporary))
+  end)
+
+  it("rejects an unenforceable absolute denial after narrowing the Windows temporary grant", function()
+    local selected = windows_temporary_profile()
+    local windows = require("neoagent.sandbox.windows")
+    local denied = windows.paths.join(windows.temporary_root(), "future")
+    selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = denied, access = "deny" }
+    local stat = windows.paths.stat
+    windows.paths.stat = function(path)
+      if windows.paths.is_absolute(path) and windows.paths.key(path) == windows.paths.key(denied) then return nil end
+      return stat(path)
+    end
+    cleanup(function() windows.paths.stat = stat end)
+    local err = caught(function() return windows.compile(selected) end)
+    assert.matches("missing deny path outside a writable root", err.message)
+  end)
+
   local function windows_events(values, stderr, result)
     local framed = require("neoagent.sandbox.protocol")
     return function(_, opts)
@@ -1613,6 +1687,25 @@ describe("neoagent sandbox platform adapters", function()
       }
     end
   end
+
+  it("retains Windows sandbox ownership when native permission cleanup is unconfirmed", function()
+    windows_test_host()
+    local windows = require("neoagent.sandbox.windows")
+    local relay = windows.start_worker({
+      argv = { "C:\\Repo\\tool.exe" }, cwd = "C:\\Repo", env = {}, profile = windows_profile(),
+    }, {
+      fs = fs, nvim = "C:\\Neovim\\bin\\nvim.exe",
+      start_worker = function(request)
+        assert(request.on_stdout)(protocol.encode({ v = 1, type = "ready" })
+          .. protocol.encode({ v = 1, type = "error", stage = "acl-write", errno = 5 }))
+        return completed_worker(request)
+      end,
+    })
+    local result = relay:wait()
+    assert.is_false(relay:is_released(), "runtime exit cannot acknowledge permission cleanup")
+    assert.is_not_nil(result.cleanup_error)
+    assert.matches("acl-write", assert(result.error).message, 1, true)
+  end)
 
   it("starts Windows streaming workers through the native protocol relay", function()
     windows_test_host()
@@ -1690,15 +1783,17 @@ describe("neoagent sandbox platform adapters", function()
       start_worker = function(value)
         captured = value
         assert(value.on_stdout)(protocol.encode({ v = 1, type = "ready" })
-          .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0 }))
+          .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0, cleanup = { released = true } }))
         assert(value.on_exit)({ code = 0, signal = 0, stderr = "" })
         return base
       end,
     })
     assert.are.equal(0, relay:wait().code)
+    assert.is_nil(relay:wait().cleanup_error)
+    assert.is_true(relay:is_released())
     local spec = vim.json.decode(assert(captured).env.NEOAGENT_SANDBOX_SPEC)
     assert.are.equal(60000, spec.admission_timeout_ms)
-    assert.is_true(vim.list_contains(spec.runner.read_roots, "C:\\Repo"))
+    assert.is_true(vim.list_contains(spec.read_paths, "C:\\Repo"))
 
     -- Exercise the real launch-environment boundary, including ambient keys
     -- that libuv would otherwise add to this deliberately sparse bootstrap.
@@ -1822,11 +1917,7 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal("C:\\state",
       seen[1].opts.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
     assert.is_true(vim.list_contains(seen[1].argv, "-l"))
-    assert.are.same({
-      "C:\\Neovim\\bin",
-      "C:\\Neoagent\\lua\\neoagent\\process\\windows_command.lua",
-      "C:\\Neovim\\share\\nvim\\runtime",
-    }, seen[1].spec.runner.read_roots)
+    assert.are.same({}, seen[1].spec.read_paths)
     assert.are.equal("C:\\state\\shared-tmp", windows.temporary_root())
 
     local previous_runtime = vim.env.VIMRUNTIME
@@ -1841,7 +1932,7 @@ describe("neoagent sandbox platform adapters", function()
       return simulated_stat(path)
     end
     value = windows.start_worker({
-      argv = { "C:\\bin\\tool.exe" },
+      argv = { "C:\\Portable\\bin\\nvim.exe" },
       cwd = "C:\\Repo",
       env = {},
       profile = windows_profile(),
@@ -1853,9 +1944,8 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal(0, value:wait().code)
     assert.are.same({
       "C:\\Portable\\bin",
-      "C:\\Neoagent\\lua\\neoagent\\process\\windows_command.lua",
       "C:\\Portable\\runtime",
-    }, seen[#seen].spec.runner.read_roots)
+    }, seen[#seen].spec.read_paths)
     vim.uv.fs_stat = simulated_stat
     vim.env.VIMRUNTIME = previous_runtime
 
@@ -1937,7 +2027,7 @@ describe("neoagent sandbox platform adapters", function()
           signal = 0,
           stdout = framed.encode({ v = 1, type = "ready" })
             .. framed.encode({
-              v = 1, type = "exit", code = 0, signal = 0,
+              v = 1, type = "exit", code = 0, signal = 0, cleanup = { released = true },
             }),
           stderr = "",
         }
@@ -1977,7 +2067,7 @@ describe("neoagent sandbox platform adapters", function()
             signal = 0,
             stdout = framed.encode({ v = 1, type = "ready" })
               .. framed.encode({
-                v = 1, type = "exit", code = 0, signal = 0,
+                v = 1, type = "exit", code = 0, signal = 0, cleanup = { released = true },
               }),
             stderr = "",
           }
@@ -1996,6 +2086,11 @@ describe("neoagent sandbox platform adapters", function()
         system = function() return result end,
       })
     end
+    assert.are.equal("cleanup", checked({
+      code = 0, signal = 0, stderr = "",
+      stdout = framed.encode({ v = 1, type = "ready" })
+        .. framed.encode({ v = 1, type = "exit", code = 0, signal = 0 }),
+    }).stage)
     assert.are.equal("probe", checked(nil).stage)
     local verbose = checked({ code = 1, signal = 0, stdout = "", stderr = string.rep("x", 2000) })
     assert.are.equal("protocol", verbose.stage)
@@ -2009,16 +2104,22 @@ describe("neoagent sandbox platform adapters", function()
       code = 0, signal = 0,
       stdout = string.char(0, 0, 0, 1) .. "{", stderr = "",
     }).stage)
-    local missing = checked({
-      code = 125,
-      signal = 0,
-      stdout = framed.encode({
-        v = 1, type = "error", stage = "state-missing", errno = 2,
-      }),
-      stderr = "",
-    })
-    assert.are.equal("state-missing", missing.stage)
-    assert.matches("setup command", (assert(missing.message)))
+    for _, stage in ipairs({ "state-missing", "setup-launch-rights", "setup-upgrade-required", "namespace-open" }) do
+      local missing = checked({
+        code = 125,
+        signal = 0,
+        stdout = framed.encode({ v = 1, type = "error", stage = stage, errno = 5 }),
+        stderr = "",
+      })
+      assert.are.equal(stage, missing.stage)
+      local message = assert(missing.message)
+      if stage == "namespace-open" then
+        local hint = message:find("setup command", 1, true)
+        assert.is_nil(hint)
+      else
+        assert.matches("setup command", message, 1, true)
+      end
+    end
 
     local nonzero = checked({
       code = 1,

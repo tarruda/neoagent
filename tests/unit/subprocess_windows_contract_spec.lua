@@ -32,8 +32,32 @@ describe("Windows subprocess boundary rules", function()
       package.loaded[module] = nil
       pty.new = require(module).new
       package.loaded.ffi = original_ffi
-      trees.new = function()
-        return nil, "injected Job allocation failure"
+      trees.new = function(options)
+        local tree = original_tree({
+          callbacks = options.callbacks,
+          backend = {
+            create = function()
+              return nil, "injected Job allocation failure"
+            end,
+            open = function()
+              error("unexpected process handle")
+            end,
+            assign = function()
+              error("unexpected Job attachment")
+            end,
+            running = function()
+              return false
+            end,
+            empty = function()
+              return true
+            end,
+            terminate = function()
+              return true
+            end,
+            close = function() end,
+          },
+        })
+        return tree
       end
       vim.uv.new_work = function(work, completed)
         local context = new_work(work, completed)
@@ -74,8 +98,9 @@ describe("Windows subprocess boundary rules", function()
     local native_process
     ---@type fun()?
     local complete
-    windows.new = function()
+    windows.new = function(options)
       return new_tree({
+        callbacks = options.callbacks,
         backend = {
           create = function()
             return 1
@@ -90,6 +115,9 @@ describe("Windows subprocess boundary rules", function()
             return true
           end,
           terminate = function()
+            return true
+          end,
+          empty = function()
             return true
           end,
           close = function() end,
@@ -116,7 +144,7 @@ describe("Windows subprocess boundary rules", function()
       assert(vim.uv.os_environ()),
       {
         output = function() end,
-          released = function() end,
+        released = function() end,
         exited = function() end,
         closed = function()
           closed = true

@@ -46,15 +46,27 @@ function M.new(spec, env, callbacks, input_limits)
   local uv = vim.uv
   local posix_child = jit.os ~= "Windows" and require("neoagent.subprocess.posix_child") or nil
   local release = require("neoagent.subprocess.release").new(callbacks.released)
+  ---@type Neoagent.WindowsProcessTree?
+  local tree
+  local drained, notified = false, false
+  local function closed()
+    if drained and not notified and (not tree or tree.empty) then
+      notified = true
+      callbacks.closed()
+    end
+  end
   local io = streams.new({
     output = callbacks.output,
     exited = callbacks.exited,
-    closed = callbacks.closed,
+    closed = function()
+      drained = true
+      closed()
+    end,
     failed = callbacks.failed,
     input_failed = callbacks.input_failed,
     released = release.retain(),
   }, input_limits)
-  local exited, disposed = false, false
+  local exited = false
   local release_process
   ---@type uv.uv_pipe_t?
   local stdin
@@ -65,23 +77,10 @@ function M.new(spec, env, callbacks, input_limits)
   local process
   ---@type Neoagent.PosixChild?
   local child
-  ---@type Neoagent.WindowsProcessTree?
-  local tree
-  local function finalize_windows()
-    if tree and disposed and (exited or not process) then
-      tree:close(true)
-      tree = nil
-    end
-    if disposed and not tree then
-      release.close()
-    end
-  end
   local function dispose()
-    disposed = true
     local cleaned, err = pcall(function()
       if tree then
-        tree:terminate(9)
-        finalize_windows()
+        tree:close()
       end
       if child then
         child.terminate(true)
@@ -89,9 +88,7 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end)
     io.dispose()
-    if not tree then
-      release.close()
-    end
+    release.close()
     if not cleaned then
       error(err, 0)
     end
@@ -103,7 +100,6 @@ function M.new(spec, env, callbacks, input_limits)
       exited = true
       if release_process then
         assert(process):close(release_process)
-        finalize_windows()
       else
         io.close(process)
       end
@@ -111,8 +107,23 @@ function M.new(spec, env, callbacks, input_limits)
       io.exited()
     end
     if jit.os == "Windows" then
-      tree = require("neoagent.process.windows").new()
-      if not tree then
+      ---@type fun()?
+      local release_tree
+      tree = require("neoagent.process.windows").new({
+        callbacks = {
+          empty = function()
+            vim.schedule(closed)
+          end,
+          released = function()
+            assert(release_tree)()
+          end,
+          failed = function(message)
+            callbacks.failed("process_supervision", message)
+          end,
+        },
+      })
+      release_tree = release.retain()
+      if not tree:start() then
         error(validate.error("process_supervision", "Failed to create process supervisor"), 0)
       end
     elseif posix_child then
@@ -222,6 +233,9 @@ function M.new(spec, env, callbacks, input_limits)
       if not ok then
         -- Failed admission may precede read_start. Those pipes cannot report
         -- EOF, but the retained process must still deliver its native exit.
+        if tree then
+          tree:close()
+        end
         io.close(stdout)
         io.close(stderr)
         error(failure, 0)

@@ -148,6 +148,13 @@ describe("Windows native Tool RPC", function()
 
   it("cancels a command tree, reuses its connection, and releases the native lease", function()
     local connection, child, call = start()
+    local launched = wait(async.run(function()
+      return tool_client.invoke(connection, "shell", {
+        argv = { assert(vim.env.COMSPEC), "/d", "/s", "/c", "echo child-ready" }, timeout_ms = 10000,
+      }, call)
+    end))
+    assert.is_false(launched.isError, vim.inspect(launched))
+    assert.matches("child-ready", vim.inspect(launched), 1, true)
     local ready, late = root .. "/ready", root .. "/late"
     local program = root .. "/child.cmd"
     assert(fs.write_all(

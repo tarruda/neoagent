@@ -1,14 +1,63 @@
 local assert = require("luassert")
 
 describe("native process helpers", function()
+  ---@type {tree: Neoagent.WindowsProcessTree, released: boolean}[]
+  local owners = {}
+  before_each(function()
+    owners = {}
+  end)
+  after_each(function()
+    for _, entry in ipairs(owners) do
+      entry.tree:close()
+    end
+    assert(vim.wait(2000, function()
+      for _, entry in ipairs(owners) do
+        if not entry.released then
+          return false
+        end
+      end
+      return true
+    end, 5))
+  end)
+
+  ---@param options {backend?: Neoagent.WindowsProcessBackend, native?: Neoagent.WindowsProcessNativeOptions}
+  ---@return Neoagent.WindowsProcessTree?, string?
+  local function start(options)
+    local entry = { released = false }
+    local tree = require("neoagent.process.windows").new({
+      backend = options.backend,
+      native = options.native,
+      callbacks = {
+        empty = function() end,
+        released = function()
+          entry.released = true
+        end,
+        failed = function() end,
+      },
+    })
+    entry.tree = tree
+    owners[#owners + 1] = entry
+    local ok, err = tree:start()
+    if not ok then
+      tree:close()
+      return nil, err
+    end
+    return tree
+  end
 
   it("owns Windows process descendants through a kill-on-close job", function()
     ---@type string[]
     local calls = {}
     ---@type Neoagent.WindowsProcessBackend
     local backend = {
-      create = function() calls[#calls + 1] = "create" return "job" end,
-      open = function(pid) calls[#calls + 1] = "open:" .. pid return "process" end,
+      create = function()
+        calls[#calls + 1] = "create"
+        return "job"
+      end,
+      open = function(pid)
+        calls[#calls + 1] = "open:" .. pid
+        return "process"
+      end,
       assign = function(job, child)
         calls[#calls + 1] = "assign:" .. tostring(job) .. ":" .. tostring(child)
         return true
@@ -21,9 +70,16 @@ describe("native process helpers", function()
         calls[#calls + 1] = "terminate:" .. tostring(job) .. ":" .. code
         return true
       end,
-      close = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) end,
+      empty = function()
+        return true
+      end,
+      close = function(handle)
+        calls[#calls + 1] = "close:" .. tostring(handle)
+      end,
     }
-    local tree = assert(require("neoagent.process.windows").new({ backend = backend }))
+    local tree = assert(start({ backend = backend }))
+    tree:poll()
+    assert.is_nil(tree.empty, "an empty Job during creation cannot establish target completion")
     assert.is_false(tree:running())
     assert.is_false(tree:terminate(15))
     assert(tree:attach(0))
@@ -33,15 +89,20 @@ describe("native process helpers", function()
     assert.is_nil(replaced)
     assert.are.equal("process tree already has a root", replace_err)
     assert.is_true(tree:terminate(15))
-    tree:close(true)
+    tree:close()
     assert.is_false(tree:running())
     local attached, attach_err = tree:attach(42)
     assert.is_nil(attached)
     assert.are.equal("process tree is closed", attach_err)
-    tree:close(true)
+    tree:close()
     assert.are.same({
-      "create", "open:42", "assign:job:process",
-      "terminate:job:15", "terminate:job:125", "close:process", "close:job",
+      "create",
+      "open:42",
+      "assign:job:process",
+      "terminate:job:15",
+      "terminate:job:125",
+      "close:process",
+      "close:job",
     }, calls)
   end)
 
@@ -52,21 +113,36 @@ describe("native process helpers", function()
       cdef = function() end,
       ---@param name string
       new = function(name)
+        if name == "NEOAGENT_JOB_ACCOUNTING_INFORMATION" then
+          return { ActiveProcesses = 0 }
+        end
         assert.are.equal("NEOAGENT_JOB_EXTENDED_LIMIT_INFORMATION", name)
         return { BasicLimitInformation = {} }
       end,
-      sizeof = function() return 144 end,
+      sizeof = function()
+        return 144
+      end,
     }
     ---@type Neoagent.WindowsProcessKernel
     local kernel = {
-      GetLastError = function() return 5 end,
-      CreateJobObjectW = function() calls[#calls + 1] = "create" return "job" end,
+      GetLastError = function()
+        return 5
+      end,
+      CreateJobObjectW = function()
+        calls[#calls + 1] = "create"
+        return "job"
+      end,
       SetInformationJobObject = function(job, class, limits, size)
         assert.are.equal("job", job)
         assert.are.equal(9, class)
         assert.are.equal(0x2000, limits.BasicLimitInformation.LimitFlags)
         assert.are.equal(144, size)
         calls[#calls + 1] = "configure"
+        return 1
+      end,
+      QueryInformationJobObject = function(job, class, information)
+        assert.are.same({ "job", 1 }, { job, class })
+        information.ActiveProcesses = 0
         return 1
       end,
       OpenProcess = function(access, inherit, pid)
@@ -91,42 +167,203 @@ describe("native process helpers", function()
         calls[#calls + 1] = "terminate"
         return 1
       end,
-      CloseHandle = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) return 1 end,
+      CloseHandle = function(handle)
+        calls[#calls + 1] = "close:" .. tostring(handle)
+        return 1
+      end,
     }
-    local tree = assert(require("neoagent.process.windows").new({
-      native = { ffi = ffi --[[@as Neoagent.WindowsProcessFfi]], kernel = kernel },
+    local tree = assert(start({
+      native = {
+        ffi = ffi --[[@as Neoagent.WindowsProcessFfi]],
+        kernel = kernel,
+      },
     }))
     assert(tree:attach(43))
     assert.is_true(tree:running())
-    tree:close(true)
+    tree:close()
     assert.are.same({
-      "create", "configure", "open", "assign", "query",
-      "terminate", "close:process", "close:job",
+      "create",
+      "configure",
+      "open",
+      "assign",
+      "query",
+      "terminate",
+      "close:process",
+      "close:job",
     }, calls)
   end)
 
+  it("retains an atomically assigned Job when disposal interrupts native creation", function()
+    local empty, stopped = false, 0
+    local closed = {}
+    local tree = assert(start({
+      backend = {
+        create = function()
+          return "job"
+        end,
+        open = function()
+          error("native creation transfers its existing handle")
+        end,
+        assign = function()
+          error("native creation already assigned the Job")
+        end,
+        running = function()
+          return false
+        end,
+        empty = function()
+          return empty
+        end,
+        terminate = function()
+          stopped = stopped + 1
+          return true
+        end,
+        close = function(handle)
+          closed[#closed + 1] = handle
+        end,
+      },
+    }))
+    tree:close()
+    assert.is_nil(tree.closed)
+    assert.are.equal(1, stopped)
+    assert.are.same({}, closed)
+    tree:adopt("process")
+    assert.are.equal(2, stopped)
+    assert.are.same({}, closed)
+    empty = true
+    tree:poll()
+    assert.are.same({ "process", "job" }, closed)
+    tree:poll()
+  end)
+
+  it("closes a late native process handle after its Job already emptied", function()
+    local closed = {}
+    local tree = assert(start({
+      backend = {
+        create = function()
+          return "job"
+        end,
+        open = function()
+          error("native creation supplies its handle")
+        end,
+        assign = function()
+          error("native creation assigns its Job")
+        end,
+        running = function()
+          return false
+        end,
+        empty = function()
+          return true
+        end,
+        terminate = function()
+          return true
+        end,
+        close = function(handle)
+          closed[#closed + 1] = handle
+        end,
+      },
+    }))
+    tree:close()
+    assert.has_error(function()
+      tree:adopt("process")
+    end, "process tree is closed")
+    assert.are.same({ "job", "process" }, closed)
+  end)
+
+  for _, refused in ipairs({ "allocation", "scheduling" }) do
+    it("releases partial native ownership when Job observation " .. refused .. " fails", function()
+      local new_timer = vim.uv.new_timer
+      local restore
+      local created, closed = 0, 0
+      vim.uv.new_timer = function()
+        if refused == "allocation" then
+          return nil
+        end
+        local timer = assert(new_timer())
+        local methods = getmetatable(timer).__index
+        local schedule = methods.start
+        restore = function()
+          methods.start = schedule
+        end
+        methods.start = function()
+          return nil, "Job observation could not start"
+        end
+        return timer
+      end
+      local ok, err = pcall(function()
+        local tree, failure = start({
+          backend = {
+            create = function()
+              created = created + 1
+              return "job"
+            end,
+            open = function()
+              error("a target must not start without observation")
+            end,
+            assign = function()
+              error("a target must not start without observation")
+            end,
+            running = function()
+              return false
+            end,
+            empty = function()
+              return true
+            end,
+            terminate = function()
+              return true
+            end,
+            close = function()
+              closed = closed + 1
+            end,
+          },
+        })
+        assert.is_nil(tree)
+        assert.is_string(failure)
+        assert.are.equal(refused == "allocation" and 0 or 1, created)
+        assert.are.equal(created, closed)
+      end)
+      vim.uv.new_timer = new_timer
+      if restore then
+        restore()
+      end
+      assert.is_true(ok, vim.inspect(err))
+    end)
+  end
+
   it("reports native Windows Job API failures and closes handles", function()
-    local windows = require("neoagent.process.windows")
     local ffi = {
       cdef = function() end,
-      new = function() return { BasicLimitInformation = {} } end,
-      sizeof = function() return 144 end,
+      new = function()
+        return { BasicLimitInformation = {} }
+      end,
+      sizeof = function()
+        return 144
+      end,
     }
     ---@type Neoagent.WindowsProcessHandle[]
     local closed = {}
     local mode = "create"
     ---@type Neoagent.WindowsProcessKernel
     local kernel = {
-      GetLastError = function() return 5 end,
+      GetLastError = function()
+        return 5
+      end,
       CreateJobObjectW = function()
-        if mode == "create" then return nil end
+        if mode == "create" then
+          return nil
+        end
         return "job"
       end,
       SetInformationJobObject = function()
         return mode == "configure" and 0 or 1
       end,
+      QueryInformationJobObject = function(_, _, information)
+        information.ActiveProcesses = 0
+        return mode == "accounting" and 0 or 1
+      end,
       OpenProcess = function()
-        if mode == "open" then return nil end
+        if mode == "open" then
+          return nil
+        end
         return "process"
       end,
       AssignProcessToJobObject = function()
@@ -138,11 +375,19 @@ describe("native process helpers", function()
       TerminateJobObject = function()
         return mode == "terminate" and 0 or 1
       end,
-      CloseHandle = function(handle) closed[#closed + 1] = handle return 1 end,
+      CloseHandle = function(handle)
+        closed[#closed + 1] = handle
+        return 1
+      end,
     }
     ---@return Neoagent.WindowsProcessTree?, string?
     local function create()
-      return windows.new({ native = { ffi = ffi --[[@as Neoagent.WindowsProcessFfi]], kernel = kernel } })
+      return start({
+        native = {
+          ffi = ffi --[[@as Neoagent.WindowsProcessFfi]],
+          kernel = kernel,
+        },
+      })
     end
 
     local tree, err = create()
@@ -180,6 +425,16 @@ describe("native process helpers", function()
     assert.are.equal("Win32 error 5", query_err)
     mode = "terminate"
     assert.is_false(tree:terminate())
+    local reported = {}
+    tree.callbacks.failed = function(message)
+      reported[#reported + 1] = message
+    end
+    mode = "accounting"
+    tree:poll()
+    tree:poll()
+    assert.are.same({ "Could not observe process Job completion (Win32 error 5)" }, reported)
+    assert.is_nil(tree.empty)
+    mode = "exited"
     tree:close()
   end)
 end)

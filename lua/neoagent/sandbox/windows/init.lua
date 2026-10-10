@@ -27,7 +27,8 @@ local nvim_launch = require("neoagent.process.nvim")
 ---@field env table<string, string>
 ---@field probe? {write: string, deny_write: string, deny_read: string}
 ---@field admission_timeout_ms integer
----@field runner {argv: string[], read_roots: string[], script: string, version: 'script'}
+---@field finalization_timeout_ms integer
+---@field read_paths string[] Bootstrap paths needed by the restricted target.
 
 ---@class Neoagent.WindowsSandboxProbe
 ---@field spec Neoagent.WindowsSandboxSpec
@@ -36,10 +37,12 @@ local nvim_launch = require("neoagent.process.nvim")
 local M = {
   name = "windows",
   paths = path_module.windows(),
+  finalization_timeout_ms = 60000,
 }
 
 local PROBE_TIMEOUT_MS = 30000
 local MINIMUM_NVIM = { 0, 12, 0 }
+local TEMPORARY_VARIABLES = { TMP = true, TEMP = true, TMPDIR = true }
 local CAPABILITIES = {
   filesystem = true,
   network = true,
@@ -143,22 +146,11 @@ local function runtime_argv(nvim, script)
   return argv
 end
 
----@param runtime string
----@return string
-local function command_module(runtime)
-  local checkout = M.paths.dirname(M.paths.dirname(runtime))
-  return M.paths.join(checkout, "lua", "neoagent", "process", "windows_command.lua")
-end
-
 ---@param nvim string[]
----@param script string
 ---@return string[]
-local function runner_read_roots(nvim, script)
-  if not M.paths.is_absolute(nvim[1]) then
-    return {}
-  end
+local function nvim_read_roots(nvim)
   local executable_root = M.paths.dirname((assert(nvim[1])))
-  local roots = { executable_root, command_module(script) }
+  local roots = { executable_root }
   local installation = M.paths.dirname(executable_root)
   -- Release archives place the runtime below the installation root. Custom
   -- distributions expose their initialized runtime through VIMRUNTIME.
@@ -287,10 +279,9 @@ end
 
 ---@param request Neoagent.WindowsSandboxRequest
 ---@param mode Neoagent.WindowsSandboxMode
----@param runtime string
 ---@param nvim string[]
 ---@return Neoagent.WindowsSandboxSpec
-local function specification(request, mode, runtime, nvim)
+local function specification(request, mode, nvim)
   local argv
   if mode == "exec" then
     argv = util.copy(request.argv or {})
@@ -299,6 +290,10 @@ local function specification(request, mode, runtime, nvim)
       error(util.error("sandbox_unavailable", "Sandbox executable was not found: " .. tostring(argv[1])), 0)
     end
     argv[1] = program
+  end
+  local required = util.copy(request.bootstrap_paths or {})
+  if argv and M.paths.is_absolute(nvim[1]) and M.paths.key(assert(argv[1])) == M.paths.key(assert(nvim[1])) then
+    vim.list_extend(required, nvim_read_roots(nvim))
   end
   return {
     v = 1,
@@ -309,24 +304,70 @@ local function specification(request, mode, runtime, nvim)
     env = util.copy(request.env or {}),
     probe = util.copy(request.probe),
     admission_timeout_ms = relay_lease.DEFAULT_ADMISSION_TIMEOUT_MS,
-    runner = {
-      argv = util.copy(nvim),
-      -- CreateProcessWithLogonW uses a separate local account. Initialized
-      -- Neovim reads adjacent DLLs and its packaged runtime before the Lua
-      -- runner can connect, so those installation roots need inherited read
-      -- and execute access in addition to the executable itself.
-      read_roots = runner_read_roots(nvim, runtime),
-      script = runtime,
-      version = "script",
-    },
+    finalization_timeout_ms = M.finalization_timeout_ms,
+    read_paths = require("neoagent.sandbox.policy").require_read(request.profile, required, M.paths, "bootstrap"),
   }
+end
+
+-- Partition only the managed default grant and exact environment references.
+-- Other absolute paths are caller declarations, including protection of data
+-- already present under the temporary root; preparation must not move them.
+---@param profile Neoagent.SandboxProfile
+---@param fs Neoagent.SandboxFilesystemService
+local function prepare_temporary(profile, fs)
+  local temporary = M.temporary_root()
+  local temporary_key = M.paths.key(temporary)
+  local references = {}
+  for name, value in pairs(profile.environment.set) do
+    if TEMPORARY_VARIABLES[name:upper()] and M.paths.is_absolute(value) then
+      if M.paths.key(value) == temporary_key then
+        references[#references + 1] = name
+      elseif M.paths.contains(temporary, value) then
+        -- An explicitly selected subdirectory addresses existing storage.
+        -- Preserve that grant and let native admission check its sharing.
+        return
+      end
+    end
+  end
+  if #references == 0 then
+    return
+  end
+  for index, entry in ipairs(profile.filesystem.entries) do
+    if entry.access == "write" and M.paths.key(entry.path) == temporary_key then
+      table.remove(profile.filesystem.entries, index)
+      -- Validate the caller's remaining policy before adding managed storage.
+      -- An absolute denial outside its write roots must already be enforceable.
+      local policy = compiler.compile(profile, { paths = M.paths })
+      local regions = {}
+      for _, paths in ipairs({ policy.write_roots, policy.deny_write }) do
+        local keys = {}
+        for _, path in ipairs(paths) do
+          keys[#keys + 1] = M.paths.key(path)
+        end
+        table.sort(keys)
+        regions[#regions + 1] = keys
+      end
+      local scoped = M.paths.join(temporary, vim.fn.sha256(util.json_encode(regions)))
+      local ok, err = fs.mkdirp(scoped)
+      if not ok then
+        error(util.error("sandbox_unavailable", "Could not prepare Windows sandbox temporary storage", err), 0)
+      end
+      entry.path = scoped
+      table.insert(profile.filesystem.entries, index, entry)
+      for _, name in ipairs(references) do
+        profile.environment.set[name] = scoped
+      end
+      return
+    end
+  end
 end
 
 ---@param profile Neoagent.SandboxProfile
 ---@return Neoagent.WindowsSandboxProfile
 function M.compile(profile)
   local compiled = util.copy(profile) --[[@as Neoagent.WindowsSandboxProfile]]
-  compiled.windows = compiler.compile(profile, { paths = M.paths })
+  prepare_temporary(compiled, require("neoagent.fs"))
+  compiled.windows = compiler.compile(compiled, { paths = M.paths })
   return compiled
 end
 
@@ -345,22 +386,9 @@ function M.start_worker(request, services)
   if not executable(nvim[1]) then
     error(util.error("sandbox_unavailable", "Current Neovim executable cannot be resolved"), 0)
   end
-  local required = util.copy(request.bootstrap_paths or {})
-  required[#required + 1] = command_module(runtime)
-  local bootstrap = require("neoagent.sandbox.policy").require_read(request.profile, required, M.paths, "bootstrap")
-  local spec = specification(request --[[@as Neoagent.WindowsSandboxRequest]], "exec", runtime, nvim)
-  local seen = {}
-  for _, path in ipairs(spec.runner.read_roots) do
-    seen[M.paths.key(path)] = true
-  end
-  for _, normalized in ipairs(bootstrap) do
-    local key = M.paths.key(normalized)
-    if not seen[key] then
-      seen[key] = true
-      spec.runner.read_roots[#spec.runner.read_roots + 1] = normalized
-    end
-  end
+  local spec = specification(request --[[@as Neoagent.WindowsSandboxRequest]], "exec", nvim)
   local relay = relay_lease.new({
+    require_cleanup_ack = true,
     on_failure = request.on_failure,
     on_stdout = request.on_stdout,
     on_stderr = request.on_stderr,
@@ -454,7 +482,7 @@ local function check_request(services, runtime, nvim)
         deny_write = denied_write,
         deny_read = denied_read,
       },
-    }, "probe", runtime, nvim),
+    }, "probe", nvim),
     root = root,
   }
 end
@@ -492,6 +520,7 @@ function M.check(services)
   end
   local completed = (services.system or system)(runtime_argv(nvim, runtime), {
     cwd = vim.fs.dirname(runtime),
+    stdin = "",
     env = environment(prepared.spec),
     clear_env = true,
     text = false,
@@ -507,7 +536,12 @@ function M.check(services)
   end
   assert(type(terminal) == "table")
   if terminal.type == "error" then
-    local hint = terminal.stage == "state-missing" and "; run the documented elevated Windows sandbox setup command"
+    local hint = (
+      terminal.stage == "state-missing"
+      or terminal.stage == "setup-launch-rights"
+      or terminal.stage == "setup-upgrade-required"
+    )
+        and "; run the documented elevated Windows sandbox setup command"
       or ""
     return unavailable(
       terminal.stage,
@@ -516,6 +550,9 @@ function M.check(services)
   end
   if completed.code ~= 0 or terminal.code ~= 0 then
     return unavailable("probe", "Windows sandbox probe failed")
+  end
+  if not terminal.cleanup or not terminal.cleanup.released then
+    return unavailable("cleanup", "Windows sandbox probe did not confirm permission cleanup")
   end
   return {
     ok = true,

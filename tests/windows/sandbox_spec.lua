@@ -253,7 +253,7 @@ describe("neoagent Windows sandbox", function()
     ---@param value Neoagent.ToolResult
     local function assert_restricted(value)
       assert.is_true(value.isError)
-      assert.is_true(assert(value.execution).sandbox.ran_restricted)
+      assert.is_true(assert(value.execution, vim.inspect(value)).sandbox.ran_restricted)
       assert.matches("blocked by the sandbox",
         content(value), 1, true)
     end
@@ -418,6 +418,55 @@ describe("neoagent Windows sandbox", function()
     assert.are.equal("online", value.stdout)
     assert.is_nil(listener_error)
     assert.is_true(accepted)
+  end)
+
+  it("blocks network access from the target's restricted primary token", function()
+    local value = run({ "python", "-c", table.concat({
+      "import socket, sys",
+      "with socket.socket() as s:",
+      " s.settimeout(2)",
+      " code = s.connect_ex(('127.0.0.1', 9))",
+      " print(code)",
+      " sys.exit(0 if code == 10013 else 1)",
+    }, "\n") }, options())
+    assert.are.equal(0, value.code, value.stdout .. value.stderr)
+    assert.are.equal("10013", vim.trim(value.stdout))
+  end)
+
+  it("preserves failed native ACL revocation after target exit until a separate recovery", function()
+    local worker = require("neoagent.rpc.worker_lease")
+    local nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath
+    ---@type Neoagent.SandboxExecutionServices
+    local services = { fs = fs, nvim = nvim, capabilities = assert(status.capabilities) }
+    services.start_worker = function(request)
+      for index, value in ipairs(request.argv) do
+        if value:match("sandbox_windows_runtime%.lua$") then
+          request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_cleanup.lua"))
+        end
+      end
+      return worker.start(request)
+    end
+    local lease = windows.start_worker({
+      argv = { "cmd.exe", "/d", "/s", "/c", "exit 7" }, cwd = root, env = environment,
+      profile = windows.compile(profile()),
+    }, services)
+    local checked, failure = pcall(function()
+      local result = wait(async.run(function() return lease:wait() end))
+      assert.are.equal(7, result.code, vim.inspect(result))
+      assert.is_nil(result.error)
+      assert.matches("acl-build", assert(result.cleanup_error).message, 1, true)
+      assert.are.equal("errno=5", assert(result.cleanup_error).detail)
+      assert.is_false(lease:is_released())
+      local released = require("tests.helpers.subprocess").complete(function() return lease:wait_release() end)
+      assert.are.same(result.cleanup_error, released.error)
+    end)
+    lease:dispose("native cleanup test finished")
+    -- Real recovery revokes the recorded ACLs. This completed lease has no
+    -- recovery subscription and must keep its unconfirmed release quarantined.
+    local recovered = windows.check(services)
+    assert.is_true(recovered.ok, vim.inspect(recovered))
+    assert.is_false(lease:is_released())
+    assert(checked, vim.inspect(failure))
   end)
 
   it("kills descendants on timeout and reconciles interrupted ACL leases", function()

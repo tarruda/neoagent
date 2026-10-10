@@ -1367,6 +1367,69 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal(1, assert(value.details).exit_code)
   end)
 
+  for _, cancelled in ipairs({ false, true }) do
+    it("allows native finalization after RPC shutdown with cancellation=" .. tostring(cancelled), function()
+      local root = temporary_root()
+      local lease, state = child()
+      ---@type Neoagent.AwaitCallbacks<Neoagent.WorkerResult>?
+      local finish
+      function lease:wait()
+        return async.await(function(done) finish = done end)
+      end
+      local acknowledged = false
+      remote({ close = function() acknowledged = true; return true end })
+      local original_new_timer = vim.uv.new_timer
+      ---@type Neoagent.TestDeferredTimer[]
+      local timers = {}
+      vim.uv.new_timer = function()
+        ---@type Neoagent.TestDeferredTimer
+        local timer = {
+          closed = false,
+          start = function(self, timeout, _, callback)
+            self.timeout, self.callback = timeout, callback
+          end,
+          stop = function() end,
+          close = function(self) self.closed = true end,
+          is_closing = function(self) return self.closed end,
+        }
+        timers[#timers + 1] = timer
+        return timer --[[@as uv.uv_timer_t]]
+      end
+      local run
+      local ok, err = pcall(function()
+        local execute = interceptor(root, {
+          name = "test", finalization_timeout_ms = 60000,
+          start_worker = function() return lease end,
+        }):wrap(function(tool, arguments, ctx)
+          local result = tool.execute(arguments, ctx)
+          if cancelled then error(util.error("cancelled", "caller stopped observing"), 0) end
+          return result
+        end)
+        run = async.run(function()
+          return execute(restricted_tool(), { path = "completed.txt", content = "value" }, context(root))
+        end)
+        assert(vim.wait(1000, function() return finish ~= nil end, 5))
+        assert.is_true(acknowledged)
+        -- Advance beyond both the RPC cancellation and worker-exit budgets,
+        -- while the native platform is still within its finalization budget.
+        for _, timer in ipairs(timers) do
+          if not timer.closed and assert(timer.timeout) <= 12000 then
+            assert(timer.callback)()
+          end
+        end
+        assert.are.equal(0, state.closed, "parent disposed healthy native finalization")
+      end)
+      vim.uv.new_timer = original_new_timer
+      if finish then finish.resolve({ code = 0, signal = 0, stderr = "" }) end
+      if run then assert(vim.wait(1000, function() return run:is_done() end, 5)) end
+      assert(vim.wait(1000, function()
+        for _, timer in ipairs(timers) do if not timer.closed then return false end end
+        return true
+      end, 5), "native completion retained a shutdown timer")
+      assert.is_true(ok, tostring(err))
+    end)
+  end
+
   it("retains and disposes a worker when post-close waiting is cancelled", function()
     local root = temporary_root()
     local state = {
@@ -2197,7 +2260,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return active_child
       end,
     }
-    remote()
+    remote({ close = function() error(util.error("protocol", "worker did not acknowledge shutdown"), 0) end })
     ---@async
     local function suspend(tool, _, ctx)
       tool.execute({ path = "operation.txt", content = "value" }, ctx)

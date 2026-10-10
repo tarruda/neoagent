@@ -8,10 +8,28 @@ local M = {}
 local CANCEL_LEASE_GRACE_MS = require("neoagent.rpc.protocol").CANCEL_GRACE_MS + 250
 local WORKER_EXIT_GRACE_MS = 10000
 
+-- Resolve the complete shutdown budget before native startup. The invocation
+-- owns protocol/worker shutdown; the platform contributes its native authority
+-- finalization allowance, used by that platform's runtime as well.
+---@param finalization_ms? integer
+---@return integer
+function M.shutdown_timeout(finalization_ms)
+  local validate = require("neoagent.subprocess.validate")
+  if finalization_ms == nil then
+    finalization_ms = 0
+  end
+  assert(
+    validate.integer(finalization_ms, 0, validate.MAX_TIMEOUT_MS - WORKER_EXIT_GRACE_MS),
+    "sandbox finalization timeout must be a bounded non-negative integer"
+  )
+  return WORKER_EXIT_GRACE_MS + finalization_ms
+end
+
 ---@class Neoagent.SandboxInvocation
 ---@field connection Neoagent.RpcConnection
 ---@field _lease Neoagent.WorkerLease
 ---@field _dispose_error? Neoagent.Error
+---@field _shutdown_timeout_ms integer
 ---@field timer? uv.uv_timer_t
 ---@field disposed boolean
 ---@field opened boolean
@@ -150,6 +168,13 @@ function Invocation:deadline(milliseconds, reason, on_timeout)
   end)
 end
 
+-- RPC acknowledgement ends protocol shutdown. The native lease then owns
+-- worker exit and platform finalization; cancellation must enter this same
+-- phase instead of retaining the shorter RPC cancellation watchdog.
+function Invocation:begin_shutdown()
+  self:deadline(self._shutdown_timeout_ms, "restricted worker shutdown and native finalization did not settle")
+end
+
 -- One invocation retains both resources until detached cleanup settles. The
 -- deadline and disposal guard belong to that same owner across cancellation.
 ---@param cancelling boolean
@@ -162,6 +187,8 @@ function Invocation:retain(cancelling)
       if not cancelled or not closed then
         self.connection:abort()
         self:dispose("restricted worker cancellation failed")
+      else
+        self:begin_shutdown()
       end
     end
     return self:wait()
@@ -226,7 +253,7 @@ function Invocation:close(operation_failed)
     end
     return err
   end
-  self:deadline(WORKER_EXIT_GRACE_MS, "restricted worker did not exit after orderly shutdown")
+  self:begin_shutdown()
   local waited, value = pcall(self.wait, self)
   if not waited then
     self:retain(false)
@@ -250,14 +277,16 @@ end
 ---@param connection Neoagent.RpcConnection
 ---@param lease Neoagent.WorkerLease
 ---@param on_cleanup fun(error?: Neoagent.Error) Reports final cleanup, including success, to the owning composition.
+---@param shutdown_timeout_ms integer Validated complete shutdown budget from the platform composition.
 ---@return Neoagent.SandboxInvocation
-function M.new(connection, lease, on_cleanup)
+function M.new(connection, lease, on_cleanup, shutdown_timeout_ms)
   return setmetatable({
     connection = connection,
     _lease = lease,
     disposed = false,
     opened = false,
     report = on_cleanup,
+    _shutdown_timeout_ms = shutdown_timeout_ms,
   }, Invocation)
 end
 

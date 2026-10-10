@@ -97,6 +97,8 @@ end
 ---@return Neoagent.SandboxInvocation
 function M.start(options, on_cleanup)
   local prepared, launch = pcall(function()
+    local shutdown_timeout_ms =
+      require("neoagent.sandbox.invocation").shutdown_timeout(options.platform.finalization_timeout_ms)
     local worker_module = require("neoagent.rpc.worker")
     local worker = worker_module.worker_file()
     local nvim = worker_module.nvim_command(options.nvim)
@@ -105,7 +107,12 @@ function M.start(options, on_cleanup)
     env.NEOAGENT_WORKER_MODE = options.mode
     local required = worker_module.bootstrap_paths(worker, nvim)
     require("neoagent.sandbox.policy").require_read(options.profile, required, options.paths, "bootstrap")
-    return { argv = worker_module.argv(nvim, worker), bootstrap_paths = required, env = env }
+    return {
+      argv = worker_module.argv(nvim, worker),
+      bootstrap_paths = required,
+      env = env,
+      shutdown_timeout_ms = shutdown_timeout_ms,
+    }
   end)
   if not prepared then
     error(util.normalize_error(launch, "worker_start"), 0)
@@ -135,7 +142,7 @@ function M.start(options, on_cleanup)
   end
   -- Publish ownership before validating the adapter's result or awaiting
   -- readiness. Rejected leases can already own native resources.
-  return require("neoagent.sandbox.invocation").new(connection, lease, on_cleanup)
+  return require("neoagent.sandbox.invocation").new(connection, lease, on_cleanup, launch.shutdown_timeout_ms)
 end
 
 return M

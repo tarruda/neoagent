@@ -182,8 +182,9 @@ describe("Windows PTY native ownership", function()
             return check_strings and "program\237\160\128.exe" or "unused"
           end,
         }
-        trees.new = function()
+        trees.new = function(options)
           return original_tree({
+            callbacks = options.callbacks,
             backend = {
               create = function()
                 return native.cast("void *", 4)
@@ -204,6 +205,9 @@ describe("Windows PTY native ownership", function()
               terminate = function()
                 stopped = true
                 return true
+              end,
+              empty = function()
+                return stopped
               end,
               close = function() end,
             },

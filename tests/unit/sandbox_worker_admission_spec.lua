@@ -101,6 +101,9 @@ describe("sandbox worker lease admission", function()
         assert.are.equal(1, owner:status().reserved)
         assert.is_false(owner:status().released)
       else
+        -- This rejected adapter has no release waiter. Its remaining native
+        -- query can establish release, but cannot promise a notification.
+        assert(vim.wait(5000, function() return assert(lease):is_released() end, 5))
         assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
         assert.are.equal(0, owner:status().reserved)
       end
