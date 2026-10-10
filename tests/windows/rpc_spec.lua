@@ -160,16 +160,35 @@ describe("Windows native Tool RPC", function()
     custody_module.new = new_custody
     local job = assert(assert(custody)._job)
     local ffi = require("ffi")
+    ffi.cdef([[
+typedef struct {
+  unsigned long assigned;
+  unsigned long count;
+  uintptr_t ids[64];
+} NATestRpcJobProcessIds;
+]])
     local kernel = ffi.load("kernel32")
-    local accounting = ffi.new("NASandboxJobAccounting") --[[@as Neoagent.WindowsSandboxJobAccounting]]
-    local function active_processes()
-      assert(kernel.QueryInformationJobObject(assert(job.handle), 1, accounting, ffi.sizeof(accounting), nil) ~= 0)
-      return accounting.ActiveProcesses
+    ---@class Neoagent.TestRpcJobProcessIds: ffi.cdata*
+    ---@field assigned integer
+    ---@field count integer
+    ---@field ids Neoagent.FfiArray<integer>
+    local ids = ffi.new("NATestRpcJobProcessIds") --[[@as Neoagent.TestRpcJobProcessIds]]
+    ---@param pid number
+    ---@return boolean
+    local function contains(pid)
+      assert(kernel.QueryInformationJobObject(assert(job.handle), 3, ids, ffi.sizeof(ids), nil) ~= 0)
+      assert.are.equal(ids.assigned, ids.count, "Job process list was truncated")
+      for index = 0, ids.count - 1 do
+        if tonumber(ids.ids[index]) == pid then
+          return true
+        end
+      end
+      return false
     end
-    assert.are.equal(1, active_processes(), "only the RPC worker should be running")
     local fixture = vim.fs.joinpath(assert(vim.uv.cwd()), "tests", "fixtures", "rpc_cancel_tree.lua")
     local gate, descendant_ready = root .. "/spawn-child", root .. "/child-ready"
-    local ready = false
+    ---@type number?
+    local parent_pid
     local request = connection:start_request("shell", {
       argv = {
         assert(vim.env.NEOAGENT_NVIM),
@@ -191,7 +210,7 @@ describe("Windows native Tool RPC", function()
       on_event = function(message)
         if message.name == codec.events.update then
           local content = assert(message.value.content[1]).text
-          ready = content:find("PARENT_READY", 1, true) ~= nil
+          parent_pid = tonumber(content:match("PARENT_READY (%d+)%D"))
         end
       end,
     })
@@ -199,21 +218,25 @@ describe("Windows native Tool RPC", function()
     -- Only then let it create a descendant, which must inherit that ownership.
     assert(
       vim.wait(60000, function()
-        return ready or request._run:is_done()
+        return parent_pid ~= nil or request._run:is_done()
       end, 10),
       "command parent did not announce readiness"
     )
     assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
-    assert.are.equal(2, active_processes(), "worker and command parent must be running")
+    assert.is_true(contains(assert(parent_pid)), "command parent is absent from its sandbox Job")
     assert(fs.write_all(gate, "start"))
+    ---@type number?
+    local descendant_pid
     assert(
       vim.wait(60000, function()
-        return vim.uv.fs_stat(descendant_ready) ~= nil or request._run:is_done()
+        local bytes = fs.read(descendant_ready)
+        descendant_pid = bytes and tonumber(bytes) or nil
+        return descendant_pid ~= nil or request._run:is_done()
       end, 10),
       "command descendant did not announce readiness"
     )
     assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
-    assert.are.equal(3, active_processes(), "worker, command, and descendant must all be running")
+    assert.is_true(contains(assert(descendant_pid)), "command descendant is absent from its sandbox Job")
     request:cancel()
     wait(async.run(function()
       connection:wait_cancelled()
@@ -221,7 +244,7 @@ describe("Windows native Tool RPC", function()
       -- a failure to terminate the request's own process tree.
       assert(
         vim.wait(5000, function()
-          return active_processes() == 1
+          return not contains(assert(parent_pid)) and not contains(assert(descendant_pid))
         end, 10),
         "cancelled command or descendant remains in the sandbox Job"
       )

@@ -3,7 +3,7 @@
 -- so the child will inherit that Job rather than racing its assignment.
 if arg[1] == "child" then
   local ready = assert(io.open(assert(arg[2]), "w"))
-  assert(ready:write("ready"))
+  assert(ready:write(tostring(vim.uv.os_getpid())))
   assert(ready:close())
   -- Stay alive independently of the parent. Closing the parent's handles
   -- must not substitute for terminating the descendant through its Job.
@@ -13,7 +13,7 @@ if arg[1] == "child" then
   error("RPC cancellation did not terminate the descendant")
 end
 
-io.stdout:write("PARENT_READY\n")
+io.stdout:write(("PARENT_READY %d\n"):format(vim.uv.os_getpid()))
 io.stdout:flush()
 assert(
   vim.wait(120000, function()
