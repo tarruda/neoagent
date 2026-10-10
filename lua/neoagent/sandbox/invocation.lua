@@ -25,6 +25,9 @@ function M.shutdown_timeout(finalization_ms)
   return WORKER_EXIT_GRACE_MS + finalization_ms
 end
 
+---@class Neoagent.SandboxWorkerCleanupError: Neoagent.Error
+---@field shutdown_error? Neoagent.Error Failure establishing shutdown before native cleanup completed.
+
 ---@class Neoagent.SandboxInvocation
 ---@field connection Neoagent.RpcConnection
 ---@field _lease Neoagent.WorkerLease
@@ -33,7 +36,6 @@ end
 ---@field timer? uv.uv_timer_t
 ---@field disposed boolean
 ---@field opened boolean
----@field completed? boolean
 ---@field report fun(error?: Neoagent.Error)
 ---@field cleanup? Neoagent.Run<Neoagent.WorkerResult, unknown>
 local Invocation = {}
@@ -123,10 +125,6 @@ end
 
 ---@param err? Neoagent.Error
 function Invocation:complete(err)
-  if self.completed then
-    return
-  end
-  self.completed = true
   self:stop_timer()
   pending_invocations[self] = nil
   self.report(err)
@@ -183,20 +181,41 @@ end
 -- One invocation retains both resources until detached cleanup settles. The
 -- deadline and disposal guard belong to that same owner across cancellation.
 ---@param cancelling boolean
-function Invocation:retain(cancelling)
+---@param reason? string
+function Invocation:retain(cancelling, reason)
   pending_invocations[self] = true
   self.cleanup = async.run(function()
+    ---@type Neoagent.Error?
+    local shutdown_error
     if cancelling then
-      local cancelled = pcall(self.connection.wait_cancelled, self.connection)
-      local closed = cancelled and pcall(self.connection.close, self.connection)
-      if not cancelled or not closed then
+      -- Establish cancellation supervision inside its retained owner. Any
+      -- protocol or timer failure still reaches the native cleanup waiter.
+      local prepared, err = pcall(function()
+        self.connection:cancel()
+        self:deadline(CANCEL_LEASE_GRACE_MS, assert(reason))
+        self.connection:wait_cancelled()
+        self.connection:close()
+        self:begin_shutdown()
+      end)
+      if not prepared then
+        shutdown_error = util.normalize_error(err, "sandbox_unavailable")
         self.connection:abort()
         self:dispose("restricted worker cancellation failed")
-      else
-        self:begin_shutdown()
       end
     end
-    return self:wait()
+    local result = self:wait()
+    if shutdown_error then
+      result = util.copy(result)
+      if result.cleanup_error then
+        ---@type Neoagent.SandboxWorkerCleanupError
+        local cleanup_error = result.cleanup_error
+        cleanup_error.shutdown_error = shutdown_error
+        result.cleanup_error = cleanup_error
+      else
+        result.cleanup_error = shutdown_error
+      end
+    end
+    return result
   end, {
     error_kind = "sandbox_unavailable",
     on_done = function(value)
@@ -212,12 +231,7 @@ end
 
 ---@param reason string
 function Invocation:cancel(reason)
-  local cancelled = pcall(self.connection.cancel, self.connection)
-  if not cancelled then
-    self.connection:abort()
-  end
-  self:deadline(CANCEL_LEASE_GRACE_MS, reason)
-  self:retain(true)
+  self:retain(true, reason)
 end
 
 ---@async
@@ -242,9 +256,10 @@ function Invocation:abort(reason)
 end
 
 ---@async
+---@param self Neoagent.SandboxInvocation
 ---@param operation_failed boolean
 ---@return Neoagent.Error?
-function Invocation:close(operation_failed)
+local function close(self, operation_failed)
   if not self.opened or operation_failed and self.connection:is_failed() then
     return self:abort("restricted worker admission or operation failed")
   end
@@ -277,6 +292,20 @@ function Invocation:close(operation_failed)
   if not finished then
     return util.normalize_error(finish_err, "protocol")
   end
+end
+
+---@async
+---@param operation_failed boolean
+---@return Neoagent.Error?
+function Invocation:close(operation_failed)
+  -- Native supervision can fail before the cleanup waiter is installed. The
+  -- invocation still owns disposal and observation on every such exit path.
+  local ok, result = pcall(close, self, operation_failed)
+  if ok then
+    return result
+  end
+  local err = util.normalize_error(result, "sandbox_unavailable")
+  return self:abort("restricted worker shutdown failed") or err
 end
 
 ---@param connection Neoagent.RpcConnection

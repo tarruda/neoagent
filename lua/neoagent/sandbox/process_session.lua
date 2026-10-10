@@ -117,6 +117,10 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
     }
   end
   local function remember(collection)
+    -- A terminal cleanup failure is independently valid even if the later
+    -- completion notification is lost. Retain its first observation so copied
+    -- snapshots cannot publish the same target transition more than once.
+    local first_cleanup_error = not target.cleanup_error and collection.cleanup_error or nil
     for _, event in ipairs(collection.events) do
       buffer.append(event)
     end
@@ -127,8 +131,9 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       resize_supported = collection.resize_supported,
       outcome = collection.outcome,
       error = collection.error,
-      cleanup_error = collection.cleanup_error,
+      cleanup_error = target.cleanup_error or collection.cleanup_error,
     }
+    report_cleanup(first_cleanup_error)
   end
   local function finish_worker()
     if shutdown.phase == "settled" or not worker_observation or not close_observation then
@@ -202,7 +207,6 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       local terminal = completion.pending
       completion.pending = nil
       remember(terminal)
-      report_cleanup(target.cleanup_error)
     end
     close_worker_when_ready()
     notify()

@@ -937,6 +937,34 @@ describe("retained process RPC", function()
     assert.are.equal(1, owner:status().reserved)
   end)
 
+  it("retains a collected cleanup failure when the completion notification is lost", function()
+    local failures = {}
+    owner = sessions.new({ capacity = 1 }, function(err) failures[#failures + 1] = err end, factory)
+    reap_gate = vim.fn.tempname()
+    assert(require("neoagent.fs").write_all(reap_gate, "hold"))
+    hold_completion, hold_release, quarantined = true, true, true
+    local admission = start("exit 0", nil, 2000)
+    local cleanup = assert(admission.result.cleanup_error)
+    assert.are.equal("process_cleanup", cleanup.code)
+    assert.is_false(admission.result.done)
+    local id = assert(admission.commit())
+    -- The target really releases before losing its worker. Only the release
+    -- acknowledgement is withheld, so teardown does not orphan a native child.
+    assert.are.equal(0, vim.fn.delete((assert(reap_gate))))
+    reap_gate = nil
+    assert(vim.wait(3000, function() return deliver_release ~= nil end, 5))
+    assert(leases[1]):dispose("lose channel before target completion acknowledgement")
+    helper.complete(function() return owner:wait_cleanup(5000) end)
+    assert(vim.wait(1000, function() return #failures > 0 end, 5))
+    assert.are.same(cleanup, owner:status().cleanup_error,
+      "the acknowledged target cleanup error was replaced by release uncertainty")
+    assert.are.same(cleanup, failures[1])
+    assert.are.equal(2, #failures, "target cleanup and release uncertainty each report once")
+    assert.are.equal(1, owner:status().reserved)
+    assert.is_true(poll(id, nil, 0).done)
+    assert.are.equal(2, #failures, "reading a cleanup snapshot repeated the diagnostic")
+  end)
+
   it("enforces the parent lifetime deadline without another poll from its owner", function()
     ---@type Neoagent.Error[]
     local diagnostics = {}
@@ -1046,6 +1074,36 @@ describe("retained process RPC", function()
       assert.are.equal(#publications, #failures)
     end)
   end
+
+  it("observes native cleanup when allocating worker shutdown supervision fails", function()
+    local invocations = require("neoagent.sandbox.invocation")
+    local new = invocations.new
+    invocations.new = function(connection, lease, on_cleanup, timeout_ms)
+      local invocation = new(connection, lease, on_cleanup, timeout_ms)
+      local begin_shutdown = invocation.begin_shutdown
+      function invocation:begin_shutdown()
+        local allocate = vim.uv.new_timer
+        vim.uv.new_timer = function() return nil end
+        local ok, err = pcall(begin_shutdown, self)
+        vim.uv.new_timer = allocate
+        if not ok then error(err, 0) end
+      end
+      return invocation
+    end
+    local checked, failure = pcall(function()
+      local admission = start("exit 0", nil, 1000)
+      admission.commit()
+      owner:close("finished")
+      assert(vim.wait(3000, function() return assert(leases[1]):is_released() end, 5))
+      local result = helper.complete(function() return owner:wait_cleanup(1000) end)
+      quarantined = not owner:status().cleanup_done
+      assert.is_true(owner:status().cleanup_done, "shutdown timer failure abandoned native cleanup observation")
+      assert.is_not_nil(result.error)
+      assert.is_true(helper.complete(function() return owner:wait_release(1000) end))
+    end)
+    invocations.new = new
+    if not checked then error(failure, 0) end
+  end)
 
   it("normalizes termination reasons before sending a retained control", function()
     local reason = "cancel\27[31m " .. string.rep("x", require("neoagent.rpc.protocol").MAX_REQUEST)

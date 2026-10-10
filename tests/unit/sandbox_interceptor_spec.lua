@@ -1367,6 +1367,64 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal(1, assert(value.details).exit_code)
   end)
 
+  for _, failing_timer in ipairs({ 1, 2 }) do
+    it("observes cancelled worker cleanup when supervision timer " .. failing_timer .. " cannot be allocated", function()
+      local root = temporary_root()
+      local lease, state = child()
+      local diagnostics = {}
+      ---@type Neoagent.AwaitCallbacks<Neoagent.WorkerResult>?
+      local finish
+      function lease:wait()
+        return async.await(function(done) finish = done end)
+      end
+      remote()
+      local invocations = require("neoagent.sandbox.invocation")
+      local new = invocations.new
+      invocations.new = function(connection, native, report, timeout_ms)
+        local invocation = new(connection, native, report, timeout_ms)
+        local deadline = invocation.deadline
+        local calls = 0
+        function invocation:deadline(milliseconds, reason, on_timeout)
+          -- The Tool operation has its own timeout callback. Fail one of
+          -- the two later cancellation/shutdown supervision allocations.
+          if not on_timeout then calls = calls + 1 end
+          local allocate = vim.uv.new_timer
+          if not on_timeout and calls == failing_timer then vim.uv.new_timer = function() return nil end end
+          local ok, err = pcall(deadline, self, milliseconds, reason, on_timeout)
+          vim.uv.new_timer = allocate
+          if not ok then error(err, 0) end
+        end
+        return invocation
+      end
+      local execute = interceptor(root, {
+        name = "test", start_worker = function() return lease end,
+      }):wrap(function(tool, arguments, ctx)
+        tool.execute(arguments, ctx)
+        error(util.error("cancelled", "caller stopped observing"), 0)
+      end)
+      local run = async.run(function()
+        return execute(restricted_tool(), { path = "completed.txt", content = "value" }, context(root))
+      end, { report = function(diagnostic) diagnostics[#diagnostics + 1] = diagnostic end })
+      local checked, check_err = pcall(function()
+        assert(vim.wait(1000, function() return run:is_done() end, 5))
+        assert(vim.wait(1000, function() return finish ~= nil end, 5),
+          "supervision failure abandoned cancelled worker cleanup")
+        assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
+        assert.are.equal(1, state.closed)
+        assert.are.equal(0, #diagnostics, "cleanup was reported before its native outcome")
+        assert(finish).resolve({ code = 0, signal = 0, stderr = "",
+          cleanup_error = util.error("process_cleanup", "Later native cleanup failed") })
+        assert(vim.wait(1000, function() return #diagnostics > 0 end, 5))
+        assert.are.equal(1, #diagnostics)
+        assert.matches("Later native cleanup failed", diagnostics[1].message, 1, true)
+      end)
+      invocations.new = new
+      if finish then finish.resolve({ code = 0, signal = 0, stderr = "" }) end
+      run:cancel()
+      assert.is_true(checked, tostring(check_err))
+    end)
+  end
+
   for _, cancelled in ipairs({ false, true }) do
     it("allows native finalization after RPC shutdown with cancellation=" .. tostring(cancelled), function()
       local root = temporary_root()

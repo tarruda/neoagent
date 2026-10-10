@@ -2130,7 +2130,7 @@ describe("neoagent sandbox platform adapters", function()
       code = 0, signal = 0,
       stdout = string.char(0, 0, 0, 1) .. "{", stderr = "",
     }).stage)
-    for _, stage in ipairs({ "state-missing", "state-read", "coordinator-missing", "setup-incomplete", "setup-launch-rights", "namespace-open" }) do
+    for _, stage in ipairs({ "state-missing", "state-read", "state-format", "coordinator-missing", "setup-incomplete", "setup-launch-rights", "namespace-open" }) do
       local missing = checked({
         code = 125,
         signal = 0,
@@ -2139,7 +2139,7 @@ describe("neoagent sandbox platform adapters", function()
       })
       assert.are.equal(stage, missing.stage)
       local message = assert(missing.message)
-      if stage == "namespace-open" or stage == "state-missing" or stage == "state-read" then
+      if stage == "namespace-open" or stage == "state-missing" or stage == "state-read" or stage == "state-format" then
         local hint = message:find("setup command", 1, true)
         assert.is_nil(hint)
       else
