@@ -29,6 +29,8 @@ describe("Windows native Tool RPC", function()
     return
   end
 
+  local custody_module = require("neoagent.sandbox.windows.custody")
+  local new_custody = custody_module.new
   ---@type string
   local root
   ---@type Neoagent.WorkerLease[]
@@ -41,6 +43,7 @@ describe("Windows native Tool RPC", function()
   end)
 
   after_each(function()
+    custody_module.new = new_custody
     for _, child in ipairs(children) do
       child:dispose("native RPC scenario teardown")
       wait(async.run(function()
@@ -147,50 +150,98 @@ describe("Windows native Tool RPC", function()
   end)
 
   it("cancels a command tree, reuses its connection, and releases the native lease", function()
+    ---@type Neoagent.WindowsSandboxCustody?
+    local custody
+    custody_module.new = function(directory, recover)
+      custody = new_custody(directory, recover)
+      return custody
+    end
     local connection, child, call = start()
-    local launched = wait(async.run(function()
-      return tool_client.invoke(connection, "shell", {
-        argv = { assert(vim.env.COMSPEC), "/d", "/s", "/c", "echo child-ready" }, timeout_ms = 10000,
-      }, call)
-    end))
-    assert.is_false(launched.isError, vim.inspect(launched))
-    assert.matches("child-ready", vim.inspect(launched), 1, true)
-    local ready, late = root .. "/ready", root .. "/late"
-    local program = root .. "/child.cmd"
-    assert(fs.write_all(
-      program,
-      table.concat({
-        "@echo off",
-        'echo started>"' .. ready .. '"',
-        "ping.exe -n 5 127.0.0.1 >nul",
-        'echo survived>"' .. late .. '"',
-        "",
-      }, "\r\n")
-    ))
+    custody_module.new = new_custody
+    local job = assert(assert(custody)._job)
+    local ffi = require("ffi")
+    local kernel = ffi.load("kernel32")
+    local accounting = ffi.new("NASandboxJobAccounting") --[[@as Neoagent.WindowsSandboxJobAccounting]]
+    local function active_processes()
+      assert(kernel.QueryInformationJobObject(assert(job.handle), 1, accounting, ffi.sizeof(accounting), nil) ~= 0)
+      return accounting.ActiveProcesses
+    end
+    assert.are.equal(1, active_processes(), "only the RPC worker should be running")
+    local fixture = vim.fs.joinpath(assert(vim.uv.cwd()), "tests", "fixtures", "rpc_cancel_tree.lua")
+    local gate, descendant_ready = root .. "/spawn-child", root .. "/child-ready"
+    local ready = false
     local request = connection:start_request("shell", {
-      argv = { assert(vim.env.COMSPEC), "/d", "/s", "/c", 'call "' .. program .. '"' },
+      argv = {
+        assert(vim.env.NEOAGENT_NVIM),
+        "--headless",
+        "--noplugin",
+        "-u",
+        "NONE",
+        "-i",
+        "NONE",
+        "-n",
+        "-l",
+        fixture,
+        assert(vim.env.NEOAGENT_NVIM),
+        gate,
+        descendant_ready,
+      },
       timeout_ms = 30000,
-    }, { on_event = function() end })
-    assert(vim.wait(60000, function()
-      return vim.uv.fs_stat(ready) ~= nil
-    end, 10))
+    }, {
+      on_event = function(message)
+        if message.name == codec.events.update then
+          local content = assert(message.value.content[1]).text
+          ready = content:find("PARENT_READY", 1, true) ~= nil
+        end
+      end,
+    })
+    -- RPC progress proves that the parent is attached to its request Job.
+    -- Only then let it create a descendant, which must inherit that ownership.
+    assert(
+      vim.wait(60000, function()
+        return ready or request._run:is_done()
+      end, 10),
+      "command parent did not announce readiness"
+    )
+    assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
+    assert.are.equal(2, active_processes(), "worker and command parent must be running")
+    assert(fs.write_all(gate, "start"))
+    assert(
+      vim.wait(60000, function()
+        return vim.uv.fs_stat(descendant_ready) ~= nil or request._run:is_done()
+      end, 10),
+      "command descendant did not announce readiness"
+    )
+    assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
+    assert.are.equal(3, active_processes(), "worker, command, and descendant must all be running")
     request:cancel()
     wait(async.run(function()
       connection:wait_cancelled()
-      local value =
-        tool_client.invoke(connection, "write_file", { path = "after.txt", resolved_path = root .. "/after.txt", content = "reused" }, call)
+      -- Check before closing the sandbox worker: its outer Job must not hide
+      -- a failure to terminate the request's own process tree.
+      assert(
+        vim.wait(5000, function()
+          return active_processes() == 1
+        end, 10),
+        "cancelled command or descendant remains in the sandbox Job"
+      )
+      local value = tool_client.invoke(
+        connection,
+        "write_file",
+        { path = "after.txt", resolved_path = root .. "/after.txt", content = "reused" },
+        call
+      )
       assert.is_nil(value.isError)
       connection:close()
       assert.are.equal(0, child:wait().code)
     end))
-    assert.is_false((vim.wait(5500, function()
-      return vim.uv.fs_stat(late) ~= nil
-    end, 10)))
     assert.are.equal("reused", fs.read(root .. "/after.txt"))
     -- A new invocation must acquire the restored ACL lease after shutdown.
     local next_connection, next_child, next_call = start()
     wait(async.run(function()
-      tool_client.invoke(next_connection, "write_file",
+      tool_client.invoke(
+        next_connection,
+        "write_file",
         { path = "after.txt", resolved_path = root .. "/after.txt", content = "new lease" },
         next_call
       )
