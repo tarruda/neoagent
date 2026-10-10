@@ -33,6 +33,7 @@ end
 ---@field timer? uv.uv_timer_t
 ---@field disposed boolean
 ---@field opened boolean
+---@field completed? boolean
 ---@field report fun(error?: Neoagent.Error)
 ---@field cleanup? Neoagent.Run<Neoagent.WorkerResult, unknown>
 local Invocation = {}
@@ -122,6 +123,10 @@ end
 
 ---@param err? Neoagent.Error
 function Invocation:complete(err)
+  if self.completed then
+    return
+  end
+  self.completed = true
   self:stop_timer()
   pending_invocations[self] = nil
   self.report(err)

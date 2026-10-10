@@ -250,7 +250,7 @@ describe("retained process RPC", function()
     controller:dispose("admission revoked")
     local result = helper.complete(function() return controller:start() end)
     assert.are.equal("process_disposed", assert(result.error).code)
-    assert.is_true(helper.complete(function() return controller:wait() end))
+    assert.is_true(helper.complete(function() return controller:wait_cleanup() end))
     assert.is_true(controller:state().released)
     local controlled = helper.complete(function() return controller:control({ kind = "write", data = "late" }) end)
     assert.are.equal("process_terminal", assert(controlled.error).code)
@@ -679,7 +679,7 @@ describe("retained process RPC", function()
     helper.success(function()
       assert(controller):control({ kind = "write", data = "preserved\n" })
       assert(controller):control({ kind = "close_stdin" })
-      return assert(controller):wait()
+      return assert(controller):wait_cleanup()
     end)
     result = helper.complete(function()
       assert(async.current()):cancel()
@@ -978,11 +978,44 @@ describe("retained process RPC", function()
     assert.matches("Worker staging cleanup failed", failures[1].message, 1, true)
   end)
 
+  for _, fails in ipairs({ false, true }) do
+    it("waits for worker cleanup observation with failure=" .. tostring(fails), function()
+      hold_worker_wait, fail_worker_cleanup = true, fails
+      local admission = start("exit 0", nil, 1000)
+      assert.is_true(admission.result.done)
+      assert.is_false(admission.result.cleanup_done)
+      admission.commit()
+      owner:close("target finished")
+      assert(vim.wait(2000, function() return finish_worker_wait ~= nil end, 5))
+      assert.is_false(owner:status().cleanup_done)
+      local observer = async.run(function() return owner:wait_cleanup(3000) end)
+      pending[#pending + 1] = observer
+      assert.is_false(observer:is_done(), "cleanup succeeded before its worker outcome was known")
+      hold_worker_wait = false
+      assert(finish_worker_wait).resolve(true)
+      finish_worker_wait = nil
+      local result = helper.wait(observer)
+      assert.is_true(owner:status().cleanup_done)
+      if fails then
+        assert.matches("Worker staging cleanup failed", assert(result.error).message, 1, true)
+      else
+        assert.is_true(result)
+      end
+    end)
+  end
+
   for _, target_failed in ipairs({ false, true }) do
     it("preserves relay cleanup causes " .. (target_failed and "alongside target cleanup" or "without target cleanup"), function()
       local util = require("neoagent.util")
       local failures = {}
-      owner = sessions.new({ capacity = 1 }, function(err) failures[#failures + 1] = err end, factory)
+      local publications = {}
+      owner = sessions.new({ capacity = 1 }, function(err) failures[#failures + 1] = err end,
+        function(spec, maximum, on_cleanup, on_released)
+          return factory(spec, maximum, function(err)
+            publications[#publications + 1] = err
+            on_cleanup(err)
+          end, on_released)
+        end)
       fail_worker_cleanup, fail_staging_cleanup, quarantined = true, true, true
       if target_failed then
         intercept_reply = function(message)
@@ -1005,6 +1038,12 @@ describe("retained process RPC", function()
       assert.are.same(target_failed and util.error("process_cleanup", "Target cleanup failed") or nil, rawget(cleanup, "target_cleanup_error"))
       assert(vim.wait(1000, function() return #failures >= (target_failed and 2 or 1) end, 5), "later cleanup diagnostic was lost")
       assert.are.same(cleanup, failures[#failures])
+      local observed = helper.complete(function() return owner:wait_cleanup(1000) end)
+      assert.is_not_nil(observed.error)
+      assert.is_true(owner:status().cleanup_done)
+      assert.is_false(owner:status().released)
+      assert.are.equal(target_failed and 2 or 1, #publications)
+      assert.are.equal(#publications, #failures)
     end)
   end
 

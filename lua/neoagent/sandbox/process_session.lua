@@ -52,10 +52,14 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   local release_published = false
   -- Collection snapshots describe the target. Connection notifications
   -- acknowledge completion/release independently of request delivery.
-  ---@type {received: boolean, released: boolean, pending?: Neoagent.ProcessCollection}
+  ---@type {received: boolean, released: boolean, pending?: Neoagent.ProcessTargetCollection}
   local completion = { received = false, released = false }
   ---@type {requested: boolean, phase: "open"|"closing"|"settled", forced: boolean}
   local shutdown = { requested = false, phase = "open", forced = false }
+  -- Closing the logical invocation can detach native cleanup. Join both
+  -- outcomes before publishing the worker's one cleanup transition.
+  ---@type {error?: Neoagent.Error}?
+  local worker_observation, close_observation
   ---@type "new"|"starting"|"finished"
   local startup = "new"
   local stdin_closed, target_requested = false, false
@@ -66,15 +70,6 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   local function report_cleanup(err)
     if err then
       pcall(on_cleanup, util.copy(err))
-    end
-  end
-  local function worker_cleanup(err)
-    if err then
-      -- Worker cleanup already includes native and staging failures. Target
-      -- cleanup is independent; retain it without replacing that cause chain.
-      cleanup_error = util.copy(err)
-      cleanup_error.target_cleanup_error = util.copy(target.cleanup_error)
-      report_cleanup(cleanup_error)
     end
   end
   local notification = async.notification()
@@ -108,6 +103,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   local function state()
     return {
       done = completed(),
+      cleanup_done = shutdown.phase == "settled",
       released = released(),
       release_error = not released() and util.copy(release_error) or nil,
       stdin_writable = not shutdown.requested and not completion.received and not target.done and target.stdin_writable,
@@ -133,12 +129,24 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       error = collection.error,
       cleanup_error = collection.cleanup_error,
     }
-    report_cleanup(target.cleanup_error)
   end
-  local function settle_worker(owner, err)
-    worker_cleanup(err)
+  local function finish_worker()
+    if shutdown.phase == "settled" or not worker_observation or not close_observation then
+      return
+    end
+    local err = worker_observation.error or close_observation.error
+    if err then
+      -- Native and staging failures already share the worker's cause chain.
+      -- Add the independent target failure without replacing that structure.
+      cleanup_error = util.copy(err)
+      cleanup_error.target_cleanup_error = util.copy(target.cleanup_error)
+    end
     shutdown.phase = "settled"
+    if err then
+      report_cleanup(cleanup_error)
+    end
     notify()
+    local owner = assert(invocation)
     if not owner:is_released() then
       -- The lease retains native ownership beyond bounded cleanup. Its
       -- release observation belongs here even after the target is complete.
@@ -152,6 +160,12 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
           notify()
         end,
       })
+    end
+  end
+  local function observe_worker_cleanup(err)
+    if not worker_observation then
+      worker_observation = { error = util.copy(err) }
+      finish_worker()
     end
   end
   local function close_worker_when_ready()
@@ -176,7 +190,8 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
     end, {
       error_kind = "protocol",
       on_done = function(result)
-        settle_worker(owner, result.error)
+        close_observation = { error = result.error }
+        finish_worker()
       end,
     })
   end
@@ -187,6 +202,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       local terminal = completion.pending
       completion.pending = nil
       remember(terminal)
+      report_cleanup(target.cleanup_error)
     end
     close_worker_when_ready()
     notify()
@@ -447,7 +463,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
         if spec.timeout_ms then
           lifetime_timer = assert(vim.uv.new_timer())
         end
-        invocation = worker.start(launch, worker_cleanup)
+        invocation = worker.start(launch, observe_worker_cleanup)
         if shutdown.requested then
           error(async.cancelled_error, 0)
         end
@@ -522,8 +538,8 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       return true
     end,
     ---@async
-    wait = function()
-      while not completed() do
+    wait_cleanup = function()
+      while shutdown.phase ~= "settled" do
         changed()
       end
       return true

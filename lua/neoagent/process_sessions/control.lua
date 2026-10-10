@@ -11,12 +11,16 @@ local M = {}
 ---@field cleanup_error? Neoagent.Error
 
 ---@class Neoagent.ProcessControllerState: Neoagent.ProcessTargetState
+---@field cleanup_done boolean Target and controller cleanup outcomes are known, independently of native release.
 ---@field released boolean
 ---@field release_error? Neoagent.Error Release cannot be confirmed; capacity must remain quarantined.
 
----@class Neoagent.ProcessCollection: Neoagent.ProcessControllerState
----@field events Neoagent.SubprocessOutputEvent[] Raw bytes in callback order.
+---@class Neoagent.ProcessTargetCollection: Neoagent.ProcessTargetState
+---@field released boolean
+---@field events Neoagent.SubprocessOutputEvent[]
 ---@field dropped_bytes integer
+
+---@class Neoagent.ProcessCollection: Neoagent.ProcessControllerState, Neoagent.ProcessTargetCollection
 
 ---@class Neoagent.ProcessControl
 ---@field kind "write"|"close_stdin"|"resize"|"interrupt"|"terminate"
@@ -33,7 +37,7 @@ local M = {}
 ---@field state fun(self: Neoagent.ProcessController): Neoagent.ProcessControllerState
 ---@field collect async fun(self: Neoagent.ProcessController, wait_ms: integer, until_exit?: boolean): Neoagent.ProcessCollection
 ---@field control async fun(self: Neoagent.ProcessController, command: Neoagent.ProcessControl): true
----@field wait async fun(self: Neoagent.ProcessController): true
+---@field wait_cleanup async fun(self: Neoagent.ProcessController): true
 ---@field dispose fun(self: Neoagent.ProcessController, reason: string)
 
 ---@alias Neoagent.ProcessControllerFactory fun(spec: Neoagent.SubprocessSpec, output_bytes: integer, on_cleanup: fun(error: Neoagent.Error), on_released?: fun()): Neoagent.ProcessController

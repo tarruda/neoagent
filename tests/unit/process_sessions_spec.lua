@@ -23,7 +23,7 @@ describe("retained process sessions", function()
     -- leak a child outside the manager during the failing-test run.
     for _, controller in ipairs(constructed) do controller:dispose("test finished") end
     for _, controller in ipairs(constructed) do
-      assert.is_true(helper.complete(function() return controller:wait() end))
+      assert.is_true(helper.complete(function() return controller:wait_cleanup() end))
       assert(vim.wait(4000, function() return controller:state().released end, 5))
     end
     helper.complete(function()
@@ -265,7 +265,7 @@ describe("retained process sessions", function()
     helper.success(function()
       assert(controller):control({ kind = "write", data = "preserved\n" })
       assert(controller):control({ kind = "close_stdin" })
-      return assert(controller):wait()
+      return assert(controller):wait_cleanup()
     end)
     result = helper.complete(function()
       assert(async.current()):cancel()
@@ -505,7 +505,7 @@ describe("retained process sessions", function()
           record.native = true
           if record.published then notify_release() end
         end)
-        local state, collect, wait = controller.state, controller.collect, controller.wait
+        local state, collect, wait = controller.state, controller.collect, controller.wait_cleanup
         function controller:state()
           local value = state(self)
           value.released = value.released and record.published
@@ -519,7 +519,7 @@ describe("retained process sessions", function()
           end
           return value
         end
-        function controller:wait()
+        function controller:wait_cleanup()
           wait(self)
           -- Observe after the manager's completion callback has reconsidered
           -- retention, while release or interaction is still outstanding.
@@ -581,8 +581,8 @@ describe("retained process sessions", function()
       owner = sessions.new({ capacity = 3, completed = 1 }, nil, function(spec, maximum, cleanup, released)
         local controller = require("neoagent.process_sessions.local").new(spec, maximum, cleanup, released)
         first = first or controller
-        local wait = controller.wait
-        function controller:wait()
+        local wait = controller.wait_cleanup
+        function controller:wait_cleanup()
           wait(self)
           if hold then async.await(function(done) observations[#observations + 1] = done end) end
           return true

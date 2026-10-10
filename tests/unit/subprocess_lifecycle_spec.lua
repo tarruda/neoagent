@@ -298,6 +298,28 @@ describe("subprocess ownership and terminal races", function()
     assert.are.equal(1, disposals)
   end)
 
+  it("retains the native cleanup result after a delayed failed session startup", function()
+    limits.REAP_MS = 2000
+    attach_fails = true
+    local beginning = vim.uv.hrtime()
+    delivery_delay = function(now)
+      return now - beginning
+    end
+    local reported
+    local controller = require("neoagent.process_sessions.local").new(helper.spec("unused"), 64, function(err)
+      reported = err
+    end)
+    assert.are.equal("process_supervision", helper.failure(controller.start).code)
+    assert.is_true(helper.complete(function() return controller:wait_cleanup() end, 6000))
+    local failure = assert(controller:state().cleanup_error)
+    assert.are.equal("Process cleanup did not settle before its deadline", failure.message)
+    local cause = rawget(failure, "cause")
+    assert(type(cause) == "table")
+    assert.are.equal("process_supervision", cause.code)
+    assert.are.same(failure, reported)
+    assert.is_true(controller:state().released)
+  end)
+
   it("stops controls after native exit and preserves its later status", function()
     limits.REAP_MS = 250
     local handle = spawn(nil, helper.spec("unused", { timeout_ms = 10 }))

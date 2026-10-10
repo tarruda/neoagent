@@ -24,6 +24,7 @@ local M = {}
 ---@field committed boolean
 ---@field discarded boolean
 ---@field done boolean Target cleanup observation has finished.
+---@field cleanup_done boolean Target and controller cleanup observation has finished.
 ---@field release "pending"|"quarantined"|"released"
 ---@field release_error? Neoagent.Error Why release cannot be confirmed.
 ---@field cleanup_error? Neoagent.Error Independent cleanup observation failure.
@@ -34,6 +35,7 @@ local M = {}
 ---@field completed integer
 ---@field provisional integer
 ---@field quarantined integer
+---@field cleanup_done boolean
 ---@field released boolean
 ---@field reservations Neoagent.ProcessReservation[] Copied reservations, ordered by ID.
 ---@field cleanup_error? Neoagent.Error
@@ -60,7 +62,7 @@ local M = {}
 ---@field busy boolean
 ---@field complete_order? integer
 ---@field remove_cancel? fun()
----@field cleanup_reported? Neoagent.Error
+---@field dispose_attempted? boolean
 
 local function integer(value, minimum, maximum, label)
   if not validate.integer(value, minimum, maximum) then
@@ -102,20 +104,17 @@ function M.new(options, on_cleanup, default_factory)
     -- without returning a controller has not acquired native resources.
     return {
       done = not entry.constructing and (entry.started or entry.discarded),
+      cleanup_done = not entry.constructing and (entry.started or entry.discarded),
       released = not entry.constructing,
       stdin_writable = false,
       resize_supported = false,
     }
   end
 
-  ---@param entry Neoagent.ProcessSessionEntry
   ---@param err Neoagent.Error
-  local function record_cleanup(entry, err)
+  local function record_cleanup(err)
     cleanup_error = cleanup_error or util.copy(err)
-    if on_cleanup and not vim.deep_equal(entry.cleanup_reported, err) then
-      -- Target cleanup can finish before worker or staging cleanup. Report a
-      -- later distinct failure while suppressing repeated copies of one fact.
-      entry.cleanup_reported = util.copy(err)
+    if on_cleanup then
       local report, diagnostic = on_cleanup, util.copy(err)
       -- Native watchdogs can report from fast callbacks. Preserve the fact
       -- now, but keep editor-facing delivery on the loop and independent of
@@ -170,6 +169,7 @@ function M.new(options, on_cleanup, default_factory)
     ---@type Neoagent.ProcessReservation[]
     local reservations = {}
     local released = true
+    local cleanup_done = true
     for _, entry in pairs(entries) do
       local state = state(entry)
       if not state.released or not entry.committed and not entry.discarded then
@@ -183,12 +183,14 @@ function M.new(options, on_cleanup, default_factory)
           committed = entry.committed,
           discarded = entry.discarded,
           done = state.done,
+          cleanup_done = state.cleanup_done,
           release = state.released and "released" or uncertain and "quarantined" or "pending",
           release_error = util.copy(state.release_error),
           cleanup_error = util.copy(state.cleanup_error),
         }
       end
       released = released and state.released
+      cleanup_done = cleanup_done and state.cleanup_done
       if state.done and entry.committed then
         retained = retained + 1
       end
@@ -207,6 +209,7 @@ function M.new(options, on_cleanup, default_factory)
       quarantined = quarantined,
       reservations = reservations,
       released = released,
+      cleanup_done = cleanup_done,
       cleanup_error = util.copy(cleanup_error),
     }
   end
@@ -216,10 +219,11 @@ function M.new(options, on_cleanup, default_factory)
       entry.remove_cancel()
       entry.remove_cancel = nil
     end
-    if entry.controller then
+    if entry.controller and not entry.dispose_attempted then
+      entry.dispose_attempted = true
       local disposed, err = pcall(entry.controller.dispose, entry.controller, reason)
       if not disposed then
-        record_cleanup(entry, util.normalize_error(err, "process_cleanup"))
+        record_cleanup(util.normalize_error(err, "process_cleanup"))
       end
     end
     changed()
@@ -272,7 +276,7 @@ function M.new(options, on_cleanup, default_factory)
     local function ready()
       for _, entry in pairs(entries) do
         local state = state(entry)
-        if release and not state.released or not release and not state.done then
+        if release and not state.released or not release and not state.cleanup_done then
           return false
         end
       end
@@ -343,9 +347,7 @@ function M.new(options, on_cleanup, default_factory)
               -- The publication owner already holds this admission before
               -- placement or startup can yield. Only observations cross the
               -- producing Run's result-delivery boundary.
-              local controller = (default_factory or native.new)(spec, output_bytes, function(err)
-                record_cleanup(entry, err)
-              end, function()
+              local controller = (default_factory or native.new)(spec, output_bytes, record_cleanup, function()
                 -- Native release can arrive from a fast callback and can
                 -- make a previously completed record eligible for eviction.
                 util.schedule(changed)
@@ -364,7 +366,7 @@ function M.new(options, on_cleanup, default_factory)
           local controller = entry.controller
           if controller then
             async.run(function()
-              controller:wait()
+              controller:wait_cleanup()
             end, {
               on_done = changed,
             })

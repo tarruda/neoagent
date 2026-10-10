@@ -195,15 +195,20 @@ local function scope(on_settled, on_released)
       return wait(timeout_ms)
     end,
   },
-    wait
+    ---@async
+    function()
+      return wait()
+    end
 end
 
--- Internal notification for retained controllers; the public constructor
--- exposes only scopes, without a configurable supervision callback.
+-- Internal constructor also returns an observer of the handles' bounded
+-- cleanup, without imposing another deadline. The public entrypoint exposes
+-- only the scope.
 ---@param on_released? fun()
 ---@return Neoagent.SubprocessScope
+---@return async fun(): true
 function M.new(on_released)
-  return (scope(nil, on_released))
+  return scope(nil, on_released)
 end
 
 ---@async

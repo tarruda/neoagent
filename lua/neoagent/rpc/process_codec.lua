@@ -41,10 +41,22 @@ local function wire_error(err)
   })
 end
 
----@param result Neoagent.ProcessCollection
+---@param result Neoagent.ProcessTargetCollection
 ---@return table
 function M.encode(result)
-  local value = util.copy(result)
+  -- Only target facts cross this boundary. The parent owns its controller's
+  -- worker cleanup independently of the worker-local target observation.
+  local value = {
+    done = result.done,
+    released = result.released,
+    stdin_writable = result.stdin_writable,
+    resize_supported = result.resize_supported,
+    outcome = util.copy(result.outcome),
+    error = util.copy(result.error),
+    cleanup_error = util.copy(result.cleanup_error),
+    events = util.copy(result.events),
+    dropped_bytes = result.dropped_bytes,
+  }
   if value.error then
     value.error = wire_error(value.error)
   end
@@ -56,7 +68,7 @@ end
 
 ---@param value unknown
 ---@param maximum integer
----@return Neoagent.ProcessCollection
+---@return Neoagent.ProcessTargetCollection
 function M.collection(value, maximum)
   object(value, {
     done = true,

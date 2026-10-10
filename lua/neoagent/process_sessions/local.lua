@@ -9,7 +9,7 @@ local M = {}
 ---@param on_released? fun()
 ---@return Neoagent.ProcessController
 function M.new(spec, output_bytes, on_cleanup, on_released)
-  local scope = require("neoagent.subprocess.scope").new(on_released)
+  local scope, wait_cleanup = require("neoagent.subprocess.scope").new(on_released)
   local buffer = require("neoagent.process_sessions.buffer").new(output_bytes)
   ---@type Neoagent.SubprocessHandle?
   local handle
@@ -22,6 +22,7 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
     local native = handle and handle:state()
     return {
       done = done,
+      cleanup_done = done,
       released = started and scope:is_released(),
       stdin_writable = native ~= nil and native.stdin_writable,
       resize_supported = native ~= nil and native.resize_supported,
@@ -52,11 +53,7 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
       -- This cleanup observer belongs to the controller, not to the caller
       -- waiting for admission, input, or output.
       async.run(function()
-        if handle then
-          handle:wait_cleanup()
-        else
-          scope:wait(validate.REAP_MS + 1000)
-        end
+        wait_cleanup()
       end, {
         on_done = function(result)
           if result.ok == false then
@@ -105,7 +102,7 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
       return handle:terminate(assert(command.reason))
     end,
     ---@async
-    wait = function()
+    wait_cleanup = function()
       while not done do
         changed()
       end

@@ -40,7 +40,7 @@ function M.new()
             controller = owner
             local started, err = pcall(owner.start, owner)
             async.run(function()
-              owner:wait()
+              owner:wait_cleanup()
               if not closed then
                 send_complete(codec.COMPLETE, codec.encode(owner:collect(0)))
                 completion_sent = true
