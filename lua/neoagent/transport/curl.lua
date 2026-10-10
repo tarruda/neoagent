@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
+local failures = require("neoagent.transport.failure")
 
 local M = {}
 
@@ -124,6 +125,7 @@ local function curl_error(code, stderr)
   ---@type Neoagent.HttpError
   local err = util.error("transport", message, detail)
   err.exit_code = code
+  err.code = assert(failures.classify(err)).code
   if detail ~= "" then
     err.stderr = detail
   end
@@ -255,9 +257,7 @@ function M.fetch(opts)
                 if result.code == 0 then
                   done.resolve(result)
                 else
-                  done.reject(
-                    util.error("transport", "curl exited with status " .. tostring(result.code), result.stderr)
-                  )
+                  done.reject(curl_error(result.code, result.stderr))
                 end
               end)
             end)
@@ -275,7 +275,12 @@ function M.fetch(opts)
       local headers, header_status, header_error = response_headers(header_path)
       pcall(vim.fn.delete, header_path)
       if not completed_ok then
-        error(completed, 0)
+        ---@type Neoagent.HttpError
+        local err = util.normalize_error(completed, "transport")
+        if headers and (header_status or next(headers) ~= nil) then
+          err.response = { status = header_status, headers = headers }
+        end
+        error(err, 0)
       end
       if not headers then
         error(util.error("transport", "Failed reading curl response headers", header_error), 0)
