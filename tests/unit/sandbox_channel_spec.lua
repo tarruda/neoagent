@@ -104,14 +104,14 @@ describe("sandbox channel failure ordering", function()
           return lease
         end,
       }
-      local interceptor = require("neoagent.sandbox.interceptor").new({
+      local interceptor = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
         platform = platform,
         profile = {
           id = "channel-order", filesystem = { default = "read", entries = { { path = root, access = "write" } } },
           network = "restricted", environment = { clear = true, inherit = {}, set = {} },
         },
         nvim = vim.env.NEOAGENT_NVIM,
-      })
+      }))
       local fake_model = require("tests.helpers.fake_model")
       local run = require("neoagent.agent_loop").run({
         model = fake_model.new({

@@ -159,7 +159,7 @@ describe("neoagent sandbox Tool RPC selection", function()
   ---@param profile_source? Neoagent.SandboxProfileSource<unknown>
   ---@return Neoagent.SandboxInterceptor<unknown>
   local function interceptor(root, platform, profile_source)
-    return require("neoagent.sandbox.interceptor").new({
+    return require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
       profile = profile_source or {
         id = "interceptor-test",
         filesystem = { default = "read", entries = { { path = root, access = "write" } } },
@@ -171,7 +171,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return { PATH = vim.env.PATH or "/bin" }
       end,
       nvim = vim.env.NEOAGENT_NVIM,
-    })
+    }))
   end
 
   for _, method in ipairs({ "grep", "find" }) do
@@ -210,6 +210,8 @@ describe("neoagent sandbox Tool RPC selection", function()
               server:receive(message)
             end)
             return {
+              is_released = function() return true end,
+              wait_release = function() return true end,
               write = function(_, bytes)
                 decoder:feed(bytes)
                 return true
@@ -414,6 +416,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           end)
           local result = { code = 0, signal = 0, stderr = "" }
           return {
+            is_released = function() return true end,
+            wait_release = function() return true end,
             write = function(_, bytes)
               decoder:feed(bytes)
               return true
@@ -936,7 +940,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       canonical_candidate = base_paths.canonical_candidate,
       realpath = function(value) return value end,
       stat = function() return nil end,
-      environment_key = function(value) return value:lower() end,
+      environment_key = function(value) return vim.fn.toupper(value) end,
       validate_component = base_paths.validate_component,
     }
     local configured = {
@@ -963,11 +967,16 @@ describe("neoagent sandbox Tool RPC selection", function()
       GITHUB_TOKEN = "inherited-token",
       OPENAI_API_KEY = "secret",
       USER_PASSWORD = "secret",
+      ["cloud.api-token"] = "secret",
+      ["ſECRET"] = "secret",
+      ["APı_TOKEN"] = "secret",
+      ["ProgramFiles(x86)"] = "C:\\Program Files (x86)",
+      ["=C:"] = "C:\\workspace",
     }
     local environment = {}
     local active_child = child()
     remote()
-    local selected = require("neoagent.sandbox.interceptor").new({
+    local selected = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
       profile = configured,
       paths = case_insensitive_paths,
       environ = function() return ambient end,
@@ -980,7 +989,7 @@ describe("neoagent sandbox Tool RPC selection", function()
           return active_child
         end,
       },
-    })
+    }))
     local value = wait(async.run(function()
       return selected:wrap()(require("neoagent.tools.read_file").new(), { path = "file" }, context(root))
     end))
@@ -996,6 +1005,11 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.is_nil(environment.Mixed)
     assert.is_nil(environment.OPENAI_API_KEY)
     assert.is_nil(environment.USER_PASSWORD)
+    assert.are.equal("C:\\Program Files (x86)", environment["ProgramFiles(x86)"])
+    assert.is_nil(environment["cloud.api-token"])
+    assert.is_nil(environment["ſECRET"])
+    assert.is_nil(environment["APı_TOKEN"])
+    assert.is_nil(environment["=C:"])
   end)
 
   it("resolves fixed compiled profiles only for registered restricted tools", function()
@@ -1085,6 +1099,31 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.is_true(assert(value.execution).sandbox.unavailable)
     assert.matches("invalid worker lease", value.content[1].text)
   end)
+
+  for _, missing in ipairs({ "is_released", "wait_release", "dispose", "wait" }) do
+    it("rejects a lease without " .. missing .. " and reports available cleanup through the Tool boundary", function()
+      local root = temporary_root()
+      local lease, state = child()
+      rawset(lease, missing, false)
+      local _, channel = remote()
+      local execute = interceptor(root, {
+        name = "test", start_worker = function() return lease end,
+      }):wrap()
+      local value = wait(async.run(function()
+        return execute(restricted_tool(), { path = "rejected.txt", content = "unused" }, context(root))
+      end))
+      assert.is_true(value.isError)
+      assert.matches("invalid worker lease", assert(value.content[1]).text, 1, true)
+      assert.are.equal(0, channel.attached)
+      assert.are.equal(0, channel.operations)
+      assert.are.equal(missing == "dispose" and 0 or 1, state.closed)
+      assert.are.equal(missing == "wait" and 0 or 1, state.waited)
+      if missing == "dispose" or missing == "wait" then
+        assert.is_true(assert(assert(value.execution).sandbox).cleanup_failed)
+        assert.matches("Worker lease cannot", assert(value.content[2]).text, 1, true)
+      end
+    end)
+  end
 
   it("reaps failed worker leases and classifies open and close failures", function()
     local root = temporary_root()
@@ -1504,6 +1543,8 @@ describe("neoagent sandbox Tool RPC selection", function()
             end
           end)
           return {
+            is_released = function() return true end,
+            wait_release = function() return true end,
             write = function(_, bytes) decoder:feed(bytes) return true end,
             close_stdin = function() return true end,
             terminate = function() end,
@@ -1589,6 +1630,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           end
         end)
         return {
+          is_released = function() return true end,
+          wait_release = function() return true end,
           write = function(_, bytes) decoder:feed(bytes) return true end,
           close_stdin = function() return true end,
           terminate = function() end,
@@ -1652,6 +1695,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           server:receive(message)
         end)
         return {
+          is_released = function() return true end,
+          wait_release = function() return true end,
           write = function(_, bytes)
             decoder:feed(bytes)
             return true
@@ -1737,6 +1782,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           })
           local decoder = protocol.decoder(function(message) server:receive(message) end)
           return {
+            is_released = function() return reaped end,
+            wait_release = function(self) self:wait() return true end,
             write = function(_, bytes) decoder:feed(bytes)
               return true end,
             close_stdin = function() return true end,

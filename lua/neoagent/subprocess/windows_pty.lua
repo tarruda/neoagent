@@ -99,7 +99,7 @@ function M.new(spec, env, callbacks)
   local console_work
   ---@type string?
   local console_bytes
-  local exited, disposed, drained, notified = false, false, false, false
+  local terminated, disposed, drained, notified = false, false, false, false
   ---@type "resize"|"close"|nil
   local operation
   ---@type {columns: integer, rows: integer}?
@@ -126,11 +126,11 @@ function M.new(spec, env, callbacks)
     end,
   })
   settled = function()
-    if disposed and tree and (exited or not tree.attached) then
+    if disposed and tree and (terminated or not tree.attached) then
       tree:close(true)
       tree = nil
     end
-    if console == nil and exited then
+    if console == nil and terminated then
       -- luv roots the completion callback until the work context is collected.
       -- Break its reference back to this owner once no console needs it.
       console_work = nil
@@ -198,14 +198,14 @@ function M.new(spec, env, callbacks)
     if tree and tree.attached then
       tree:terminate(9)
     else
-      exited = true
+      terminated = true
     end
     io.exited()
     io.dispose()
     close_console()
   end
   local function running()
-    if exited then
+    if terminated then
       return false
     end
     local active = assert(tree):running()
@@ -213,12 +213,15 @@ function M.new(spec, env, callbacks)
       error(validate.error("process_supervision", "Could not observe native PTY process state"), 0)
     end
     if not active then
+      -- The signalled process handle establishes termination independently
+      -- of status retrieval. A missing status must not retain native owners.
+      terminated = true
       local code = ffi.new("unsigned long[1]") --[[@as Neoagent.ConsoleNumbers]]
       if kernel.GetExitCodeProcess(assert(tree).process, code) == 0 then
-        error(validate.error("process_supervision", "Could not read native PTY exit status"), 0)
+        callbacks.failed("process_supervision", "Could not read native PTY exit status")
+      else
+        callbacks.exited(code[0], 0)
       end
-      exited = true
-      callbacks.exited(code[0], 0)
       io.exited()
       close_console()
     end

@@ -20,7 +20,7 @@ describe("Windows retained process sessions", function()
   for _, terminal in ipairs({ false, true }) do
     it("retains " .. (terminal and "ConPTY" or "pipe") .. " input and native ownership across handoff", function()
       local admission = helper.success(function()
-        return owner:prepare({
+        return helper.admit(owner, {
           argv = { "python", "-u", "-c", "import sys; print('READY', flush=True); print('VALUE=' + sys.stdin.readline(), flush=True)" },
           cwd = assert(vim.uv.cwd()), timeout_ms = 15000,
           stdio = terminal and { kind = "pty", columns = 80, rows = 24 } or { kind = "pipes", stdin = "open" },

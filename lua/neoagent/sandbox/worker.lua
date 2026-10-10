@@ -35,7 +35,12 @@ function M.environment(profile, source, paths)
     end
   end
   local function allowed_ambient(name)
-    local upper = name:upper()
+    -- Preserve native names such as ProgramFiles(x86). Entries containing
+    -- '=' (including Windows drive state) cannot be ordinary profile names.
+    if not name:match("^[^=%z]+$") then
+      return false
+    end
+    local upper = paths.environment_key(name):upper()
     if upper == "NVIM" or upper == "NVIM_LISTEN_ADDRESS" or SENSITIVE_ENVIRONMENT[upper] then
       return false
     end
@@ -83,17 +88,21 @@ end
 ---@field nvim? string|string[]
 ---@field cwd string
 ---@field environment table<string, string>
+---@field mode "tools"|"process"
 ---@field on_failure fun(error: Neoagent.Error)
+---@field on_event? fun(message: table)
 
 ---@param options Neoagent.SandboxWorkerLaunch
----@return Neoagent.RpcConnection, Neoagent.WorkerLease
-function M.start(options)
+---@param on_cleanup fun(error?: Neoagent.Error)
+---@return Neoagent.SandboxInvocation
+function M.start(options, on_cleanup)
   local prepared, launch = pcall(function()
     local worker_module = require("neoagent.rpc.worker")
     local worker = worker_module.worker_file()
     local nvim = worker_module.nvim_command(options.nvim)
     local env = util.copy(options.environment)
     env.NEOAGENT_WORKER_FILE = worker
+    env.NEOAGENT_WORKER_MODE = options.mode
     local required = worker_module.bootstrap_paths(worker, nvim)
     require("neoagent.sandbox.policy").require_read(options.profile, required, options.paths, "bootstrap")
     return { argv = worker_module.argv(nvim, worker), bootstrap_paths = required, env = env }
@@ -103,6 +112,7 @@ function M.start(options)
   end
   local connection = require("neoagent.rpc.connection").new({
     on_failure = options.on_failure,
+    on_event = options.on_event,
   })
   local started, lease = pcall(options.platform.start_worker, {
     argv = launch.argv,
@@ -123,20 +133,9 @@ function M.start(options)
   if not started then
     error(util.normalize_error(lease, "sandbox_unavailable"), 0)
   end
-  if
-    not (
-      type(lease) == "table"
-      and type(lease.write) == "function"
-      and type(lease.close_stdin) == "function"
-      and type(lease.terminate) == "function"
-      and type(lease.wait) == "function"
-      and type(lease.dispose) == "function"
-    )
-  then
-    error(util.error("sandbox_unavailable", "sandbox platform returned an invalid worker lease"), 0)
-  end
-  connection:attach(lease)
-  return connection, lease
+  -- Publish ownership before validating the adapter's result or awaiting
+  -- readiness. Rejected leases can already own native resources.
+  return require("neoagent.sandbox.invocation").new(connection, lease, on_cleanup)
 end
 
 return M

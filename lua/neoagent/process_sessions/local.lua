@@ -3,87 +3,21 @@ local util = require("neoagent.util")
 local validate = require("neoagent.subprocess.validate")
 local M = {}
 
----@class Neoagent.ProcessControllerState
----@field done boolean
----@field released boolean
----@field stdin_writable boolean
----@field resize_supported boolean
----@field outcome? Neoagent.SubprocessOutcome
----@field error? Neoagent.Error
----@field cleanup_error? Neoagent.Error
-
----@class Neoagent.ProcessCollection: Neoagent.ProcessControllerState
----@field events Neoagent.SubprocessOutputEvent[] Raw bytes in callback order.
----@field dropped_bytes integer
-
----@class Neoagent.ProcessControl
----@field kind "write"|"close_stdin"|"resize"|"interrupt"|"terminate"
----@field data? string
----@field columns? integer
----@field rows? integer
----@field reason? string
-
--- Both concrete controllers reserve ownership before start. A remote
--- controller acknowledges controls asynchronously without changing the
--- synchronous local subprocess API.
----@class Neoagent.ProcessController
----@field start async fun(self: Neoagent.ProcessController): true
----@field state fun(self: Neoagent.ProcessController): Neoagent.ProcessControllerState
----@field collect async fun(self: Neoagent.ProcessController, wait_ms: integer, until_exit?: boolean): Neoagent.ProcessCollection
----@field control async fun(self: Neoagent.ProcessController, command: Neoagent.ProcessControl): true
----@field wait async fun(self: Neoagent.ProcessController): true
----@field dispose fun(self: Neoagent.ProcessController, reason: string)
-
----@alias Neoagent.ProcessControllerFactory fun(spec: Neoagent.SubprocessSpec, output_bytes: integer, on_cleanup: fun(error: Neoagent.Error)): Neoagent.ProcessController
-
----@param command unknown
----@return Neoagent.ProcessControl
-function M.validate_control(command)
-  local fields = {
-    write = { kind = true, data = true },
-    close_stdin = { kind = true },
-    resize = { kind = true, columns = true, rows = true },
-    interrupt = { kind = true },
-    terminate = { kind = true, reason = true },
-  }
-  assert(type(command) == "table" and fields[command.kind], "invalid process control")
-  validate.fields(command, fields[command.kind], "Process control")
-  if command.kind == "write" then
-    assert(
-      type(command.data) == "string" and #command.data <= validate.WRITE_BYTES,
-      "process input exceeds 65536 bytes"
-    )
-  elseif command.kind == "resize" then
-    validate.dimensions(command.columns, command.rows)
-  elseif command.kind == "terminate" then
-    validate.reason(command.reason)
-  end
-  ---@cast command Neoagent.ProcessControl
-  return util.copy(command)
-end
-
 ---@param spec Neoagent.SubprocessSpec
 ---@param output_bytes integer
 ---@param on_cleanup? fun(error: Neoagent.Error)
+---@param on_released? fun()
 ---@return Neoagent.ProcessController
-function M.new(spec, output_bytes, on_cleanup)
-  local scope = require("neoagent.subprocess.scope").new()
+function M.new(spec, output_bytes, on_cleanup, on_released)
+  local scope = require("neoagent.subprocess.scope").new(on_released)
   local buffer = require("neoagent.process_sessions.buffer").new(output_bytes)
   ---@type Neoagent.SubprocessHandle?
   local handle
   ---@type Neoagent.Error?
   local failure, cleanup_error
   local started, done, disposed = false, false, false
-  ---@type table<Neoagent.AwaitCallbacks<true>, fun()>
-  local waiters = {}
-  local function notify()
-    local current = waiters
-    waiters = {}
-    for waiter, cleanup in pairs(current) do
-      cleanup()
-      waiter.resolve(true)
-    end
-  end
+  local notification = async.notification()
+  local notify, changed = notification.notify, notification.wait
   local function state()
     local native = handle and handle:state()
     return {
@@ -95,29 +29,6 @@ function M.new(spec, output_bytes, on_cleanup)
       error = util.copy(failure or native and native.failure),
       cleanup_error = util.copy(cleanup_error),
     }
-  end
-  ---@async
-  local function changed(milliseconds)
-    return async.await(function(waiter)
-      local timer
-      local function cleanup()
-        waiters[waiter] = nil
-        if timer and not timer:is_closing() then
-          timer:stop()
-          timer:close()
-        end
-      end
-      if milliseconds then
-        timer = assert(vim.uv.new_timer())
-        vim.uv.update_time()
-        timer:start(milliseconds, 0, function()
-          cleanup()
-          waiter.resolve(true)
-        end)
-      end
-      waiters[waiter] = cleanup
-      return cleanup
-    end)
   end
   return {
     start = function()
@@ -179,7 +90,6 @@ function M.new(spec, output_bytes, on_cleanup)
       return vim.tbl_extend("force", result, { events = events, dropped_bytes = dropped })
     end,
     control = function(_, command)
-      M.validate_control(command)
       if disposed or not handle then
         error(validate.error("process_disposed", "Process controller is unavailable"), 0)
       end

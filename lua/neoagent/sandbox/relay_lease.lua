@@ -297,13 +297,14 @@ end
 ---@async
 ---@return true
 function Relay:wait_release()
-  self:wait()
-  assert(self._base):wait_release()
+  local result = self:wait()
   if not self._cleanup_released then
-    -- Failed platform cleanup has no confirmed release. Keep capacity
-    -- quarantined; cancelling this observer does not abandon its owner.
-    return async.await(function() end)
+    -- Staging removal has no retry owner. Report its permanent failure so
+    -- capacity can be classified as quarantined instead of waiting forever.
+    -- The base lease independently retains any outstanding native resources.
+    error(assert(result.cleanup_error), 0)
   end
+  assert(self._base):wait_release()
   return true
 end
 

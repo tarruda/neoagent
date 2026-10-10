@@ -1,7 +1,4 @@
 local async = require("neoagent.async")
-local invocation_module = require("neoagent.sandbox.invocation")
-local path_module = require("neoagent.sandbox.path")
-local profile_module = require("neoagent.sandbox.profile")
 local result = require("neoagent.sandbox.result")
 local common = require("neoagent.tools.common")
 local util = require("neoagent.util")
@@ -10,24 +7,8 @@ local M = {}
 
 local FILESYSTEM_DENIALS = { EACCES = true, EPERM = true, EROFS = true }
 
----@class Neoagent.SandboxInterceptorOptions<C>
----@field profile Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>
----@field platform Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
----@field paths? Neoagent.SandboxPaths
----@field fs? Neoagent.SandboxFilesystemService
----@field environ? fun(): table<string, string>
----@field nvim? string|string[]
----@field capabilities? Neoagent.SandboxCapabilities
----@field start_worker? fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease
-
 ---@class Neoagent.SandboxInterceptor<C>
----@field _profile_source Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>
----@field _configured_profile? Neoagent.SandboxProfile
----@field _platform Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
----@field _paths Neoagent.SandboxPaths
----@field _environ fun(): table<string, string>
----@field _services Neoagent.SandboxExecutionServices
----@field _nvim? string|string[]
+---@field _placement Neoagent.SandboxPlacement<Neoagent.SandboxContext<C>>
 local Interceptor = {}
 Interceptor.__index = Interceptor
 
@@ -111,16 +92,7 @@ end
 ---@param ctx Neoagent.ToolContext<unknown>
 ---@return Neoagent.SandboxProfile
 local function resolve_profile(self, ctx)
-  local profile
-  if self._configured_profile then
-    profile = util.copy(self._configured_profile)
-  else
-    profile = profile_module.resolve(self._profile_source, ctx, { paths = self._paths })
-  end
-  if self._platform.compile then
-    profile = self._platform.compile(profile, ctx, self._services)
-  end
-  return profile
+  return self._placement.resolve(ctx)
 end
 
 ---@param err Neoagent.Error
@@ -177,35 +149,53 @@ local function sandbox_error(err, profile, platform, ran_restricted, evidence)
 end
 
 ---@async
+---@generic R, E
 ---@param self Neoagent.SandboxInterceptor<unknown>
 ---@param profile Neoagent.SandboxProfile
 ---@param call Neoagent.ToolOperationCall
+---@param owner Neoagent.Run<R, E>
 ---@return Neoagent.SandboxInvocation
-local function create_worker(self, profile, call)
+local function create_worker(self, profile, call, owner)
+  ---@type Neoagent.SandboxInvocation?
   local invocation
   local worker = require("neoagent.sandbox.worker")
-  local prepared, environment = pcall(function()
-    return worker.environment(profile, self._environ(), self._paths)
-  end)
+  local prepared, environment = pcall(self._placement.environment, profile)
   if not prepared then
     error(util.normalize_error(environment, "worker_start"), 0)
   end
-  local connection, lease = worker.start({
-    profile = profile,
-    platform = self._platform,
-    paths = self._paths,
-    services = self._services,
-    nvim = self._nvim,
-    cwd = call.workspace.cwd,
-    environment = environment,
-    on_failure = function()
-      if invocation then
-        invocation:dispose("restricted Tool worker channel failed")
+  local release = owner:_retain_diagnostics()
+  local function report(err)
+    if err then
+      local message = err.message
+      if err.detail then
+        message = message .. ": " .. util.safe_message(err.detail)
       end
-    end,
-  })
-  invocation = invocation_module.new(connection, lease)
-  return invocation
+      owner:_diagnose("dispose", message)
+    end
+    release()
+  end
+  local started, failure = pcall(function()
+    invocation = worker.start({
+      profile = profile,
+      platform = self._placement.platform,
+      paths = self._placement.paths,
+      services = self._placement.services,
+      nvim = self._placement.nvim,
+      cwd = call.workspace.cwd,
+      environment = environment,
+      mode = "tools",
+      on_failure = function()
+        if invocation then
+          invocation:dispose("restricted Tool worker channel failed")
+        end
+      end,
+    }, report)
+  end)
+  if not started then
+    release()
+    error(failure, 0)
+  end
+  return assert(invocation)
 end
 
 ---@param next_execute? Neoagent.ToolExecutor<C>
@@ -222,7 +212,7 @@ function Interceptor:wrap(next_execute)
       return result.sandbox("Restricted execution is unavailable for this Tool", {
         unavailable = true,
         kind = "unsupported_tool",
-        backend = self._platform.name,
+        backend = self._placement.platform.name,
       })
     end
     local profile_ok, profile = pcall(resolve_profile, self, ctx)
@@ -231,7 +221,7 @@ function Interceptor:wrap(next_execute)
       return result.sandbox(err.message, {
         unavailable = true,
         kind = err.kind,
-        backend = self._platform.name,
+        backend = self._placement.platform.name,
       })
     end
     local call_ok, call = pcall(common.call, ctx)
@@ -240,14 +230,14 @@ function Interceptor:wrap(next_execute)
       return result.sandbox(err.message, {
         unavailable = true,
         kind = err.kind,
-        backend = self._platform.name,
+        backend = self._placement.platform.name,
         profile = profile.id,
       })
     end
     local policy = require("neoagent.sandbox.tool_policy").new({
       profile = profile,
-      paths = self._paths,
-      platform = self._platform.name,
+      paths = self._placement.paths,
+      platform = self._placement.platform.name,
     })
     ---@type Neoagent.SandboxInvocation?
     local invocation
@@ -261,7 +251,7 @@ function Interceptor:wrap(next_execute)
       local read_only, timeout_ms
       request_value, read_only, timeout_ms = policy:authorize(method, request_value, operation_call)
       if not invocation then
-        invocation = create_worker(self, profile, call)
+        invocation = create_worker(self, profile, call, async.current() or ctx.run)
         invocation:open(require("neoagent.rpc.codec").encode_context(call, { denial_keywords = DENIAL_KEYWORDS }))
       end
       ran_restricted = true
@@ -325,7 +315,7 @@ function Interceptor:wrap(next_execute)
         error(execution_err, 0)
       end
       if intercepted then
-        return sandbox_error(execution_err, profile, self._platform.name)
+        return sandbox_error(execution_err, profile, self._placement.platform.name)
       end
       error(execution_err, 0)
     end
@@ -335,10 +325,10 @@ function Interceptor:wrap(next_execute)
     end
     local cleanup_error = invocation:close(execution_err ~= nil)
     if execution_err then
-      value = sandbox_error(execution_err, profile, self._platform.name, ran_restricted, policy_evidence)
+      value = sandbox_error(execution_err, profile, self._placement.platform.name, ran_restricted, policy_evidence)
     end
     ---@cast value Neoagent.ToolResult
-    local operation_denied = denied_result(value, self._platform.name, policy_evidence)
+    local operation_denied = denied_result(value, self._placement.platform.name, policy_evidence)
     if cleanup_error then
       local unobserved = cleanup_error.kind == "cancelled"
       local message = cleanup_error.message
@@ -346,7 +336,7 @@ function Interceptor:wrap(next_execute)
         message = message .. ": " .. bounded(cleanup_error.detail)
       end
       value = result.cleanup(value, message, {
-        backend = self._platform.name,
+        backend = self._placement.platform.name,
         profile = profile.id,
         cleanup_kind = cleanup_error.kind,
         ran_restricted = ran_restricted,
@@ -358,7 +348,7 @@ function Interceptor:wrap(next_execute)
     if operation_denied then
       return result.append(value, result.SANDBOX_FAILURE, {
         ran_restricted = ran_restricted,
-        backend = self._platform.name,
+        backend = self._placement.platform.name,
         profile = profile.id,
       })
     end
@@ -367,35 +357,11 @@ function Interceptor:wrap(next_execute)
 end
 
 ---@generic C
----@param opts Neoagent.SandboxInterceptorOptions<C>
+---@param placement Neoagent.SandboxPlacement<Neoagent.SandboxContext<C>>
 ---@return Neoagent.SandboxInterceptor<C>
-function M.new(opts)
-  opts = opts or {}
-  assert(type(opts) == "table", "sandbox interceptor options must be a table")
-  assert(type(opts.profile) == "table" or type(opts.profile) == "function", "sandbox profile is required")
-  assert(
-    type(opts.platform) == "table" and type(opts.platform.start_worker) == "function",
-    "sandbox platform must start workers"
-  )
-  local paths = opts.paths or opts.platform.paths or path_module.posix
-  local configured
-  if type(opts.profile) == "table" then
-    configured = profile_module.validate(opts.profile, { paths = paths })
-  end
-  local fs = opts.fs or require("neoagent.fs")
+function M.new(placement)
   return setmetatable({
-    _profile_source = opts.profile,
-    _configured_profile = configured,
-    _platform = opts.platform,
-    _paths = paths,
-    _environ = opts.environ or vim.fn.environ,
-    _nvim = opts.nvim,
-    _services = {
-      fs = fs,
-      nvim = opts.nvim,
-      capabilities = util.copy(opts.capabilities or {}),
-      start_worker = opts.start_worker,
-    },
+    _placement = placement,
   }, Interceptor)
 end
 

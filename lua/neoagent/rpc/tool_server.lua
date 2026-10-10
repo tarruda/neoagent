@@ -57,6 +57,8 @@ function M.new(dependencies, dispatch)
   local execute = dispatch or dispatch_default
   return {
     error_kind = "tool",
+    max_pending_events = 0,
+    events = function() end,
     open = function(value)
       context = codec.decode_context(value)
     end,

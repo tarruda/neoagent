@@ -149,6 +149,28 @@ describe("neoagent Windows sandbox", function()
     assert.matches("value", assert(fs.read(unicode)))
   end)
 
+  it("passes native environment names through sandbox admission", function()
+    local selected = options()
+    selected.env = vim.tbl_extend("force", environment, {
+      ["ProgramFiles(x86)"] = "native-value",
+      ["éVAR"] = "unicode-value",
+    })
+    local value = run({ "cmd.exe", "/d", "/s", "/c", "echo %ProgramFiles(x86)% %ÉVAR%" }, selected)
+    assert.are.equal(0, value.code, value.stderr)
+    assert.are.equal("native-value unicode-value", vim.trim(value.stdout))
+  end)
+
+  it("rejects native environment aliases before launching the target", function()
+    local selected = options()
+    selected.env = vim.tbl_extend("force", environment, {
+      ["ÉVAR"] = "first",
+      ["éVAR"] = "second",
+    })
+    local completed, err = pcall(run, { "cmd.exe", "/d", "/s", "/c", "echo unexpected" }, selected)
+    assert.is_false(completed)
+    assert.matches("specification%-environment", tostring(err))
+  end)
+
   it("accepts canonical cmd paths with single and split command tails", function()
     local executable = vim.fn.exepath("cmd.exe"):gsub("\\", "/")
     assert.is_not.equal("", executable)
@@ -171,12 +193,12 @@ describe("neoagent Windows sandbox", function()
       TMP = worker_temp,
       TMPDIR = worker_temp,
     })
-    local execute = require("neoagent.sandbox.interceptor").new({
+    local execute = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
       platform = windows,
       profile = active,
       capabilities = assert(status.capabilities),
       nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath,
-    }):wrap()
+    })):wrap()
     local context = {
       workspace = Workspace.new({ root = root, cwd = root }),
       agent = "Windows sandbox",

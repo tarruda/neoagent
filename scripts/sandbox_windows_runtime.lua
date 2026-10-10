@@ -358,6 +358,7 @@ BOOL __stdcall FlushFileBuffers(HANDLE);
 BOOL __stdcall GetFileSizeEx(HANDLE, LONGLONG *);
 BOOL __stdcall MoveFileExW(const WCHAR *, const WCHAR *, DWORD);
 int __stdcall MultiByteToWideChar(UINT, DWORD, const char *, int, WCHAR *, int);
+int __stdcall CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
 int __stdcall WideCharToMultiByte(UINT, DWORD, const WCHAR *, int,
   char *, int, const char *, BOOL *);
 
@@ -984,6 +985,28 @@ local function wide(value)
   end
   buffer[length] = 0
   return buffer
+end
+
+-- Native environment comparison is case-insensitive Unicode ordering. Use
+-- the same comparison for duplicate admission and the process environment.
+---@param environment table<string, string>
+---@return string[]
+local function environment_names(environment)
+  local names = vim.tbl_keys(environment)
+  local encoded = {}
+  for _, name in ipairs(names) do encoded[name] = wide(name) end
+  local function compare(left, right)
+    local order = K.CompareStringOrdinal(encoded[left], -1, encoded[right], -1, 1)
+    if order == 0 then failure("environment-order") end
+    return order
+  end
+  table.sort(names, function(left, right) return compare(left, right) == 1 end)
+  for index = 2, #names do
+    if compare(names[index - 1], names[index]) == 2 then
+      failure("specification-environment", 0)
+    end
+  end
+  return names
 end
 
 ---@param pointer? ffi.cdata*
@@ -2028,17 +2051,14 @@ local function validate_spec(spec, directory)
       or vim.islist(spec.env) and next(spec.env) then
     failure("specification-environment", 0)
   end
-  local by_name = {}
   for name, value in pairs(spec.env) do
-    local key = type(name) == "string" and name:lower() or ""
     if type(name) ~= "string"
-        or not name:match("^[A-Za-z_][A-Za-z0-9_]*$")
-        or type(value) ~= "string" or value:find("\0", 1, true)
-        or by_name[key] then
+        or not name:match("^[^=%z]+$")
+        or type(value) ~= "string" or value:find("\0", 1, true) then
       failure("specification-environment", 0)
     end
-    by_name[key] = true
   end
+  environment_names(spec.env)
   if type(spec.runner) ~= "table"
       or type(spec.runner.argv) ~= "table"
       or not vim.islist(spec.runner.argv)
@@ -2439,11 +2459,7 @@ end
 ---@param environment table<string, string>
 ---@return Neoagent.FfiArray<integer>
 local function utf16_block(environment)
-  local names = vim.tbl_keys(environment)
-  table.sort(names, function(left, right)
-    local left_key, right_key = left:lower(), right:lower()
-    return left_key == right_key and left < right or left_key < right_key
-  end)
+  local names = environment_names(environment)
   ---@type integer
   local units = #names == 0 and 2 or 1
   local encoded = {}

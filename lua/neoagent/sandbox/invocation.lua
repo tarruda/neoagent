@@ -10,7 +10,8 @@ local WORKER_EXIT_GRACE_MS = 10000
 
 ---@class Neoagent.SandboxInvocation
 ---@field connection Neoagent.RpcConnection
----@field lease Neoagent.WorkerLease
+---@field _lease Neoagent.WorkerLease
+---@field _dispose_error? Neoagent.Error
 ---@field timer? uv.uv_timer_t
 ---@field disposed boolean
 ---@field opened boolean
@@ -27,11 +28,78 @@ local pending_invocations = {}
 ---@async
 ---@param context Neoagent.JsonObject
 function Invocation:open(context)
-  if self.lease.wait_ready then
-    self.lease:wait_ready()
+  local lease = self._lease
+  if
+    not (
+      type(lease) == "table"
+      and type(lease.write) == "function"
+      and type(lease.close_stdin) == "function"
+      and type(lease.terminate) == "function"
+      and type(lease.wait) == "function"
+      and type(lease.dispose) == "function"
+      and type(lease.is_released) == "function"
+      and type(lease.wait_release) == "function"
+      and (lease.wait_ready == nil or type(lease.wait_ready) == "function")
+    )
+  then
+    error(util.error("sandbox_unavailable", "sandbox platform returned an invalid worker lease"), 0)
+  end
+  self.connection:attach(lease)
+  if lease.wait_ready then
+    lease:wait_ready()
   end
   self.connection:open(context)
   self.opened = true
+end
+
+-- A rejected adapter can lack release observation. Cleanup completion alone
+-- cannot release its capacity, even when the remaining lease methods work.
+---@return boolean
+function Invocation:is_released()
+  local lease = self._lease
+  if type(lease) ~= "table" or type(lease.is_released) ~= "function" then
+    return false
+  end
+  local ok, released = pcall(lease.is_released, lease)
+  return ok and released == true
+end
+
+-- Release observation remains independent of bounded cleanup, including for
+-- rejected adapters. A successful query can confirm release without a waiter.
+---@async
+---@return true
+function Invocation:wait_release()
+  if not self:is_released() then
+    local lease = self._lease
+    assert(
+      type(lease) == "table" and type(lease.wait_release) == "function",
+      "Worker lease cannot observe native release"
+    )
+    lease:wait_release()
+    assert(self:is_released(), "Worker lease did not confirm native release")
+  end
+  return true
+end
+
+---@async
+---@return Neoagent.WorkerResult
+function Invocation:wait()
+  local lease = self._lease
+  if type(lease) ~= "table" or type(lease.wait) ~= "function" then
+    return {
+      stderr = "",
+      cleanup_error = util.with_cause(
+        util.error("sandbox_unavailable", "Worker lease cannot observe cleanup"),
+        self._dispose_error
+      ),
+    }
+  end
+  local result = lease:wait()
+  if self._dispose_error then
+    result = util.copy(result)
+    result.cleanup_error = util.with_cause(self._dispose_error, result.cleanup_error)
+  end
+  return result
 end
 
 ---@param err? Neoagent.Error
@@ -56,7 +124,14 @@ function Invocation:dispose(reason)
     return
   end
   self.disposed = true
-  pcall(self.lease.dispose, self.lease, reason)
+  local disposed, err = pcall(function()
+    local lease = self._lease
+    assert(type(lease) == "table" and type(lease.dispose) == "function", "Worker lease cannot dispose its resources")
+    lease:dispose(reason)
+  end)
+  if not disposed then
+    self._dispose_error = util.normalize_error(err, "sandbox_unavailable")
+  end
 end
 
 ---@param milliseconds integer
@@ -86,15 +161,15 @@ function Invocation:retain(cancelling)
       local closed = cancelled and pcall(self.connection.close, self.connection)
       if not cancelled or not closed then
         self.connection:abort()
-        self:dispose("restricted Tool worker cancellation failed")
+        self:dispose("restricted worker cancellation failed")
       end
     end
-    return self.lease:wait()
+    return self:wait()
   end, {
     error_kind = "sandbox_unavailable",
     on_done = function(value)
       if value.ok == false then
-        self:dispose("restricted Tool worker cleanup failed")
+        self:dispose("restricted worker cleanup failed")
         self:complete(value.error)
       else
         self:complete(value.cleanup_error)
@@ -124,7 +199,7 @@ function Invocation:abort(reason)
     self:retain(false)
     return run and async.cancelled_error or nil
   else
-    local waited, value = pcall(self.lease.wait, self.lease)
+    local waited, value = pcall(self.wait, self)
     if not waited then
       self:retain(false)
       return util.normalize_error(value, "sandbox_unavailable")
@@ -139,20 +214,20 @@ end
 ---@return Neoagent.Error?
 function Invocation:close(operation_failed)
   if not self.opened or operation_failed and self.connection:is_failed() then
-    return self:abort("restricted Tool worker admission or operation failed")
+    return self:abort("restricted worker admission or operation failed")
   end
   local closed, close_err = pcall(self.connection.close, self.connection)
   if not closed then
     local err = util.normalize_error(close_err, "protocol")
     if err.kind == "cancelled" then
-      self:cancel("restricted Tool worker shutdown cancellation did not settle")
+      self:cancel("restricted worker shutdown cancellation did not settle")
     else
-      return self:abort("restricted Tool worker failed to close") or err
+      return self:abort("restricted worker failed to close") or err
     end
     return err
   end
-  self:deadline(WORKER_EXIT_GRACE_MS, "restricted Tool worker did not exit after orderly shutdown")
-  local waited, value = pcall(self.lease.wait, self.lease)
+  self:deadline(WORKER_EXIT_GRACE_MS, "restricted worker did not exit after orderly shutdown")
+  local waited, value = pcall(self.wait, self)
   if not waited then
     self:retain(false)
     return util.normalize_error(value, "sandbox_unavailable")
@@ -162,7 +237,7 @@ function Invocation:close(operation_failed)
     return util.normalize_error(value.cleanup_error or value.error, "sandbox_unavailable")
   end
   if value.code ~= 0 then
-    return util.error("protocol", "Tool worker failed during shutdown", value.stderr ~= "" and value.stderr or nil)
+    return util.error("protocol", "Worker failed during shutdown", value.stderr ~= "" and value.stderr or nil)
   end
   -- The lease can deliver trailing bytes after close acknowledged the peer.
   -- Recheck the logical channel after all output and native cleanup settle.
@@ -174,27 +249,15 @@ end
 
 ---@param connection Neoagent.RpcConnection
 ---@param lease Neoagent.WorkerLease
+---@param on_cleanup fun(error?: Neoagent.Error) Reports final cleanup, including success, to the owning composition.
 ---@return Neoagent.SandboxInvocation
-function M.new(connection, lease)
-  local run = async.current()
-  local release = run and run:_retain_diagnostics()
+function M.new(connection, lease, on_cleanup)
   return setmetatable({
     connection = connection,
-    lease = lease,
+    _lease = lease,
     disposed = false,
     opened = false,
-    report = function(err)
-      if run and err then
-        local message = err.message
-        if err.detail then
-          message = message .. ": " .. util.safe_message(err.detail)
-        end
-        run:_diagnose("dispose", message)
-      end
-      if release then
-        release()
-      end
-    end,
+    report = on_cleanup,
   }, Invocation)
 end
 

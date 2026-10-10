@@ -132,6 +132,7 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 
 ---@class Neoagent.AgentRuntimeOptions
 ---@field process_sessions? Neoagent.ProcessSessionsOptions
+---@field process_placement? fun(context: Neoagent.AgentToolEnvironment, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
 ---@field workspace_trust? Neoagent.WorkspaceTrust
 ---@field runtimes? Neoagent.ProviderRuntimes
 ---@field destroy_runtimes? fun()
@@ -248,7 +249,7 @@ function M.from_config(options, runtime)
       "agent host effects are invalid"
     )
   end
-  for _, field in ipairs({ "interaction", "compaction_run" }) do
+  for _, field in ipairs({ "interaction", "compaction_run", "process_placement" }) do
     assert(runtime[field] == nil or type(runtime[field]) == "function", "agent " .. field .. " must be a function")
   end
   if runtime.compaction_component ~= nil then
@@ -403,6 +404,20 @@ function M.from_config(options, runtime)
       shell_timeout = options.shell_timeout,
     }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
   end
+  local workspace = require("neoagent.workspace").new({ root = workspace_root, cwd = workspace_root })
+  ---@type Neoagent.ProcessControllerFactory?
+  local process_factory
+  if runtime.process_placement then
+    process_factory = function(spec, maximum, on_cleanup, on_released)
+      local factory = runtime.process_placement({
+        files = initial_session:files(),
+        workspace = workspace,
+        agent = options.name,
+        session_id = initial_session:identity(),
+      }, util.copy(spec))
+      return factory(spec, maximum, on_cleanup, on_released)
+    end
+  end
   ---@type Neoagent.AgentState
   local state = {
     applet = runtime.applet,
@@ -410,10 +425,7 @@ function M.from_config(options, runtime)
     session = initial_session,
     session_id = initial_session:identity(),
     request_selection = request_selection,
-    workspace = require("neoagent.workspace").new({
-      root = workspace_root,
-      cwd = workspace_root,
-    }),
+    workspace = workspace,
     workspace_settings = nil,
     workspace_model_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
     session_selection_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
@@ -442,7 +454,7 @@ function M.from_config(options, runtime)
     destroyed = false,
     process_sessions = require("neoagent.process_sessions").new(runtime.process_sessions, function(err)
       notify("Retained process cleanup failed: " .. util.safe_message(err.message), vim.log.levels.ERROR)
-    end),
+    end, process_factory),
     pending_warning = options._sandbox_warning,
     toolset = {
       tools = tools,

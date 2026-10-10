@@ -25,6 +25,8 @@ local util = require("neoagent.util")
 ---@field _domain Neoagent.RpcServerDomain
 ---@field _state "waiting_open"|"open"|"closed"|"failed"
 ---@field _call_id? string
+---@field _deferred_events {name: string, value: table}[]
+---@field _event_sequence integer
 ---@field _last_request integer
 ---@field _completed_request? integer
 ---@field _active? Neoagent.RpcServerRequest
@@ -39,7 +41,9 @@ Server.__index = Server
 
 ---@class Neoagent.RpcServerDomain
 ---@field error_kind string
+---@field max_pending_events integer Maximum connection notifications queued during a request.
 ---@field open fun(context: unknown)
+---@field events fun(send: fun(name: string, value: table))
 ---@field request fun(method: string, payload: unknown, emit: fun(name: string, value: table), cancelled: fun(): boolean): Neoagent.RpcServerOperation
 ---@field close fun(reason: string)
 ---@field is_quiescent fun(): boolean
@@ -170,6 +174,23 @@ local function start_request(self, message)
           end)
           if not completed then
             stop(self, completion_err)
+          else
+            local events = self._deferred_events
+            self._deferred_events = {}
+            for _, event in ipairs(events) do
+              self._event_sequence = self._event_sequence + 1
+              local sent, err = pcall(send, self, {
+                type = "event",
+                call_id = assert(self._call_id),
+                sequence = self._event_sequence,
+                name = event.name,
+                value = event.value,
+              })
+              if not sent then
+                stop(self, err)
+                break
+              end
+            end
           end
         end,
       })
@@ -302,7 +323,25 @@ local function new(opts, domain)
     _domain = domain,
     _state = "waiting_open",
     _last_request = 0,
+    _event_sequence = 0,
+    _deferred_events = {},
   }, Server)
+  domain.events(function(name, value)
+    assert(server._state == "open", "RPC connection event requires an open connection")
+    if server._active then
+      assert(#server._deferred_events < domain.max_pending_events, "RPC connection event queue exceeded its bound")
+      server._deferred_events[#server._deferred_events + 1] = { name = name, value = value }
+      return
+    end
+    server._event_sequence = server._event_sequence + 1
+    send(server, {
+      type = "event",
+      call_id = assert(server._call_id),
+      sequence = server._event_sequence,
+      name = name,
+      value = value,
+    })
+  end)
   send(server, { type = "ready", marker = protocol.MARKER })
   return server
 end
@@ -321,6 +360,14 @@ end
 function M._new(opts, selected_dispatch)
   assert(type(selected_dispatch) == "function", "Tool RPC test dispatcher must be a function")
   return new(opts, require("neoagent.rpc.tool_server").new(util.copy(opts.dependencies or {}), selected_dispatch))
+end
+
+-- Retained execution has its own connection lifetime; Tool request scopes
+-- keep their existing ownership in the separate Tool domain.
+---@param opts Neoagent.RpcServerOptions
+---@return Neoagent.RpcServer
+function M.process(opts)
+  return new(opts, require("neoagent.rpc.process_server").new())
 end
 
 return M

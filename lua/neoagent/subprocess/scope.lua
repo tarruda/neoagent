@@ -21,9 +21,10 @@ local M = {}
 ---@field wait_release async fun(self: Neoagent.SubprocessScope, timeout_ms: integer): true
 
 ---@param on_settled? fun(err?: Neoagent.Error)
+---@param on_released? fun()
 ---@return Neoagent.SubprocessScope
 ---@return async fun(): true
-local function scope(on_settled)
+local function scope(on_settled, on_released)
   local closed = false
   ---@type table<Neoagent.OwnedSubprocess, boolean>
   local pending = {}
@@ -44,6 +45,9 @@ local function scope(on_settled)
       local complete = on_settled
       on_settled = nil
       complete(failure)
+    end
+    if releasing and on_released then
+      on_released()
     end
     local current = releasing and release_waiters or waiters
     for waiter, cleanup in pairs(current) do
@@ -194,9 +198,12 @@ local function scope(on_settled)
     wait
 end
 
+-- Internal notification for retained controllers; the public constructor
+-- exposes only scopes, without a configurable supervision callback.
+---@param on_released? fun()
 ---@return Neoagent.SubprocessScope
-function M.new()
-  return (scope())
+function M.new(on_released)
+  return (scope(nil, on_released))
 end
 
 ---@async

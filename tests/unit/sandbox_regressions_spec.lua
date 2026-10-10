@@ -55,6 +55,8 @@ describe("restricted filesystem execution", function()
         servers[#servers + 1] = server
         local decoder = protocol.decoder(function(message) server:receive(message) end)
         return {
+          is_released = function() return true end,
+          wait_release = function() return true end,
           write = function(_, data) decoder:feed(data) return true end,
           close_stdin = function()
             request.on_exit({ code = 0, signal = 0, stderr = "" })
@@ -72,7 +74,7 @@ describe("restricted filesystem execution", function()
         }
       end,
     }
-    ---@type Neoagent.SandboxInterceptorOptions<unknown>
+    ---@type Neoagent.SandboxPlacementOptions<Neoagent.SandboxContext<unknown>>
     local interceptor_options = {
       platform = platform,
       profile = {
@@ -83,7 +85,7 @@ describe("restricted filesystem execution", function()
       },
       nvim = vim.env.NEOAGENT_NVIM,
     }
-    local interceptor = require("neoagent.sandbox.interceptor").new(interceptor_options)
+    local interceptor = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new(interceptor_options))
     ---@async
     ---@return Neoagent.AgentLoopResult
     local function lifetime()
