@@ -8,8 +8,7 @@ int __stdcall ReleaseMutex(void *);
 int __stdcall CloseHandle(void *);
 ]])
 local kernel = ffi.load("kernel32")
-local directory = assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
-local name = "Global\\NeoagentSandbox-" .. vim.fn.sha256(directory:gsub("/", "\\"):lower()):sub(1, 32)
+local name = dofile(vim.fs.joinpath(assert(vim.uv.cwd()), "scripts", "sandbox_windows_coordinator.lua")).mutex
 local wide = (ffi.new("unsigned short[?]", #name + 1) --[[@as Neoagent.FfiArray<integer>]])
 for index = 1, #name do wide[index - 1] = name:byte(index) end
 local mutex = kernel.CreateMutexW(nil, 0, wide)

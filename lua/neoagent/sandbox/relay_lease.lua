@@ -173,7 +173,9 @@ local function finish(self)
   end
   local cleanup_error = self._host_result.cleanup_error
   self._cleanup_released = true
-  if self._opts.require_cleanup_ack then
+  -- A runtime that provably never executed could not acquire persistent
+  -- authority. Readiness/startup errors alone cannot establish that fact.
+  if self._opts.require_cleanup_ack and self._host_result.execution ~= "not_started" then
     self._cleanup_released = observation ~= nil and observation.released
     if not self._cleanup_released then
       local failure = observation and observation.error

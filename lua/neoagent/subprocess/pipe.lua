@@ -4,6 +4,8 @@ local streams = require("neoagent.subprocess.streams")
 
 local M = {}
 
+---@alias Neoagent.NativeExecution "not_started"|"started"|"unknown"
+
 ---@class Neoagent.SubprocessCallbacks
 ---@field output fun(stream: "stdout"|"stderr"|"pty", bytes: string)
 ---@field exited fun(code: integer, signal: integer)
@@ -11,6 +13,7 @@ local M = {}
 ---@field released fun() All native components have released their ownership after disposal.
 ---@field failed fun(code: string, message: string)
 ---@field input_failed? fun() Accepted input failed asynchronously.
+---@field execution? fun(state: Neoagent.NativeExecution) Pipe launch evidence, independent of driver readiness.
 
 ---@class Neoagent.SubprocessDriver
 -- The owner retains the driver before start() allocates native resources.
@@ -150,6 +153,11 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end
     local _, spawn_code
+    -- A binding exception cannot prove whether native execution occurred.
+    -- Only an ordinary failed spawn return restores proof of no execution.
+    if callbacks.execution then
+      callbacks.execution("unknown")
+    end
     process, _, spawn_code = uv.spawn(assert(argv[1]), {
       args = vim.list_slice(argv, 2),
       cwd = spec.cwd,
@@ -160,8 +168,14 @@ function M.new(spec, env, callbacks, input_limits)
       verbatim = verbatim,
     }, complete)
     if not process then
+      if callbacks.execution then
+        callbacks.execution("not_started")
+      end
       local code = type(spawn_code) == "string" and spawn_code:match("^E[A-Z0-9]+$") or "UNKNOWN"
       error(validate.error("process_start", "Failed to start process (" .. code .. ")"), 0)
+    end
+    if callbacks.execution then
+      callbacks.execution("started")
     end
     if jit.os == "Windows" then
       -- Keep uv's process handle and the Job until native exit, even when

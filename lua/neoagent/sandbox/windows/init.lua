@@ -362,11 +362,22 @@ local function prepare_temporary(profile, fs)
   end
 end
 
+-- Placement owns managed storage preparation before either execution domain
+-- captures its environment. Compilation only validates and translates policy.
+---@param profile Neoagent.SandboxProfile
+---@param _ctx unknown
+---@param services Neoagent.SandboxExecutionServices
+---@return Neoagent.SandboxProfile
+function M.prepare(profile, _ctx, services)
+  local prepared = util.copy(profile)
+  prepare_temporary(prepared, assert(services.fs, "Windows preparation requires its filesystem service"))
+  return prepared
+end
+
 ---@param profile Neoagent.SandboxProfile
 ---@return Neoagent.WindowsSandboxProfile
 function M.compile(profile)
   local compiled = util.copy(profile) --[[@as Neoagent.WindowsSandboxProfile]]
-  prepare_temporary(compiled, require("neoagent.fs"))
   compiled.windows = compiler.compile(compiled, { paths = M.paths })
   return compiled
 end
@@ -537,9 +548,9 @@ function M.check(services)
   assert(type(terminal) == "table")
   if terminal.type == "error" then
     local hint = (
-      terminal.stage == "state-missing"
+      terminal.stage == "coordinator-missing"
+      or terminal.stage == "setup-incomplete"
       or terminal.stage == "setup-launch-rights"
-      or terminal.stage == "setup-upgrade-required"
     )
         and "; run the documented elevated Windows sandbox setup command"
       or ""

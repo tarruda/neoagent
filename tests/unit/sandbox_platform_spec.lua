@@ -1609,12 +1609,38 @@ describe("neoagent sandbox platform adapters", function()
     return selected
   end
 
+  it("compiles Windows policy without creating temporary storage or changing its environment", function()
+    local selected = windows_temporary_profile()
+    local allocations = 0
+    fs.mkdirp = function() allocations = allocations + 1; return true end
+    local compiled = require("neoagent.sandbox.windows").compile(selected)
+    assert.are.equal(0, allocations, "policy compilation acquired host resources")
+    assert.are.same(selected.environment, compiled.environment)
+    assert.are.same(selected.filesystem, compiled.filesystem)
+  end)
+
+  it("owns Windows temporary preparation through the placement filesystem service", function()
+    local selected = windows_temporary_profile()
+    local allocations = 0
+    local filesystem = require("neoagent.util").copy(fs)
+    filesystem.mkdirp = function() allocations = allocations + 1; return nil, "storage refused" end
+    local placement = require("neoagent.sandbox.placement").new({
+      profile = { id = selected.id, network = selected.network,
+        filesystem = selected.filesystem, environment = selected.environment },
+      platform = require("neoagent.sandbox.windows"),
+      fs = filesystem,
+    })
+    local err = caught(function() return placement.resolve({}) end)
+    assert.matches("temporary storage", err.message, 1, true)
+    assert.are.equal(1, allocations)
+  end)
+
   it("keeps absolute bootstrap denials when preparing managed Windows temporary storage", function()
     local selected = windows_temporary_profile()
     local windows = require("neoagent.sandbox.windows")
     local denied = windows.paths.join(windows.temporary_root(), "private-runtime")
     selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = denied, access = "deny" }
-    local compiled = windows.compile(selected)
+    local compiled = windows.compile(windows.prepare(selected, {}, { fs = fs }))
     local started = false
     local ok, err = pcall(windows.start_worker, {
       argv = { "C:\\Repo\\tool.exe" }, cwd = "C:\\Repo", env = {}, profile = compiled,
@@ -1637,7 +1663,7 @@ describe("neoagent sandbox platform adapters", function()
       local selected = windows_temporary_profile()
       local windows = require("neoagent.sandbox.windows")
       selected.environment.set.TMPDIR = value
-      local compiled = windows.compile(selected)
+      local compiled = windows.compile(windows.prepare(selected, {}, { fs = fs }))
       local environment = require("neoagent.sandbox.worker").environment(compiled, {}, windows.paths)
       local expected = windows.paths.is_absolute(value) and environment.TEMP or value
       assert.are.equal(expected, environment.TMPDIR)
@@ -1650,7 +1676,7 @@ describe("neoagent sandbox platform adapters", function()
     local windows = require("neoagent.sandbox.windows")
     local temporary = windows.temporary_root()
     selected.environment.set.TMP = windows.paths.join(temporary, "existing-cache")
-    local compiled = windows.compile(selected)
+    local compiled = windows.compile(windows.prepare(selected, {}, { fs = fs }))
     assert.are.same(selected.environment, compiled.environment)
     assert.is_true(vim.list_contains(compiled.windows.write_roots, temporary))
   end)
@@ -1666,7 +1692,7 @@ describe("neoagent sandbox platform adapters", function()
       return stat(path)
     end
     cleanup(function() windows.paths.stat = stat end)
-    local err = caught(function() return windows.compile(selected) end)
+    local err = caught(function() return windows.compile(windows.prepare(selected, {}, { fs = fs })) end)
     assert.matches("missing deny path outside a writable root", err.message)
   end)
 
@@ -2104,7 +2130,7 @@ describe("neoagent sandbox platform adapters", function()
       code = 0, signal = 0,
       stdout = string.char(0, 0, 0, 1) .. "{", stderr = "",
     }).stage)
-    for _, stage in ipairs({ "state-missing", "setup-launch-rights", "setup-upgrade-required", "namespace-open" }) do
+    for _, stage in ipairs({ "state-missing", "state-read", "coordinator-missing", "setup-incomplete", "setup-launch-rights", "namespace-open" }) do
       local missing = checked({
         code = 125,
         signal = 0,
@@ -2113,7 +2139,7 @@ describe("neoagent sandbox platform adapters", function()
       })
       assert.are.equal(stage, missing.stage)
       local message = assert(missing.message)
-      if stage == "namespace-open" then
+      if stage == "namespace-open" or stage == "state-missing" or stage == "state-read" then
         local hint = message:find("setup command", 1, true)
         assert.is_nil(hint)
       else

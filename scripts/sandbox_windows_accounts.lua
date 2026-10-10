@@ -26,6 +26,7 @@ long __stdcall SamSetSecurityObject(void *, unsigned long, void *);
 long __stdcall SamCloseHandle(void *);
 long __stdcall SamFreeMemory(void *);
 unsigned long __stdcall NetLocalGroupAdd(const unsigned short *, unsigned long, void *, unsigned long *);
+unsigned long __stdcall NetLocalGroupGetInfo(const unsigned short *, const unsigned short *, unsigned long, unsigned char **);
 unsigned long __stdcall NetUserDel(const unsigned short *, const unsigned short *);
 unsigned long __stdcall DsRoleGetPrimaryDomainInformation(const unsigned short *, int, unsigned char **);
 void __stdcall DsRoleFreeMemory(void *);
@@ -48,13 +49,14 @@ void __stdcall DsRoleFreeMemory(void *);
 ---@field absent? boolean Creation failed without allocating an account.
 ---@class Neoagent.WindowsOfflineGroup
 ---@field name string
----@field sid string
+---@field marker string Native creation comment, reserved before allocation.
+---@field sid? string Absent until setup observes the reserved native principal.
 ---@class Neoagent.WindowsAccountDependencies
 ---@field wide fun(text: string): Neoagent.FfiArray<integer>
+---@field utf8 fun(value?: ffi.cdata*, length?: integer): string?
 ---@field sid fun(text: string): ffi.cdata*
 ---@field lookup fun(name: string): string?, integer?
 ---@field access fun(sid: ffi.cdata*, mask: integer, mode: integer, inheritance: integer): Neoagent.Win32.EXPLICIT_ACCESS_W
----@field random fun(bytes: integer): string
 ---@field failure fun(stage: string, code?: integer): never
 
 ---@param deps Neoagent.WindowsAccountDependencies
@@ -146,7 +148,7 @@ function M.new(deps)
   ---@param access integer
   ---@param callback fun(alias: ffi.cdata*)
   local function with_group(domain, group, access, callback)
-    local _, rid = split_sid(group.sid)
+    local _, rid = split_sid(assert(group.sid))
     local handle = ffi.new("void *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]]
     check(sam.SamOpenAlias(domain, access, rid, handle), "account-group-open")
     local ok, err = pcall(callback, handle[0])
@@ -172,33 +174,50 @@ function M.new(deps)
       end
     end,
 
-    ---@param owner string
-    ---@param launcher_sid string
-    ---@param existing? Neoagent.WindowsOfflineGroup
-    ---@return Neoagent.WindowsOfflineGroup
-    setup = function(owner, launcher_sid, existing)
-      local domain_sid = split_sid(launcher_sid)
-      local group = existing
-      if not group then
-        local name = "neoagent_net_" .. deps.random(3)
-        local encoded, comment = wide(name), wide("Neoagent offline sandbox invocations")
+    ---@param group Neoagent.WindowsOfflineGroup
+    ---@return string
+    allocate_group = function(group)
+      local buffer = ffi.new("unsigned char *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]]
+      local code = net.NetLocalGroupGetInfo(nil, wide(group.name), 1, buffer)
+      if code == 0 then
+        local info = ffi.cast("NASamGroup *", buffer[0]) --[[@as Neoagent.FfiArray<Neoagent.WindowsSamGroup>]]
+        local ok, comment = pcall(deps.utf8, info[0].comment)
+        net.NetApiBufferFree(buffer[0])
+        if not ok then error(comment, 0) end
+        local sid = deps.lookup(group.name)
+        if not sid or comment ~= group.marker or group.sid and group.sid ~= sid then
+          failure("account-group-identity", 5)
+        end
+        return sid
+      elseif code ~= 2220 then -- NERR_GroupNotFound.
+        failure("account-group-read", code)
+      end
+      if group.sid then failure("account-group-identity", 5) end
+      do
+        local encoded, comment = wide(group.name), wide(group.marker)
         local info = ffi.new("NASamGroup") --[[@as Neoagent.WindowsSamGroup]]
         info.name, info.comment = encoded, comment
-        local code = net.NetLocalGroupAdd(nil, 1, info, nil)
+        code = net.NetLocalGroupAdd(nil, 1, info, nil)
         if code ~= 0 then
           failure("account-group-create", code)
         end
-        group = { name = name, sid = assert(deps.lookup(name)) }
-      elseif deps.lookup(group.name) ~= group.sid then
-        failure("account-group-identity", 5)
       end
+      local sid, err = deps.lookup(group.name)
+      if not sid then failure("account-group-sid", err) end
+      return sid
+    end,
+
+    ---@param owner string
+    ---@param launcher_sid string
+    ---@param group Neoagent.WindowsOfflineGroup
+    delegate = function(owner, launcher_sid, group)
+      local domain_sid = split_sid(launcher_sid)
       with_domain(domain_sid, 0x60200, function(domain)
         grant(domain, owner, 0x210) -- DOMAIN_CREATE_USER | DOMAIN_LOOKUP.
-        with_group(domain, assert(group), 0x60000, function(alias)
+        with_group(domain, group, 0x60000, function(alias)
           grant(alias, owner, 0x7) -- Membership only; no group policy changes.
         end)
       end)
-      return assert(group)
     end,
 
     ---@param account Neoagent.WindowsPrivateAccount

@@ -404,6 +404,8 @@ BOOL __stdcall CreateProcessAsUserW(HANDLE, const WCHAR *, WCHAR *,
   const WCHAR *, STARTUPINFOW *, PROCESS_INFORMATION *);
 
 DWORD __stdcall NetUserAdd(const WCHAR *, DWORD, BYTE *, DWORD *);
+DWORD __stdcall NetUserGetInfo(const WCHAR *, const WCHAR *, DWORD, BYTE **);
+DWORD __stdcall NetApiBufferFree(void *);
 DWORD __stdcall NetUserSetInfo(const WCHAR *, const WCHAR *, DWORD,
   BYTE *, DWORD *);
 
@@ -873,11 +875,11 @@ WIN32.FILE.SANDBOX_DENY_WRITE = bit.bor(
   WIN32.ACCESS.WRITE_OWNER)
 
 -- Protocol and lifecycle limits live together so bounded reads, output
--- polling, cleanup, and state migrations remain easy to audit.
+-- polling and cleanup remain easy to audit.
 local RUNTIME = {
   ADMISSION_TIMEOUT_MS = 60 * 1000,
   MAX_FRAME = 1024 * 1024,
-  STATE_VERSION = 3,
+  STATE_VERSION = 5,
   PROTOCOL_VERSION = 1,
   OUTPUT_POLL_MS = 10,
   OUTPUT_DRAIN_POLLS = 1000,
@@ -902,7 +904,8 @@ local RUNTIME = {
 
 ---@class Neoagent.WindowsRuntimeAccount
 ---@field name string
----@field sid string
+---@field marker string Native creation comment, reserved before allocation.
+---@field sid? string Absent until setup observes the reserved native principal.
 ---@field password string
 
 ---@class Neoagent.WindowsPathIdentity
@@ -919,15 +922,9 @@ local RUNTIME = {
 ---@field high? integer
 ---@field low? integer
 
----@class Neoagent.WindowsRecovery
----@field account_sid? string
----@field capability_sid? string
----@field paths? string[]
----@field placeholders? Neoagent.WindowsPlaceholder[]
-
 ---@class Neoagent.WindowsAuthorityLease
----@field policy? Neoagent.WindowsAuthorityPolicy Absent in an older live journal; new admission then fails closed.
----@field account? Neoagent.WindowsPrivateAccount Absent only in an older setup journal.
+---@field policy Neoagent.WindowsAuthorityPolicy
+---@field account Neoagent.WindowsPrivateAccount
 ---@field logon_sid? string
 ---@field launch_sid? string Trusted creation token's temporary read access.
 ---@field namespaces? string[] Session object directories granted to the private account.
@@ -940,14 +937,13 @@ local RUNTIME = {
 ---@class Neoagent.WindowsRuntimeState
 ---@field v integer
 ---@field owner_sid string
----@field launcher? Neoagent.WindowsRuntimeAccount
----@field offline_group? Neoagent.WindowsOfflineGroup
----@field accounts? table<'offline'|'online', Neoagent.WindowsRuntimeAccount> Legacy credentials, consumed during setup.
----@field recovery? Neoagent.WindowsRecovery Legacy state, consumed during upgrade.
+---@field coordinator string
+---@field provisioned boolean Ordinary admission requires completed persistent setup.
+---@field launcher Neoagent.WindowsRuntimeAccount
+---@field offline_group Neoagent.WindowsOfflineGroup
 ---@field leases table<string, Neoagent.WindowsAuthorityLease>
 ---@field placeholders Neoagent.WindowsPlaceholder[]
----@field acl? table
----@field wfp? {filters: string[]}
+---@field wfp {filters: string[]}
 
 ---@class Neoagent.WindowsRuntimeSpec: Neoagent.WindowsSandboxSpec
 ---@field profile Neoagent.WindowsSandboxProfile
@@ -1421,10 +1417,10 @@ end
 
 local accounts = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_accounts.lua")).new({
   wide = wide,
+  utf8 = utf8,
   sid = sid_from_string,
   lookup = account_sid,
   access = explicit_access,
-  random = random_hex,
   failure = failure,
 })
 local namespace = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_namespace.lua")).new({
@@ -1433,6 +1429,8 @@ local namespace = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_n
   access = explicit_access,
   failure = failure,
 })
+authority.coordinator = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_coordinator.lua"))
+authority.registration = authority.coordinator.new({ wide = wide, utf8 = utf8, failure = failure })
 
 -- Persistent setup state -----------------------------------------------------
 --
@@ -1474,18 +1472,22 @@ local function dpapi(value, decrypt)
 end
 
 ---@param path string
----@return string?, string?
+---@return string?
 local function read_file(path)
-  local fd, err = vim.uv.fs_open(path, "r", 0)
-  if not fd then return nil, err end
-  local stat, stat_err = vim.uv.fs_fstat(fd)
+  local fd, _, code = vim.uv.fs_open(path, "r", 0)
+  if not fd then
+    if code == "ENOENT" then return nil end
+    failure("state-read", 0)
+  end
+  local stat = vim.uv.fs_fstat(fd)
   if not stat or stat.type ~= "file" then
     vim.uv.fs_close(fd)
-    return nil, stat_err or "not a regular file"
+    failure("state-read", 0)
   end
-  local data, read_err = vim.uv.fs_read(fd, stat.size, 0)
+  local data = vim.uv.fs_read(fd, stat.size, 0)
   vim.uv.fs_close(fd)
-  return data, read_err
+  if not data then failure("state-read", 0) end
+  return data
 end
 
 ---@param path string
@@ -1529,65 +1531,65 @@ end
 ---@return Neoagent.WindowsRuntimeState
 local function decode_state(directory)
   local data = read_file(state_path(directory))
-  if type(data) ~= "string" then
-    failure("state-missing", WIN32.ERROR.FILE_NOT_FOUND)
-  end
+  if type(data) ~= "string" then failure("state-missing", WIN32.ERROR.FILE_NOT_FOUND) end
   local ok, state = pcall(vim.json.decode, data)
-  if not ok or type(state) ~= "table" or state.v ~= RUNTIME.STATE_VERSION and state.v ~= 1 and state.v ~= 2
-      or type(state.owner_sid) ~= "string" then
+  if not ok or type(state) ~= "table" or state.v ~= RUNTIME.STATE_VERSION
+      or type(state.owner_sid) ~= "string" or type(state.provisioned) ~= "boolean" then
     failure("state-format", 0)
   end
-  local names = state.v == RUNTIME.STATE_VERSION and { "launcher" } or { "offline", "online" }
-  local credentials = state.v == RUNTIME.STATE_VERSION and state or state.accounts
-  if type(credentials) ~= "table" then failure("state-format", 0) end
-  for _, name in ipairs(names) do
-    local account = credentials[name]
-    if type(account) ~= "table" or type(account.name) ~= "string"
-        or type(account.sid) ~= "string" or type(account.password) ~= "string" then
+  if type(state.coordinator) ~= "string" or #state.coordinator ~= 32 or not state.coordinator:match("^%x+$") then
+    failure("state-coordinator", 0)
+  end
+  for _, name in ipairs({ "launcher", "offline_group" }) do
+    local principal = state[name]
+    if type(principal) ~= "table" or type(principal.name) ~= "string"
+        or #principal.name ~= 19 or not principal.name:match(name == "launcher" and "^neoagent_run_%x+$" or "^neoagent_net_%x+$")
+        or type(principal.marker) ~= "string" or #principal.marker ~= 32 or not principal.marker:match("^%x+$")
+        or principal.sid ~= nil and type(principal.sid) ~= "string"
+        or state.provisioned and principal.sid == nil then
       failure("state-format", 0)
     end
   end
-  if state.v == RUNTIME.STATE_VERSION and (type(state.offline_group) ~= "table"
-      or type(state.offline_group.name) ~= "string" or type(state.offline_group.sid) ~= "string") then
+  if type(state.launcher.password) ~= "string" or type(state.wfp) ~= "table"
+      or type(state.wfp.filters) ~= "table" or not vim.islist(state.wfp.filters) or #state.wfp.filters ~= 4 then
     failure("state-format", 0)
   end
-  if state.v ~= 1 then
-    if type(state.leases) ~= "table" or type(state.placeholders) ~= "table" then
+  for _, key in ipairs(state.wfp.filters) do
+    if type(key) ~= "string" or not key:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
       failure("state-format", 0)
     end
-    for id, lease in pairs(state.leases) do
-      if type(id) ~= "string" or not id:match("^%x+$") or #id ~= 32
-          or type(lease) ~= "table" or lease.logon_sid ~= nil and type(lease.logon_sid) ~= "string"
-          or lease.launch_sid ~= nil and type(lease.launch_sid) ~= "string"
-          or type(lease.paths) ~= "table" or not vim.islist(lease.paths) then
-        failure("state-format", 0)
-      end
-      if state.v == RUNTIME.STATE_VERSION and (type(lease.account) ~= "table"
-          or type(lease.account.name) ~= "string" or not lease.account.name:match("^na_%x+$")
-          or #lease.account.name ~= 19
-          or lease.account.sid ~= nil and type(lease.account.sid) ~= "string"
-          or lease.account.absent ~= nil and type(lease.account.absent) ~= "boolean") then
-        failure("state-format", 0)
-      end
-      for _, path in ipairs(lease.paths) do
+  end
+  if type(state.leases) ~= "table" or type(state.placeholders) ~= "table"
+      or not state.provisioned and (next(state.leases) ~= nil or next(state.placeholders) ~= nil) then
+    failure("state-format", 0)
+  end
+  for id, lease in pairs(state.leases) do
+    if type(id) ~= "string" or not id:match("^%x+$") or #id ~= 32
+        or type(lease) ~= "table" or lease.logon_sid ~= nil and type(lease.logon_sid) ~= "string"
+        or lease.launch_sid ~= nil and type(lease.launch_sid) ~= "string"
+        or type(lease.paths) ~= "table" or not vim.islist(lease.paths)
+        or type(lease.account) ~= "table" or type(lease.account.name) ~= "string"
+        or not lease.account.name:match("^na_%x+$") or #lease.account.name ~= 19
+        or lease.account.sid ~= nil and type(lease.account.sid) ~= "string"
+        or lease.account.absent ~= nil and type(lease.account.absent) ~= "boolean" then
+      failure("state-format", 0)
+    end
+    for _, path in ipairs(lease.paths) do
+      if type(path) ~= "string" or path == "" then failure("state-format", 0) end
+    end
+    if type(lease.policy) ~= "table" then failure("state-format", 0) end
+    for _, name in ipairs({ "write_roots", "deny_write" }) do
+      local paths = lease.policy[name]
+      if type(paths) ~= "table" or not vim.islist(paths) then failure("state-format", 0) end
+      for _, path in ipairs(paths) do
         if type(path) ~= "string" or path == "" then failure("state-format", 0) end
       end
-      if lease.policy ~= nil then
-        if type(lease.policy) ~= "table" then failure("state-format", 0) end
-        for _, name in ipairs({ "write_roots", "deny_write" }) do
-          local paths = lease.policy[name]
-          if type(paths) ~= "table" or not vim.islist(paths) then failure("state-format", 0) end
-          for _, path in ipairs(paths) do
-            if type(path) ~= "string" or path == "" then failure("state-format", 0) end
-          end
-        end
-      end
-      if lease.namespaces ~= nil then
-        if type(lease.namespaces) ~= "table" or not vim.islist(lease.namespaces) then failure("state-format", 0) end
-        for _, path in ipairs(lease.namespaces) do
-          if type(path) ~= "string" or path ~= "\\BaseNamedObjects"
-              and not path:match("^\\Sessions\\BNOLINKS\\%d+$") then failure("state-format", 0) end
-        end
+    end
+    if lease.namespaces ~= nil then
+      if type(lease.namespaces) ~= "table" or not vim.islist(lease.namespaces) then failure("state-format", 0) end
+      for _, path in ipairs(lease.namespaces) do
+        if type(path) ~= "string" or path ~= "\\BaseNamedObjects"
+            and not path:match("^\\Sessions\\BNOLINKS\\%d+$") then failure("state-format", 0) end
       end
     end
   end
@@ -1628,40 +1630,39 @@ local function account_name(prefix)
   return selected
 end
 
----@param name string
----@param password string
+---@param account Neoagent.WindowsRuntimeAccount
 ---@return string
-local function create_or_update_account(name, password)
-  local existing = account_sid(name)
-  local encoded_password = wide(password)
-  if existing then
-    local info = (ffi.new("USER_INFO_1003") --[[@as Neoagent.Win32.USER_INFO_1003]])
-    info.usri1003_password = encoded_password
-    local parameter = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
-    local code = N.NetUserSetInfo(
-      nil, wide(name), 1003, (ffi.cast("BYTE *", info) --[[@as Neoagent.FfiArray<integer>]]), parameter)
-    if code ~= WIN32.ERROR.SUCCESS then failure("account-password", code) end
-    return existing
+local function allocate_launcher(account)
+  local buffer = (ffi.new("BYTE *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local encoded_name = wide(account.name)
+  local code = N.NetUserGetInfo(nil, encoded_name, 1, buffer)
+  if code == WIN32.ERROR.SUCCESS then
+    local info = (ffi.cast("USER_INFO_1 *", buffer[0]) --[[@as Neoagent.FfiArray<Neoagent.Win32.USER_INFO_1>]])
+    local ok, comment = pcall(utf8, info[0].usri1_comment)
+    N.NetApiBufferFree(buffer[0])
+    if not ok then error(comment, 0) end
+    local sid = account_sid(account.name)
+    if not sid or comment ~= account.marker or account.sid and account.sid ~= sid then
+      failure("account-identity", WIN32.ERROR.ACCESS_DENIED)
+    end
+    return sid
+  elseif code ~= 2221 then -- NERR_UserNotFound.
+    failure("account-read", code)
   end
-  local encoded_name = wide(name)
-  local comment = wide("Neoagent Windows sandbox account")
+  if account.sid then failure("account-identity", WIN32.ERROR.ACCESS_DENIED) end
+  local encoded_password, comment = wide(account_password(account)), wide(account.marker)
   local info = (ffi.new("USER_INFO_1") --[[@as Neoagent.Win32.USER_INFO_1]])
   info.usri1_name = encoded_name
   info.usri1_password = encoded_password
-  info.usri1_password_age = 0
   info.usri1_priv = WIN32.ACCOUNT.PRIVILEGE_USER
-  info.usri1_home_dir = nil
   info.usri1_comment = comment
   info.usri1_flags = bit.bor(
     WIN32.ACCOUNT.SCRIPT, WIN32.ACCOUNT.PASSWORD_CANNOT_CHANGE,
     WIN32.ACCOUNT.NORMAL, WIN32.ACCOUNT.PASSWORD_NEVER_EXPIRES)
-  info.usri1_script_path = nil
   local parameter = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
-  local code = N.NetUserAdd(nil, 1, (ffi.cast("BYTE *", info) --[[@as Neoagent.FfiArray<integer>]]), parameter)
-  if code ~= WIN32.ERROR.SUCCESS and code ~= WIN32.ERROR.USER_EXISTS then
-    failure("account-create", code)
-  end
-  local sid, sid_err = account_sid(name)
+  code = N.NetUserAdd(nil, 1, (ffi.cast("BYTE *", info) --[[@as Neoagent.FfiArray<integer>]]), parameter)
+  if code ~= WIN32.ERROR.SUCCESS then failure("account-create", code) end
+  local sid, sid_err = account_sid(account.name)
   if not sid then failure("account-sid", sid_err) end
   return sid
 end
@@ -1878,82 +1879,70 @@ local function mkdir(path)
   end
 end
 
--- Setup delegates account ownership and provisions the trusted creation
--- identity. Targets use new accounts, and offline membership selects WFP rules.
+-- Setup owns persistent authority through the same journal that owns invocation
+-- effects. Planned identities precede allocation; a native creation comment
+-- identifies a principal after interruption before its SID could be saved.
 ---@param directory string
 local function setup(directory)
   accounts.check_host()
-  mkdir(directory)
+  local registration = authority.location(directory, true)
+  directory = registration.directory
   local owner_sid = current_user_sid_string()
-
-  local state
   local existing = read_file(state_path(directory))
+  if registration.initialized and not existing then failure("state-missing", WIN32.ERROR.FILE_NOT_FOUND) end
+
+  ---@type Neoagent.WindowsRuntimeState
+  local state
   if existing then
     state = decode_state(directory)
-    if state.owner_sid ~= owner_sid then
-      failure("state-owner", WIN32.ERROR.ACCESS_DENIED)
-    end
-    state = authority.upgrade(directory, state)
+    if state.owner_sid ~= owner_sid then failure("state-owner", WIN32.ERROR.ACCESS_DENIED) end
+    if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
     authority.recover(directory, state)
     if next(state.leases) then failure("setup-active-leases", WIN32.ERROR.ACCESS_DENIED) end
   else
     state = {
-      v = RUNTIME.STATE_VERSION,
-      owner_sid = owner_sid,
-      leases = {},
-      placeholders = {},
+      v = RUNTIME.STATE_VERSION, owner_sid = owner_sid, coordinator = registration.id,
+      provisioned = false, leases = {}, placeholders = {},
+      launcher = {
+        name = account_name("neoagent_run_"), marker = random_hex(16),
+        password = vim.base64.encode(dpapi(password_value(), false)),
+      },
+      offline_group = { name = account_name("neoagent_net_"), marker = random_hex(16) },
+      wfp = { filters = {} },
     }
+    for index = 1, #WFP.FILTERS do state.wfp.filters[index] = random_guid() end
   end
   protect_path(directory, owner_sid)
+  state.provisioned = false
+  encode_state(directory, state)
+  -- From this point the established inventory must never be treated as absent,
+  -- even while provisioning is incomplete. No native allocation precedes it.
+  if not registration.initialized then
+    registration.initialized = true
+    authority.registration.write(vim.json.encode(registration))
+  end
 
-  local record = state.launcher or state.accounts and state.accounts.online
-  local password = record and account_password(record) or password_value()
-  local name = record and record.name or account_name("neoagent_run_")
-  state.launcher = {
-    name = name,
-    sid = create_or_update_account(name, password),
-    password = vim.base64.encode(dpapi(password, false)),
-  }
+  state.launcher.sid = allocate_launcher(state.launcher)
+  encode_state(directory, state)
   provision_launch_rights(state.launcher.sid)
-  state.offline_group = accounts.setup(owner_sid, state.launcher.sid, state.offline_group)
-
-  if state.wfp == nil then
-    state.wfp = { filters = {} }
-    for index = 1, #WFP.FILTERS do
-      state.wfp.filters[index] = random_guid()
-    end
-  elseif type(state.wfp) ~= "table"
-      or type(state.wfp.filters) ~= "table"
-      or not vim.islist(state.wfp.filters)
-      or #state.wfp.filters ~= #WFP.FILTERS then
-    failure("state-format", 0)
-  else
-    for _, value in ipairs(state.wfp.filters) do
-      if type(value) ~= "string" then failure("state-format", 0) end
-    end
-  end
-  install_wfp(assert(state.offline_group).sid, state.wfp.filters)
-  for _, account in pairs(state.accounts or {}) do
-    if account.sid ~= state.launcher.sid then accounts.retire(account) end
-  end
-  state.accounts = nil
-  state.v = RUNTIME.STATE_VERSION
-  local shared = vim.fs.joinpath(directory, "shared-tmp")
-  mkdir(shared)
+  state.offline_group.sid = accounts.allocate_group(state.offline_group)
+  encode_state(directory, state)
+  accounts.delegate(owner_sid, state.launcher.sid, state.offline_group)
+  install_wfp(state.offline_group.sid, state.wfp.filters)
+  mkdir(vim.fs.joinpath(directory, "shared-tmp"))
   protect_path(directory, owner_sid)
+  state.provisioned = true
   encode_state(directory, state)
   protect_path(state_path(directory), owner_sid)
   io.stdout:write(vim.json.encode({
-    v = RUNTIME.PROTOCOL_VERSION,
-    ok = true,
-    platform = "windows",
-    setup_version = RUNTIME.STATE_VERSION,
+    v = RUNTIME.PROTOCOL_VERSION, ok = true, platform = "windows", setup_version = RUNTIME.STATE_VERSION,
   }))
 end
 
 -- Request preparation --------------------------------------------------------
 --
--- One global mutex serializes journal/ACL mutations, never process execution.
+-- One machine-wide mutex serializes journal/ACL mutations, never execution.
+-- Its registered inventory is independent of requested storage locations.
 -- Per-lease mutexes remain owned by their native hosts. A nonblocking attempt
 -- distinguishes a live owner from an abandoned lease without probing a PID.
 -- Paths are normalized, resolved, and compared case-insensitively before any
@@ -1990,11 +1979,10 @@ local function acquire_named_mutex(name, timeout_ms)
   return handle
 end
 
----@param directory string
 ---@param timeout_ms integer
 ---@return ffi.cdata*
-local function acquire_mutex(directory, timeout_ms)
-  local handle = acquire_named_mutex(mutex_name(directory), timeout_ms)
+local function acquire_mutex(timeout_ms)
+  local handle = acquire_named_mutex(authority.coordinator.mutex, timeout_ms)
   if not handle then failure("mutex-wait-timeout", WIN32.WAIT.TIMEOUT) end
   return handle
 end
@@ -2302,6 +2290,51 @@ function same_identity(record, identity)
     and record.low == identity.low
 end
 
+-- Elevated setup binds one host account and one physical directory to the
+-- machine coordinator. Ordinary hosts cannot register another inventory, and
+-- replacement of the registered directory cannot silently reset ownership.
+---@param directory string
+---@param register? boolean
+---@return Neoagent.WindowsCoordinatorRegistration
+function authority.location(directory, register)
+  local encoded = authority.registration.read()
+  local owner = current_user_sid_string()
+  if encoded then
+    local ok, record = pcall(vim.json.decode, encoded)
+    if not ok or type(record) ~= "table" or record.v ~= 1
+        or type(record.id) ~= "string" or #record.id ~= 32 or not record.id:match("^%x+$")
+        or type(record.owner_sid) ~= "string" or type(record.directory) ~= "string"
+        or type(record.initialized) ~= "boolean" then
+      failure("coordinator-format", 0)
+    end
+    if record.owner_sid ~= owner then failure("coordinator-owner", WIN32.ERROR.ACCESS_DENIED) end
+    local resolved = canonical_existing(directory, "coordinator-location")
+    if path_key(resolved) ~= path_key(record.directory) then
+      failure("coordinator-location", WIN32.ERROR.ACCESS_DENIED)
+    end
+    if not same_identity(record, path_identity(record.directory)) then
+      failure("coordinator-identity", WIN32.ERROR.ACCESS_DENIED)
+    end
+    if not register and not record.initialized then failure("setup-incomplete", 0) end
+    return record
+  end
+  if not register then failure("coordinator-missing", WIN32.ERROR.FILE_NOT_FOUND) end
+  mkdir(directory)
+  directory = canonical_existing(directory, "coordinator-location")
+  local previous = read_file(state_path(directory))
+  if previous then failure("coordinator-registration-missing", WIN32.ERROR.ACCESS_DENIED) end
+  local identity, err = path_identity(directory)
+  if not identity then failure("coordinator-identity", err) end
+  protect_path(directory, owner)
+  local record = {
+    v = 1, id = random_hex(16), owner_sid = owner, directory = directory,
+    initialized = false,
+    volume = identity.volume, high = identity.high, low = identity.low,
+  }
+  authority.registration.write(vim.json.encode(record))
+  return record
+end
+
 ---@param record Neoagent.WindowsPlaceholder
 ---@return string?
 function marker_path(record)
@@ -2365,80 +2398,6 @@ function cleanup_placeholder(record)
     return
   end
   K.RemoveDirectoryW(wide(path))
-end
-
--- The state file is also a cleanup journal. Every temporary ACL and placeholder
--- is recorded before enforcement, allowing this pass to revoke an interrupted
--- request on the next launch. File identities and private marker contents prove
--- that a placeholder still belongs to this runtime before removal.
----@param state Neoagent.WindowsRuntimeState
-local function legacy_cleanup(state)
-  local recovery = state.recovery
-  if type(recovery) ~= "table" or type(recovery.paths) ~= "table" then
-    state.recovery = {}
-    return
-  end
-  local account = type(recovery.account_sid) == "string"
-      and sid_from_string(recovery.account_sid) or nil
-  local capability = type(recovery.capability_sid) == "string"
-      and sid_from_string(recovery.capability_sid) or nil
-  local first_error
-  for _, path in ipairs(recovery.paths) do
-    if type(path) == "string" then
-      if account then
-        local ok, err = pcall(revoke_path, path, account)
-        if not ok and not first_error then first_error = err end
-      end
-      if capability then
-        local ok, err = pcall(revoke_path, path, capability)
-        if not ok and not first_error then first_error = err end
-      end
-    end
-  end
-  local placeholders = type(recovery.placeholders) == "table"
-      and recovery.placeholders or {}
-  table.sort(placeholders, function(left, right)
-    return type(left) == "table" and type(right) == "table"
-      and #(left.path or "") > #(right.path or "")
-  end)
-  for _, record in ipairs(placeholders) do
-    local ok, err = pcall(cleanup_placeholder, record)
-    if not ok and not first_error then first_error = err end
-  end
-  if account then K.LocalFree(account) end
-  if capability then K.LocalFree(capability) end
-  if first_error then error(first_error, 0) end
-  state.recovery = {}
-end
-
--- Existing setup data contains encrypted account passwords and firewall
--- identities. Upgrade it in place after acquiring the old runtime's lock, so
--- an old invocation must finish before its one-record journal is consumed.
----@param directory string
----@param state Neoagent.WindowsRuntimeState
----@return Neoagent.WindowsRuntimeState
-function authority.upgrade(directory, state)
-  if state.v ~= 1 then return state end
-  local name = "Local\\NeoagentSandbox-" .. vim.fn.sha256(tostring(directory):lower()):sub(1, 32)
-  local legacy = acquire_named_mutex(name, RUNTIME.ADMISSION_TIMEOUT_MS)
-  if not legacy then failure("legacy-lease-active", WIN32.WAIT.TIMEOUT) end
-  local ok, err = pcall(function()
-    state = decode_state(directory)
-    legacy_cleanup(state)
-    for _, account in pairs(assert(state.accounts)) do
-      local sid = sid_from_string(account.sid)
-      local revoked, revoke_err = pcall(revoke_path, vim.fs.joinpath(directory, "shared-tmp"), sid)
-      K.LocalFree(sid)
-      if not revoked then error(revoke_err, 0) end
-    end
-    state.v = 2
-    state.recovery, state.acl = nil, nil
-    state.leases, state.placeholders = {}, {}
-    encode_state(directory, state)
-  end)
-  release_mutex(legacy)
-  if not ok then error(err, 0) end
-  return state
 end
 
 ---@param job ffi.cdata*
@@ -2510,12 +2469,10 @@ function authority.finish(directory, state, id)
   recover_job(directory, id)
   if lease.logon_sid then revoke_paths(lease.paths, lease.logon_sid) end
   if lease.launch_sid then revoke_paths(lease.paths, lease.launch_sid) end
-  if lease.account then
-    for _, path in ipairs(lease.namespaces or {}) do
-      namespace.change(path, assert(lease.account.sid), false)
-    end
-    accounts.retire(lease.account)
+  for _, path in ipairs(lease.namespaces or {}) do
+    namespace.change(path, assert(lease.account.sid), false)
   end
+  accounts.retire(lease.account)
   state.leases[id] = nil
   cleanup_placeholders(state)
   encode_state(directory, state)
@@ -2590,7 +2547,6 @@ end
 ---@param policy Neoagent.WindowsAuthorityPolicy
 function authority.admit(state, policy)
   for _, lease in pairs(state.leases) do
-    if not lease.policy then failure("lease-policy-unavailable", WIN32.ERROR.ACCESS_DENIED) end
     if not compatible_authority(lease.policy, policy) then
       failure("lease-policy-conflict", WIN32.ERROR.ACCESS_DENIED)
     end
@@ -3378,7 +3334,7 @@ local function host_main(directory, cleanup)
     timeouts[name] = value
   end
   ---@type ffi.cdata*?
-  local mutex = acquire_mutex(directory, timeouts.admission)
+  local mutex = acquire_mutex(timeouts.admission)
   ---@type Neoagent.WindowsRuntimeState?
   local state
   ---@type Neoagent.WindowsTarget
@@ -3392,11 +3348,14 @@ local function host_main(directory, cleanup)
   ---@type ffi.cdata*?
   local guard
   local ok, err = pcall(function()
+    local registration = authority.location(directory)
+    directory = registration.directory
     state = decode_state(directory)
     if state.owner_sid ~= current_user_sid_string() then
       failure("state-owner", WIN32.ERROR.ACCESS_DENIED)
     end
-    if state.v ~= RUNTIME.STATE_VERSION then failure("setup-upgrade-required", 0) end
+    if not state.provisioned then failure("setup-incomplete", 0) end
+    if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
     authority.recover(directory, state)
     spec = validate_spec(spec, directory)
     local policy = {
@@ -3420,7 +3379,7 @@ local function host_main(directory, cleanup)
     encode_state(directory, state)
     do
       local password = password_value()
-      accounts.create(account, launcher.sid, state.owner_sid, password,
+      accounts.create(account, assert(launcher.sid), state.owner_sid, password,
         spec.profile.network == "restricted" and assert(state.offline_group) or nil,
         function() encode_state(directory, state) end)
       target_base = logon_account(account.name, password)
@@ -3463,8 +3422,10 @@ local function host_main(directory, cleanup)
     if not cleanup.released then
       if not mutex then
         local remaining = math.max(0, math.ceil((finalization_deadline - vim.uv.hrtime()) / 1000000))
-        mutex = acquire_mutex(directory, remaining)
+        mutex = acquire_mutex(remaining)
+        local registration = authority.location(directory)
         state = decode_state(directory)
+        if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
       end
       authority.finish(directory, assert(state), assert(id))
     end
@@ -3515,7 +3476,7 @@ local directory = default_state_directory()
 if arguments[1] == "--setup" then
   local mutex
   local ok, err = pcall(function()
-    mutex = acquire_mutex(directory, RUNTIME.ADMISSION_TIMEOUT_MS)
+    mutex = acquire_mutex(RUNTIME.ADMISSION_TIMEOUT_MS)
     setup(directory)
   end)
   release_mutex(mutex)

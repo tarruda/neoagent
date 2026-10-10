@@ -38,6 +38,12 @@ describe("concurrent Windows sandbox authority", function()
   end
 
   ---@param selected Neoagent.SandboxProfile
+  ---@return Neoagent.WindowsSandboxProfile
+  local function prepare(selected)
+    return windows.compile(windows.prepare(selected, {}, { fs = fs }))
+  end
+
+  ---@param selected Neoagent.SandboxProfile
   ---@param argv string[]
   ---@param launch? fun(request: Neoagent.WorkerRequest): Neoagent.WorkerLease
   ---@return Neoagent.WorkerLease, fun(): string
@@ -95,6 +101,9 @@ describe("concurrent Windows sandbox authority", function()
       "  elif mode == 'replace-parent':",
       "   p.rename(p.with_name(p.name + '.moved')); p.mkdir(); (p / 'protected').write_text('replacement')",
       "  elif mode == 'privilege': enable_privilege(name)",
+      "  elif mode == 'coordinator':",
+      "   import winreg",
+      "   with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\\Neoagent\\Sandbox', 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY): pass",
       "  elif mode.startswith('event-'):",
       "   k = ctypes.WinDLL('kernel32', use_last_error=True)",
       "   k.CreateEventW.restype = w.HANDLE; k.OpenEventW.restype = w.HANDLE",
@@ -227,6 +236,102 @@ describe("concurrent Windows sandbox authority", function()
     finish(second)
   end)
 
+  for _, operation in ipairs({ "runtime", "setup" }) do
+    it("rejects an independent authority inventory during " .. operation, function()
+      local original = assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
+      local alternate = vim.fs.joinpath(assert(vim.env.RUNNER_TEMP), "neoagent-alternate-" .. tostring(vim.uv.hrtime()))
+      temporary_directories[#temporary_directories + 1] = alternate
+      assert(fs.mkdirp(vim.fs.joinpath(alternate, "shared-tmp")))
+      -- Reuse setup credentials without allocating another persistent account
+      -- or network policy. The copied inventory is independently empty.
+      assert(fs.write_all(vim.fs.joinpath(alternate, "state.json"), assert(fs.read(vim.fs.joinpath(original, "state.json")))))
+      local protected = vim.fs.joinpath(root, "protected")
+      local replacement = vim.fs.joinpath(root, "replacement")
+      assert(fs.write_all(protected, "protected"))
+      local first, check_first = access_worker(profile({
+        { path = root, access = "write" }, { path = protected, access = "deny" },
+      }))
+      assert.are.equal("DENIED", check_first("read", protected))
+      if operation == "setup" then
+        local runtime = assert(vim.uv.fs_realpath("scripts/sandbox_windows_runtime.lua"))
+        local result = vim.system({ assert(vim.env.NEOAGENT_NVIM), "--headless", "-u", "NONE", "-i", "NONE",
+          "-n", "-l", runtime, "--", "--setup" }, {
+          text = true, env = { NEOAGENT_WINDOWS_SANDBOX_STATE = alternate },
+        }):wait(30000)
+        assert.are_not.equal(0, result.code, "another storage directory created an independent coordinator")
+        assert.matches("coordinator", assert(result.stderr), 1, true)
+      else
+        local second = start(profile({ { path = root, access = "write" } }), {
+          "python", "-c", "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text('replacement'); os.replace(sys.argv[1], sys.argv[2])",
+          replacement, protected,
+        }, function(request)
+          request.env.NEOAGENT_WINDOWS_SANDBOX_STATE = alternate
+          return require("neoagent.rpc.worker_lease").start(request)
+        end)
+        local result = helper.success(function() return second:wait() end, 15000)
+        assert.are.equal("DENIED", check_first("read", protected), "a second inventory bypassed the original denial")
+        assert.matches("coordinator", assert(result.error).message, 1, true)
+        assert.is_nil(result.cleanup_error, vim.inspect(result))
+        assert.is_true(helper.complete(function() return second:wait_release() end, 10000))
+      end
+      finish(first)
+    end)
+  end
+
+  it("keeps machine registration outside restricted target authority", function()
+    local lease, check = access_worker(profile({ { path = root, access = "write" } }))
+    assert.are.equal("DENIED", check("coordinator", ""))
+    finish(lease)
+  end)
+
+  it("rejects replacement of the registered authority directory", function()
+    local directory = assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
+    local saved = directory .. "-identity-" .. tostring(vim.uv.hrtime())
+    local state = assert(fs.read(vim.fs.joinpath(directory, "state.json")))
+    assert(vim.uv.fs_rename(directory, saved))
+    local checked, failure = pcall(function()
+      assert(fs.mkdirp(vim.fs.joinpath(directory, "shared-tmp")))
+      assert(fs.write_all(vim.fs.joinpath(directory, "state.json"), state))
+      local lease = start(profile({ { path = root, access = "write" } }), { "cmd.exe", "/d", "/c", "exit 0" })
+      local result = helper.success(function() return lease:wait() end, 15000)
+      assert.matches("coordinator-identity", assert(result.error).message, 1, true)
+      assert.is_nil(result.cleanup_error)
+      assert.is_true(helper.complete(function() return lease:wait_release() end, 10000))
+    end)
+    vim.fn.delete(directory, "rf")
+    assert(vim.uv.fs_rename(saved, directory))
+    if not checked then error(failure, 0) end
+  end)
+
+  for _, mode in ipairs({ "missing", "unreadable" }) do
+    it("preserves established authority when its journal is " .. mode, function()
+      local protected = vim.fs.joinpath(root, "protected")
+      assert(fs.write_all(protected, "protected"))
+      local lease, check = access_worker(profile({
+        { path = root, access = "write" }, { path = protected, access = "deny" },
+      }))
+      local path = vim.fs.joinpath(assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")
+      local original = assert(fs.read(path))
+      local saved = path .. ".saved"
+      if mode == "missing" then assert(vim.uv.fs_rename(path, saved)) end
+      local checked, failure = pcall(function()
+        local runtime = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_account_failure.lua"))
+        local result = vim.system({ assert(vim.env.NEOAGENT_NVIM), "--headless", "-u", "NONE", "-i", "NONE",
+          "-n", "-l", runtime, "--", "--setup" }, {
+          text = true, env = { NEOAGENT_ACCOUNT_TEST_FAILURE = "setup-journal-" .. mode },
+        }):wait(30000)
+        assert.are.equal(1, result.code, result.stderr)
+        local diagnostic = vim.json.decode((assert(result.stderr)))
+        assert.are.equal(mode == "missing" and "state-missing" or "state-read", diagnostic.stage)
+        assert.are.equal("DENIED", check("read", protected))
+      end)
+      if mode == "missing" then assert(vim.uv.fs_rename(saved, path)) end
+      assert.are.equal(original, fs.read(path))
+      finish(lease)
+      if not checked then error(failure, 0) end
+    end)
+  end
+
   it("keeps a peer's created files read-only without an explicit denial", function()
     local left, right = vim.fs.joinpath(root, "left"), vim.fs.joinpath(root, "right")
     assert(fs.mkdirp(left))
@@ -298,9 +403,9 @@ describe("concurrent Windows sandbox authority", function()
     assert(fs.mkdirp(left))
     assert(fs.mkdirp(right))
     local composition = require("neoagent.sandbox.composition")
-    local first_profile = windows.compile(composition.default_profile({ context = { root = left } },
+    local first_profile = prepare(composition.default_profile({ context = { root = left } },
       windows.paths, windows.temporary_root()))
-    local second_profile = windows.compile(composition.default_profile({ context = { root = right } },
+    local second_profile = prepare(composition.default_profile({ context = { root = right } },
       windows.paths, windows.temporary_root()))
     temporary_directories = { first_profile.environment.set.TEMP, second_profile.environment.set.TEMP }
     assert.are_not.equal(first_profile.environment.set.TEMP, second_profile.environment.set.TEMP)
@@ -312,7 +417,7 @@ describe("concurrent Windows sandbox authority", function()
     assert.are.equal("ALLOWED", check_second("write", vim.fs.joinpath(second_profile.environment.set.TEMP, "value")))
     assert.are.equal("DENIED", check_second("move", vim.json.encode({ temporary, destination })))
     assert.are.equal("DENIED", check_first("write", destination))
-    local peer_profile = windows.compile(composition.default_profile({ context = { root = left } },
+    local peer_profile = prepare(composition.default_profile({ context = { root = left } },
       windows.paths, windows.temporary_root()))
     assert.are.equal(first_profile.environment.set.TEMP, peer_profile.environment.set.TEMP)
     local peer, check_peer = access_worker(peer_profile)
@@ -328,7 +433,7 @@ describe("concurrent Windows sandbox authority", function()
       windows.paths, windows.temporary_root())
     local mkdirp = fs.mkdirp
     fs.mkdirp = function() return nil, "temporary directory unavailable" end
-    local ok, err = pcall(windows.compile, selected)
+    local ok, err = pcall(prepare, selected)
     fs.mkdirp = mkdirp
     assert.is_false(ok)
     local failure = require("neoagent.util").normalize_error(err, "test")
@@ -346,7 +451,7 @@ describe("concurrent Windows sandbox authority", function()
     local selected = require("neoagent.sandbox.composition").default_profile({ context = { root = root } },
       windows.paths, windows.temporary_root())
     selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = denied, access = "deny" }
-    local compiled = windows.compile(selected)
+    local compiled = prepare(selected)
     temporary_directories[#temporary_directories + 1] = compiled.environment.set.TEMP
     local ok, result = pcall(windows.start_worker, {
       argv = { "python", "-c", "import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_text())", bootstrap },
@@ -520,45 +625,50 @@ describe("concurrent Windows sandbox authority", function()
     assert.is_false(first:is_released())
   end)
 
-  it("upgrades an existing setup and reconciles its interrupted legacy ACL", function()
+  it("rejects an incompatible journal without migrating or replacing it", function()
     local path = vim.fs.joinpath(assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")
-    ---@type Neoagent.WindowsRuntimeState
-    local state = vim.json.decode((assert(fs.read(path))))
-    assert.is_nil((next(state.leases)))
-    local original = vim.system({ "icacls", root }, { text = true }):wait(10000)
-    assert.are.equal(0, original.code, original.stderr)
-    local account = assert(state.launcher)
-    local granted = vim.system({ "icacls", root, "/grant", "*" .. account.sid .. ":(OI)(CI)(M)" },
-      { text = true }):wait(10000)
-    assert.are.equal(0, granted.code, granted.stderr)
-    local legacy = {
-      v = 1, owner_sid = state.owner_sid, accounts = { offline = account, online = account }, wfp = state.wfp,
-      offline_group = state.offline_group,
-      recovery = { account_sid = account.sid, paths = { root }, placeholders = {} },
-    }
-    assert(fs.write_all(path, vim.json.encode(legacy)))
-    local runtime = assert(vim.uv.fs_realpath("scripts/sandbox_windows_runtime.lua"))
-    local updated_setup = vim.system({ assert(vim.env.NEOAGENT_NVIM), "--headless", "-u", "NONE", "-i", "NONE",
-      "-n", "-l", runtime, "--", "--setup" }, { text = true }):wait(30000)
-    assert.are.equal(0, updated_setup.code, updated_setup.stderr)
-    local updated = vim.json.decode((assert(fs.read(path))))
-    assert.are.equal(account.sid, updated.launcher.sid)
-    -- DPAPI can encrypt the same password differently. Reuse the old encrypted
-    -- credential for this launch to verify that setup preserved the password.
-    updated.launcher.password = account.password
-    assert(fs.write_all(path, vim.json.encode(updated)))
-    local lease = start(profile({ { path = root, access = "write" } }),
-      { "cmd.exe", "/d", "/s", "/c", "exit 0" })
-    helper.success(function() return assert(lease.wait_ready)(lease) end, 30000)
-    finish(lease)
-    local reconciled = vim.system({ "icacls", root }, { text = true }):wait(10000)
-    assert.are.equal(original.stdout, reconciled.stdout)
-    updated = vim.json.decode((assert(fs.read(path))))
-    assert.are.equal(3, updated.v)
-    assert.is_nil(updated.accounts)
-    assert.is_nil(updated.recovery)
-    assert.is_nil((next(updated.leases)))
+    local original = assert(fs.read(path))
+    local state = vim.json.decode(original)
+    state.v = state.v - 1
+    local incompatible = vim.json.encode(state)
+    assert(fs.write_all(path, incompatible))
+    local checked, failure = pcall(function()
+      local before = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+      assert.is_false(before.ok)
+      assert.are.equal("state-format", before.stage)
+      local runtime = assert(vim.uv.fs_realpath("scripts/sandbox_windows_runtime.lua"))
+      local setup = vim.system({ assert(vim.env.NEOAGENT_NVIM), "--headless", "-u", "NONE", "-i", "NONE",
+        "-n", "-l", runtime, "--", "--setup" }, { text = true }):wait(30000)
+      assert.are.equal(1, setup.code)
+      assert.matches('"stage":"state-format"', assert(setup.stderr), 1, true)
+      assert.are.equal(incompatible, fs.read(path))
+    end)
+    assert(fs.write_all(path, original))
+    if not checked then error(failure, 0) end
   end)
+
+  for _, principal in ipairs({ "launcher", "offline_group" }) do
+    it("rejects changed " .. principal .. " ownership during setup", function()
+      local path = vim.fs.joinpath(assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")
+      local original = assert(fs.read(path))
+      local state = vim.json.decode(original)
+      state[principal].marker = string.rep("0", 32)
+      assert(fs.write_all(path, vim.json.encode(state)))
+      local checked, failure = pcall(function()
+        local runtime = assert(vim.uv.fs_realpath("scripts/sandbox_windows_runtime.lua"))
+        local setup = vim.system({ assert(vim.env.NEOAGENT_NVIM), "--headless", "-u", "NONE", "-i", "NONE",
+          "-n", "-l", runtime, "--", "--setup" }, { text = true }):wait(30000)
+        assert.are.equal(1, setup.code)
+        assert.matches(principal == "launcher" and "account-identity" or "account-group-identity",
+          assert(setup.stderr), 1, true)
+        local status = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+        assert.is_false(status.ok)
+        assert.are.equal("setup-incomplete", status.stage)
+      end)
+      assert(fs.write_all(path, original))
+      if not checked then error(failure, 0) end
+    end)
+  end
 
   for _, mode in ipairs({ "grant", "crash" }) do
     it("retires a private account after " .. mode .. " interrupts startup", function()

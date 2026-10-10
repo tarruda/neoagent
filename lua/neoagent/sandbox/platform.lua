@@ -37,6 +37,7 @@
 ---@field paths? Neoagent.SandboxPaths
 ---@field check fun(services?: Neoagent.SandboxCheckServices<string>): Neoagent.SandboxStatus
 ---@field start_worker fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerLease
+---@field prepare? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile Prepare persistent platform storage before compilation and environment capture.
 ---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
 ---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string
 ---@field finalization_timeout_ms? integer Native authority cleanup budget after worker exit.

@@ -3,8 +3,22 @@
 -- when the standalone native host is lost during startup.
 local ffi = require("ffi")
 local load = ffi.load
+if vim.env.NEOAGENT_ACCOUNT_TEST_FAILURE == "setup-journal-unreadable" then
+  local open = vim.uv.fs_open
+  vim.uv.fs_open = function(path, flags, mode)
+    if vim.fs.basename(path) == "state.json" then
+      return nil, "EACCES: permission denied", "EACCES"
+    end
+    return open(path, flags, mode)
+  end
+end
 ffi.load = function(name, global)
   local library = load(name, global)
+  if name == "netapi32" and (vim.env.NEOAGENT_ACCOUNT_TEST_FAILURE == "setup-journal-missing"
+      or vim.env.NEOAGENT_ACCOUNT_TEST_FAILURE == "setup-journal-unreadable") then
+    -- Stop an incorrect fresh-setup path before it allocates another account.
+    return setmetatable({ NetUserAdd = function() return 5 end }, { __index = library })
+  end
   if name == "netapi32" and vim.env.NEOAGENT_ACCOUNT_TEST_FAILURE == "domain-controller" then
     return setmetatable({
       DsRoleGetPrimaryDomainInformation = function(server, level, buffer)

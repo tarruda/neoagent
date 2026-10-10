@@ -25,6 +25,7 @@ local M = {}
 ---@field stderr string
 ---@field error? Neoagent.Error Startup, transport, or protocol failure.
 ---@field cleanup_error? Neoagent.Error Native cleanup failure, independent of the operation error.
+---@field execution? Neoagent.NativeExecution Native launch evidence; adapters without evidence leave it unknown.
 -- If native exit was not observed, at least one failure field is present.
 
 ---@class Neoagent.WorkerLease: Neoagent.RpcTransport
@@ -47,6 +48,7 @@ local M = {}
 ---@field _starting boolean
 ---@field _driver_closed boolean
 ---@field _released boolean
+---@field _execution Neoagent.NativeExecution
 ---@field _release_waiters table<Neoagent.AwaitCallbacks<true>, boolean>
 ---@field _kill_timer? uv.uv_timer_t
 ---@field _cleanup? Neoagent.ProcessCleanupDeadline
@@ -130,6 +132,7 @@ function Lease:_finish(failure)
     stderr = self._stderr,
     error = self._failure,
     cleanup_error = failure,
+    execution = self._execution,
   }
   active[self] = nil
   local waiters = self._waiters
@@ -277,6 +280,7 @@ function M.start(request)
     _waiters = {},
     _release_waiters = {},
     _released = false,
+    _execution = "not_started",
     _stdin_closed = false,
     _terminating = false,
     _disposing = false,
@@ -303,6 +307,9 @@ function M.start(request)
       lease:_finish(util.error("worker_exit", "Worker cleanup did not settle before its deadline"))
     end)
     lease._driver = pipes.new(spec, env, {
+      execution = function(state)
+        lease._execution = state
+      end,
       output = function(stream, bytes)
         if lease._result then
           return

@@ -57,6 +57,9 @@ function M.new(options)
     nvim = options.nvim,
     resolve = function(context)
       local profile = configured and util.copy(configured) or profiles.resolve(source, context, { paths = paths })
+      if platform.prepare then
+        profile = platform.prepare(profile, context, services)
+      end
       if platform.compile then
         profile = platform.compile(profile, context, services)
       end
