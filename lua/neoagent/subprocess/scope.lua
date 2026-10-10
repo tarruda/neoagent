@@ -16,7 +16,9 @@ local M = {}
 ---@field run async fun(self: Neoagent.SubprocessScope, spec: Neoagent.SubprocessSpec, options: Neoagent.SubprocessRunOptions): Neoagent.SubprocessResult
 ---@field close fun(self: Neoagent.SubprocessScope, reason: string)
 ---@field is_settled fun(self: Neoagent.SubprocessScope): boolean
+---@field is_released fun(self: Neoagent.SubprocessScope): boolean
 ---@field wait async fun(self: Neoagent.SubprocessScope, timeout_ms: integer): true
+---@field wait_release async fun(self: Neoagent.SubprocessScope, timeout_ms: integer): true
 
 ---@param on_settled? fun(err?: Neoagent.Error)
 ---@return Neoagent.SubprocessScope
@@ -25,25 +27,28 @@ local function scope(on_settled)
   local closed = false
   ---@type table<Neoagent.OwnedSubprocess, boolean>
   local pending = {}
+  ---@type table<Neoagent.OwnedSubprocess, boolean>
+  local unreleased = {}
   ---@type table<Neoagent.AwaitCallbacks<true>, fun()>
   local waiters = {}
+  ---@type table<Neoagent.AwaitCallbacks<true>, fun()>
+  local release_waiters = {}
   ---@type Neoagent.Error?
   local failure
 
-  local function notify()
-    if next(pending) then
+  local function notify(releasing)
+    if next(releasing and unreleased or pending) then
       return
     end
-    if closed and on_settled then
+    if not releasing and closed and on_settled then
       local complete = on_settled
       on_settled = nil
       complete(failure)
     end
-    local current = waiters
-    waiters = {}
+    local current = releasing and release_waiters or waiters
     for waiter, cleanup in pairs(current) do
       cleanup()
-      if failure then
+      if failure and not releasing then
         waiter.reject(util.copy(failure))
       else
         waiter.resolve(true)
@@ -53,11 +58,13 @@ local function scope(on_settled)
 
   ---@async
   ---@param timeout_ms? integer
+  ---@param releasing? boolean
   ---@return true
-  local function wait(timeout_ms)
+  local function wait(timeout_ms, releasing)
+    local waiting = releasing and release_waiters or waiters
     return async.await(function(done)
-      if next(pending) == nil then
-        if failure then
+      if next(releasing and unreleased or pending) == nil then
+        if failure and not releasing then
           done.reject(util.copy(failure))
         else
           done.resolve(true)
@@ -67,7 +74,7 @@ local function scope(on_settled)
       ---@type uv.uv_timer_t?
       local timer
       local function cleanup()
-        waiters[done] = nil
+        waiting[done] = nil
         if timer and not timer:is_closing() then
           timer:stop()
           timer:close()
@@ -81,10 +88,15 @@ local function scope(on_settled)
           done.reject(validate.error("process_cleanup", "Process scope cleanup timed out"))
         end)
       end
-      waiters[done] = cleanup
-      notify()
+      waiting[done] = cleanup
+      notify(releasing)
       return cleanup
     end)
+  end
+
+  local function on_release(owned)
+    unreleased[owned] = nil
+    notify(true)
   end
 
   ---@param owned Neoagent.OwnedSubprocess
@@ -105,8 +117,9 @@ local function scope(on_settled)
     if closed then
       error(validate.error("process_disposed", "Process scope is closed"), 0)
     end
-    local owned = handles.new(spec, observer, on_cleanup, capture)
+    local owned = handles.new(spec, observer, on_cleanup, on_release, capture)
     pending[owned] = true
+    unreleased[owned] = true
     return owned
   end
 
@@ -159,6 +172,16 @@ local function scope(on_settled)
     end,
     is_settled = function()
       return next(pending) == nil
+    end,
+    is_released = function()
+      return next(unreleased) == nil
+    end,
+    ---@async
+    wait_release = function(_, timeout_ms)
+      if not validate.integer(timeout_ms, 1, 2147483647) then
+        error(validate.error("process_validation", "Process scope wait requires a positive bounded timeout"), 0)
+      end
+      return wait(timeout_ms, true)
     end,
     ---@async
     wait = function(_, timeout_ms)

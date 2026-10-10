@@ -132,6 +132,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local state = { terminated = {}, waited = 0, closed = 0 }
     ---@type Neoagent.WorkerLease
     local value = {
+      is_released = function() return true end,
+      wait_release = function() return true end,
       write = function()
         return true
       end,
@@ -1337,6 +1339,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     }
     ---@type Neoagent.WorkerLease
     local lease = {
+      is_released = function() return true end,
+      wait_release = function() return true end,
       write = function() return true end,
       close_stdin = function() return true end,
       terminate = function() end,

@@ -1,5 +1,6 @@
 local assert = require("luassert")
 local helper = require("tests.helpers.subprocess")
+local async = require("neoagent.async")
 local subprocess = require("neoagent.subprocess_common")
 local workers = require("neoagent.rpc.worker_lease")
 
@@ -112,6 +113,7 @@ describe("native child reaping failures", function()
     it("reports " .. kind .. " cleanup failure and retains a child until reaping succeeds", function()
       -- EPERM models a policy denying the final wait operation.
       local result
+      local release_waiter
       if kind == "handle" then
         local handle = owner:spawn(helper.spec("exit 0"))
         result = helper.complete(function()
@@ -129,6 +131,16 @@ describe("native child reaping failures", function()
           end).error).code
         )
         assert.is_true(owner:is_settled())
+        assert.is_false(owner:is_released())
+        assert.is_false(handle:state().released)
+        release_waiter = async.run(function()
+          return handle:wait_release()
+        end)
+        release_waiter:cancel()
+        assert.are.equal("cancelled", assert(helper.wait(release_waiter).error).kind)
+        release_waiter = async.run(function()
+          return handle:wait_release()
+        end)
       else
         worker = workers.start({
           argv = { "sh", "-c", "exit 0" },
@@ -145,6 +157,15 @@ describe("native child reaping failures", function()
           "native reap failure was reported as success"
         )
         assert.matches("errno 1", assert(result.cleanup_error).message, 1, true)
+        assert.is_false(assert(worker):is_released())
+        release_waiter = async.run(function()
+          return assert(worker):wait_release()
+        end)
+        release_waiter:cancel()
+        assert.are.equal("cancelled", assert(helper.wait(release_waiter).error).kind)
+        release_waiter = async.run(function()
+          return assert(worker):wait_release()
+        end)
       end
       assert(
         vim.wait(2000, function()
@@ -153,6 +174,7 @@ describe("native child reaping failures", function()
         "the native owner abandoned the failed reap"
       )
       assert.is_false(reaped)
+      assert.is_false(assert(release_waiter):is_done())
       blocked = false
       assert(
         vim.wait(2000, function()
@@ -160,8 +182,53 @@ describe("native child reaping failures", function()
         end, 5),
         "the native owner did not finish reaping"
       )
+      assert.is_true(helper.wait(assert(release_waiter)))
+      assert.is_true(helper.complete(function()
+        return owner:wait_release(2000)
+      end))
+      assert.is_true(owner:is_released())
     end)
   end
+
+  it("keeps failed-start release observable after its bounded cleanup reports failure", function()
+    local pipes = require("neoagent.subprocess.pipe")
+    local new = pipes.new
+    pipes.new = function(...)
+      local driver = new(...)
+      local start = driver.start
+      driver.start = function()
+        start()
+        error({ kind = "process_start", code = "process_start", message = "failure before publication" }, 0)
+      end
+      return driver
+    end
+    local ok, failure = pcall(helper.failure, function()
+      owner:spawn(helper.spec("exec sleep 30"))
+    end)
+    pipes.new = new
+    assert.is_true(ok, vim.inspect(failure))
+    assert.are.equal("process_start", failure.code)
+    assert.are.equal(
+      "process_cleanup",
+      assert(helper.complete(function()
+        return owner:wait(3000)
+      end).error).code
+    )
+    assert.is_true(owner:is_settled())
+    assert.is_false(owner:is_released())
+    local observing = async.run(function()
+      return owner:wait_release(2000)
+    end)
+    observing:cancel()
+    assert.are.equal("cancelled", assert(helper.wait(observing).error).kind)
+    assert.is_false(owner:is_released())
+    blocked = false
+    assert.is_true(helper.complete(function()
+      return owner:wait_release(2000)
+    end))
+    assert.is_true(reaped)
+    assert.is_true(owner:is_released())
+  end)
 
   it("retries an interrupted reap without reporting a cleanup failure", function()
     failure_errno = 4
@@ -211,33 +278,38 @@ describe("native child reaping failures", function()
     end)
   end
 
-  it("releases its watcher if the reserved reap timer cannot be allocated", function()
-    local new_signal, new_timer, spawn = vim.uv.new_signal, vim.uv.new_timer, vim.uv.spawn
-    ---@type uv.uv_signal_t?
-    local watcher
-    local launched = false
-    vim.uv.new_signal = function()
-      watcher = new_signal()
-      vim.uv.new_timer = function()
-        error("native timer allocation failed")
+  for _, thrown in ipairs({ false, true }) do
+    it("releases its watcher if reap timer allocation " .. (thrown and "throws" or "fails"), function()
+      local new_signal, new_timer, spawn = vim.uv.new_signal, vim.uv.new_timer, vim.uv.spawn
+      ---@type uv.uv_signal_t?
+      local watcher
+      local launched = false
+      vim.uv.new_signal = function()
+        watcher = new_signal()
+        vim.uv.new_timer = function()
+          if thrown then
+            error("native timer allocation failed")
+          end
+          return nil
+        end
+        return watcher
       end
-      return watcher
-    end
-    vim.uv.spawn = function(...)
-      launched = true
-      return spawn(...)
-    end
-    local ok, failure = pcall(function()
-      return helper.failure(function()
-        owner:spawn(helper.spec("exit 0"))
+      vim.uv.spawn = function(...)
+        launched = true
+        return spawn(...)
+      end
+      local ok, failure = pcall(function()
+        return helper.failure(function()
+          owner:spawn(helper.spec("exit 0"))
+        end)
       end)
+      vim.uv.new_signal, vim.uv.new_timer, vim.uv.spawn = new_signal, new_timer, spawn
+      assert.is_true(ok, vim.inspect(failure))
+      assert.are.equal("process_supervision", failure.code)
+      assert.is_false(launched)
+      assert.is_true(assert(watcher):is_closing())
     end)
-    vim.uv.new_signal, vim.uv.new_timer, vim.uv.spawn = new_signal, new_timer, spawn
-    assert.is_true(ok, vim.inspect(failure))
-    assert.are.equal("process_supervision", failure.code)
-    assert.is_false(launched)
-    assert.is_true(assert(watcher):is_closing())
-  end)
+  end
 
   it("releases reserved resources when native child observation cannot start", function()
     local new_signal = vim.uv.new_signal

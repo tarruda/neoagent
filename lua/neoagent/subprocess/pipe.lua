@@ -8,6 +8,7 @@ local M = {}
 ---@field output fun(stream: "stdout"|"stderr"|"pty", bytes: string)
 ---@field exited fun(code: integer, signal: integer)
 ---@field closed fun() Output and tracked handles drained; dispose finalizes retained native ownership.
+---@field released fun() All native components have released their ownership after disposal.
 ---@field failed fun(code: string, message: string)
 ---@field input_failed? fun() Accepted input failed asynchronously.
 
@@ -24,6 +25,7 @@ local M = {}
 ---@field flush async fun(): true
 ---@field writable fun(): boolean
 ---@field resize fun(columns: integer, rows: integer): true
+---@field interrupt fun(): boolean Interrupt input or request a native process interrupt.
 ---@field stop fun(): boolean Request the backend's graceful stop sequence.
 ---@field kill fun(): boolean Request forced termination of owned native resources.
 ---@field dispose fun()
@@ -43,8 +45,17 @@ local M = {}
 function M.new(spec, env, callbacks, input_limits)
   local uv = vim.uv
   local posix_child = jit.os ~= "Windows" and require("neoagent.subprocess.posix_child") or nil
-  local io = streams.new(callbacks, input_limits)
-  local exited = false
+  local release = require("neoagent.subprocess.release").new(callbacks.released)
+  local io = streams.new({
+    output = callbacks.output,
+    exited = callbacks.exited,
+    closed = callbacks.closed,
+    failed = callbacks.failed,
+    input_failed = callbacks.input_failed,
+    released = release.retain(),
+  }, input_limits)
+  local exited, disposed = false, false
+  local release_process
   ---@type uv.uv_pipe_t?
   local stdin
 
@@ -56,10 +67,21 @@ function M.new(spec, env, callbacks, input_limits)
   local child
   ---@type Neoagent.WindowsProcessTree?
   local tree
+  local function finalize_windows()
+    if tree and disposed and (exited or not process) then
+      tree:close(true)
+      tree = nil
+    end
+    if disposed and not tree then
+      release.close()
+    end
+  end
   local function dispose()
+    disposed = true
     local cleaned, err = pcall(function()
       if tree then
-        tree:close(true)
+        tree:terminate(9)
+        finalize_windows()
       end
       if child then
         child.terminate(true)
@@ -67,6 +89,9 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end)
     io.dispose()
+    if not tree then
+      release.close()
+    end
     if not cleaned then
       error(err, 0)
     end
@@ -76,7 +101,12 @@ function M.new(spec, env, callbacks, input_limits)
     local env_list = environment.for_pipes(env)
     local function complete(code, signal)
       exited = true
-      io.close(process)
+      if release_process then
+        assert(process):close(release_process)
+        finalize_windows()
+      else
+        io.close(process)
+      end
       callbacks.exited(code, signal)
       io.exited()
     end
@@ -90,6 +120,7 @@ function M.new(spec, env, callbacks, input_limits)
         exited = complete,
         output = callbacks.output,
         closed = callbacks.closed,
+        released = release.retain(),
         failed = callbacks.failed,
       })
     end
@@ -121,7 +152,13 @@ function M.new(spec, env, callbacks, input_limits)
       local code = type(spawn_code) == "string" and spawn_code:match("^E[A-Z0-9]+$") or "UNKNOWN"
       error(validate.error("process_start", "Failed to start process (" .. code .. ")"), 0)
     end
-    io.own(process)
+    if jit.os == "Windows" then
+      -- Keep uv's process handle and the Job until native exit, even when
+      -- the owner's bounded cleanup observation has already failed.
+      release_process = release.retain()
+    else
+      io.own(process)
+    end
     local pid = process:get_pid()
     if child then
       child.attach(pid)
@@ -202,6 +239,14 @@ function M.new(spec, env, callbacks, input_limits)
     writable = io.writable,
     resize = function()
       error(validate.error("unsupported_control", "Pipe processes cannot be resized"), 0)
+    end,
+    interrupt = function()
+      if child then
+        return child.interrupt()
+      end
+      -- Windows redirected processes have no portable console interrupt.
+      -- Match the explicit stop behavior of their native Job owner.
+      return terminate(true)
     end,
     stop = function()
       return terminate(false)

@@ -65,6 +65,7 @@ describe("native pipe admission ownership", function()
         assert(vim.uv.os_environ()),
         {
           output = function() end,
+          released = function() end,
           exited = function()
             exited = true
           end,
