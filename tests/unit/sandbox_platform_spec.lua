@@ -2190,18 +2190,11 @@ describe("neoagent sandbox platform adapters", function()
     end
     rawset(vim, "version", test_version)
     assert.are.equal("version", windows.check({}).stage)
-    local version_err = caught(function()
-      require("tests.helpers.sandbox").start_worker(windows, {
-        argv = { "C:\\bin\\tool.exe" },
-        cwd = "C:\\Repo",
-        env = {},
-        profile = windows_profile(),
-      }, {
-        fs = fs,
-        nvim = vim.env.NEOAGENT_NVIM,
-        start_worker = function() error("must not run") end,
-      })
-    end)
+    local unsupported = windows.create_worker({
+      argv = { "C:\\bin\\tool.exe" }, cwd = "C:\\Repo", env = {}, profile = windows_profile(),
+    }, { fs = fs, nvim = vim.env.NEOAGENT_NVIM, start_worker = function() error("must not run") end })
+    local version_err = caught(function() unsupported:start() end)
+    assert.is_true(require("tests.helpers.subprocess").complete(function() return unsupported:wait_release() end))
     assert.matches("Neovim 0.12", version_err.message)
     rawset(vim, "version", function()
       return { major = "invalid", minor = 12, patch = 0 }

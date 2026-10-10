@@ -9,6 +9,7 @@ describe("native pipe admission ownership", function()
       local argv = platform == "Windows" and { vim.fn.exepath("cmd.exe"), "/d", "/s", "/c", "set /p value=" }
         or { vim.fn.exepath("sh"), "-c", "read line" }
       local closed, exited = false, false
+      local failures = {}
       local restore_kill
       trees.new = function(options)
         return new_tree({
@@ -77,7 +78,7 @@ describe("native pipe admission ownership", function()
             closed = true
           end,
           failed = function(code)
-            error(code)
+            failures[#failures + 1] = code
           end,
         }
       )
@@ -102,6 +103,9 @@ describe("native pipe admission ownership", function()
       driver.dispose()
       assert.is_true(drained, "failed native admission left unobserved pipes open")
       assert.are.equal(rejected ~= "allocation", exited)
+      if rejected == "attachment" then
+        assert.are.same({ "process_supervision" }, failures)
+      end
       assert.is_true(ok, vim.inspect(failure))
     end)
   end

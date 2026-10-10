@@ -102,7 +102,8 @@ describe("concurrent Windows sandbox authority", function()
       "  elif mode == 'privilege': enable_privilege(name)",
       "  elif mode == 'coordinator':",
       "   import winreg",
-      "   with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\\Neoagent\\Sandbox', 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY): pass",
+      "   key = r'SOFTWARE\\Neoagent\\Sandbox' + ('\\\\' + name if name else '')",
+      "   with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0, winreg.KEY_WRITE | 0x10000 | winreg.KEY_WOW64_64KEY): pass",
       "  elif mode.startswith('mutex-'):",
       "   k = ctypes.WinDLL('kernel32', use_last_error=True); a = ctypes.WinDLL('advapi32', use_last_error=True)",
       "   k.CreateMutexW.restype = w.HANDLE",
@@ -179,8 +180,11 @@ describe("concurrent Windows sandbox authority", function()
   local recovery_waiter
   local custody_module = require("neoagent.sandbox.windows.custody")
   local new_custody = custody_module.new
+  local subprocess = require("neoagent.subprocess_common")
+  local run_process = subprocess.run
   after_each(function()
     custody_module.new = new_custody
+    subprocess.run = run_process
     if recovery_waiter then recovery_waiter.resolve(true); recovery_waiter = nil end
     if unlock_timer then
       unlock_timer:stop()
@@ -327,6 +331,7 @@ describe("concurrent Windows sandbox authority", function()
   it("keeps machine registration outside restricted target authority", function()
     local lease, check = access_worker(profile({ { path = root, access = "write" } }))
     assert.are.equal("DENIED", check("coordinator", ""))
+    assert.are.equal("DENIED", check("coordinator", "Executions"))
     finish(lease)
   end)
 
@@ -659,10 +664,29 @@ describe("concurrent Windows sandbox authority", function()
     local left_file, right_file = vim.fs.joinpath(left, "value"), vim.fs.joinpath(right, "value")
     assert.are.equal("ALLOWED", first_check("write", left_file))
     assert.are.equal("ALLOWED", second_check("write", right_file))
+    local recoveries = 0
+    ---@async
+    subprocess.run = function(spec, opts)
+      local settings = spec.environment and spec.environment.set
+      local encoded = settings and settings.NEOAGENT_SANDBOX_SPEC
+      if type(encoded) == "string" and vim.json.decode(encoded).mode == "recover" then
+        recoveries = recoveries + 1
+        if recoveries == 1 then
+          spec = vim.deepcopy(spec)
+          for index, value in ipairs(spec.argv) do
+            if value:match("sandbox_windows_runtime%.lua$") then
+              spec.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+            end
+          end
+        end
+      end
+      return run_process(spec, opts)
+    end
     assert(assert(assert(host)._driver).kill())
     local crashed = helper.success(function() return first:wait() end, 15000)
     assert.is_not_nil(crashed.error)
     assert.is_true(helper.success(function() return first:wait_release() end, 15000))
+    assert.are.equal(2, recoveries, "release must retain native evidence across failed recovery")
     local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
     assert.is_true(recovered.ok, vim.inspect(recovered))
     assert.are.equal("ALLOWED", second_check("write", right_file))

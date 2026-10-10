@@ -592,7 +592,7 @@ describe("neoagent shared sandbox contract", function()
         enabled = true, profile = profile,
       }, {
         platform = selected_platform, status = status,
-        create_worker = function(request)
+        start_worker = function(request)
           child = observed_worker(request, function(pid)
             guardian_pid = pid
           end)
@@ -666,7 +666,7 @@ describe("neoagent shared sandbox contract", function()
         enabled = true, profile = profile,
       }, {
         platform = selected_platform, status = status,
-        create_worker = function(request)
+        start_worker = function(request)
           child = observed_worker(request, function(pid)
             worker_pid = pid
           end)

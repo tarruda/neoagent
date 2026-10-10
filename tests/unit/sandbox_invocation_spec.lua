@@ -61,6 +61,22 @@ describe("sandbox invocation ownership", function()
     end)
   end
 
+  it("keeps disposal and native cleanup failures in its single final outcome", function()
+    local owner, lease, _, state = resources()
+    local dispose_error = util.error("sandbox_unavailable", "worker disposal failed")
+    local native_error = util.error("worker_exit", "native cleanup failed")
+    lease.dispose = function() error(dispose_error, 0) end
+    lease.wait = function() return { code = 0, stderr = "", cleanup_error = native_error } end
+    local result = wait(async.run(function()
+      owner:open({})
+      owner:dispose("test forced shutdown")
+      return { error = owner:close(true) }
+    end))
+    assert.are.equal(dispose_error.message, assert(result.error).message)
+    assert.are.same(native_error, assert(result.error).cause)
+    assert.are.same({ { error = result.error } }, state.reports)
+  end)
+
   it("retains admission after its observer cancels and closes cooperatively", function()
     local owner, lease, _, state = resources()
     ---@type Neoagent.AwaitCallbacks<true>?

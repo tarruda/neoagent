@@ -269,6 +269,34 @@ describe("native process helpers", function()
     assert.are.same({ "job", "process" }, closed)
   end)
 
+  it("retries failed termination after disposal until the retained Job releases", function()
+    local denied, empty, attempts = true, false, 0
+    local tree = assert(start({ backend = {
+      create = function() return "job" end,
+      open = function() return "process" end,
+      assign = function() return true end,
+      running = function() return not empty end,
+      empty = function() return empty end,
+      terminate = function()
+        attempts = attempts + 1
+        if denied then return nil, "Win32 error 5" end
+        empty = true
+        return true
+      end,
+      close = function() end,
+    } }))
+    assert(tree:attach(42))
+    tree:close()
+    assert.is_nil(tree.closed)
+    assert.are.equal(1, attempts)
+    denied = false
+    local released = vim.wait(2000, function() return tree.closed == true end, 5)
+    -- Teardown must also terminate the failing baseline's retained Job.
+    if not released then tree:terminate(); tree:poll() end
+    assert.is_true(released, "disposed Job never retried its failed termination")
+    assert.is_true(attempts > 1)
+  end)
+
   for _, refused in ipairs({ "allocation", "scheduling" }) do
     it("releases partial native ownership when Job observation " .. refused .. " fails", function()
       local new_timer = vim.uv.new_timer

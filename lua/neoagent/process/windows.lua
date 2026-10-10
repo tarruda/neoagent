@@ -54,6 +54,10 @@ local M = {}
 ---@field disposed? boolean
 ---@field empty? boolean
 ---@field observation_failed? boolean
+---@field termination_sent? boolean
+---@field termination_failed? boolean
+---@field retry_termination_ns? number
+---@field retry_delay_ms? integer
 ---@field monitor? uv.uv_timer_t
 ---@field callbacks Neoagent.WindowsProcessCallbacks
 local Tree = {}
@@ -202,6 +206,23 @@ function Tree:poll()
     return
   end
   if not self.empty then
+    if self.disposed and self.job ~= nil and not self.termination_sent then
+      local now = vim.uv.hrtime()
+      if not self.retry_termination_ns or now >= self.retry_termination_ns then
+        local stopped, err = self.backend.terminate(self.job, 125)
+        if stopped then
+          self.termination_sent = true
+        else
+          local delay = self.retry_delay_ms or 20
+          self.retry_termination_ns = now + delay * 1000000
+          self.retry_delay_ms = math.min(delay * 2, 1000)
+          if not self.termination_failed then
+            self.termination_failed = true
+            self.callbacks.failed("Could not terminate process Job (" .. assert(err) .. ")")
+          end
+        end
+      end
+    end
     if self.job ~= nil and (self.attached or self.disposed) then
       local empty, err = self.backend.empty(assert(self.job))
       if empty == nil then
@@ -281,7 +302,8 @@ function Tree:adopt(process)
   self.process = process
   self.attached = true
   if self.disposed then
-    self:terminate(125)
+    self.termination_sent = nil
+    self.retry_termination_ns = nil
     self:poll()
   end
 end
@@ -309,7 +331,6 @@ function Tree:close()
     return
   end
   self.disposed = true
-  self:terminate(125)
   self:poll()
 end
 

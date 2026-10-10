@@ -231,4 +231,55 @@ describe("native retained process authority", function()
     assert.matches("NEXT", next_admission.result.text, 1, true)
     next_admission.commit()
   end)
+
+  if jit.os == "Windows" then
+    it("reclaims retained capacity after native Windows release despite a lost RPC channel", function()
+      local workers = require("neoagent.sandbox.worker")
+      local construct = workers.new
+      ---@type Neoagent.SandboxInvocation?
+      local invocation
+      workers.new = function(...)
+        local value = construct(...)
+        invocation = value
+        return value
+      end
+      local factory = remote.factory(require("neoagent.sandbox.placement").new({ profile = profile,
+        platform = assert(platform), capabilities = assert(status).capabilities, nvim = vim.env.NEOAGENT_NVIM }), {})
+      owner = sessions.new({ capacity = 1 }, nil, factory)
+      ---@type Neoagent.TestProcessAdmission?
+      local admission
+      local started, failure = pcall(function()
+        admission = helper.success(function()
+          return helper.admit(owner, { argv = { "python", "-u", "-c",
+            "import time; print('READY', flush=True); time.sleep(120)" }, cwd = root,
+            stdio = { kind = "pipes" } }, 0)
+        end, 30000)
+      end)
+      workers.new = construct
+      assert.is_true(started, vim.inspect(failure))
+      local id = assert(assert(admission).commit())
+      local native = assert(invocation)
+      native.connection:abort(require("neoagent.util").error("protocol", "lost retained channel"))
+      assert.is_false(native:is_released())
+      assert.are.equal(1, owner:status().reserved, "channel failure released capacity before native proof")
+      assert.is_true(helper.complete(function() return native:wait_release() end, 20000))
+      -- Native ownership is already released. Leave no failed baseline's
+      -- quarantined record in the common teardown's release wait.
+      local manager = owner
+      owner = sessions.new()
+      assert.is_true(helper.complete(function() return manager:wait_release(1000) end))
+      owner = manager
+      assert.are.equal(0, owner:status().reserved)
+      local result = helper.success(function() return owner:interact(id, 0) end)
+      assert.is_true(result.done)
+      assert.is_not_nil(result.error, "native release must preserve the channel operation failure")
+      local next_admission = helper.success(function()
+        return helper.admit(owner, { argv = { "python", "-c", "print('NEXT')" },
+          cwd = root, stdio = { kind = "pipes" } }, 30000)
+      end, 35000)
+      assert.are.equal(0, assert(next_admission.result.outcome).code)
+      assert.matches("NEXT", next_admission.result.text, 1, true)
+      next_admission.commit()
+    end)
+  end
 end)

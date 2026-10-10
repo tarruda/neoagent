@@ -84,11 +84,8 @@ end
 -- The invocation owns this object before preparation or native allocation.
 -- Startup failure settles through the same cleanup owner as a running worker.
 function Relay:start()
-  assert(not self._started, "sandbox worker already started")
+  assert(not self._started and not self._disposed, "sandbox worker already started or disposed")
   self._started = true
-  if self._disposed then
-    return
-  end
   self._preparing = true
   local ok, err = pcall(function()
     assert(self._opts.start)(self)

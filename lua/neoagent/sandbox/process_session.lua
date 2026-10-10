@@ -27,6 +27,9 @@ end
 ---@param on_released? fun()
 ---@return Neoagent.ProcessController
 local function controller(spec, maximum, launch, on_cleanup, on_released)
+  -- Capture the admitted platform's native release guarantee. Worker exit
+  -- alone cannot substitute for the target acknowledgement on POSIX.
+  local contained = launch.platform.release_covers_descendants == true
   local buffer = require("neoagent.process_sessions.buffer").new(maximum)
   local dropped = 0
   ---@type Neoagent.SandboxInvocation?
@@ -72,7 +75,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   local changed = notification.wait
   local function released()
     return shutdown.phase == "settled"
-      and (not target_requested or completion.released)
+      and (not target_requested or completion.released or contained)
       and (not invocation or invocation:is_released())
   end
   local function notify()
@@ -132,9 +135,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
     report_cleanup(first_cleanup_error)
   end
   local function observe_worker_cleanup(err)
-    if shutdown.phase == "settled" then
-      return
-    end
+    assert(shutdown.phase ~= "settled", "Worker cleanup was already observed")
     if err then
       -- Native and staging failures already share the worker's cause chain.
       -- Add the independent target failure without replacing that structure.
@@ -205,7 +206,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       return
     end
     shutdown.forced = true
-    if target_requested and not completion.released then
+    if target_requested and not completion.released and not contained then
       release_error = util.with_cause(
         validate.error("process_cleanup", "Target release could not be confirmed; capacity remains reserved"),
         failure

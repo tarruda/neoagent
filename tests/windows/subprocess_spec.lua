@@ -415,6 +415,56 @@ print('native-strings:ok', flush=True)
   end)
 
   for _, kind in ipairs({ "pipes", "pty" }) do
+    it("retries " .. kind .. " termination after its cleanup deadline", function()
+      local trees = require("neoagent.process.windows")
+      local create = trees.new
+      local denied, output = true, ""
+      ---@type Neoagent.WindowsProcessTree?
+      local native
+      trees.new = function(options)
+        local tree = create(options)
+        native = tree
+        local terminate = tree.backend.terminate
+        tree.backend.terminate = function(job, code)
+          if denied then return nil, "Win32 error 5" end
+          return terminate(job, code)
+        end
+        return tree
+      end
+      local ok, err = pcall(function()
+        -- Pipe fallback can kill the root, and closing ConPTY can end its
+        -- console processes. A detached-console descendant still belongs to
+        -- the same Job and requires the retained native termination owner.
+        local script = [=[import subprocess,sys,time
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+  creationflags=subprocess.CREATE_NO_WINDOW)
+print('READY', flush=True)
+time.sleep(60)]=]
+        local handle = owner:spawn(spec({ "python", "-u", "-c", script,
+        }, { kind = kind, columns = kind == "pty" and 80 or nil, rows = kind == "pty" and 24 or nil }), {
+          on_output = function(event) output = output .. event.data end,
+        })
+        assert(vim.wait(5000, function() return output:find("READY", 1, true) ~= nil end, 5))
+        handle:dispose("termination retry regression")
+        local cleanup = helper.complete(function() return handle:wait_cleanup() end, 5000)
+        assert.is_not_nil(cleanup.error)
+        local tree = assert(native)
+        assert.is_false(tree.backend.empty(assert(tree.job)))
+        assert.is_false(owner:is_released())
+        denied = false
+        assert.is_true(vim.wait(5000, function() return owner:is_released() end, 5),
+          "native cleanup did not retry termination after its failure cleared")
+        assert.are.same(cleanup, helper.complete(function() return handle:wait_cleanup() end))
+      end)
+      trees.new, denied = create, false
+      if native then native:terminate() end -- Also clean the failing baseline.
+      owner:close("termination retry regression finished")
+      assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+      owner = subprocess.scope()
+      assert.is_true(ok, vim.inspect(err))
+    end)
+
     it("preserves " .. kind .. " supervision errors after native Job observation recovers", function()
       local trees = require("neoagent.process.windows")
       local create = trees.new

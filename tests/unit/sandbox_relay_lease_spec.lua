@@ -39,6 +39,16 @@ local function exited(code, signal)
 end
 
 describe("neoagent native sandbox relay lease", function()
+  it("rejects startup after unstarted ownership was disposed", function()
+    local starts = 0
+    local relay = relay_lease.new({ start = function() starts = starts + 1 end })
+    relay:dispose("admission revoked")
+    assert.is_false((pcall(relay.start, relay)))
+    assert.are.equal(0, starts)
+    assert.are.equal("cancelled", assert(relay:wait().error).kind)
+    assert.is_true(relay:is_released())
+  end)
+
   it("keeps native release independent of completion and observer cancellation", function()
     local helper = require("tests.helpers.subprocess")
     local base = base_child()

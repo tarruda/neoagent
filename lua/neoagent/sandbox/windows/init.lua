@@ -46,6 +46,7 @@ local M = {
   name = "windows",
   paths = path_module.windows(),
   finalization_timeout_ms = 60000,
+  release_covers_descendants = true,
 }
 
 local PROBE_TIMEOUT_MS = 30000
