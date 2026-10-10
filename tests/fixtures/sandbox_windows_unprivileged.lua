@@ -3,30 +3,33 @@
 -- an elevated CI parent must not conceal dependence on its own privileges.
 local ffi = require("ffi")
 local load = ffi.load
+local stripped = false
 ffi.load = function(name, global)
   local library = load(name, global)
   if name == "advapi32" then
-    local kernel = load("kernel32")
-    local token = (
-      ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]]
-    )
-    assert(library.OpenProcessToken(kernel.GetCurrentProcess(), 0x28, token) ~= 0)
-    for _, privilege in ipairs({ "SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege" }) do
-      local name_wide = (
-        ffi.new("WCHAR[?]", #privilege + 1) --[[@as Neoagent.FfiArray<integer>]]
-      )
-      for index = 1, #privilege do
-        name_wide[index - 1] = privilege:byte(index)
-      end
-      local value = (
-        ffi.new("TOKEN_PRIVILEGES") --[[@as Neoagent.Win32.TOKEN_PRIVILEGES]]
-      )
-      value.PrivilegeCount = 1
-      assert(library.LookupPrivilegeValueW(nil, name_wide, value.Privileges[0].Luid) ~= 0)
-      value.Privileges[0].Attributes = 4 -- SE_PRIVILEGE_REMOVED, not merely disabled.
-      assert(library.AdjustTokenPrivileges(token[0], 0, value, 0, nil, nil) ~= 0)
-    end
-    kernel.CloseHandle(token[0])
+    return setmetatable({
+      OpenProcessToken = function(...)
+        -- Bind the intervention to token use, after its declarations exist;
+        -- native module loading order must not supply the fixture's timing.
+        if not stripped then
+          stripped = true
+          local kernel = load("kernel32")
+          local token = ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]]
+          assert(library.OpenProcessToken(kernel.GetCurrentProcess(), 0x28, token) ~= 0)
+          for _, privilege in ipairs({ "SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege" }) do
+            local name_wide = ffi.new("WCHAR[?]", #privilege + 1) --[[@as Neoagent.FfiArray<integer>]]
+            for index = 1, #privilege do name_wide[index - 1] = privilege:byte(index) end
+            local value = ffi.new("TOKEN_PRIVILEGES") --[[@as Neoagent.Win32.TOKEN_PRIVILEGES]]
+            value.PrivilegeCount = 1
+            assert(library.LookupPrivilegeValueW(nil, name_wide, value.Privileges[0].Luid) ~= 0)
+            value.Privileges[0].Attributes = 4 -- SE_PRIVILEGE_REMOVED, not merely disabled.
+            assert(library.AdjustTokenPrivileges(token[0], 0, value, 0, nil, nil) ~= 0)
+          end
+          kernel.CloseHandle(token[0])
+        end
+        return library.OpenProcessToken(...)
+      end,
+    }, { __index = library })
   elseif name == "ntdll" then
     local security, kernel = load("advapi32"), load("kernel32")
     return setmetatable({

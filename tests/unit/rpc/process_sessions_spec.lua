@@ -65,7 +65,7 @@ describe("retained process RPC", function()
         check = function()
           return { ok = true, platform = "test" }
         end,
-        start_worker = function(request)
+        create_worker = function(request)
           if vim.env.NEOAGENT_COVERAGE == "1" then
             table.insert(request.argv, 2, "--cmd")
             table.insert(request.argv, 3, ("lua dofile(%q)"):format(root .. "/tests/fixtures/coverage_worker.lua"))
@@ -110,12 +110,13 @@ describe("retained process RPC", function()
             end })
             request.on_stdout = function(bytes) decoder:feed(bytes) end
           end
-          local lease = workers.start(request)
+          local lease = workers.new(request)
           if hold_worker_release then
             local is_released, wait_release = lease.is_released, lease.wait_release
             function lease:is_released()
               return not hold_worker_release and is_released(self)
             end
+            ---@async
             function lease:wait_release()
               wait_release(self)
               if hold_worker_release then
@@ -135,6 +136,7 @@ describe("retained process RPC", function()
           end
           if fail_worker_cleanup or hold_worker_wait then
             local wait = lease.wait
+            ---@async
             function lease:wait()
               local result = wait(self)
               if hold_worker_wait then
@@ -163,6 +165,8 @@ describe("retained process RPC", function()
             -- Keep this test's real RPC transport; the relay owns staging
             -- completion and release exactly as on the native platform.
             return {
+              start = function() lease:start() end,
+              wait_ready = function() return true end,
               write = function(_, bytes) return lease:write(bytes) end,
               close_stdin = function() return lease:close_stdin() end,
               terminate = function(_, reason) lease:terminate(reason) end,

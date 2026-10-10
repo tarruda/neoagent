@@ -433,7 +433,7 @@ describe("neoagent Windows sandbox", function()
     assert.are.equal("10013", vim.trim(value.stdout))
   end)
 
-  it("preserves failed native ACL revocation after target exit until a separate recovery", function()
+  it("preserves failed native ACL revocation after eventual recovery releases its authority", function()
     local worker = require("neoagent.rpc.worker_lease")
     local nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath
     ---@type Neoagent.SandboxExecutionServices
@@ -446,7 +446,7 @@ describe("neoagent Windows sandbox", function()
       end
       return worker.start(request)
     end
-    local lease = windows.start_worker({
+    local lease = require("tests.helpers.sandbox").start_worker(windows, {
       argv = { "cmd.exe", "/d", "/s", "/c", "exit 7" }, cwd = root, env = environment,
       profile = windows.compile(profile()),
     }, services)
@@ -454,22 +454,18 @@ describe("neoagent Windows sandbox", function()
       local result = wait(async.run(function() return lease:wait() end))
       assert.are.equal(7, result.code, vim.inspect(result))
       assert.is_nil(result.error)
-      assert.matches("acl-build", assert(result.cleanup_error).message, 1, true)
-      assert.are.equal("errno=5", assert(result.cleanup_error).detail)
-      assert.is_false(lease:is_released())
-      local released = require("tests.helpers.subprocess").complete(function() return lease:wait_release() end)
-      assert.are.same(result.cleanup_error, released.error)
+      assert.matches("acl-build (errno=5)", tostring(assert(result.cleanup_error).detail), 1, true)
+      assert.is_true(require("tests.helpers.subprocess").complete(function() return lease:wait_release() end, 15000))
+      assert.are.same(result.cleanup_error, lease:wait().cleanup_error)
     end)
     lease:dispose("native cleanup test finished")
-    -- Real recovery revokes the recorded ACLs. This completed lease has no
-    -- recovery subscription and must keep its unconfirmed release quarantined.
     local recovered = windows.check(services)
     assert.is_true(recovered.ok, vim.inspect(recovered))
-    assert.is_false(lease:is_released())
+    assert.is_true(lease:is_released())
     assert(checked, vim.inspect(failure))
   end)
 
-  it("kills descendants on timeout and reconciles interrupted ACL leases", function()
+  it("kills descendants on forced shutdown and recovers through retained Job evidence", function()
     local escaped = vim.fs.joinpath(root, "escaped.txt")
     local child = vim.fs.joinpath(root, "child.cmd")
     local parent = vim.fs.joinpath(root, "parent.ps1")
@@ -485,20 +481,33 @@ describe("neoagent Windows sandbox", function()
       "$arguments = '/d /c \"' + $child + '\"'",
       "Start-Process -FilePath $env:COMSPEC "
         .. "-ArgumentList $arguments -WindowStyle Hidden",
+      "Write-Output 'CHILD-STARTED'",
       "Start-Sleep -Seconds 30",
       "",
     }, "\r\n")))
-    local value = run({
-      "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-      "-ExecutionPolicy", "Bypass", "-File", parent,
-    }, options({ timeout_ms = 500, kill_grace_ms = 0 }))
-    assert.is_true(value.timed_out)
-    assert.is_false((vim.wait(5000, function()
-      return vim.uv.fs_stat(escaped) ~= nil
-    end, 20)))
-    assert.is_nil(vim.uv.fs_stat(escaped))
+    local output = ""
+    local lease = require("tests.helpers.sandbox").start_worker(windows, {
+      argv = { "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", parent },
+      cwd = root, env = environment, profile = windows.compile(profile()), kill_grace_ms = 0,
+      on_stdout = function(bytes) output = output .. bytes end,
+    }, { fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+    local checked, failure = pcall(function()
+      wait(async.run(function() return assert(lease.wait_ready)(lease) end))
+      assert(vim.wait(30000, function() return output:find("CHILD-STARTED", 1, true) ~= nil end, 10))
+      lease:dispose("native command deadline")
+      wait(async.run(function() return lease:wait() end))
+      assert.is_true(require("tests.helpers.subprocess").complete(function() return lease:wait_release() end, 15000))
+      assert.is_false((vim.wait(5000, function() return vim.uv.fs_stat(escaped) ~= nil end, 20)))
+      assert.is_nil(vim.uv.fs_stat(escaped))
+    end)
+    lease:dispose("forced shutdown test finished")
+    wait(async.run(function() return lease:wait() end))
+    local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+    assert.is_true(recovered.ok, vim.inspect(recovered))
+    if not checked then error(failure, 0) end
 
-    value = run({
+    local value = run({
       "cmd.exe", "/d", "/s", "/c",
       'echo changed>"' .. vim.fs.joinpath(readonly, "config") .. '"',
     }, options())

@@ -8,10 +8,24 @@ int __stdcall ReleaseMutex(void *);
 int __stdcall CloseHandle(void *);
 ]])
 local kernel = ffi.load("kernel32")
-local name = dofile(vim.fs.joinpath(assert(vim.uv.cwd()), "scripts", "sandbox_windows_coordinator.lua")).mutex
-local wide = (ffi.new("unsigned short[?]", #name + 1) --[[@as Neoagent.FfiArray<integer>]])
-for index = 1, #name do wide[index - 1] = name:byte(index) end
-local mutex = kernel.CreateMutexW(nil, 0, wide)
+local checkout = assert(vim.uv.cwd())
+local coordinator = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_coordinator.lua"))
+local objects = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_objects.lua"))
+local file = assert(io.open(vim.fs.joinpath(assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json"), "rb"))
+local state = vim.json.decode((file:read("*a")))
+file:close()
+---@param text string
+local function wide(text)
+  local value = ffi.new("unsigned short[?]", #text + 1) --[[@as Neoagent.FfiArray<integer>]]
+  for index = 1, #text do value[index - 1] = text:byte(index) end
+  return value
+end
+local namespace = objects.new(coordinator.namespace, {
+  identity = state.owner_sid, wide = wide,
+  failure = function(stage, code) error(stage .. ": " .. tostring(code)) end,
+})
+namespace:join(vim.uv.hrtime() + 10000000000)
+local mutex = kernel.CreateMutexW(nil, 0, wide(namespace:path("journal")))
 assert(mutex ~= nil)
 local status = kernel.WaitForSingleObject(mutex, 10000)
 assert(status == 0 or status == 0x80)
@@ -26,4 +40,5 @@ input:read_stop()
 input:close()
 assert(kernel.ReleaseMutex(mutex) ~= 0)
 kernel.CloseHandle(mutex)
+namespace:close(false)
 assert(observed, "authority contention test did not release its mutex")

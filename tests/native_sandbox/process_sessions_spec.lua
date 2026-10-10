@@ -186,4 +186,49 @@ describe("native retained process authority", function()
     assert.is_true(helper.complete(function() return owner:wait_release(15000) end, 20000))
     assert.are.equal(0, owner:status().reserved)
   end)
+
+  it("finishes cancelled native admission before admitting another worker", function()
+    local async = require("neoagent.async")
+    local connections = require("neoagent.rpc.connection")
+    local original = connections.new
+    ---@type Neoagent.AwaitCallbacks<true>?
+    local opening
+    connections.new = function(options)
+      local connection = original(options)
+      local open = connection.open
+      ---@async
+      function connection:open(context)
+        -- Native readiness has already launched the restricted RPC worker.
+        -- Delay opening only; no additional native owner helps its cleanup.
+        async.await(function(done) opening = done end)
+        return open(self, context)
+      end
+      return connection
+    end
+    local factory = remote.factory(require("neoagent.sandbox.placement").new({ profile = profile,
+      platform = assert(platform), capabilities = assert(status).capabilities, nvim = vim.env.NEOAGENT_NVIM }), {})
+    owner = sessions.new({ capacity = 1 }, nil, factory)
+    local marker = vim.fs.joinpath(root, "cancelled-command")
+    local admitting = async.run(function()
+      return helper.admit(owner, { argv = { jit.os == "Windows" and "python" or "python3", "-c",
+        "open('cancelled-command', 'w').write('ran')" }, cwd = root, stdio = { kind = "pipes" } }, 0)
+    end)
+    local reached = vim.wait(30000, function() return opening ~= nil or admitting:is_done() end, 5)
+    connections.new = original
+    admitting:cancel()
+    if opening then opening.resolve(true) end
+    assert.is_true(reached)
+    assert.is_not_nil(opening, vim.inspect(admitting:result()))
+    assert.are.equal("cancelled", assert(helper.wait(admitting).error).kind)
+    assert.is_true(helper.complete(function() return owner:wait_cleanup(15000) end, 20000))
+    assert.is_true(helper.complete(function() return owner:wait_release(15000) end, 20000))
+    assert.is_nil(vim.uv.fs_stat(marker), "cancelled admission executed its requested command")
+    local next_admission = helper.success(function()
+      return helper.admit(owner, { argv = { jit.os == "Windows" and "python" or "python3", "-c", "print('NEXT')" },
+        cwd = root, stdio = { kind = "pipes" } }, 30000)
+    end, 35000)
+    assert.are.equal(0, assert(next_admission.result.outcome).code, vim.inspect(next_admission.result))
+    assert.matches("NEXT", next_admission.result.text, 1, true)
+    next_admission.commit()
+  end)
 end)

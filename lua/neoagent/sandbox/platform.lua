@@ -36,7 +36,7 @@
 ---@field name string
 ---@field paths? Neoagent.SandboxPaths
 ---@field check fun(services?: Neoagent.SandboxCheckServices<string>): Neoagent.SandboxStatus
----@field start_worker fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerLease
+---@field create_worker fun(request: Neoagent.SandboxWorkerRequest, services: Neoagent.SandboxExecutionServices): Neoagent.WorkerOwner Pure construction; start() owns all preparation and native effects.
 ---@field prepare? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile Prepare persistent platform storage before compilation and environment capture.
 ---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
 ---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string

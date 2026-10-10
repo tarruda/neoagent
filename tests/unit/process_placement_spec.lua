@@ -42,14 +42,14 @@ describe("Agent retained process placement", function()
           profile.environment.set.NEOAGENT_PLACEMENT_COMPILED = "yes"
           return profile
         end,
-        start_worker = function(request)
+        create_worker = function(request)
           starts = starts + 1
           if vim.env.NEOAGENT_COVERAGE == "1" then
             table.insert(request.argv, 2, "--cmd")
             table.insert(request.argv, 3, ("lua dofile(%q)"):format(
               assert(vim.uv.cwd()) .. "/tests/fixtures/coverage_worker.lua"))
           end
-          return require("neoagent.rpc.worker_lease").start(request)
+          return require("neoagent.rpc.worker_lease").new(request)
         end,
       }
     end

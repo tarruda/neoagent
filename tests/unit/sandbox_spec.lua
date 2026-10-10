@@ -127,6 +127,8 @@ local function loopback_child(request)
     wait = function()
       return util.copy(result)
     end,
+    start = function() end,
+    wait_ready = function() return true end,
     is_released = function() return true end,
     wait_release = function() return true end,
     dispose = function()
@@ -149,7 +151,7 @@ local function test_platform(on_start)
       return { ok = true, platform = "test", capabilities = {} }
     end,
 
-    start_worker = function(request)
+    create_worker = function(request)
       if on_start then
         on_start(request)
       end
@@ -473,7 +475,7 @@ describe("neoagent sandbox composition", function()
       return {
         name = name,
         check = function() return { ok = true, platform = name } end,
-        start_worker = function() error("dispatch must not execute") end,
+        create_worker = function() error("dispatch must not execute") end,
       }
     end
     local linux, macos, windows = platform("linux"), platform("macos"), platform("windows")
@@ -832,7 +834,7 @@ describe("neoagent sandbox composition", function()
           name = "broken",
           check = function() return { ok = true, platform = "broken" } end,
           temporary_root = function() error("temporary root failed") end,
-          start_worker = function() error("must not execute") end,
+          create_worker = function() error("must not execute") end,
 
         },
       })
@@ -860,7 +862,7 @@ describe("neoagent sandbox composition", function()
         check = function() return { ok = true, platform = "test" } end,
         temporary_root = function() error("backend setup failed") end,
 
-        start_worker = function() error("must not execute") end,
+        create_worker = function() error("must not execute") end,
       } })
 
     local status, err = runtime:set_enabled(true)
@@ -988,7 +990,7 @@ describe("neoagent sandbox composition", function()
       platform = {
         name = "broken",
 
-        start_worker = function() error("probe failed") end,
+        create_worker = function() error("probe failed") end,
         check = function() error("probe exploded") end,
       },
     })

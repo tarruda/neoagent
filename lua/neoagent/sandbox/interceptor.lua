@@ -175,7 +175,7 @@ local function create_worker(self, profile, call, owner)
     release()
   end
   local started, failure = pcall(function()
-    invocation = worker.start({
+    invocation = worker.new({
       profile = profile,
       platform = self._placement.platform,
       paths = self._placement.paths,

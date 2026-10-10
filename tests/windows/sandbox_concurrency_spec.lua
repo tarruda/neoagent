@@ -26,7 +26,6 @@ describe("concurrent Windows sandbox authority", function()
   local unlock_timer
   ---@type string[]
   local temporary_directories
-
   ---@param entries Neoagent.SandboxFilesystemEntry[]
   ---@return Neoagent.WindowsSandboxProfile
   local function profile(entries)
@@ -49,7 +48,7 @@ describe("concurrent Windows sandbox authority", function()
   ---@return Neoagent.WorkerLease, fun(): string
   local function start(selected, argv, launch)
     local output = ""
-    local lease = windows.start_worker({
+    local lease = require("tests.helpers.sandbox").start_worker(windows, {
       argv = argv, cwd = root, env = vim.tbl_extend("force", environment, selected.environment.set), profile = selected,
       on_stdout = function(bytes) output = output .. bytes end,
     }, { fs = fs, nvim = vim.env.NEOAGENT_NVIM, start_worker = launch })
@@ -104,6 +103,38 @@ describe("concurrent Windows sandbox authority", function()
       "  elif mode == 'coordinator':",
       "   import winreg",
       "   with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\\Neoagent\\Sandbox', 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY): pass",
+      "  elif mode.startswith('mutex-'):",
+      "   k = ctypes.WinDLL('kernel32', use_last_error=True); a = ctypes.WinDLL('advapi32', use_last_error=True)",
+      "   k.CreateMutexW.restype = w.HANDLE",
+      "   if mode == 'mutex-close':",
+      "    h = w.HANDLE(objects.pop(name)); k.ReleaseMutex(h); k.CloseHandle(h); print('ALLOWED', flush=True); continue",
+      "   class SECURITY(ctypes.Structure): _fields_ = [('length', w.DWORD), ('descriptor', w.LPVOID), ('inherit', w.BOOL)]",
+      "   descriptor = w.LPVOID()",
+      "   if not a.ConvertStringSecurityDescriptorToSecurityDescriptorW(ctypes.c_wchar_p('D:P(D;;GA;;;' + name + ')(A;;GA;;;WD)'), 1, ctypes.byref(descriptor), None): raise RuntimeError('DACL failed')",
+      "   attributes = SECURITY(ctypes.sizeof(SECURITY), descriptor, False)",
+      "   try:",
+      "    h = k.CreateMutexW(ctypes.byref(attributes), True, ctypes.c_wchar_p(r'Global\\NeoagentSandboxAuthority'))",
+      "    if not h: raise PermissionError(ctypes.get_last_error())",
+      "    objects[name] = h",
+      "   finally: k.LocalFree(descriptor)",
+      "  elif mode.startswith('namespace-'):",
+      "   alias, identity = json.loads(name)",
+      "   k = ctypes.WinDLL('kernel32', use_last_error=True); a = ctypes.WinDLL('advapi32', use_last_error=True)",
+      "   k.CreateBoundaryDescriptorW.restype = w.HANDLE",
+      "   k.OpenPrivateNamespaceW.restype = w.HANDLE; k.CreatePrivateNamespaceW.restype = w.HANDLE",
+      "   boundary = w.HANDLE(k.CreateBoundaryDescriptorW(ctypes.c_wchar_p(alias), 0)); sid = w.LPVOID()",
+      "   if not boundary: raise RuntimeError('boundary allocation failed')",
+      "   try:",
+      "    if not a.ConvertStringSidToSidW(ctypes.c_wchar_p(identity), ctypes.byref(sid)): raise RuntimeError('SID failed')",
+      "    if not k.AddSIDToBoundaryDescriptor(ctypes.byref(boundary), sid): raise RuntimeError('boundary SID failed')",
+      "    h = k.OpenPrivateNamespaceW(boundary, ctypes.c_wchar_p(alias)) if mode == 'namespace-open' else k.CreatePrivateNamespaceW(None, boundary, ctypes.c_wchar_p(alias))",
+      "    err = ctypes.get_last_error()",
+      "    if h: k.ClosePrivateNamespace(w.HANDLE(h), 1 if mode == 'namespace-create' else 0)",
+      "    elif mode == 'namespace-open' and err != 5: raise RuntimeError('unexpected namespace error ' + str(err))",
+      "    else: raise PermissionError(err)",
+      "   finally:",
+      "    if sid: k.LocalFree(sid)",
+      "    k.DeleteBoundaryDescriptor(boundary)",
       "  elif mode.startswith('event-'):",
       "   k = ctypes.WinDLL('kernel32', use_last_error=True)",
       "   k.CreateEventW.restype = w.HANDLE; k.OpenEventW.restype = w.HANDLE",
@@ -144,7 +175,13 @@ describe("concurrent Windows sandbox authority", function()
     leases, runs, temporary_directories = {}, {}, {}
   end)
 
+  ---@type Neoagent.AwaitCallbacks<true>?
+  local recovery_waiter
+  local custody_module = require("neoagent.sandbox.windows.custody")
+  local new_custody = custody_module.new
   after_each(function()
+    custody_module.new = new_custody
+    if recovery_waiter then recovery_waiter.resolve(true); recovery_waiter = nil end
     if unlock_timer then
       unlock_timer:stop()
       unlock_timer:close()
@@ -166,6 +203,9 @@ describe("concurrent Windows sandbox authority", function()
     for _, lease in ipairs(leases) do
       lease:dispose("concurrency test finished")
       helper.complete(function() return lease:wait() end, 15000)
+    end
+    for _, lease in ipairs(leases) do
+      assert.is_true(helper.complete(function() return lease:wait_release() end, 15000))
     end
     local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
     assert.is_true(recovered.ok, vim.inspect(recovered))
@@ -230,9 +270,15 @@ describe("concurrent Windows sandbox authority", function()
       assert.are.equal("DENIED", check_second("process-" .. access, first_pid))
     end
     finish(first)
+    -- A new host must join the namespace still owned by the surviving peer,
+    -- even after the host that originally created it has left.
+    local third = access_worker(profile({
+      { path = left, access = "write" }, { path = secret, access = "deny" },
+    }))
     assert.are.equal("ALLOWED", check_second("write", right_file))
     assert.are.equal("DENIED", check_second("read", secret))
     assert.are.equal("DENIED", check_second("write", left_file))
+    finish(third)
     finish(second)
   end)
 
@@ -453,7 +499,7 @@ describe("concurrent Windows sandbox authority", function()
     selected.filesystem.entries[#selected.filesystem.entries + 1] = { path = denied, access = "deny" }
     local compiled = prepare(selected)
     temporary_directories[#temporary_directories + 1] = compiled.environment.set.TEMP
-    local ok, result = pcall(windows.start_worker, {
+    local ok, result = pcall(function(...) return require("tests.helpers.sandbox").start_worker(windows, ...) end, {
       argv = { "python", "-c", "import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_text())", bootstrap },
       cwd = root, env = environment, profile = compiled, bootstrap_paths = { bootstrap },
     }, { fs = fs, nvim = vim.env.NEOAGENT_NVIM })
@@ -605,6 +651,8 @@ describe("concurrent Windows sandbox authority", function()
       host = require("neoagent.rpc.worker_lease").start(request)
       return host
     end)
+    -- The production editor owns custody; this regression retains no test
+    -- handle that could supply evidence absent from ordinary execution.
     local second, second_check = access_worker(profile({
       { path = right, access = "write" },
     }))
@@ -613,16 +661,250 @@ describe("concurrent Windows sandbox authority", function()
     assert.are.equal("ALLOWED", second_check("write", right_file))
     assert(assert(assert(host)._driver).kill())
     local crashed = helper.success(function() return first:wait() end, 15000)
-    assert.is_not_nil(crashed.cleanup_error)
-    assert.is_false(first:is_released())
+    assert.is_not_nil(crashed.error)
+    assert.is_true(helper.success(function() return first:wait_release() end, 15000))
     local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
     assert.is_true(recovered.ok, vim.inspect(recovered))
     assert.are.equal("ALLOWED", second_check("write", right_file))
     assert.are.equal("DENIED", second_check("write", left_file))
     finish(second)
-    -- A different host's recovery cannot retroactively acknowledge this
-    -- failed invocation's resource release to its original caller.
-    assert.is_false(first:is_released())
+    assert.is_true(first:is_released())
+  end)
+
+  it("denies restricted targets access to their host's Job namespace", function()
+    local lease, check = access_worker(profile({ { path = root, access = "write" } }))
+    local directory = assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
+    local state = vim.json.decode((assert(fs.read(vim.fs.joinpath(directory, "state.json")))))
+    local id = assert(next(state.leases))
+    local alias = "NeoagentSandbox-" .. vim.fn.sha256(directory:gsub("/", "\\"):lower()):sub(1, 32)
+      .. "-job-" .. id .. "-" .. state.owner_sid
+    local request = vim.json.encode({ alias, state.owner_sid })
+    assert.are.equal("DENIED", check("namespace-open", request))
+    assert.are.equal("DENIED", check("namespace-create", vim.json.encode({ alias .. "-replacement", state.owner_sid })))
+    finish(lease)
+  end)
+
+  it("keeps coordination independent of a public mutex owned by a restricted target", function()
+    local selected = profile({ { path = root, access = "write" } })
+    local attacker, check = access_worker(selected)
+    local peer = access_worker(selected)
+    local directory = assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE)
+    local state = vim.json.decode((assert(fs.read(vim.fs.joinpath(directory, "state.json")))))
+    assert.are.equal("ALLOWED", check("mutex-create", state.owner_sid))
+    local completed, err = pcall(finish, peer)
+    assert.are.equal("ALLOWED", check("mutex-close", state.owner_sid))
+    finish(attacker)
+    assert.is_true(completed, "untrusted public coordination blocked peer cleanup: " .. vim.inspect(err))
+  end)
+
+  it("keeps abandoned authority when the Job name cannot prove termination", function()
+    ---@type Neoagent.ProcessWorkerLease?
+    local host
+    local protected = vim.fs.joinpath(root, "protected")
+    assert(fs.write_all(protected, "protected"))
+    custody_module.new = function(scripts, recover)
+      return new_custody(scripts, function(id)
+        require("neoagent.async").await(function(done) recovery_waiter = done end)
+        return recover(id)
+      end)
+    end
+    local lease = access_worker(profile({
+      { path = root, access = "write" }, { path = protected, access = "deny" },
+    }), function(request)
+      host = require("neoagent.rpc.worker_lease").start(request)
+      return host
+    end)
+    custody_module.new = new_custody
+    assert(assert(assert(host)._driver).kill())
+    local crashed = helper.success(function() return lease:wait() end, 15000)
+    assert.is_not_nil(crashed.cleanup_error)
+    local path = vim.fs.joinpath(assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")
+    local recorded = assert(fs.read(path))
+    local checked = windows.check({
+      fs = fs, nvim = vim.env.NEOAGENT_NVIM,
+      system = function(argv, options, timeout)
+        for index, value in ipairs(argv) do
+          if value:match("sandbox_windows_runtime%.lua$") then
+            argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+          end
+        end
+        return vim.system(argv, options):wait(timeout)
+      end,
+    })
+    assert.is_false(checked.ok, "missing native identity erased the abandoned policy reservation")
+    assert.are.equal("lease-job-unconfirmed", checked.stage)
+    assert.are.equal(recorded, fs.read(path), "unconfirmed recovery changed the authority inventory")
+    assert(recovery_waiter).resolve(true)
+    recovery_waiter = nil
+    assert.is_true(helper.success(function() return lease:wait_release() end, 15000))
+  end)
+
+  it("records confirmed Job emptiness before closing its last handle", function()
+    local record = vim.fs.joinpath(root, "job-closed.json")
+    local lease = start(profile({ { path = root, access = "write" } }), { "cmd.exe", "/d", "/c", "exit 0" },
+      function(request)
+        request.env.NEOAGENT_JOB_TEST_FAILURE = "closed"
+        request.env.NEOAGENT_JOB_TEST_RECORD = record
+        for index, value in ipairs(request.argv) do
+          if value:match("sandbox_windows_runtime%.lua$") then
+            request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+          end
+        end
+        return require("neoagent.rpc.worker_lease").start(request)
+      end)
+    local crashed = helper.success(function() return lease:wait() end, 30000)
+    assert.is_not_nil(crashed.error)
+    local recorded = vim.json.decode((assert(fs.read(record))))
+    assert.are.equal("empty", recorded.job, "the last handle closed before termination evidence was journaled")
+    local checked = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+    assert.is_true(checked.ok, vim.inspect(checked))
+    local state = vim.json.decode((assert(fs.read(vim.fs.joinpath(
+      assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")))))
+    assert.is_nil(state.leases[recorded.id])
+  end)
+
+  for _, phase in ipairs({ "persist", "read" }) do
+    it("keeps native termination evidence through a failed journal " .. phase, function()
+      local record = vim.fs.joinpath(root, "failed-empty-write.json")
+        local lease = start(profile({ { path = root, access = "write" } }), { "cmd.exe", "/d", "/c", "exit 0" },
+        function(request)
+          request.env.NEOAGENT_JOB_TEST_FAILURE = phase
+          request.env.NEOAGENT_JOB_TEST_RECORD = record
+          for index, value in ipairs(request.argv) do
+            if value:match("sandbox_windows_runtime%.lua$") then
+              request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+            end
+          end
+          return require("neoagent.rpc.worker_lease").start(request)
+        end)
+      local result = helper.success(function() return lease:wait() end, 30000)
+      local observed = vim.json.decode((assert(fs.read(record))))
+      assert.are.equal("empty", observed.job)
+      assert.is_nil(result.error, vim.inspect(result))
+      assert.is_nil(result.cleanup_error, "one failed journal operation discarded the only termination evidence")
+      assert.is_true(helper.complete(function() return lease:wait_release() end, 10000))
+      local checked = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+      assert.is_true(checked.ok, vim.inspect(checked))
+    end)
+  end
+
+  it("allows failed admission to complete native rollback before its parent deadline", function()
+    local record = vim.fs.joinpath(root, "admission-empty-write.json")
+    local relay = require("neoagent.sandbox.relay_lease")
+    local previous = relay.DEFAULT_ADMISSION_TIMEOUT_MS
+    relay.DEFAULT_ADMISSION_TIMEOUT_MS = 10000
+    local created, lease = pcall(start, profile({ { path = root, access = "write" } }), { "cmd.exe", "/d", "/c", "exit 0" },
+      function(request)
+        request.env.NEOAGENT_JOB_TEST_FAILURE = "admission"
+        request.env.NEOAGENT_JOB_TEST_RECORD = record
+        for index, value in ipairs(request.argv) do
+          if value:match("sandbox_windows_runtime%.lua$") then
+            request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+          end
+        end
+        local child = require("neoagent.rpc.worker_lease").start(request)
+        -- Start observing readiness at rollback, independently of machine
+        -- account-creation latency. The native cleanup budget is still active.
+        if not vim.wait(30000, function() return fs.read(record) ~= nil end, 10) then
+          child:dispose("admission regression did not reach rollback")
+          local result = helper.success(function() return child:wait() end, 10000)
+          error("admission regression did not reach rollback: " .. vim.inspect(result))
+        end
+        return child
+      end)
+    relay.DEFAULT_ADMISSION_TIMEOUT_MS = previous
+    assert(created, vim.inspect(lease))
+    local ready = helper.complete(function() return assert(lease.wait_ready)(lease) end, 20000)
+    assert.matches("target-create", assert(ready.error).message, 1, true)
+    local result = helper.success(function() return lease:wait() end, 10000)
+    assert.is_nil(result.cleanup_error, vim.inspect(result))
+    assert.is_true(helper.complete(function() return lease:wait_release() end, 10000))
+  end)
+
+  for _, phase in ipairs({ "admission_expired", "creation_expired", "resume" }) do
+    it("rejects execution after native " .. phase, function()
+      local marker = vim.fs.joinpath(root, "must-not-run")
+      local lease = start(profile({ { path = root, access = "write" } }),
+        { "python", "-c", "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')", marker },
+        function(request)
+          request.env.NEOAGENT_JOB_TEST_FAILURE = phase
+          local spec = vim.json.decode((assert(request.env.NEOAGENT_SANDBOX_SPEC)))
+          spec.admission_timeout_ms = 1000
+          request.env.NEOAGENT_SANDBOX_SPEC = vim.json.encode(spec)
+          for index, value in ipairs(request.argv) do
+            if value:match("sandbox_windows_runtime%.lua$") then
+              request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+            end
+          end
+          return require("neoagent.rpc.worker_lease").start(request)
+        end)
+      local ready = helper.complete(function() return assert(lease.wait_ready)(lease) end, 15000)
+      local result = helper.success(function() return lease:wait() end, 15000)
+      assert.is_nil(fs.read(marker), "execution started after the admission deadline")
+      assert.matches(phase == "resume" and "target-resume" or "admission-timeout", assert(ready.error).message, 1, true)
+      assert.is_nil(result.cleanup_error, vim.inspect(result))
+      assert.is_true(helper.complete(function() return lease:wait_release() end, 10000))
+    end)
+  end
+
+  it("bounds unavailable journal persistence without retiring unconfirmed authority", function()
+    local record = vim.fs.joinpath(root, "unavailable-empty-write.json")
+    local lease = start(profile({ { path = root, access = "write" } }), { "cmd.exe", "/d", "/c", "exit 0" },
+      function(request)
+        request.env.NEOAGENT_JOB_TEST_FAILURE = "persist_deadline"
+        request.env.NEOAGENT_JOB_TEST_RECORD = record
+        local spec = vim.json.decode((assert(request.env.NEOAGENT_SANDBOX_SPEC)))
+        spec.finalization_timeout_ms = 500
+        request.env.NEOAGENT_SANDBOX_SPEC = vim.json.encode(spec)
+        for index, value in ipairs(request.argv) do
+          if value:match("sandbox_windows_runtime%.lua$") then
+            request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+          end
+        end
+        return require("neoagent.rpc.worker_lease").start(request)
+      end)
+    helper.success(function() return assert(lease.wait_ready)(lease) end, 30000)
+    local result = helper.success(function() return lease:wait() end, 5000)
+    assert.is_nil(result.error, vim.inspect(result))
+    assert.matches("state-replace", tostring(assert(result.cleanup_error).detail), 1, true)
+    local observed = vim.json.decode((assert(fs.read(record))))
+    assert.are.equal("empty", observed.job)
+    assert.is_true(helper.complete(function() return lease:wait_release() end, 15000))
+    local state = vim.json.decode((assert(fs.read(vim.fs.joinpath(
+      assert(vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE), "state.json")))))
+    assert.is_nil(state.leases[observed.id], "confirmed recovery retained the old authority reservation")
+  end)
+
+  it("lets a completed health probe retain its native finalization budget", function()
+    local record = vim.fs.joinpath(root, "probe-empty-write.json")
+    local checked = windows.check({
+      fs = fs, nvim = vim.env.NEOAGENT_NVIM, probe_timeout_ms = 10,
+      system = function(argv, options, timeout)
+        local env = assert(options.env)
+        env.NEOAGENT_JOB_TEST_FAILURE = "persist_delay"
+        env.NEOAGENT_JOB_TEST_RECORD = record
+        for index, value in ipairs(argv) do
+          if value:match("sandbox_windows_runtime%.lua$") then
+            argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_job_failure.lua"))
+          end
+        end
+        lock_holder = vim.system(argv, options)
+        -- Begin the outer observation at native finalization to isolate its
+        -- budget from machine-dependent account and process startup latency.
+        local observed = vim.wait(30000, function()
+          local bytes = fs.read(record)
+          if not bytes or bytes == "" then return false end
+          local decoded, value = pcall(vim.json.decode, bytes)
+          return decoded and value.job == "empty"
+        end, 10)
+        if not observed then lock_holder:kill(9) end
+        local result = lock_holder:wait(observed and timeout or 5000)
+        lock_holder = nil
+        assert(observed, vim.inspect(result))
+        return result
+      end,
+    })
+    assert.is_true(checked.ok, "the probe killed its native cleanup owner: " .. vim.inspect(checked))
   end)
 
   it("rejects an incompatible journal without migrating or replacing it", function()
@@ -688,17 +970,7 @@ describe("concurrent Windows sandbox authority", function()
       assert.is_not_nil(admission.error, vim.inspect(admission))
       helper.complete(function() return lease:wait() end, 15000)
       local name = assert(fs.read(record))
-      if mode == "crash" then
-        assert.is_false(lease:is_released())
-        local existing = vim.system({ "net", "user", name }, { text = true }):wait(10000)
-        assert.are.equal(0, existing.code, existing.stderr)
-        -- Native CI owns the setup authority too. Recovery may need that
-        -- authority when the crash preceded the ordinary host's DACL grant.
-        local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
-        assert.is_true(recovered.ok, vim.inspect(recovered))
-      else
-        assert.is_true(helper.complete(function() return lease:wait_release() end, 10000))
-      end
+      assert.is_true(helper.complete(function() return lease:wait_release() end, 15000))
       local retired = vim.system({ "net", "user", name }, { text = true }):wait(10000)
       assert.are_not.equal(0, retired.code, "failed startup left its private account behind")
       local state = vim.json.decode((assert(fs.read(vim.fs.joinpath(

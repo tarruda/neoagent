@@ -575,14 +575,14 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.01)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local child
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local lease
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          lease = assert(platform).create_worker(request, services)
           return lease
         end,
       })
@@ -592,7 +592,7 @@ describe("neoagent shared sandbox contract", function()
         enabled = true, profile = profile,
       }, {
         platform = selected_platform, status = status,
-        start_worker = function(request)
+        create_worker = function(request)
           child = observed_worker(request, function(pid)
             guardian_pid = pid
           end)
@@ -647,14 +647,14 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.05)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local child
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local lease
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          lease = assert(platform).create_worker(request, services)
           return lease
         end,
       })
@@ -666,7 +666,7 @@ describe("neoagent shared sandbox contract", function()
         enabled = true, profile = profile,
       }, {
         platform = selected_platform, status = status,
-        start_worker = function(request)
+        create_worker = function(request)
           child = observed_worker(request, function(pid)
             worker_pid = pid
           end)
@@ -721,8 +721,8 @@ describe("neoagent shared sandbox contract", function()
       local leases = {}
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          local lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          local lease = assert(platform).create_worker(request, services)
           leases[#leases + 1] = lease
           return lease
         end,

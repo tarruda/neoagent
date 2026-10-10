@@ -88,7 +88,11 @@ describe("neoagent native sandbox relay lease", function()
     it("preserves native permission cleanup independently of operation failure=" .. tostring(operation_failed), function()
       local util = require("neoagent.util")
       local host_failure = util.error("worker_exit", "host reaping failed", "errno=10")
-      local relay = relay_lease.new({ require_cleanup_ack = true })
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
       relay:attach(base_child())
       local terminal = operation_failed and { v = 1, type = "error", stage = "runner-start", errno = 2 }
         or { v = 1, type = "exit", code = 7, signal = 0 }
@@ -97,8 +101,7 @@ describe("neoagent native sandbox relay lease", function()
       relay:host_exited({ code = 0, signal = 0, stderr = "", cleanup_error = host_failure })
       local result = relay:wait()
       local failure = assert(result.cleanup_error)
-      assert.matches("acl-write", failure.message, 1, true)
-      assert.are.equal("errno=5", failure.detail)
+      assert.are.equal("acl-write", failure.detail)
       assert.are.same(host_failure, rawget(failure, "cause"))
       assert.is_false(relay:is_released())
       local released, release_error = pcall(relay.wait_release, relay)
@@ -114,7 +117,11 @@ describe("neoagent native sandbox relay lease", function()
   end
 
   it("releases native permission ownership after acknowledged cleanup of failed startup", function()
-    local relay = relay_lease.new({ require_cleanup_ack = true })
+    local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
     relay:attach(base_child())
     relay:feed(protocol.encode({ v = 1, type = "error", stage = "runner-start", errno = 2,
       cleanup = { released = true } }))
@@ -129,7 +136,11 @@ describe("neoagent native sandbox relay lease", function()
     it("observes native cleanup acknowledgement after " .. stopped, function()
       local output, failures = {}, {}
       local relay = relay_lease.new({
-        require_cleanup_ack = true, admission_timeout_ms = 1,
+        admission_timeout_ms = 1,
+        cleanup = function(_, terminal)
+          assert.is_true(assert(assert(terminal).cleanup).released)
+          return true
+        end,
         on_stdout = function(data)
           output[#output + 1] = data
           if stopped == "output failure" then error("consumer failed") end
@@ -167,7 +178,11 @@ describe("neoagent native sandbox relay lease", function()
       { released = false, error = { stage = "", errno = 5 } },
       { released = false, error = { stage = "acl-write", errno = -1 } },
     }) do
-      local relay = relay_lease.new({ require_cleanup_ack = true })
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
       relay:attach(base_child())
       relay:feed(ready() .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0, cleanup = observation }))
       relay:feed(protocol.encode({ v = 1, type = "exit", code = 0, signal = 0, cleanup = { released = true } }))
@@ -180,7 +195,11 @@ describe("neoagent native sandbox relay lease", function()
 
   for _, suffix in ipairs({ "\0", "\0\0\0\1\255", exited() }) do
     it("rejects a cached release acknowledgement when trailing protocol bytes are invalid: " .. #suffix, function()
-      local relay = relay_lease.new({ require_cleanup_ack = true })
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
       relay:attach(base_child())
       relay:feed(ready() .. protocol.encode({ v = 1, type = "exit", code = 7, signal = 0,
         cleanup = { released = true } }))

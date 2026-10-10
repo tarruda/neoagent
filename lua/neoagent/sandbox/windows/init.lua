@@ -19,6 +19,7 @@ local nvim_launch = require("neoagent.process.nvim")
 ---@alias Neoagent.WindowsSandboxMode 'exec'|'probe'
 
 ---@class Neoagent.WindowsSandboxSpec
+---@field lease? string Parent-owned native Job identity for execution.
 ---@field v 1
 ---@field mode Neoagent.WindowsSandboxMode
 ---@field profile Neoagent.SandboxProfile
@@ -29,6 +30,13 @@ local nvim_launch = require("neoagent.process.nvim")
 ---@field admission_timeout_ms integer
 ---@field finalization_timeout_ms integer
 ---@field read_paths string[] Bootstrap paths needed by the restricted target.
+
+---@class Neoagent.WindowsSandboxRecovery
+---@field v 1
+---@field mode "recover"
+---@field lease string
+---@field admission_timeout_ms integer
+---@field finalization_timeout_ms integer
 
 ---@class Neoagent.WindowsSandboxProbe
 ---@field spec Neoagent.WindowsSandboxSpec
@@ -41,6 +49,7 @@ local M = {
 }
 
 local PROBE_TIMEOUT_MS = 30000
+local STARTUP_DELIVERY_MS = 5000
 local MINIMUM_NVIM = { 0, 12, 0 }
 local TEMPORARY_VARIABLES = { TMP = true, TEMP = true, TMPDIR = true }
 local CAPABILITIES = {
@@ -180,7 +189,7 @@ function M.temporary_root()
   return M.paths.join(state_dir(), "shared-tmp")
 end
 
----@param spec Neoagent.WindowsSandboxSpec
+---@param spec Neoagent.WindowsSandboxSpec|Neoagent.WindowsSandboxRecovery
 ---@return table<string, string>
 local function environment(spec)
   local values = {
@@ -384,47 +393,97 @@ end
 
 ---@param request Neoagent.SandboxWorkerRequest
 ---@param services Neoagent.SandboxExecutionServices<string|string[]>
----@return Neoagent.WorkerLease
-function M.start_worker(request, services)
-  if not supported_version() then
-    error(util.error("sandbox_unavailable", "Windows sandboxing requires Neovim 0.12 or newer"), 0)
-  end
-  local runtime = runtime_file()
-  if not runtime then
-    error(util.error("sandbox_unavailable", "Windows sandbox runtime was not found"), 0)
-  end
-  local nvim = nvim_command(services.nvim)
-  if not executable(nvim[1]) then
-    error(util.error("sandbox_unavailable", "Current Neovim executable cannot be resolved"), 0)
-  end
-  local spec = specification(request --[[@as Neoagent.WindowsSandboxRequest]], "exec", nvim)
-  local relay = relay_lease.new({
-    require_cleanup_ack = true,
+---@return Neoagent.WorkerOwner
+function M.create_worker(request, services)
+  ---@type Neoagent.WindowsSandboxCustody?
+  local custody
+  return relay_lease.new({
+    ---@async
+    cleanup = function(result, terminal, host)
+      if custody then
+        return custody:finish(result, terminal, host)
+      end
+      return true, nil
+    end,
+    release = {
+      is_released = function()
+        return not custody or custody:is_released()
+      end,
+      ---@async
+      wait_release = function()
+        if custody then
+          return custody:wait_release()
+        end
+        return true
+      end,
+    },
     on_failure = request.on_failure,
     on_stdout = request.on_stdout,
     on_stderr = request.on_stderr,
     on_exit = request.on_exit,
-    admission_timeout_ms = spec.admission_timeout_ms,
-  })
-  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
-  local started, child = pcall(start, {
-    argv = runtime_argv(nvim, runtime),
-    cwd = assert(vim.fs.dirname(runtime)),
-    env = environment(spec),
-    clear_env = true,
-    kill_grace_ms = request.kill_grace_ms,
-    on_stdout = function(data)
-      relay:feed(data)
+    -- A failed admission can enter native rollback before emitting its first
+    -- terminal frame. Keep that owner alive for its full finalization budget.
+    admission_timeout_ms = relay_lease.DEFAULT_ADMISSION_TIMEOUT_MS + M.finalization_timeout_ms + STARTUP_DELIVERY_MS,
+    start = function(relay)
+      if not supported_version() then
+        error(util.error("sandbox_unavailable", "Windows sandboxing requires Neovim 0.12 or newer"), 0)
+      end
+      local runtime = runtime_file()
+      if not runtime then
+        error(util.error("sandbox_unavailable", "Windows sandbox runtime was not found"), 0)
+      end
+      local nvim = nvim_command(services.nvim)
+      if not executable(nvim[1]) then
+        error(util.error("sandbox_unavailable", "Current Neovim executable cannot be resolved"), 0)
+      end
+      local spec = specification(request --[[@as Neoagent.WindowsSandboxRequest]], "exec", nvim)
+      custody = require("neoagent.sandbox.windows.custody").new(assert(vim.fs.dirname(runtime)), function(id)
+        local recovered = require("neoagent.subprocess_common").run({
+          argv = runtime_argv(nvim, runtime),
+          cwd = assert(vim.fs.dirname(runtime)),
+          environment = {
+            inherit = false,
+            set = environment({
+              v = 1,
+              mode = "recover",
+              lease = id,
+              admission_timeout_ms = M.finalization_timeout_ms,
+              finalization_timeout_ms = M.finalization_timeout_ms,
+            }),
+          },
+          stdio = { kind = "pipes" },
+          timeout_ms = M.finalization_timeout_ms + STARTUP_DELIVERY_MS,
+        }, { capture = { max_bytes = 1024 * 1024 } })
+        local events, terminal = protocol.decode_all(recovered.stdout)
+        if
+          recovered.code ~= 0
+          or not events
+          or type(terminal) ~= "table"
+          or not terminal.cleanup
+          or not terminal.cleanup.released
+        then
+          error(util.error("sandbox_unavailable", "Windows sandbox recovery did not confirm authority release"), 0)
+        end
+        return true
+      end)
+      custody:start()
+      spec.lease = assert(custody.id)
+      local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+      relay:attach(start({
+        argv = runtime_argv(nvim, runtime),
+        cwd = assert(vim.fs.dirname(runtime)),
+        env = environment(spec),
+        clear_env = true,
+        kill_grace_ms = request.kill_grace_ms,
+        on_stdout = function(data)
+          relay:feed(data)
+        end,
+        on_exit = function(result)
+          relay:host_exited(result)
+        end,
+      }))
     end,
-    on_exit = function(result)
-      relay:host_exited(result)
-    end,
   })
-  if not started then
-    error(util.error("sandbox_unavailable", "Could not start Windows sandbox runtime", child), 0)
-  end
-  relay:attach(child)
-  return relay
 end
 
 ---@param path? string
@@ -529,13 +588,19 @@ function M.check(services)
   if not prepared then
     return unavailable(stage, message)
   end
+  -- The observer owns startup and native cleanup as well as the probe itself.
+  -- Killing a host inside either native budget can discard its Job evidence.
+  local timeout = (services.probe_timeout_ms or PROBE_TIMEOUT_MS)
+    + prepared.spec.admission_timeout_ms
+    + prepared.spec.finalization_timeout_ms
+    + STARTUP_DELIVERY_MS
   local completed = (services.system or system)(runtime_argv(nvim, runtime), {
     cwd = vim.fs.dirname(runtime),
     stdin = "",
     env = environment(prepared.spec),
     clear_env = true,
     text = false,
-  }, services.probe_timeout_ms or PROBE_TIMEOUT_MS)
+  }, timeout)
   cleanup_probe(prepared.root)
   if not completed then
     return unavailable("probe", "Windows sandbox probe timed out")

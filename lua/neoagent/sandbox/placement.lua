@@ -35,7 +35,7 @@ function M.new(options)
   assert(type(options) == "table", "sandbox placement options must be a table")
   assert(type(options.profile) == "table" or type(options.profile) == "function", "sandbox profile is required")
   assert(
-    type(options.platform) == "table" and type(options.platform.start_worker) == "function",
+    type(options.platform) == "table" and type(options.platform.create_worker) == "function",
     "sandbox platform must start workers"
   )
   local paths = options.paths or options.platform.paths or require("neoagent.sandbox.path").posix

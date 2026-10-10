@@ -56,10 +56,6 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   local completion = { received = false, released = false }
   ---@type {requested: boolean, phase: "open"|"closing"|"settled", forced: boolean}
   local shutdown = { requested = false, phase = "open", forced = false }
-  -- Closing the logical invocation can detach native cleanup. Join both
-  -- outcomes before publishing the worker's one cleanup transition.
-  ---@type {error?: Neoagent.Error}?
-  local worker_observation, close_observation
   ---@type "new"|"starting"|"finished"
   local startup = "new"
   local stdin_closed, target_requested = false, false
@@ -135,11 +131,10 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
     }
     report_cleanup(first_cleanup_error)
   end
-  local function finish_worker()
-    if shutdown.phase == "settled" or not worker_observation or not close_observation then
+  local function observe_worker_cleanup(err)
+    if shutdown.phase == "settled" then
       return
     end
-    local err = worker_observation.error or close_observation.error
     if err then
       -- Native and staging failures already share the worker's cause chain.
       -- Add the independent target failure without replacing that structure.
@@ -167,12 +162,6 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       })
     end
   end
-  local function observe_worker_cleanup(err)
-    if not worker_observation then
-      worker_observation = { error = util.copy(err) }
-      finish_worker()
-    end
-  end
   local function close_worker_when_ready()
     if shutdown.phase ~= "open" or startup == "starting" or transaction then
       return
@@ -192,13 +181,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
     local owner = invocation
     async.run(function()
       return { error = owner:close(shutdown.forced) }
-    end, {
-      error_kind = "protocol",
-      on_done = function(result)
-        close_observation = { error = result.error }
-        finish_worker()
-      end,
-    })
+    end)
   end
   -- Request settlement is the boundary for applying final target output.
   -- Only then can the independently acknowledged release permit shutdown.
@@ -467,7 +450,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
         if spec.timeout_ms then
           lifetime_timer = assert(vim.uv.new_timer())
         end
-        invocation = worker.start(launch, observe_worker_cleanup)
+        invocation = worker.new(launch, observe_worker_cleanup)
         if shutdown.requested then
           error(async.cancelled_error, 0)
         end

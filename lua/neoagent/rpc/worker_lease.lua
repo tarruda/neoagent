@@ -36,7 +36,12 @@ local M = {}
 ---@field is_released fun(self: Neoagent.WorkerLease): boolean
 ---@field wait_release async fun(self: Neoagent.WorkerLease): true
 
----@class Neoagent.ProcessWorkerLease: Neoagent.WorkerLease
+---@class Neoagent.WorkerOwner: Neoagent.WorkerLease
+---@field start fun(self: Neoagent.WorkerOwner)
+---@field wait_ready async fun(self: Neoagent.WorkerOwner): true
+
+---@class Neoagent.ProcessWorkerLease: Neoagent.WorkerOwner
+---@field _start? fun()
 ---@field _driver? Neoagent.SubprocessDriver
 ---@field _result? Neoagent.WorkerResult
 ---@field _exit? {code: integer, signal: integer}
@@ -162,6 +167,7 @@ function Lease:_reap()
   assert(self._cleanup).start(self._reap_grace_ms, self._driver and self._driver.delivery_delay_ns)
 end
 
+---@async
 ---@return true
 function Lease:wait_ready()
   if self._failure then
@@ -250,6 +256,13 @@ function Lease:dispose(reason)
     return
   end
   self._disposing = true
+  if self._start then
+    self._start = nil
+    self._starting = false
+    self._failure = util.error("cancelled", reason)
+    self:_finish()
+    return
+  end
   self:terminate(reason)
 end
 
@@ -257,8 +270,8 @@ end
 -- always return its owner, including on failure: wait_ready reports startup,
 -- while wait/on_exit observe the independently retained native cleanup.
 ---@param request Neoagent.WorkerRequest
----@return Neoagent.WorkerLease
-function M.start(request)
+---@return Neoagent.ProcessWorkerLease
+function M.new(request)
   assert(type(request) == "table", "worker request must be an object")
   local spec = validate.spec({
     argv = request.argv,
@@ -292,90 +305,106 @@ function M.start(request)
     _stderr = "",
     _on_exit = request.on_exit,
   }, Lease)
-  active[lease] = true
-  local function failed(message)
-    if not lease._result then
-      lease._failure = lease._failure or util.error("worker_exit", message)
-      lease:terminate(message)
+  lease._start = function()
+    active[lease] = true
+    local function failed(message)
+      if not lease._result then
+        lease._failure = lease._failure or util.error("worker_exit", message)
+        lease:terminate(message)
+      end
     end
-  end
-  local ok, err = pcall(function()
-    lease._kill_timer = assert(vim.uv.new_timer())
-    lease._cleanup = cleanup.new(function()
-      lease:_kill()
-    end, function()
-      lease:_finish(util.error("worker_exit", "Worker cleanup did not settle before its deadline"))
+    local ok, err = pcall(function()
+      lease._kill_timer = assert(vim.uv.new_timer())
+      lease._cleanup = cleanup.new(function()
+        lease:_kill()
+      end, function()
+        lease:_finish(util.error("worker_exit", "Worker cleanup did not settle before its deadline"))
+      end)
+      lease._driver = pipes.new(spec, env, {
+        execution = function(state)
+          lease._execution = state
+        end,
+        output = function(stream, bytes)
+          if lease._result then
+            return
+          end
+          if stream == "stderr" and #lease._stderr < MAX_STDERR then
+            lease._stderr = (lease._stderr .. bytes):sub(1, MAX_STDERR)
+          end
+          local callback
+          if stream == "stdout" then
+            callback = request.on_stdout
+          else
+            callback = request.on_stderr
+          end
+          if callback and not pcall(callback, bytes) then
+            failed("Worker " .. stream .. " callback failed")
+          end
+        end,
+        exited = function(code, signal)
+          if lease._result or lease._exit then
+            return
+          end
+          lease._exit = { code = signal ~= 0 and 128 + signal or code, signal = signal }
+          lease._stdin_closed = true
+          close_timer(lease._kill_timer)
+          lease:_kill()
+          lease:_reap()
+        end,
+        closed = function()
+          lease._driver_closed = true
+          if not lease._starting then
+            lease:_finish()
+          end
+        end,
+        released = function()
+          lease:_release()
+        end,
+        failed = function(_, message)
+          failed(message)
+        end,
+        input_failed = function()
+          if not lease._terminating and not lease._exit then
+            failed("Worker input failed")
+          end
+        end,
+      }, INPUT_LIMITS)
+      lease._driver.start()
     end)
-    lease._driver = pipes.new(spec, env, {
-      execution = function(state)
-        lease._execution = state
-      end,
-      output = function(stream, bytes)
-        if lease._result then
-          return
-        end
-        if stream == "stderr" and #lease._stderr < MAX_STDERR then
-          lease._stderr = (lease._stderr .. bytes):sub(1, MAX_STDERR)
-        end
-        local callback
-        if stream == "stdout" then
-          callback = request.on_stdout
-        else
-          callback = request.on_stderr
-        end
-        if callback and not pcall(callback, bytes) then
-          failed("Worker " .. stream .. " callback failed")
-        end
-      end,
-      exited = function(code, signal)
-        if lease._result or lease._exit then
-          return
-        end
-        lease._exit = { code = signal ~= 0 and 128 + signal or code, signal = signal }
-        lease._stdin_closed = true
+    lease._starting = false
+    if not ok then
+      local cause = util.normalize_error(err)
+      lease._failure = util.error("worker_start", "Could not start worker", cause.message)
+      lease._stdin_closed = true
+      lease._terminating = true
+      if lease._driver then
         close_timer(lease._kill_timer)
         lease:_kill()
         lease:_reap()
-      end,
-      closed = function()
-        lease._driver_closed = true
-        if not lease._starting then
-          lease:_finish()
-        end
-      end,
-      released = function()
-        lease:_release()
-      end,
-      failed = function(_, message)
-        failed(message)
-      end,
-      input_failed = function()
-        if not lease._terminating and not lease._exit then
-          failed("Worker input failed")
-        end
-      end,
-    }, INPUT_LIMITS)
-    lease._driver.start()
-  end)
-  lease._starting = false
-  if not ok then
-    local cause = util.normalize_error(err)
-    lease._failure = util.error("worker_start", "Could not start worker", cause.message)
-    lease._stdin_closed = true
-    lease._terminating = true
-    if lease._driver then
-      close_timer(lease._kill_timer)
-      lease:_kill()
-      lease:_reap()
+      end
+      if not lease._driver or lease._driver_closed then
+        lease:_finish()
+      end
+      return
     end
-    if not lease._driver or lease._driver_closed then
+    if lease._driver_closed then
       lease:_finish()
     end
-    return lease
   end
-  if lease._driver_closed then
-    lease:_finish()
-  end
+  return lease
+end
+
+function Lease:start()
+  local start = assert(self._start, "worker already started or disposed")
+  self._start = nil
+  start()
+end
+
+---@param request Neoagent.WorkerRequest
+---@return Neoagent.ProcessWorkerLease
+function M.start(request)
+  local lease = M.new(request)
+  lease:start()
   return lease
 end
 

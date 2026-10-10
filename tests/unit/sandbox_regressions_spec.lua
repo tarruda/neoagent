@@ -41,7 +41,7 @@ describe("restricted filesystem execution", function()
     ---@type Neoagent.SandboxPlatform<unknown>
     local platform = {
       name = "test",
-      start_worker = function(request)
+      create_worker = function(request)
         local protocol = require("neoagent.rpc.protocol")
         local options = {
           dependencies = dependencies,
@@ -55,6 +55,8 @@ describe("restricted filesystem execution", function()
         servers[#servers + 1] = server
         local decoder = protocol.decoder(function(message) server:receive(message) end)
         return {
+          start = function() end,
+          wait_ready = function() return true end,
           is_released = function() return true end,
           wait_release = function() return true end,
           write = function(_, data) decoder:feed(data) return true end,

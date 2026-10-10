@@ -95,7 +95,7 @@ end
 ---@param options Neoagent.SandboxWorkerLaunch
 ---@param on_cleanup fun(error?: Neoagent.Error)
 ---@return Neoagent.SandboxInvocation
-function M.start(options, on_cleanup)
+function M.new(options, on_cleanup)
   local prepared, launch = pcall(function()
     local shutdown_timeout_ms =
       require("neoagent.sandbox.invocation").shutdown_timeout(options.platform.finalization_timeout_ms)
@@ -121,7 +121,7 @@ function M.start(options, on_cleanup)
     on_failure = options.on_failure,
     on_event = options.on_event,
   })
-  local started, lease = pcall(options.platform.start_worker, {
+  local started, lease = pcall(options.platform.create_worker, {
     argv = launch.argv,
     cwd = options.cwd,
     env = launch.env,
@@ -140,8 +140,6 @@ function M.start(options, on_cleanup)
   if not started then
     error(util.normalize_error(lease, "sandbox_unavailable"), 0)
   end
-  -- Publish ownership before validating the adapter's result or awaiting
-  -- readiness. Rejected leases can already own native resources.
   return require("neoagent.sandbox.invocation").new(connection, lease, on_cleanup, launch.shutdown_timeout_ms)
 end
 

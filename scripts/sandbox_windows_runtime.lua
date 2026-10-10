@@ -21,6 +21,9 @@ local checkout = assert(vim.fs.dirname(assert(vim.fs.dirname(source))))
 ---@type Neoagent.WindowsCommand
 local windows_command = dofile(vim.fs.joinpath(
   checkout, "lua", "neoagent", "process", "windows_command.lua"))
+local native_job = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_job.lua"))
+local kernel_objects = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_objects.lua"))
+local journal_owner = dofile(vim.fs.joinpath(checkout, "scripts", "sandbox_windows_authority.lua"))
 
 -- LuaJIT FFI calls the Win32 ABI directly. These declarations cover process
 -- creation, access tokens, filesystem ACLs, jobs, named pipes, local accounts,
@@ -100,17 +103,6 @@ typedef struct _PROCESS_INFORMATION {
   DWORD dwThreadId;
 } PROCESS_INFORMATION;
 
-typedef struct _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION {
-  LONGLONG TotalUserTime;
-  LONGLONG TotalKernelTime;
-  LONGLONG ThisPeriodTotalUserTime;
-  LONGLONG ThisPeriodTotalKernelTime;
-  DWORD TotalPageFaultCount;
-  DWORD TotalProcesses;
-  DWORD ActiveProcesses;
-  DWORD TotalTerminatedProcesses;
-} JOBOBJECT_BASIC_ACCOUNTING_INFORMATION;
-
 typedef struct _SID SID;
 typedef struct _ACL ACL;
 typedef struct _SID_AND_ATTRIBUTES {
@@ -153,34 +145,6 @@ typedef struct _EXPLICIT_ACCESS_W {
   DWORD grfInheritance;
   TRUSTEE_W Trustee;
 } EXPLICIT_ACCESS_W;
-
-typedef struct _IO_COUNTERS {
-  ULONGLONG ReadOperationCount;
-  ULONGLONG WriteOperationCount;
-  ULONGLONG OtherOperationCount;
-  ULONGLONG ReadTransferCount;
-  ULONGLONG WriteTransferCount;
-  ULONGLONG OtherTransferCount;
-} IO_COUNTERS;
-typedef struct _JOBOBJECT_BASIC_LIMIT_INFORMATION {
-  LONGLONG PerProcessUserTimeLimit;
-  LONGLONG PerJobUserTimeLimit;
-  DWORD LimitFlags;
-  SIZE_T MinimumWorkingSetSize;
-  SIZE_T MaximumWorkingSetSize;
-  DWORD ActiveProcessLimit;
-  ULONG_PTR Affinity;
-  DWORD PriorityClass;
-  DWORD SchedulingClass;
-} JOBOBJECT_BASIC_LIMIT_INFORMATION;
-typedef struct _JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-  JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-  IO_COUNTERS IoInfo;
-  SIZE_T ProcessMemoryLimit;
-  SIZE_T JobMemoryLimit;
-  SIZE_T PeakProcessMemoryUsed;
-  SIZE_T PeakJobMemoryUsed;
-} JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 
 typedef struct _USER_INFO_1 {
   WCHAR *usri1_name;
@@ -341,11 +305,6 @@ BOOL __stdcall GetExitCodeProcess(HANDLE, DWORD *);
 void __stdcall Sleep(DWORD);
 HANDLE __stdcall CreateMutexW(SECURITY_ATTRIBUTES *, BOOL, const WCHAR *);
 BOOL __stdcall ReleaseMutex(HANDLE);
-HANDLE __stdcall CreateJobObjectW(SECURITY_ATTRIBUTES *, const WCHAR *);
-HANDLE __stdcall OpenJobObjectW(DWORD, BOOL, const WCHAR *);
-BOOL __stdcall SetInformationJobObject(HANDLE, LONG, void *, DWORD);
-BOOL __stdcall QueryInformationJobObject(HANDLE, LONG, void *, DWORD, DWORD *);
-BOOL __stdcall TerminateJobObject(HANDLE, UINT);
 BOOL __stdcall CreatePipe(HANDLE *, HANDLE *, SECURITY_ATTRIBUTES *, DWORD);
 BOOL __stdcall InitializeProcThreadAttributeList(
   void *, DWORD, DWORD, SIZE_T *);
@@ -402,6 +361,7 @@ DWORD __stdcall BuildSecurityDescriptorW(TRUSTEE_W *, TRUSTEE_W *, ULONG,
 BOOL __stdcall CreateProcessAsUserW(HANDLE, const WCHAR *, WCHAR *,
   SECURITY_ATTRIBUTES *, SECURITY_ATTRIBUTES *, BOOL, DWORD, void *,
   const WCHAR *, STARTUPINFOW *, PROCESS_INFORMATION *);
+DWORD __stdcall ResumeThread(HANDLE);
 
 DWORD __stdcall NetUserAdd(const WCHAR *, DWORD, BYTE *, DWORD *);
 DWORD __stdcall NetUserGetInfo(const WCHAR *, const WCHAR *, DWORD, BYTE **);
@@ -519,33 +479,6 @@ USHORT __stdcall htons(USHORT);
 ---@field grfAccessMode integer
 ---@field grfInheritance integer
 ---@field Trustee Neoagent.Win32.TRUSTEE_W
-
----@class Neoagent.Win32.IO_COUNTERS: ffi.cdata*
----@field ReadOperationCount integer|ffi.cdata*
----@field WriteOperationCount integer|ffi.cdata*
----@field OtherOperationCount integer|ffi.cdata*
----@field ReadTransferCount integer|ffi.cdata*
----@field WriteTransferCount integer|ffi.cdata*
----@field OtherTransferCount integer|ffi.cdata*
-
----@class Neoagent.Win32.JOBOBJECT_BASIC_LIMIT_INFORMATION: ffi.cdata*
----@field PerProcessUserTimeLimit integer|ffi.cdata*
----@field PerJobUserTimeLimit integer|ffi.cdata*
----@field LimitFlags integer
----@field MinimumWorkingSetSize integer|ffi.cdata*
----@field MaximumWorkingSetSize integer|ffi.cdata*
----@field ActiveProcessLimit integer
----@field Affinity integer|ffi.cdata*
----@field PriorityClass integer
----@field SchedulingClass integer
-
----@class Neoagent.Win32.JOBOBJECT_EXTENDED_LIMIT_INFORMATION: ffi.cdata*
----@field BasicLimitInformation Neoagent.Win32.JOBOBJECT_BASIC_LIMIT_INFORMATION
----@field IoInfo Neoagent.Win32.IO_COUNTERS
----@field ProcessMemoryLimit integer|ffi.cdata*
----@field JobMemoryLimit integer|ffi.cdata*
----@field PeakProcessMemoryUsed integer|ffi.cdata*
----@field PeakJobMemoryUsed integer|ffi.cdata*
 
 ---@class Neoagent.Win32.USER_INFO_1: ffi.cdata*
 ---@field usri1_name ffi.cdata*?
@@ -814,13 +747,6 @@ local WIN32 = {
     ATTRIBUTE_HANDLE_LIST = 0x00020002,
     ATTRIBUTE_JOB_LIST = 0x0002000d,
   },
-  JOB = {
-    KILL_ON_CLOSE = 0x2000,
-    EXTENDED_LIMIT_INFORMATION = 9,
-    BASIC_ACCOUNTING_INFORMATION = 1,
-    QUERY = 4,
-    TERMINATE = 8,
-  },
   ACCOUNT = {
     PRIVILEGE_USER = 1,
     SCRIPT = 0x1,
@@ -879,15 +805,11 @@ WIN32.FILE.SANDBOX_DENY_WRITE = bit.bor(
 local RUNTIME = {
   ADMISSION_TIMEOUT_MS = 60 * 1000,
   MAX_FRAME = 1024 * 1024,
-  STATE_VERSION = 5,
+  STATE_VERSION = 9,
   PROTOCOL_VERSION = 1,
   OUTPUT_POLL_MS = 10,
   OUTPUT_DRAIN_POLLS = 1000,
-  PROCESS_SHUTDOWN_MS = 5000,
 }
-
----@class Neoagent.WindowsJobAccounting: ffi.cdata*
----@field ActiveProcesses integer
 
 ---@class Neoagent.WindowsLsaAttributes: ffi.cdata*
 ---@field Length integer
@@ -923,6 +845,7 @@ local RUNTIME = {
 ---@field low? integer
 
 ---@class Neoagent.WindowsAuthorityLease
+---@field job "unstarted"|"unconfirmed"|"empty" Durable execution evidence, independent of Job-name availability.
 ---@field policy Neoagent.WindowsAuthorityPolicy
 ---@field account Neoagent.WindowsPrivateAccount
 ---@field logon_sid? string
@@ -950,6 +873,7 @@ local RUNTIME = {
 ---@field cwd string
 
 ---@class Neoagent.WindowsTarget
+---@field ready? boolean The target was resumed and its readiness frame delivered.
 ---@field stdin? ffi.cdata*
 ---@field stdin_write? ffi.cdata*
 ---@field stdout? ffi.cdata*
@@ -958,7 +882,7 @@ local RUNTIME = {
 ---@field stderr_write? ffi.cdata*
 ---@field process? ffi.cdata*
 ---@field thread? ffi.cdata*
----@field job? ffi.cdata*
+---@field job? Neoagent.WindowsSandboxJob
 ---@field desktop? Neoagent.WindowsDesktop
 ---@field attributes? Neoagent.WindowsProcessAttributes
 
@@ -1471,23 +1395,61 @@ local function dpapi(value, decrypt)
   return result
 end
 
+-- Retry only storage operations, while the surrounding transaction retains
+-- its mutex, lease, and native evidence. Parsing and identity validation stay
+-- outside this boundary; neither authority effects nor invalid data retry.
+---@generic T
+---@param deadline? number
+---@param operation fun(): T
+---@return T
+local function journal_io(deadline, operation)
+  while true do
+    local ok, value = pcall(operation)
+    if ok then return value end
+    local stage = type(value) == "table" and value.sandbox_runtime_error and value.stage or nil
+    if stage ~= "state-read" and stage ~= "state-open" and stage ~= "state-write"
+        and stage ~= "state-close" and stage ~= "state-replace" then
+      error(value, 0)
+    end
+    local remaining = deadline and math.floor((deadline - vim.uv.hrtime()) / 1000000) or 0
+    if remaining <= 0 then error(value, 0) end
+    K.Sleep(math.min(remaining, 100))
+  end
+end
+
+---@param deadline number
+local function check_admission(deadline)
+  if vim.uv.hrtime() >= deadline then failure("admission-timeout", WIN32.WAIT.TIMEOUT) end
+end
+
 ---@param path string
 ---@return string?
-local function read_file(path)
+local function read_file_once(path)
   local fd, _, code = vim.uv.fs_open(path, "r", 0)
   if not fd then
     if code == "ENOENT" then return nil end
     failure("state-read", 0)
   end
   local stat = vim.uv.fs_fstat(fd)
-  if not stat or stat.type ~= "file" then
+  if not stat then
     vim.uv.fs_close(fd)
     failure("state-read", 0)
+  end
+  if stat.type ~= "file" then
+    vim.uv.fs_close(fd)
+    failure("state-format", 0)
   end
   local data = vim.uv.fs_read(fd, stat.size, 0)
   vim.uv.fs_close(fd)
   if not data then failure("state-read", 0) end
   return data
+end
+
+---@param path string
+---@param deadline? number
+---@return string?
+local function read_file(path, deadline)
+  return journal_io(deadline, function() return read_file_once(path) end)
 end
 
 ---@param path string
@@ -1516,8 +1478,9 @@ local function atomic_write(path, data)
       bit.bor(
         WIN32.FILE.MOVE_REPLACE_EXISTING,
         WIN32.FILE.MOVE_WRITE_THROUGH)) == 0 then
+    local err = last_error()
     vim.uv.fs_unlink(temporary)
-    failure("state-replace")
+    failure("state-replace", err)
   end
 end
 
@@ -1528,9 +1491,10 @@ local function state_path(directory)
 end
 
 ---@param directory string
+---@param deadline? number
 ---@return Neoagent.WindowsRuntimeState
-local function decode_state(directory)
-  local data = read_file(state_path(directory))
+local function decode_state(directory, deadline)
+  local data = read_file(state_path(directory), deadline)
   if type(data) ~= "string" then failure("state-missing", WIN32.ERROR.FILE_NOT_FOUND) end
   local ok, state = pcall(vim.json.decode, data)
   if not ok or type(state) ~= "table" or state.v ~= RUNTIME.STATE_VERSION
@@ -1565,7 +1529,9 @@ local function decode_state(directory)
   end
   for id, lease in pairs(state.leases) do
     if type(id) ~= "string" or not id:match("^%x+$") or #id ~= 32
-        or type(lease) ~= "table" or lease.logon_sid ~= nil and type(lease.logon_sid) ~= "string"
+        or type(lease) ~= "table"
+        or lease.job ~= "unstarted" and lease.job ~= "unconfirmed" and lease.job ~= "empty"
+        or lease.logon_sid ~= nil and type(lease.logon_sid) ~= "string"
         or lease.launch_sid ~= nil and type(lease.launch_sid) ~= "string"
         or type(lease.paths) ~= "table" or not vim.islist(lease.paths)
         or type(lease.account) ~= "table" or type(lease.account.name) ~= "string"
@@ -1598,8 +1564,10 @@ end
 
 ---@param directory string
 ---@param state Neoagent.WindowsRuntimeState
-local function encode_state(directory, state)
-  atomic_write(state_path(directory), vim.json.encode(state))
+---@param deadline? number Absolute monotonic deadline for a journal transaction.
+local function encode_state(directory, state, deadline)
+  local path, data = state_path(directory), vim.json.encode(state)
+  journal_io(deadline, function() atomic_write(path, data) end)
 end
 
 ---@param account Neoagent.WindowsRuntimeAccount
@@ -1883,7 +1851,8 @@ end
 -- effects. Planned identities precede allocation; a native creation comment
 -- identifies a principal after interruption before its SID could be saved.
 ---@param directory string
-local function setup(directory)
+---@param deadline number
+local function setup(directory, deadline)
   accounts.check_host()
   local registration = authority.location(directory, true)
   directory = registration.directory
@@ -1897,7 +1866,7 @@ local function setup(directory)
     state = decode_state(directory)
     if state.owner_sid ~= owner_sid then failure("state-owner", WIN32.ERROR.ACCESS_DENIED) end
     if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
-    authority.recover(directory, state)
+    authority.journal(directory, state, deadline):recover()
     if next(state.leases) then failure("setup-active-leases", WIN32.ERROR.ACCESS_DENIED) end
   else
     state = {
@@ -1922,6 +1891,7 @@ local function setup(directory)
     authority.registration.write(vim.json.encode(registration))
   end
 
+  authority.registration.prepare_executions(owner_sid)
   state.launcher.sid = allocate_launcher(state.launcher)
   encode_state(directory, state)
   provision_launch_rights(state.launcher.sid)
@@ -1951,16 +1921,23 @@ end
 ---@param directory string
 ---@param suffix? string
 ---@return string
-local function mutex_name(directory, suffix)
-  return "Global\\NeoagentSandbox-" .. vim.fn.sha256(
+local function authority_name(directory, suffix)
+  return "NeoagentSandbox-" .. vim.fn.sha256(
     tostring(directory):gsub("/", "\\"):lower()):sub(1, 32) .. (suffix or "")
 end
 
+-- One namespace remains owned for the entire host lifetime, including while
+-- it releases the journal mutex but retains its lease guard. Every waiter
+-- retains the same namespace across departure of its original creator.
+---@type Neoagent.WindowsPrivateNamespace?
+local coordination
+
 ---@param name string
 ---@param timeout_ms integer
+---@param identity string
 ---@return ffi.cdata*?
-local function acquire_named_mutex(name, timeout_ms)
-  local descriptor = security_descriptor("D:P(A;;GA;;;" .. current_user_sid_string() .. ")(A;;GA;;;SY)")
+local function acquire_named_mutex(name, timeout_ms, identity)
+  local descriptor = security_descriptor("D:P(A;;GA;;;" .. identity .. ")(A;;GA;;;SY)")
   local attributes = (ffi.new("SECURITY_ATTRIBUTES") --[[@as Neoagent.Win32.SECURITY_ATTRIBUTES]])
   attributes.nLength, attributes.lpSecurityDescriptor = sizeof(attributes), descriptor
   local handle = K.CreateMutexW(attributes, 0, wide(name))
@@ -1982,9 +1959,22 @@ end
 ---@param timeout_ms integer
 ---@return ffi.cdata*
 local function acquire_mutex(timeout_ms)
-  local handle = acquire_named_mutex(authority.coordinator.mutex, timeout_ms)
+  local deadline = vim.uv.hrtime() + timeout_ms * 1000000
+  local identity = current_user_sid_string()
+  coordination = coordination or kernel_objects.new(authority.coordinator.namespace, {
+    identity = identity, wide = wide, failure = failure,
+  })
+  coordination:join(deadline)
+  local remaining = math.max(0, math.ceil((deadline - vim.uv.hrtime()) / 1000000))
+  local handle = acquire_named_mutex(coordination:path("journal"), remaining, identity)
   if not handle then failure("mutex-wait-timeout", WIN32.WAIT.TIMEOUT) end
   return handle
+end
+
+---@param id string
+---@return ffi.cdata*?
+local function acquire_lease(id)
+  return acquire_named_mutex(assert(coordination):path("lease-" .. id), 0, current_user_sid_string())
 end
 
 ---@param handle? ffi.cdata*
@@ -2127,6 +2117,9 @@ local function validate_spec(spec, directory)
   end
   if spec.mode ~= "probe" and spec.mode ~= "exec" then
     failure("specification-mode", 0)
+  end
+  if spec.mode == "exec" and (type(spec.lease) ~= "string" or #spec.lease ~= 32 or not spec.lease:match("^%x+$")) then
+    failure("specification-lease", 0)
   end
   if type(spec.admission_timeout_ms) ~= "number"
       or spec.admission_timeout_ms % 1 ~= 0
@@ -2400,37 +2393,6 @@ function cleanup_placeholder(record)
   K.RemoveDirectoryW(wide(path))
 end
 
----@param job ffi.cdata*
-function authority.stop_job(job)
-  if K.TerminateJobObject(job, 125) == 0 then failure("lease-job-stop") end
-  local information = (ffi.new("JOBOBJECT_BASIC_ACCOUNTING_INFORMATION") --[[@as Neoagent.WindowsJobAccounting]])
-  local deadline = vim.uv.hrtime() + RUNTIME.PROCESS_SHUTDOWN_MS * 1000000
-  while true do
-    if K.QueryInformationJobObject(job, WIN32.JOB.BASIC_ACCOUNTING_INFORMATION,
-        information, sizeof(information), nil) == 0 then
-      failure("lease-job-query")
-    end
-    if information.ActiveProcesses == 0 then return end
-    if vim.uv.hrtime() >= deadline then failure("lease-job-timeout", WIN32.WAIT.TIMEOUT) end
-    K.Sleep(1)
-  end
-end
-
----@param directory string
----@param id string
-local function recover_job(directory, id)
-  local job = K.OpenJobObjectW(bit.bor(WIN32.JOB.QUERY, WIN32.JOB.TERMINATE), 0,
-    wide(mutex_name(directory, "-job-" .. id)))
-  if invalid_handle(job) then
-    local err = last_error()
-    if err ~= WIN32.ERROR.FILE_NOT_FOUND then failure("lease-job-open", err) end
-    return
-  end
-  local ok, err = pcall(authority.stop_job, job)
-  close_handle(job)
-  if not ok then error(err, 0) end
-end
-
 ---@param state Neoagent.WindowsRuntimeState
 local function cleanup_placeholders(state)
   for index = #state.placeholders, 1, -1 do
@@ -2461,104 +2423,59 @@ local function revoke_paths(paths, identity)
   if first_error then error(first_error, 0) end
 end
 
----@param directory string
----@param state Neoagent.WindowsRuntimeState
----@param id string
-function authority.finish(directory, state, id)
-  local lease = assert(state.leases[id])
-  recover_job(directory, id)
+---@param lease Neoagent.WindowsAuthorityLease
+local function retire_authority(lease)
   if lease.logon_sid then revoke_paths(lease.paths, lease.logon_sid) end
   if lease.launch_sid then revoke_paths(lease.paths, lease.launch_sid) end
   for _, path in ipairs(lease.namespaces or {}) do
     namespace.change(path, assert(lease.account.sid), false)
   end
   accounts.retire(lease.account)
-  state.leases[id] = nil
-  cleanup_placeholders(state)
-  encode_state(directory, state)
+end
+
+---@param directory string
+---@param id string
+---@return Neoagent.WindowsSandboxJob
+local function new_job(directory, id)
+  local objects = kernel_objects.new(authority_name(directory, "-job-" .. id), {
+    identity = current_user_sid_string(), wide = wide, failure = failure,
+  })
+  return native_job.new(objects, { wide = wide, failure = failure })
 end
 
 ---@param directory string
 ---@param state Neoagent.WindowsRuntimeState
-function authority.recover(directory, state)
-  for id in pairs(state.leases) do
-    local guard = acquire_named_mutex(mutex_name(directory, "-lease-" .. id), 0)
-    if guard then
-      local ok, err = pcall(authority.finish, directory, state, id)
-      release_mutex(guard)
-      if not ok then error(err, 0) end
-    end
-  end
-end
-
--- Independent domains must also preserve each other's protected objects.
--- A read-only peer may have no write roots of its own; another writer still
--- cannot replace a pathname carrying that peer's explicit read denial.
----@param protected Neoagent.WindowsAuthorityPolicy
----@param writer Neoagent.WindowsAuthorityPolicy
----@return boolean
-local function conflicting_authority(protected, writer)
-  for _, boundary in ipairs(protected.deny_write) do
-    for _, root in ipairs(writer.write_roots) do
-      if path_overlap(root, boundary) then
-        local overlap = path_contains(root, boundary) and boundary or root
-        local denied = false
-        for _, denial in ipairs(writer.deny_write) do
-          if path_contains(root, denial) and path_contains(denial, overlap) then denied = true end
-        end
-        if not denied then return true end
-      end
-    end
-  end
-  return false
-end
-
----@param left string[]
----@param right string[]
----@return boolean
-local function same_paths(left, right)
-  if #left ~= #right then return false end
-  local keys = {}
-  for _, path in ipairs(left) do keys[path_key(path)] = true end
-  for _, path in ipairs(right) do
-    if not keys[path_key(path)] then return false end
-  end
-  return true
-end
-
--- A same-volume move retains the source object's DACL. A shared writable
--- region can therefore transfer a peer's grants into another write root.
--- Keep overlapping writers in one authority domain; independent domains may
--- execute concurrently only when their writable regions are disjoint.
----@param left Neoagent.WindowsAuthorityPolicy
----@param right Neoagent.WindowsAuthorityPolicy
----@return boolean
-local function compatible_authority(left, right)
-  if same_paths(left.write_roots, right.write_roots) and same_paths(left.deny_write, right.deny_write) then return true end
-  for _, first in ipairs(left.write_roots) do
-    for _, second in ipairs(right.write_roots) do
-      if path_overlap(first, second) then return false end
-    end
-  end
-  return not conflicting_authority(left, right) and not conflicting_authority(right, left)
-end
-
----@param state Neoagent.WindowsRuntimeState
----@param policy Neoagent.WindowsAuthorityPolicy
-function authority.admit(state, policy)
-  for _, lease in pairs(state.leases) do
-    if not compatible_authority(lease.policy, policy) then
-      failure("lease-policy-conflict", WIN32.ERROR.ACCESS_DENIED)
-    end
-  end
+---@param deadline number
+---@return Neoagent.WindowsAuthorityJournal
+function authority.journal(directory, state, deadline)
+  return journal_owner.new(state, {
+    save = function(value) encode_state(directory, value, deadline) end,
+    retire = retire_authority,
+    prune = cleanup_placeholders,
+    acquire = function(id)
+      check_admission(deadline)
+      local guard = acquire_lease(id)
+      if guard then return function() release_mutex(guard) end end
+    end,
+    new_job = function(id) return new_job(directory, id) end,
+    mark_execution = authority.registration.mark_execution,
+    execution_exists = authority.registration.execution_exists,
+    clear_execution = authority.registration.clear_execution,
+    failure = failure,
+    path_key = path_key,
+    contains = path_contains,
+    overlap = path_overlap,
+  })
 end
 
 ---@param directory string
 ---@param state Neoagent.WindowsRuntimeState
 ---@param spec Neoagent.WindowsRuntimeSpec
-function materialize_protected(directory, state, spec)
+---@param deadline number
+function materialize_protected(directory, state, spec, deadline)
   local protected = spec.profile.windows.protected_create
   for _, entry in ipairs(protected) do
+    check_admission(deadline)
     if not vim.uv.fs_realpath(entry.path) then
       local nonce = random_hex(24)
       local record = {
@@ -2629,7 +2546,9 @@ end
 -- also pins any existing placeholder on which this invocation's policy relies.
 ---@param spec Neoagent.WindowsRuntimeSpec
 ---@param lease Neoagent.WindowsAuthorityLease
-local function apply_runtime_acls(spec, lease)
+---@param deadline number
+local function apply_runtime_acls(spec, lease, deadline)
+  check_admission(deadline)
   local filesystem = spec.profile.windows
   local read_paths = { spec.cwd }
   local required_paths = vim.deepcopy(read_paths)
@@ -2651,16 +2570,20 @@ local function apply_runtime_acls(spec, lease)
   local launch = sid_from_string(assert(lease.launch_sid))
   local ok, err = pcall(function()
   for _, path in ipairs(unique_paths(vim.list_extend(vim.deepcopy(read_roots), filesystem.write_roots))) do
+    check_admission(deadline)
     allow_path(path, { launch }, WIN32.FILE.SANDBOX_READ, true)
   end
   allow_path(spec.cwd, { launch }, WIN32.FILE.SANDBOX_READ, false)
   for _, path in ipairs(filesystem.write_roots) do
+    check_admission(deadline)
     allow_path(path, { logon }, WIN32.FILE.SANDBOX_WRITE, true)
   end
   for _, path in ipairs(filesystem.deny_write) do
+    check_admission(deadline)
     deny_path(path, logon, WIN32.FILE.SANDBOX_DENY_WRITE)
   end
   for _, path in ipairs(filesystem.deny_read) do
+    check_admission(deadline)
     deny_path(path, logon,
       bit.bor(WIN32.FILE.SANDBOX_READ, WIN32.ACCESS.READ_CONTROL))
   end
@@ -2668,6 +2591,7 @@ local function apply_runtime_acls(spec, lease)
   -- packaged DLLs and runtime files before the worker starts its protocol.
   for _, path in ipairs(read_roots) do
     if not covered_by(filesystem.write_roots, path) then
+      check_admission(deadline)
       allow_path(path, { logon }, WIN32.FILE.SANDBOX_READ, true)
     end
   end
@@ -2681,10 +2605,12 @@ local function apply_runtime_acls(spec, lease)
   -- The same logon SID participates in ordinary and restricted write checks.
   for _, path in ipairs(read_paths) do
     if not covered_by(filesystem.write_roots, path) then
+      check_admission(deadline)
       allow_path(path, { logon }, WIN32.FILE.SANDBOX_READ, false)
     end
   end
   for _, path in ipairs(protected_ancestors(filesystem)) do
+    check_admission(deadline)
     update_acl(path, { explicit_access(logon, WIN32.ACCESS.DELETE, WIN32.SECURITY.DENY_ACCESS, 0) })
   end
   end)
@@ -2728,26 +2654,6 @@ local function utf16_block(environment)
   end
   block[offset] = 0
   return block
-end
-
--- A kill-on-close job groups a process with all descendants. Closing or
--- terminating the Job stops every target descendant before ACL revocation.
----@param stage? string
----@param name? string
----@return ffi.cdata*
-local function create_job(stage, name)
-  local job = K.CreateJobObjectW(nil, name and wide(name) or nil)
-  if invalid_handle(job) then failure(stage or "job-create") end
-  local limits = (ffi.new("JOBOBJECT_EXTENDED_LIMIT_INFORMATION") --[[@as Neoagent.Win32.JOBOBJECT_EXTENDED_LIMIT_INFORMATION]])
-  limits.BasicLimitInformation.LimitFlags =
-    WIN32.JOB.KILL_ON_CLOSE
-  if K.SetInformationJobObject(job,
-      WIN32.JOB.EXTENDED_LIMIT_INFORMATION,
-      limits, sizeof(limits)) == 0 then
-    close_handle(job)
-    failure(stage or "job-configure")
-  end
-  return job
 end
 
 -- Extended startup attributes place the target in its job during creation and
@@ -3124,7 +3030,7 @@ local function forward_target_input(input, target_stdin)
 end
 
 ---@param target Neoagent.WindowsTarget
----@param field 'stdin'|'stdin_write'|'stdout'|'stdout_write'|'stderr'|'stderr_write'|'process'|'thread'|'job'
+---@param field 'stdin'|'stdin_write'|'stdout'|'stdout_write'|'stderr'|'stderr_write'|'process'|'thread'
 local function close_target_handle(target, field)
   close_handle(target[field])
   target[field] = nil
@@ -3133,14 +3039,14 @@ end
 ---@param target Neoagent.WindowsTarget
 local function close_target(target)
   local ok, err = pcall(function()
-    if target.job then authority.stop_job(target.job) end
+    if target.job then target.job:stop() end
   end)
   if target.attributes and target.attributes.list then
     K.DeleteProcThreadAttributeList(target.attributes.list)
     target.attributes.list = nil
   end
   for _, field in ipairs({ "stdin", "stdin_write", "stdout", "stdout_write", "stderr", "stderr_write",
-      "process", "thread", "job" }) do
+      "process", "thread" }) do
     close_target_handle(target, field)
   end
   close_private_desktop(target.desktop)
@@ -3156,14 +3062,16 @@ end
 ---@param token ffi.cdata*
 ---@param logon_sid_string string
 ---@param target Neoagent.WindowsTarget
+---@param deadline number
 ---@return Neoagent.SandboxExitEvent
-local function spawn_target(spec, base, token, logon_sid_string, target)
+local function spawn_target(spec, base, token, logon_sid_string, target, deadline)
+  check_admission(deadline)
   local argv = assert(spec.argv)
   target.stdin, target.stdin_write = create_input_pipe()
   target.stdout, target.stdout_write = create_output_pipe()
   target.stderr, target.stderr_write = create_output_pipe()
   target.desktop = private_desktop(logon_sid_string)
-  target.attributes = target_process_attributes(assert(target.job), assert(target.stdin),
+  target.attributes = target_process_attributes(assert(assert(target.job).handle), assert(target.stdin),
     assert(target.stdout_write), assert(target.stderr_write))
   local startup = (ffi.new("STARTUPINFOEXW") --[[@as Neoagent.Win32.STARTUPINFOEXW]])
   startup.StartupInfo.cb = sizeof(startup)
@@ -3179,7 +3087,8 @@ local function spawn_target(spec, base, token, logon_sid_string, target)
   local cwd = wide(spec.cwd)
   local environment = utf16_block(spec.env)
   local flags = bit.bor(WIN32.PROCESS.CREATE_NO_WINDOW, WIN32.PROCESS.CREATE_UNICODE_ENVIRONMENT,
-    WIN32.PROCESS.EXTENDED_STARTUPINFO_PRESENT)
+    WIN32.PROCESS.EXTENDED_STARTUPINFO_PRESENT, WIN32.PROCESS.CREATE_SUSPENDED)
+  check_admission(deadline)
   local ok, err = with_impersonation(base, function()
     local created = A.CreateProcessAsUserW(token, executable, command, nil, nil, 1,
       flags, environment, cwd, startup.StartupInfo, process)
@@ -3191,9 +3100,14 @@ local function spawn_target(spec, base, token, logon_sid_string, target)
   close_target_handle(target, "stderr_write")
   if ok == 0 then failure("target-create", err) end
   target.process, target.thread = process.hProcess, process.hThread
+  -- Process creation itself can outlast admission. Keep the new thread
+  -- suspended until the owner checks the cutoff, with its Job already owned.
+  check_admission(deadline)
+  if K.ResumeThread(target.thread) == 0xffffffff then failure("target-resume") end
   close_target_handle(target, "thread")
   close_target_handle(target, "stdin")
   stdout_frame({ v = RUNTIME.PROTOCOL_VERSION, type = "ready" })
+  target.ready = true
   local output = output_sender(K.GetStdHandle(WIN32.HANDLE.STD_OUTPUT))
   local input = K.GetStdHandle(WIN32.HANDLE.STD_INPUT)
   local stdout_open, stderr_open = true, true
@@ -3209,7 +3123,7 @@ local function spawn_target(spec, base, token, logon_sid_string, target)
   end
   close_target_handle(target, "stdin_write")
   if process_status ~= WIN32.WAIT.OBJECT_0 then failure("target-wait", process_status) end
-  authority.stop_job(assert(target.job))
+  assert(target.job):stop()
   for _ = 1, RUNTIME.OUTPUT_DRAIN_POLLS do
     if stdout_open then stdout_open = drain_pipe(assert(target.stdout), "stdout", output) end
     if stderr_open then stderr_open = drain_pipe(assert(target.stderr), "stderr", output) end
@@ -3333,6 +3247,7 @@ local function host_main(directory, cleanup)
     end
     timeouts[name] = value
   end
+  local admission_deadline = vim.uv.hrtime() + timeouts.admission * 1000000
   ---@type ffi.cdata*?
   local mutex = acquire_mutex(timeouts.admission)
   ---@type Neoagent.WindowsRuntimeState?
@@ -3356,32 +3271,45 @@ local function host_main(directory, cleanup)
     end
     if not state.provisioned then failure("setup-incomplete", 0) end
     if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
-    authority.recover(directory, state)
+    local journal = authority.journal(directory, state, admission_deadline)
+    if spec.mode == "recover" then
+      if spec.v ~= RUNTIME.PROTOCOL_VERSION or type(spec.lease) ~= "string" or #spec.lease ~= 32 or not spec.lease:match("^%x+$") then
+        failure("specification-lease", 0)
+      end
+      journal:recover(spec.lease)
+      if state.leases[spec.lease] then failure("lease-still-owned", 0) end
+      stdout_frame({ v = RUNTIME.PROTOCOL_VERSION, type = "ready" })
+      terminal = { v = RUNTIME.PROTOCOL_VERSION, type = "exit", code = 0, signal = 0 }
+      return
+    end
+    journal:recover()
+    check_admission(admission_deadline)
     spec = validate_spec(spec, directory)
     local policy = {
       write_roots = vim.deepcopy(spec.profile.windows.write_roots),
       deny_write = vim.deepcopy(spec.profile.windows.deny_write),
     }
-    authority.admit(state, policy)
+    journal:admit(policy)
     local launcher = assert(state.launcher)
     if account_sid(launcher.name) ~= launcher.sid then
       failure("account-identity", WIN32.ERROR.ACCESS_DENIED)
     end
-    id = random_hex(16)
-    guard = acquire_named_mutex(mutex_name(directory, "-lease-" .. id), 0)
+    check_admission(admission_deadline)
+    id = spec.mode == "exec" and assert(spec.lease) or random_hex(16)
+    guard = acquire_lease(id)
     if not guard or state.leases[id] then failure("lease-identity", WIN32.ERROR.ALREADY_EXISTS) end
     ---@type Neoagent.WindowsPrivateAccount
     local account = { name = "na_" .. random_hex(8) }
     ---@type Neoagent.WindowsAuthorityLease
-    local lease = { account = account, paths = authority_paths(spec), policy = policy }
-    state.leases[id] = lease
+    local lease = { job = "unstarted", account = account, paths = authority_paths(spec), policy = policy }
     cleanup.released = false
-    encode_state(directory, state)
+    journal:reserve(id, lease)
     do
       local password = password_value()
       accounts.create(account, assert(launcher.sid), state.owner_sid, password,
         spec.profile.network == "restricted" and assert(state.offline_group) or nil,
         function() encode_state(directory, state) end)
+      check_admission(admission_deadline)
       target_base = logon_account(account.name, password)
     end
     local logon
@@ -3403,19 +3331,35 @@ local function host_main(directory, cleanup)
     if not privileges then
       failure("setup-launch-rights", error_value(privilege_error).errno)
     end
-    target.job = create_job("target-job", mutex_name(directory, "-job-" .. id))
-    materialize_protected(directory, state, spec)
-    apply_runtime_acls(spec, lease)
-    release_mutex(mutex)
-    mutex = nil
-    if spec.mode == "probe" then
-      run_probe(spec, token)
-      spec.argv = { vim.fs.joinpath(assert(vim.uv.os_getenv("SystemRoot")), "System32", "cmd.exe"),
-        "/d", "/s", "/c", "exit 0" }
+    check_admission(admission_deadline)
+    if spec.mode == "exec" then
+      target.job = new_job(directory, id)
+      if not target.job:open() then failure("target-custody", WIN32.ERROR.FILE_NOT_FOUND) end
     end
-    terminal = spawn_target(spec, base, token, logon, target)
+    materialize_protected(directory, state, spec, admission_deadline)
+    apply_runtime_acls(spec, lease, admission_deadline)
+    check_admission(admission_deadline)
+    if spec.mode == "probe" then
+      -- Probe under the private token in this host; it creates no process.
+      -- Crashing here therefore leaves an unstarted, recoverable reservation.
+      run_probe(spec, token)
+      stdout_frame({ v = RUNTIME.PROTOCOL_VERSION, type = "ready" })
+      terminal = { v = RUNTIME.PROTOCOL_VERSION, type = "exit", code = 0, signal = 0 }
+    else
+      journal:permit_launch(id)
+      release_mutex(mutex)
+      mutex = nil
+      terminal = spawn_target(spec, base, token, logon, target, admission_deadline)
+    end
   end)
   local finalization_deadline = vim.uv.hrtime() + timeouts.finalization * 1000000
+  if not target.ready then
+    -- Failed admission cannot start a fresh window beyond the total budget
+    -- supervised by the parent. Blocking native calls may consume that time;
+    -- when it is exhausted, preserve uncertainty instead of extending it.
+    local limit = admission_deadline + timeouts.finalization * 1000000
+    if finalization_deadline > limit then finalization_deadline = limit end
+  end
   local stopped, stop_err = pcall(close_target, target)
   local cleaned, cleanup_err = pcall(function()
     if not stopped then error(stop_err, 0) end
@@ -3424,10 +3368,10 @@ local function host_main(directory, cleanup)
         local remaining = math.max(0, math.ceil((finalization_deadline - vim.uv.hrtime()) / 1000000))
         mutex = acquire_mutex(remaining)
         local registration = authority.location(directory)
-        state = decode_state(directory)
+        state = decode_state(directory, finalization_deadline)
         if state.coordinator ~= registration.id then failure("state-coordinator", WIN32.ERROR.ACCESS_DENIED) end
       end
-      authority.finish(directory, assert(state), assert(id))
+      authority.journal(directory, assert(state), finalization_deadline):finish(assert(id), target.job)
     end
   end)
   release_mutex(mutex)
@@ -3474,12 +3418,25 @@ end
 
 local directory = default_state_directory()
 if arguments[1] == "--setup" then
-  local mutex
+  local mutex, bootstrap_mutex
+  local bootstrap = kernel_objects.new(authority.coordinator.setup_namespace, {
+    identity = authority.coordinator.administrators, wide = wide, failure = failure,
+  })
   local ok, err = pcall(function()
-    mutex = acquire_mutex(RUNTIME.ADMISSION_TIMEOUT_MS)
-    setup(directory)
+    local deadline = vim.uv.hrtime() + RUNTIME.ADMISSION_TIMEOUT_MS * 1000000
+    -- Before registration there is no host identity to share. Only elevated
+    -- administrators can create/open this machine-wide bootstrap namespace.
+    bootstrap:join(deadline)
+    local remaining = math.max(0, math.ceil((deadline - vim.uv.hrtime()) / 1000000))
+    bootstrap_mutex = acquire_named_mutex(bootstrap:path("setup"), remaining, authority.coordinator.administrators)
+    if not bootstrap_mutex then failure("mutex-wait-timeout", WIN32.WAIT.TIMEOUT) end
+    remaining = math.max(0, math.ceil((deadline - vim.uv.hrtime()) / 1000000))
+    mutex = acquire_mutex(remaining)
+    setup(directory, deadline)
   end)
   release_mutex(mutex)
+  release_mutex(bootstrap_mutex)
+  bootstrap:close(false)
   if not ok then
     local value = error_value(err, "setup")
     io.stderr:write(vim.json.encode({
@@ -3500,3 +3457,4 @@ else
     exit(125)
   end
 end
+if coordination then coordination:close(false) end

@@ -66,7 +66,7 @@ describe("sandbox failed-start ownership", function()
         return staging
       end,
     })
-    lease = linux.start_worker({
+    lease = require("tests.helpers.sandbox").start_worker(linux, {
       argv = { "/bin/sh", "-c", "true" },
       cwd = directory,
       env = { PATH = "/bin:/usr/bin" },
@@ -138,13 +138,13 @@ describe("sandbox failed-start ownership", function()
     assert.is_nil(vim.uv.fs_stat(assert(staging)))
   end)
 
-  it("cleans rejected requests before any worker owns native resources", function()
+  it("settles owned preparation after rejecting the native request", function()
     local err = helper.failure(function()
       launch(-1)
     end)
     assert.are.equal("sandbox_unavailable", err.kind)
-    assert.matches("worker kill grace", tostring(err.detail), 1, true)
-    assert.are.equal(0, #exits)
+    assert.matches("worker kill grace", err.message, 1, true)
+    assert.are.equal(1, #exits)
     assert.are.equal(1, removals)
     assert.is_nil(vim.uv.fs_stat(assert(staging)))
   end)

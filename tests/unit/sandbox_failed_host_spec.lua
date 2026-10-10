@@ -24,8 +24,13 @@ describe("retained sandbox host startup", function()
         name = "native-host-contract",
         paths = require("neoagent.sandbox.path").for_os(jit.os),
         check = function() return { ok = true, platform = "native-host-contract" } end,
-        start_worker = function(request)
-          local relay = relays.new({ require_cleanup_ack = true, on_failure = request.on_failure })
+        create_worker = function(request)
+          local relay = relays.new({ on_failure = request.on_failure,
+            cleanup = function(result)
+              if result.execution == "not_started" then return true end
+              return nil, "Native execution was not ruled out"
+            end,
+            start = function(relay)
           if failure == "timer allocation" then
             vim.uv.new_timer = function() return nil end
           elseif failure == "pipe allocation" then
@@ -46,6 +51,8 @@ describe("retained sandbox host startup", function()
           if not launched then error(host, 0) end
           hosts[#hosts + 1] = host
           relay:attach(host)
+            end,
+          })
           return relay
         end,
       },
@@ -95,7 +102,7 @@ describe("retained sandbox host startup", function()
       helper.complete(function() return owner:wait_cleanup(1000) end, 2000)
       assert(vim.wait(1000, function() return owner:status().quarantined == 1 end, 5), vim.inspect(owner:status()))
       assert.are.equal(1, owner:status().reserved)
-      assert.matches("not acknowledged", assert(owner:status().cleanup_error).message, 1, true)
+      assert.are.equal("Native execution was not ruled out", assert(owner:status().cleanup_error).detail)
     end)
   end
 end)

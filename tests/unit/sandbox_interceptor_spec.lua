@@ -132,6 +132,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local state = { terminated = {}, waited = 0, closed = 0 }
     ---@type Neoagent.WorkerLease
     local value = {
+      start = function() end,
+      wait_ready = function() return true end,
       is_released = function() return true end,
       wait_release = function() return true end,
       write = function()
@@ -195,7 +197,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         local denied = ending == "SIGSYS" or ending == "wrapped SIGSYS"
         local execute = interceptor(root, {
           name = ending == "other platform" and "macos" or "linux",
-          start_worker = function(request)
+          create_worker = function(request)
             local server = require("neoagent.rpc.server").new({
               send = function(message)
                 assert(request.on_stdout)(protocol.encode(message))
@@ -210,6 +212,8 @@ describe("neoagent sandbox Tool RPC selection", function()
               server:receive(message)
             end)
             return {
+              start = function() end,
+              wait_ready = function() return true end,
               is_released = function() return true end,
               wait_release = function() return true end,
               write = function(_, bytes)
@@ -264,7 +268,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return { ok = true, platform = "test", capabilities = {} }
       end,
 
-      start_worker = function()
+      create_worker = function()
         starts = starts + 1
         error("parent-only tools must not start a sandbox worker")
       end,
@@ -393,7 +397,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       local root = temporary_root()
       local platform = {
         name = "test",
-        start_worker = function(request)
+        create_worker = function(request)
           local protocol = require("neoagent.rpc.protocol")
           local server = require("neoagent.rpc.server").new({
             send = function(message)
@@ -416,6 +420,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           end)
           local result = { code = 0, signal = 0, stderr = "" }
           return {
+            start = function() end,
+            wait_ready = function() return true end,
             is_released = function() return true end,
             wait_release = function() return true end,
             write = function(_, bytes)
@@ -460,7 +466,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     remote({
       request = function(_, _, _, handlers)
@@ -504,7 +510,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function()
+      create_worker = function()
         starts = starts + 1
         error("short-circuited policy must not start a worker")
       end,
@@ -562,9 +568,9 @@ describe("neoagent sandbox Tool RPC selection", function()
         return { ok = true, platform = "test", capabilities = {} }
       end,
 
-      start_worker = function(request, services)
+      create_worker = function(request, services)
         starts = starts + 1
-        return assert(services.start_worker)(request)
+        return require("neoagent.rpc.worker_lease").new(request)
       end,
     }
     local tool = require("neoagent.tools.write_file").new()
@@ -594,7 +600,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function()
+      create_worker = function()
         starts = starts + 1
         error("unregistered tools must not start a worker")
       end,
@@ -639,7 +645,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     local execute = interceptor(root, platform):wrap(function(tool, arguments, ctx)
       tool.execute(arguments, ctx)
@@ -665,7 +671,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     local _, failed_remote = remote()
     local execute = interceptor(root, platform):wrap()
@@ -728,14 +734,16 @@ describe("neoagent sandbox Tool RPC selection", function()
         })
         local execute = interceptor(root, {
           name = "linux",
-          start_worker = function(request, services)
+          create_worker = function(request, services)
             services.fs = filesystem
-            vim.uv.spawn = function()
-              return nil, "startup denied", "EACCES"
+            local lease = require("neoagent.sandbox.linux").create_worker(request, services)
+            local start = lease.start
+            function lease:start()
+              vim.uv.spawn = function() return nil, "startup denied", "EACCES" end
+              local ok, err = pcall(start, self)
+              vim.uv.spawn = spawn
+              if not ok then error(err, 0) end
             end
-            local started, lease = pcall(require("neoagent.sandbox.linux").start_worker, request, services)
-            vim.uv.spawn = spawn
-            assert(started, vim.inspect(lease))
             live_children[#live_children + 1] = lease
             return lease
           end,
@@ -809,7 +817,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function(request)
+      create_worker = function(request)
         request.on_exit({
           code = 126,
           signal = 0,
@@ -844,7 +852,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     local _, remote_state = remote()
     local execute = interceptor(root, platform, {
@@ -894,7 +902,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return { ok = true, platform = "test", capabilities = {} }
       end,
 
-      start_worker = function()
+      create_worker = function()
         starts = starts + 1
         error("worker preparation must fail first")
       end,
@@ -984,7 +992,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       platform = {
         name = "test",
         check = function() return { ok = true, platform = "test", capabilities = {} } end,
-        start_worker = function(request)
+        create_worker = function(request)
           environment = request.env
           return active_child
         end,
@@ -1024,7 +1032,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         value.id = "compiled"
         return value
       end,
-      start_worker = function() error("must not start for a parent-only Tool") end,
+      create_worker = function() error("must not start for a parent-only Tool") end,
     }
     local selected = interceptor(root, platform)
     local executed = selected:wrap()
@@ -1043,7 +1051,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal(0, compiled)
 
     local active_child = child()
-    platform.start_worker = function()
+    platform.create_worker = function()
       return active_child
     end
     remote()
@@ -1056,11 +1064,11 @@ describe("neoagent sandbox Tool RPC selection", function()
 
   it("contains profile, context, and native child setup failures without host fallback", function()
     local root = temporary_root()
-    local function platform(start_worker)
+    local function platform(create_worker)
       return {
         name = "test",
         check = function() return { ok = true, platform = "test", capabilities = {} } end,
-        start_worker = start_worker,
+        create_worker = create_worker,
       }
     end
     local tool = restricted_tool()
@@ -1100,14 +1108,14 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.matches("invalid worker lease", value.content[1].text)
   end)
 
-  for _, missing in ipairs({ "is_released", "wait_release", "dispose", "wait" }) do
-    it("rejects a lease without " .. missing .. " and reports available cleanup through the Tool boundary", function()
+  for _, missing in ipairs({ "start", "wait_ready", "is_released", "wait_release", "dispose", "wait" }) do
+    it("rejects an incomplete lease before starting native resources: " .. missing, function()
       local root = temporary_root()
       local lease, state = child()
       rawset(lease, missing, false)
       local _, channel = remote()
       local execute = interceptor(root, {
-        name = "test", start_worker = function() return lease end,
+        name = "test", create_worker = function() return lease end,
       }):wrap()
       local value = wait(async.run(function()
         return execute(restricted_tool(), { path = "rejected.txt", content = "unused" }, context(root))
@@ -1116,12 +1124,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       assert.matches("invalid worker lease", assert(value.content[1]).text, 1, true)
       assert.are.equal(0, channel.attached)
       assert.are.equal(0, channel.operations)
-      assert.are.equal(missing == "dispose" and 0 or 1, state.closed)
-      assert.are.equal(missing == "wait" and 0 or 1, state.waited)
-      if missing == "dispose" or missing == "wait" then
-        assert.is_true(assert(assert(value.execution).sandbox).cleanup_failed)
-        assert.matches("Worker lease cannot", assert(value.content[2]).text, 1, true)
-      end
+      assert.are.equal(0, state.closed)
+      assert.are.equal(0, state.waited)
     end)
   end
 
@@ -1131,7 +1135,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     local _, remote_state = remote({ open = function()
       error(util.error("worker_start", "handshake failed"), 0)
@@ -1148,20 +1152,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.are.equal(1, child_state.closed)
 
     active_child, child_state = child()
-    platform.start_worker = function() return active_child end
-    _, remote_state = remote({ open = function()
-      error(util.error("worker_start", "direct handshake failed"), 0)
-    end,
-    })
-    value = interceptor(root, platform):wrap()(restricted_tool(), {
-      path = "open.txt", content = "value",
-    }, context(root))
-    assert.is_true(assert(value.execution).sandbox.unavailable)
-    assert.are.equal(1, child_state.waited)
-    assert.are.equal(1, child_state.closed)
-
-    active_child, child_state = child()
-    platform.start_worker = function() return active_child end
+    platform.create_worker = function() return active_child end
     _, remote_state = remote({ close = function()
       error(util.error("protocol", "shutdown failed"), 0)
     end,
@@ -1208,7 +1199,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     end,
     })
     local execute = interceptor(root, {
-      name = "test", start_worker = function() return lease end,
+      name = "test", create_worker = function() return lease end,
     }):wrap()
     local run = async.run(function()
       return execute(restricted_tool(), { path = "file", content = "value" }, context(root))
@@ -1216,7 +1207,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local checked, check_err = pcall(function()
       assert(vim.wait(1000, function() return state.waited == 1 end))
       run:cancel()
-      assert(vim.wait(1000, function() return run:is_done() and state.waited == 2 end))
+      assert(vim.wait(1000, function() return run:is_done() and state.waited == 1 end))
       assert.are.equal(1, state.closed)
       assert.is_false(reaped)
     end)
@@ -1247,7 +1238,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       local platform = {
         name = "test",
         ---@param request Neoagent.SandboxWorkerRequest
-        start_worker = function(request)
+        create_worker = function(request)
           local output = request.on_stdout
           assert(output)
           local server = require("neoagent.rpc.server").new({
@@ -1318,7 +1309,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       for _, kind in ipairs({ "protocol", "artifact" }) do
         local active_child, state = child()
         local platform = {
-          name = "test", start_worker = function() return active_child end,
+          name = "test", create_worker = function() return active_child end,
         }
         remote({ request = function()
           error(util.error(kind, "unusable worker response"), 0)
@@ -1355,7 +1346,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       end,
     })
     local execute = interceptor(root, {
-      name = "test", start_worker = function() return active_child end,
+      name = "test", create_worker = function() return active_child end,
     }):wrap()
     local value = wait(async.run(function()
       return execute(require("neoagent.tools.shell").new(), { command = "exit 1" }, context(root))
@@ -1397,7 +1388,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return invocation
       end
       local execute = interceptor(root, {
-        name = "test", start_worker = function() return lease end,
+        name = "test", create_worker = function() return lease end,
       }):wrap(function(tool, arguments, ctx)
         tool.execute(arguments, ctx)
         error(util.error("cancelled", "caller stopped observing"), 0)
@@ -1457,7 +1448,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       local ok, err = pcall(function()
         local execute = interceptor(root, {
           name = "test", finalization_timeout_ms = 60000,
-          start_worker = function() return lease end,
+          create_worker = function() return lease end,
         }):wrap(function(tool, arguments, ctx)
           local result = tool.execute(arguments, ctx)
           if cancelled then error(util.error("cancelled", "caller stopped observing"), 0) end
@@ -1499,6 +1490,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     }
     ---@type Neoagent.WorkerLease
     local lease = {
+      start = function() end,
+      wait_ready = function() return true end,
       is_released = function() return true end,
       wait_release = function() return true end,
       write = function() return true end,
@@ -1538,7 +1531,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return lease end,
+      create_worker = function() return lease end,
     }
     remote()
 
@@ -1588,7 +1581,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       })
       assert(vim.wait(1000, function() return state.waited == 1 end))
       run:cancel()
-      assert(vim.wait(1000, function() return run:is_done() and state.waited == 2 end))
+      assert(vim.wait(1000, function() return run:is_done() and state.waited == 1 end))
       local value = wait(run)
       assert.matches("complete", assert(value.content)[1].text, 1, true)
       assert(vim.wait(1000, function() return completions == 1 end))
@@ -1602,7 +1595,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       assert(vim.wait(1000, function() return #state.waiters == 0 end))
       assert.are.equal(1, state.disposed)
       assert.are.equal(1, state.completed)
-      assert.are.equal(2, state.waited)
+      assert.are.equal(1, state.waited)
       assert.are.equal(1, completions)
     end)
     vim.uv.new_timer = original_new_timer
@@ -1639,7 +1632,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       end
       local execute = interceptor(root, {
         name = "test",
-        start_worker = function(request)
+        create_worker = function(request)
           feed = assert(request.on_stdout)
           local function emit(message) assert(feed)(protocol.encode(message)) end
           emit({ type = "ready", marker = protocol.MARKER })
@@ -1664,6 +1657,8 @@ describe("neoagent sandbox Tool RPC selection", function()
             end
           end)
           return {
+            start = function() end,
+            wait_ready = function() return true end,
             is_released = function() return true end,
             wait_release = function() return true end,
             write = function(_, bytes) decoder:feed(bytes) return true end,
@@ -1722,7 +1717,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local disposed, updates = 0, 0
     local execute = interceptor(root, {
       name = "test",
-      start_worker = function(request)
+      create_worker = function(request)
         feed = assert(request.on_stdout)
         local function emit(message) assert(feed)(protocol.encode(message)) end
         emit({ type = "ready", marker = protocol.MARKER })
@@ -1751,6 +1746,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           end
         end)
         return {
+          start = function() end,
+          wait_ready = function() return true end,
           is_released = function() return true end,
           wait_release = function() return true end,
           write = function(_, bytes) decoder:feed(bytes) return true end,
@@ -1796,7 +1793,7 @@ describe("neoagent sandbox Tool RPC selection", function()
         return { ok = true, platform = "test", capabilities = {} }
       end,
 
-      start_worker = function(request)
+      create_worker = function(request)
         local protocol = require("neoagent.rpc.protocol")
         local child_result = { code = 0, signal = 0, stderr = "" }
         local server = require("neoagent.rpc.server").new({
@@ -1816,6 +1813,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           server:receive(message)
         end)
         return {
+          start = function() end,
+          wait_ready = function() return true end,
           is_released = function() return true end,
           wait_release = function() return true end,
           write = function(_, bytes)
@@ -1876,7 +1875,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       ---@type Neoagent.SandboxPlatform<unknown>
       local platform = {
         name = "test",
-        start_worker = function(request)
+        create_worker = function(request)
           local protocol = require("neoagent.rpc.protocol")
           ---@type Neoagent.AwaitCallbacks<Neoagent.WorkerResult>[]
           local waiters = {}
@@ -1903,6 +1902,8 @@ describe("neoagent sandbox Tool RPC selection", function()
           })
           local decoder = protocol.decoder(function(message) server:receive(message) end)
           return {
+            start = function() end,
+            wait_ready = function() return true end,
             is_released = function() return reaped end,
             wait_release = function(self) self:wait() return true end,
             write = function(_, bytes) decoder:feed(bytes)
@@ -1984,7 +1985,7 @@ describe("neoagent sandbox Tool RPC selection", function()
           return { ok = true, platform = "test", capabilities = {} }
         end,
 
-        start_worker = function() return active_child end,
+        create_worker = function() return active_child end,
       }
       remote()
       local execute = interceptor(root, platform):wrap(function(tool, arguments, ctx)
@@ -2009,7 +2010,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     assert.matches("worker wait failed", assert(value.content[2]).text)
     assert.is_true(assert(assert(value.execution).sandbox).cleanup_failed)
     assert(vim.wait(1000, function() return failed_state.closed == 1 end))
-    assert.are.equal(2, failed_state.waited)
+    assert.are.equal(1, failed_state.waited)
 
     value = execute_with_wait(function()
       return {
@@ -2066,7 +2067,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     remote({
       request = function(_, _, _, handlers)
@@ -2105,7 +2106,7 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "linux",
       check = function() return { ok = true, platform = "linux", capabilities = {} } end,
-      start_worker = function() return active_child end,
+      create_worker = function() return active_child end,
     }
     local function after_remote(callback)
       return function(tool, _, ctx)
@@ -2300,8 +2301,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test", capabilities = {} } end,
-      start_worker = function(request)
-        local active_child = require("neoagent.rpc.worker_lease").start({
+      create_worker = function(request)
+        local active_child = require("neoagent.rpc.worker_lease").new({
           argv = { assert(vim.fn.exepath("python3")), "-c", program, late, cleaned, started, stopping, release },
           cwd = root,
           env = require("tests.helpers.tool_worker").environment(),

@@ -77,7 +77,7 @@ describe("Windows native Tool RPC", function()
     environment.TMP = environment.TEMP
     environment.TMPDIR = environment.TEMP
     local connection = require("neoagent.rpc.connection").new()
-    local child = windows.start_worker({
+    local child = require("tests.helpers.sandbox").start_worker(windows, {
       argv = worker.argv(nvim, source),
       cwd = root,
       env = environment,
