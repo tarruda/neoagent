@@ -1,0 +1,32 @@
+# Adapted metadata-request failure; identifiers and credentials are synthetic.
+# Source SHA-256: 6f70c63b91132baa6231604a56e6f2cdda76232b051b5cf47c5f0b5349d5c737
+# The capture's message reports curl status 6. Restore that structured code
+# supplied by the current byte transport; discard the original error text.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.deepseek.com/files/file-tile
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_body
+at_us: 1000
+bytes: 0
+body: ""
+---
+type: response
+at_us: 1000
+headers: {}
+---
+type: complete
+at_us: 1000
+ok: false
+error:
+  kind: transport
+  exit_code: 6
+  message: "Synthetic resolver failure: private-transport-detail"
+  detail: "https://storage.example.test/blob?sig=private-capability"

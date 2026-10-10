@@ -193,7 +193,8 @@ jobs:
             "api_messages", "tool_schema", "sse", "http",
             "openai_completions", "openai_responses", "anthropic_messages",
             "openai_codex_responses", "api_timeouts", "model_rules", "thinking",
-            "attachment_storage", "health_process"
+            "attachment_storage", "health_process",
+            "files_http", "codex_files", "anthropic_files"
           ) | ForEach-Object { "tests/unit/${_}_spec.lua" }
           $specs += "tests/integration/session_validation_spec.lua"
           $specs += "tests/integration/file_lock_lifecycle_spec.lua"
