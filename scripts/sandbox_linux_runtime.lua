@@ -645,7 +645,7 @@ if type(spec.env) ~= "table" or vim.islist(spec.env) and next(spec.env) then
 end
 for name, value in pairs(spec.env) do
   if type(name) ~= "string"
-      or not name:match("^[A-Za-z_][A-Za-z0-9_]*$")
+      or not name:match("^[^=%z]+$")
       or type(value) ~= "string" or value:find("\0", 1, true) then
     terminal_error("specification-environment", 0)
   end

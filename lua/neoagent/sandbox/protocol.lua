@@ -15,6 +15,15 @@ M.MAX_INPUT_CHUNK = 64 * 1024
 ---@field timed_out? unknown
 ---@field stage? unknown
 ---@field errno? unknown
+---@field cleanup? unknown
+
+---@class Neoagent.SandboxNativeFailure
+---@field stage string
+---@field errno integer
+
+---@class Neoagent.SandboxCleanupObservation
+---@field released boolean
+---@field error? Neoagent.SandboxNativeFailure
 
 ---@class Neoagent.SandboxProtocolBase: Neoagent.SandboxProtocolInput
 ---@field v 1
@@ -33,11 +42,13 @@ M.MAX_INPUT_CHUNK = 64 * 1024
 ---@field code integer
 ---@field signal integer
 ---@field timed_out? boolean
+---@field cleanup? Neoagent.SandboxCleanupObservation Native sandbox resources, independent of target exit.
 
 ---@class Neoagent.SandboxErrorEvent: Neoagent.SandboxProtocolBase
 ---@field type "error"
 ---@field stage string
 ---@field errno integer
+---@field cleanup? Neoagent.SandboxCleanupObservation
 
 ---@alias Neoagent.SandboxTerminalEvent Neoagent.SandboxExitEvent|Neoagent.SandboxErrorEvent
 ---@alias Neoagent.SandboxProtocolEvent Neoagent.SandboxReadyEvent|Neoagent.SandboxOutputEvent|Neoagent.SandboxTerminalEvent
@@ -46,6 +57,7 @@ M.MAX_INPUT_CHUNK = 64 * 1024
 ---@field sequence integer
 ---@field ready boolean
 ---@field terminal? Neoagent.SandboxTerminalEvent
+---@field failed? string
 ---@field on_event fun(event: Neoagent.SandboxProtocolEvent)
 ---@field framing Neoagent.FrameDecoder
 local Decoder = {}
@@ -102,6 +114,23 @@ end
 local function validate(value, state)
   if type(value) ~= "table" or value.v ~= 1 or type(value.type) ~= "string" then
     error("invalid sandbox protocol event")
+  end
+  if value.cleanup ~= nil then
+    local cleanup = value.cleanup
+    assert(value.type == "exit" or value.type == "error", "sandbox cleanup precedes completion")
+    assert(validation.object(cleanup), "invalid sandbox cleanup observation")
+    validation.exact(cleanup, { released = true, error = false }, "sandbox cleanup")
+    assert(type(cleanup.released) == "boolean", "invalid sandbox cleanup release")
+    if cleanup.error ~= nil then
+      local failure = cleanup.error
+      assert(not cleanup.released and validation.object(failure), "invalid sandbox cleanup failure")
+      validation.exact(failure, { stage = true, errno = true }, "sandbox cleanup failure")
+      assert(type(failure.stage) == "string" and failure.stage ~= "", "invalid sandbox cleanup stage")
+      assert(
+        type(failure.errno) == "number" and failure.errno % 1 == 0 and failure.errno >= 0,
+        "invalid sandbox cleanup errno"
+      )
+    end
   end
   if value.type == "output" then
     if not state.ready then
@@ -166,9 +195,13 @@ end
 ---@param chunk string
 function Decoder:feed(chunk)
   assert(type(chunk) == "string", "sandbox protocol chunk must be a string")
+  if self.failed then
+    error(self.failed, 0)
+  end
   local ok, err = pcall(self.framing.feed, self.framing, chunk)
   if not ok then
-    error(framing_error(err), 0)
+    self.failed = framing_error(err)
+    error(self.failed, 0)
   end
 end
 
@@ -176,6 +209,9 @@ end
 ---@return_overload Neoagent.SandboxTerminalEvent
 ---@return_overload nil, string
 function Decoder:finish()
+  if self.failed then
+    return nil, self.failed
+  end
   local complete, framing_err = self.framing:finish()
   if not complete then
     return nil, framing_error(framing_err)

@@ -30,6 +30,26 @@ describe("native Windows subprocess handles", function()
     return { argv = argv, cwd = assert(vim.uv.cwd()), stdio = stdio or { kind = "pipes" }, timeout_ms = 10000 }
   end
 
+  it("stops redirected commands through their native Job when interrupted", function()
+    local output = ""
+    local handle = owner:spawn(spec({ "python", "-c", "import time; print('ready', flush=True); time.sleep(30)" }), {
+      on_output = function(event)
+        output = output .. event.data
+      end,
+    })
+    assert(vim.wait(5000, function()
+      return output:find("ready", 1, true) ~= nil
+    end, 5))
+    assert.is_false(handle:state().stdin_writable)
+    assert.is_true(handle:interrupt())
+    local result = helper.complete(function()
+      return handle:wait()
+    end)
+    assert.is_nil(result.error, vim.inspect(result))
+    assert.is_not.equal(0, result.code)
+    assert.is_false(result.timed_out)
+  end)
+
   it("binds all standard handles to ConPTY when the editor has redirected stdio", function()
     local result = helper.complete(function()
       return owner:run(spec({
@@ -39,6 +59,30 @@ describe("native Windows subprocess handles", function()
     end)
     assert.are.equal(0, result.code, vim.inspect(result))
     assert.matches("PTY_STDIO=111", assert(result.output), 1, true)
+  end)
+
+  it("delivers terminal interruption to a ConPTY command without terminating its owner", function()
+    local output = ""
+    local script = table.concat({
+      "import sys",
+      "print('READY', flush=True)",
+      "try:",
+      " sys.stdin.readline()",
+      "except KeyboardInterrupt:",
+      " print('INTERRUPTED', flush=True)",
+      " sys.exit(42)",
+    }, "\n")
+    local handle = owner:spawn(spec({ "python", "-u", "-c", script }, { kind = "pty", columns = 80, rows = 24 }), {
+      on_output = function(event) output = output .. event.data end,
+    })
+    assert(vim.wait(5000, function() return output:find("READY", 1, true) ~= nil end, 5))
+    assert.is_true(handle:interrupt())
+    local result = helper.complete(function() return handle:wait() end, 8000)
+    assert.are.equal(42, result.code, vim.inspect(result))
+    assert.is_false(result.timed_out)
+    assert.is_nil(result.termination_reason)
+    assert.matches("INTERRUPTED", output, 1, true)
+    assert.is_true(helper.complete(function() return handle:wait_release() end))
   end)
 
   for _, startup_failure in ipairs({ false, true }) do
@@ -275,6 +319,10 @@ print('native-strings:ok', flush=True)
       assert.are.equal(0, result.code, vim.inspect(result))
       assert.is_false(result.timed_out)
       assert.is_nil(result.termination_reason)
+      assert.is_true(helper.complete(function()
+        return owner:wait_release(4000)
+      end))
+      assert.is_true(owner:is_released())
     end)
     vim.uv.spawn = spawn
     for _, complete in pairs(pending) do
@@ -319,6 +367,175 @@ print('native-strings:ok', flush=True)
     end
     assert.is_true(ok, vim.inspect(err))
   end)
+
+  it("observes console release after a failed cleanup deadline", function()
+    local new_work = vim.uv.new_work
+    local pending = {}
+    vim.uv.new_work = function(work, completed)
+      return new_work(work, function(...)
+        local values = { ... }
+        pending[#pending + 1] = function()
+          completed(unpack(values))
+        end
+      end)
+    end
+    local ok, err = pcall(function()
+      local handle = owner:spawn(spec({ "cmd.exe", "/d", "/s", "/c", "exit 0" }, {
+        kind = "pty", columns = 80, rows = 24,
+      }))
+      local result = helper.complete(function()
+        return handle:wait()
+      end, 10000)
+      assert.are.equal("process_cleanup", assert(result.error).code)
+      assert.is_true(owner:is_settled())
+      assert.is_false(owner:is_released())
+      assert.is_false(handle:state().released)
+      assert.are.equal(1, #pending)
+      table.remove(pending, 1)()
+      assert.is_true(helper.complete(function()
+        return owner:wait_release(4000)
+      end))
+      assert.is_true(handle:state().released)
+      assert.are.equal("process_cleanup", assert(helper.complete(function()
+        return handle:wait_cleanup()
+      end).error).code)
+    end)
+    vim.uv.new_work = new_work
+    owner:close("release regression finished")
+    local released = vim.wait(5000, function()
+      while #pending > 0 do
+        table.remove(pending, 1)()
+      end
+      return owner:is_released()
+    end, 5)
+    -- The scope deliberately retains the observed failure after release.
+    owner = subprocess.scope()
+    assert.is_true(released)
+    assert.is_true(ok, vim.inspect(err))
+  end)
+
+  for _, kind in ipairs({ "pipes", "pty" }) do
+    it("retries " .. kind .. " termination after its cleanup deadline", function()
+      local trees = require("neoagent.process.windows")
+      local create = trees.new
+      local denied, output = true, ""
+      ---@type Neoagent.WindowsProcessTree?
+      local native
+      trees.new = function(options)
+        local tree = create(options)
+        native = tree
+        local terminate = tree.backend.terminate
+        tree.backend.terminate = function(job, code)
+          if denied then return nil, "Win32 error 5" end
+          return terminate(job, code)
+        end
+        return tree
+      end
+      local ok, err = pcall(function()
+        -- Pipe fallback can kill the root, and closing ConPTY can end its
+        -- console processes. A detached-console descendant still belongs to
+        -- the same Job and requires the retained native termination owner.
+        local script = [=[import subprocess,sys,time
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+  creationflags=subprocess.CREATE_NO_WINDOW)
+print('READY', flush=True)
+time.sleep(60)]=]
+        local handle = owner:spawn(spec({ "python", "-u", "-c", script,
+        }, { kind = kind, columns = kind == "pty" and 80 or nil, rows = kind == "pty" and 24 or nil }), {
+          on_output = function(event) output = output .. event.data end,
+        })
+        assert(vim.wait(5000, function() return output:find("READY", 1, true) ~= nil end, 5))
+        handle:dispose("termination retry regression")
+        local cleanup = helper.complete(function() return handle:wait_cleanup() end, 5000)
+        assert.is_not_nil(cleanup.error)
+        local tree = assert(native)
+        assert.is_false(tree.backend.empty(assert(tree.job)))
+        assert.is_false(owner:is_released())
+        denied = false
+        assert.is_true(vim.wait(5000, function() return owner:is_released() end, 5),
+          "native cleanup did not retry termination after its failure cleared")
+        assert.are.same(cleanup, helper.complete(function() return handle:wait_cleanup() end))
+      end)
+      trees.new, denied = create, false
+      if native then native:terminate() end -- Also clean the failing baseline.
+      owner:close("termination retry regression finished")
+      assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+      owner = subprocess.scope()
+      assert.is_true(ok, vim.inspect(err))
+    end)
+
+    it("preserves " .. kind .. " supervision errors after native Job observation recovers", function()
+      local trees = require("neoagent.process.windows")
+      local create = trees.new
+      local denied = true
+      trees.new = function(options)
+        local tree = create(options)
+        local query = tree.backend.empty
+        tree.backend.empty = function(job)
+          local empty, err = query(job)
+          if denied then return nil, "Win32 error 5" end
+          return empty, err
+        end
+        return tree
+      end
+      local ok, err = pcall(function()
+        local handle = owner:spawn(spec({ "cmd.exe", "/d", "/c", "exit 0" }, {
+          kind = kind, columns = kind == "pty" and 80 or nil, rows = kind == "pty" and 24 or nil,
+        }))
+        local result = helper.complete(function() return handle:wait() end, 5000)
+        local failure = assert(result.error)
+        assert.are.equal("process_supervision", failure.code)
+        assert.matches("Win32 error 5", failure.message, 1, true)
+        assert.is_false(owner:is_released())
+        denied = false
+        assert.is_true(helper.complete(function() return handle:wait_cleanup() end, 5000))
+        assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+        assert.are.same(failure, helper.complete(function() return handle:wait() end).error)
+      end)
+      trees.new, denied = create, false
+      owner:close("Job observation regression finished")
+      assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+      assert.is_true(ok, vim.inspect(err))
+    end)
+
+    it("retains " .. kind .. " capacity while native Job completion is pending", function()
+      local trees = require("neoagent.process.windows")
+      local create = trees.new
+      local pending, observed = true, false
+      trees.new = function(options)
+        local tree = create(options)
+        local query = tree.backend.empty
+        tree.backend.empty = function(job)
+          local empty, err = query(job)
+          if empty then
+            observed = true
+            return not pending
+          end
+          return empty, err
+        end
+        return tree
+      end
+      local ok, err = pcall(function()
+        local handle = owner:spawn(spec({ "cmd.exe", "/d", "/c", "exit 0" }, {
+          kind = kind, columns = kind == "pty" and 80 or nil, rows = kind == "pty" and 24 or nil,
+        }))
+        local completed = helper.complete(function() return handle:wait() end, 10000)
+        assert.is_true(observed, "the native Job accounting API was not observed")
+        assert.are.equal("process_cleanup", assert(completed.error).code)
+        assert.is_true(owner:is_settled())
+        assert.is_false(owner:is_released())
+        pending = false
+        assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+        assert.are.equal("process_cleanup", assert(helper.complete(function() return handle:wait_cleanup() end).error).code)
+      end)
+      trees.new, pending = create, false
+      owner:close("Job completion regression finished")
+      assert.is_true(helper.complete(function() return owner:wait_release(5000) end))
+      owner = subprocess.scope()
+      assert.is_true(ok, vim.inspect(err))
+    end)
+  end
 
   it("rejects unrepresentable PTY dimensions before spawning or resizing", function()
     local argv = { "cmd.exe", "/d", "/s", "/c", "set /p value=" }

@@ -17,8 +17,8 @@ local identities = require("neoagent.tools.identities")
 
 ---@class Neoagent.SandboxCompositionOptions<C>: Neoagent.SandboxCheckServices<string>
 ---@field os? string
----@field platforms? Neoagent.SandboxPlatforms<Neoagent.ToolContext<C>>
----@field platform? Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
+---@field platforms? Neoagent.SandboxPlatforms<Neoagent.SandboxContext<C>>
+---@field platform? Neoagent.SandboxPlatform<Neoagent.SandboxContext<C>>
 ---@field status? Neoagent.SandboxStatus
 ---@field paths? Neoagent.SandboxPaths
 ---@field environ? fun(): table<string, string>
@@ -27,6 +27,7 @@ local identities = require("neoagent.tools.identities")
 
 ---@class Neoagent.SandboxRuntime<C>
 ---@field _active_execute? Neoagent.ToolExecutor<C>
+---@field _placement? Neoagent.SandboxPlacement<Neoagent.SandboxContext<C>>
 ---@field _enabled boolean
 ---@field _host_execute Neoagent.ToolExecutor<C>
 ---@field _opts Neoagent.SandboxCompositionOptions<C>
@@ -206,10 +207,10 @@ function M.default_profile(ctx, paths, temporary_root)
 end
 
 ---@generic C
----@param setting? Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>
+---@param setting? Neoagent.SandboxProfileSetting<Neoagent.SandboxContext<C>>
 ---@param paths Neoagent.SandboxPaths
 ---@param temporary_root? string
----@return Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>
+---@return Neoagent.SandboxProfileSource<Neoagent.SandboxContext<C>>
 local function profile_source(setting, paths, temporary_root)
   if setting == nil then
     return function(ctx)
@@ -301,6 +302,7 @@ end
 ---@param opts Neoagent.SandboxCompositionOptions<C>
 ---@param escalation Neoagent.SandboxEscalation<C>
 ---@return Neoagent.ToolExecutor<C>?, Neoagent.SandboxActivation
+---@return Neoagent.SandboxPlacement<Neoagent.SandboxContext<C>>?
 local function compose_restricted(toolset, settings, opts, escalation)
   local dispatch = require("neoagent.sandbox.platform")
   local selected, status = opts.platform, opts.status
@@ -341,8 +343,7 @@ local function compose_restricted(toolset, settings, opts, escalation)
 
   local paths = opts.paths or selected.paths or path_module.posix
   local temporary_root = type(selected.temporary_root) == "function" and selected.temporary_root(services) or nil
-  ---@type Neoagent.SandboxInterceptorOptions<C>
-  local interceptor_options = {
+  local placement = require("neoagent.sandbox.placement").new({
     platform = selected,
     profile = profile_source(settings.profile, paths, temporary_root),
     paths = paths,
@@ -351,20 +352,40 @@ local function compose_restricted(toolset, settings, opts, escalation)
     nvim = opts.nvim,
     capabilities = recorded.capabilities,
     start_worker = opts.start_worker,
-  }
-  local interceptor = require("neoagent.sandbox.interceptor").new(interceptor_options)
+  })
+  local interceptor = require("neoagent.sandbox.interceptor").new(placement)
   local base = executor(toolset)
   local execute_tool = escalation:wrap({
     restricted = interceptor:wrap(base),
     elevated = base,
   })
   ---@cast execute_tool fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
-  return execute_tool, recorded
+  return execute_tool, recorded, placement
 end
 
 ---@return Neoagent.SandboxActivation
 function Runtime:status()
   return util.copy(self._status)
+end
+
+-- Select authority for this admission. Existing factories and controllers
+-- retain their captured authority when the runtime toggle later changes.
+---@param context Neoagent.SandboxContext<C>
+---@return Neoagent.ProcessControllerFactory
+function Runtime:process_factory(context)
+  if not self._enabled then
+    return require("neoagent.process_sessions.local").new
+  end
+  if not self._placement then
+    error(
+      util.error(
+        "sandbox_unavailable",
+        "Sandbox unavailable; retained process admission is blocked: " .. bounded(self._status.message)
+      ),
+      0
+    )
+  end
+  return require("neoagent.sandbox.process_session").factory(self._placement, context)
 end
 
 ---@param enabled boolean
@@ -382,7 +403,7 @@ function Runtime:set_enabled(enabled)
     local requested = util.copy(self._settings)
     requested.enabled = true
     local compose_opts = util.copy(self._opts)
-    local ok, composed, status = pcall(function()
+    local ok, composed, status, placement = pcall(function()
       return compose_restricted(self._toolset, requested, compose_opts, self._escalation)
     end)
     if not ok then
@@ -401,6 +422,7 @@ function Runtime:set_enabled(enabled)
       assert(type(composed) == "function")
       ---@cast composed Neoagent.ToolExecutor<C>
       self._active_execute = composed
+      self._placement = placement
     end
   else
     self._status.enabled = true

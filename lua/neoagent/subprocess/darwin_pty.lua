@@ -50,7 +50,15 @@ end
 ---@param callbacks Neoagent.SubprocessCallbacks
 ---@return Neoagent.SubprocessDriver
 function M.new(spec, env, callbacks)
-  local io = streams.new(callbacks)
+  local release = require("neoagent.subprocess.release").new(callbacks.released)
+  local io = streams.new({
+    output = callbacks.output,
+    exited = callbacks.exited,
+    closed = callbacks.closed,
+    failed = callbacks.failed,
+    input_failed = callbacks.input_failed,
+    released = release.retain(),
+  })
   ---@type Neoagent.PosixChild?
   local child
   ---@type uv.uv_pipe_t?
@@ -79,6 +87,7 @@ function M.new(spec, env, callbacks)
       end
     end)
     io.dispose()
+    release.close()
     if not ok then
       error(err, 0)
     end
@@ -103,6 +112,7 @@ function M.new(spec, env, callbacks)
       end,
       output = callbacks.output,
       closed = callbacks.closed,
+      released = release.retain(),
       failed = callbacks.failed,
     })
     local master_fd = ffi.new("int[1]") --[[@as Neoagent.DarwinPtyInts]]
@@ -199,6 +209,9 @@ function M.new(spec, env, callbacks)
       error(validate.error("unsupported_control", "PTY stdin cannot be closed portably"), 0)
     end,
     resize = resize,
+    interrupt = function()
+      return io.write("\3")
+    end,
     stop = function()
       return terminate(false)
     end,

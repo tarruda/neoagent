@@ -23,6 +23,7 @@ local M = {}
 ---@field resize_supported boolean
 ---@field terminal? Neoagent.SubprocessOutcome
 ---@field failure? Neoagent.Error
+---@field released boolean
 
 ---@class Neoagent.SubprocessHandle
 ---@field state fun(self: Neoagent.SubprocessHandle): Neoagent.SubprocessState
@@ -30,9 +31,11 @@ local M = {}
 ---@field close_stdin fun(self: Neoagent.SubprocessHandle): true
 ---@field flush async fun(self: Neoagent.SubprocessHandle): true
 ---@field resize fun(self: Neoagent.SubprocessHandle, columns: integer, rows: integer): true
+---@field interrupt fun(self: Neoagent.SubprocessHandle): true
 ---@field terminate fun(self: Neoagent.SubprocessHandle, reason: string): true
 ---@field wait async fun(self: Neoagent.SubprocessHandle): Neoagent.SubprocessOutcome
 ---@field wait_cleanup async fun(self: Neoagent.SubprocessHandle): true
+---@field wait_release async fun(self: Neoagent.SubprocessHandle): true
 ---@field dispose fun(self: Neoagent.SubprocessHandle, reason: string)
 
 ---@class Neoagent.OwnedSubprocess
@@ -61,10 +64,13 @@ local M = {}
 ---@field cleanup_error? Neoagent.Error
 ---@field outcome? Neoagent.SubprocessOutcome
 ---@field settled boolean
+---@field released boolean
 ---@field driver_closed? boolean
 ---@field waiters table<Neoagent.AwaitCallbacks<Neoagent.SubprocessOutcome>, boolean>
 ---@field cleanup_waiters table<Neoagent.AwaitCallbacks<true>, boolean>
 ---@field on_cleanup fun(owner: Neoagent.OwnedSubprocess, err?: Neoagent.Error)
+---@field on_release fun(owner: Neoagent.OwnedSubprocess)
+---@field release_waiters table<Neoagent.AwaitCallbacks<true>, boolean>
 local Owned = {}
 Owned.__index = Owned
 
@@ -119,6 +125,19 @@ function Owned:signal_tree(force)
   end
 end
 
+function Owned:release()
+  if self.released then
+    return
+  end
+  self.released = true
+  local waiters = self.release_waiters
+  self.release_waiters = {}
+  for waiter in pairs(waiters) do
+    waiter.resolve(true)
+  end
+  self.on_release(self)
+end
+
 ---@param err? Neoagent.Error
 function Owned:finish(err)
   if self.settled then
@@ -133,6 +152,8 @@ function Owned:finish(err)
   local driver_closed = pcall(function()
     if self.driver then
       self.driver.dispose()
+    else
+      self:release()
     end
   end)
   if not driver_closed then
@@ -349,6 +370,9 @@ function Owned:start()
           self:finish()
         end
       end,
+      released = function()
+        self:release()
+      end,
       failed = function(code, message)
         self:fail(validate.error(code, message))
       end,
@@ -442,15 +466,17 @@ end
 ---@param spec Neoagent.ValidatedSubprocessSpec
 ---@param observer Neoagent.SubprocessObserver
 ---@param on_cleanup fun(owner: Neoagent.OwnedSubprocess, err?: Neoagent.Error)
+---@param on_release fun(owner: Neoagent.OwnedSubprocess)
 ---@param capture? Neoagent.SubprocessCapture
 ---@return Neoagent.OwnedSubprocess
-function M.new(spec, observer, on_cleanup, capture)
+function M.new(spec, observer, on_cleanup, on_release, capture)
   ---@type Neoagent.OwnedSubprocess
   local self = setmetatable({
     spec = spec,
     env = environment.normalize(spec.environment),
     observer = observer,
     on_cleanup = on_cleanup,
+    on_release = on_release,
     capture = capture,
     handle = {},
     ready = false,
@@ -460,8 +486,10 @@ function M.new(spec, observer, on_cleanup, capture)
     draining = false,
     timed_out = false,
     settled = false,
+    released = false,
     waiters = {},
     cleanup_waiters = {},
+    release_waiters = {},
   }, Owned)
   -- Only these closures cross the API boundary; native objects stay private.
   self.handle = {
@@ -477,6 +505,7 @@ function M.new(spec, observer, on_cleanup, capture)
         resize_supported = available and spec.stdio.kind == "pty",
         terminal = util.copy(self.outcome),
         failure = util.copy(self.failure or self.cleanup_error or self.disposal),
+        released = self.released,
       }
     end,
     write = function(_, bytes)
@@ -512,6 +541,12 @@ function M.new(spec, observer, on_cleanup, capture)
       validate.dimensions(columns, rows)
       return control(self).resize(columns, rows)
     end,
+    interrupt = function()
+      if not control(self).interrupt() then
+        error(validate.error("process_signal", "Could not interrupt owned process"), 0)
+      end
+      return true
+    end,
     terminate = function(_, reason)
       self:terminate(validate.reason(reason))
       return true
@@ -540,6 +575,19 @@ function M.new(spec, observer, on_cleanup, capture)
         end
         return function()
           self.cleanup_waiters[done] = nil
+        end
+      end)
+    end,
+    ---@async
+    wait_release = function()
+      return async.await(function(done)
+        if self.released then
+          done.resolve(true)
+        else
+          self.release_waiters[done] = true
+        end
+        return function()
+          self.release_waiters[done] = nil
         end
       end)
     end,

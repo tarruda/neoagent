@@ -26,7 +26,9 @@ local next_call_id = 0
 ---@field method string
 ---@field sequence integer
 ---@field on_event? async fun(message: table)
+---@field on_dispatch? fun()
 ---@field terminal_received boolean
+---@field cancel_sent? boolean
 ---@field cancel? fun()
 
 ---@class Neoagent.RpcQueuedMessage
@@ -142,15 +144,21 @@ end
 
 ---@param self Neoagent.RpcConnection
 ---@param message table
+---@param on_dispatch? fun()
 ---@return true?
-local function send_detached(self, message)
+local function send_detached(self, message, on_dispatch)
   local transport = assert(self._transport, "RPC channel is not attached")
   local encoded, bytes = pcall(protocol.encode, message)
   if not encoded then
     fail(self, protocol_error(bytes))
     return
   end
-  local completed, written, write_err = pcall(transport.write, transport, bytes)
+  local completed, written, write_err = pcall(function()
+    if on_dispatch then
+      on_dispatch()
+    end
+    return transport:write(bytes)
+  end)
   if not completed or not written then
     fail(self, completed and (write_err or protocol_error("Could not write to RPC peer")) or protocol_error(written))
     return
@@ -178,7 +186,8 @@ end
 
 ---@param self Neoagent.RpcConnection
 ---@param request_id? integer
-local function begin_cancel(self, request_id)
+---@param retain_result? boolean Keep response validation with the live request coroutine.
+local function begin_cancel(self, request_id, retain_result)
   if self._state == "closed" or self._state == "failed" or self._state == "cancelling" then
     return
   end
@@ -198,14 +207,23 @@ local function begin_cancel(self, request_id)
     -- received result. Cancellation may stop its observer, not erase its input.
     return
   end
-  self._state = "cancelling"
-  self._cancel_timer = assert(vim.uv.new_timer())
-  self._cancel_timer:start(protocol.CANCEL_GRACE_MS, 0, function()
-    close_cancel_timer(self)
-    if self._state == "cancelling" then
-      fail(self, util.error("cancelled", "RPC request cancellation timed out"))
-    end
-  end)
+  if not retain_result then
+    self._state = "cancelling"
+    -- Abandoned requests have a transport-owned cancellation deadline. A
+    -- retained transaction instead keeps its owner's supervision deadline,
+    -- even when its current observer asks the peer to stop collecting.
+    self._cancel_timer = assert(vim.uv.new_timer())
+    self._cancel_timer:start(protocol.CANCEL_GRACE_MS, 0, function()
+      close_cancel_timer(self)
+      if self._active == active and not active.terminal_received then
+        fail(self, util.error("cancelled", "RPC request cancellation timed out"))
+      end
+    end)
+  end
+  if active.cancel_sent then
+    return
+  end
+  active.cancel_sent = true
   send_detached(self, {
     type = "cancel",
     call_id = self._call_id,
@@ -445,9 +463,10 @@ end
 
 ---@param self Neoagent.RpcConnection
 ---@param message table
+---@param on_dispatch? fun()
 ---@async
-local function send(self, message)
-  if not send_detached(self, message) then
+local function send(self, message, on_dispatch)
+  if not send_detached(self, message, on_dispatch) then
     raise_failure(self)
   end
 end
@@ -466,7 +485,7 @@ local function send_request(self, active, method, payload)
     payload = payload,
   }
   if message_size(message) <= protocol.MAX_FRAME then
-    send(self, message)
+    send(self, message, active.on_dispatch)
     return
   end
   local encoded, bytes = pcall(vim.mpack.encode, payload)
@@ -484,7 +503,7 @@ local function send_request(self, active, method, payload)
     request_id = active.id,
     method = method,
     bytes = #bytes,
-  })
+  }, active.on_dispatch)
   for offset = 1, #bytes, protocol.MAX_REQUEST_CHUNK do
     send(self, {
       type = "request_chunk",
@@ -687,6 +706,12 @@ end
 ---@return true
 ---@async
 function RpcConnection:close()
+  -- An abandoned request's Run can finish before its terminal frame arrives.
+  -- Orderly shutdown follows transport settlement, under cancellation's
+  -- existing deadline, rather than treating Run completion as quiescence.
+  if self._state == "cancelling" then
+    self:wait_cancelled()
+  end
   if self._state == "closed" then
     return true
   end
@@ -753,7 +778,9 @@ function RpcConnection:wait_cancelled()
   if self._failure then
     raise_failure(self)
   end
-  if self._state ~= "cancelling" and not (self._active and self._active.terminal_received) then
+  if
+    self._state ~= "cancelling" and not (self._active and (self._active.terminal_received or self._active.cancel_sent))
+  then
     error("RPC connection has no cancelling request", 0)
   end
   return async.await(function(done)
@@ -771,6 +798,7 @@ end
 
 ---@class Neoagent.RpcRequestHandlers
 ---@field on_event? async fun(message: table)
+---@field on_dispatch? fun() Called after encoding/size validation, immediately before the first transport write attempt.
 
 ---@class Neoagent.RpcCall
 ---@field _connection Neoagent.RpcConnection
@@ -806,6 +834,15 @@ function RpcCall:cancel(_reason)
   cancel_request(self._connection, self._request_id)
 end
 
+-- Ask the peer to stop, retaining a response that won the cancellation race.
+-- The caller must continue observing result() and supervising the transaction.
+-- Interruption does not shorten that owner's deadline or abandon its response.
+function RpcCall:interrupt()
+  if not self._run:is_done() then
+    begin_cancel(self._connection, self._request_id, true)
+  end
+end
+
 ---@param method string
 ---@param payload Neoagent.JsonObject
 ---@param handlers? Neoagent.RpcRequestHandlers
@@ -824,6 +861,7 @@ function RpcConnection:start_request(method, payload, handlers)
     method = method,
     sequence = 0,
     on_event = handlers and handlers.on_event or nil,
+    on_dispatch = handlers and handlers.on_dispatch or nil,
     terminal_received = false,
   }
   local connection = self

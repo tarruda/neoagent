@@ -6,7 +6,9 @@ script = vim.uv.fs_realpath(script) or vim.fs.normalize(script)
 local root = assert(vim.fs.dirname(assert(vim.fs.dirname(script))))
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
 
-for _, name in ipairs({ "NVIM", "NVIM_LISTEN_ADDRESS", "NEOAGENT_WORKER_FILE" }) do
+local mode = vim.env.NEOAGENT_WORKER_MODE or "tools"
+assert(mode == "tools" or mode == "process", "invalid worker mode")
+for _, name in ipairs({ "NVIM", "NVIM_LISTEN_ADDRESS", "NEOAGENT_WORKER_FILE", "NEOAGENT_WORKER_MODE" }) do
   (vim.uv.os_unsetenv --[[@as fun(name: string): boolean?, string?]])(name)
 end
 
@@ -39,7 +41,8 @@ local function write(bytes)
   end)
 end
 
-local server = require("neoagent.rpc.server").new({
+local server_module = require("neoagent.rpc.server")
+local server = (mode == "process" and server_module.process or server_module.new)({
   send = function(message)
     write(protocol.encode(message))
   end,

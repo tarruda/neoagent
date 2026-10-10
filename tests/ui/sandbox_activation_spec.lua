@@ -68,7 +68,7 @@ describe("neoagent sandbox activation warning", function()
         platform = {
           name = "test",
           check = function() return (assert(status)) end,
-          start_worker = function() error("must not start children") end,
+          create_worker = function() error("must not start children") end,
         },
         status = status,
       })

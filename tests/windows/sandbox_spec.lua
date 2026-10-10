@@ -149,6 +149,28 @@ describe("neoagent Windows sandbox", function()
     assert.matches("value", assert(fs.read(unicode)))
   end)
 
+  it("passes native environment names through sandbox admission", function()
+    local selected = options()
+    selected.env = vim.tbl_extend("force", environment, {
+      ["ProgramFiles(x86)"] = "native-value",
+      ["éVAR"] = "unicode-value",
+    })
+    local value = run({ "cmd.exe", "/d", "/s", "/c", "echo %ProgramFiles(x86)% %ÉVAR%" }, selected)
+    assert.are.equal(0, value.code, value.stderr)
+    assert.are.equal("native-value unicode-value", vim.trim(value.stdout))
+  end)
+
+  it("rejects native environment aliases before launching the target", function()
+    local selected = options()
+    selected.env = vim.tbl_extend("force", environment, {
+      ["ÉVAR"] = "first",
+      ["éVAR"] = "second",
+    })
+    local completed, err = pcall(run, { "cmd.exe", "/d", "/s", "/c", "echo unexpected" }, selected)
+    assert.is_false(completed)
+    assert.matches("specification%-environment", tostring(err))
+  end)
+
   it("accepts canonical cmd paths with single and split command tails", function()
     local executable = vim.fn.exepath("cmd.exe"):gsub("\\", "/")
     assert.is_not.equal("", executable)
@@ -171,12 +193,12 @@ describe("neoagent Windows sandbox", function()
       TMP = worker_temp,
       TMPDIR = worker_temp,
     })
-    local execute = require("neoagent.sandbox.interceptor").new({
+    local execute = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
       platform = windows,
       profile = active,
       capabilities = assert(status.capabilities),
       nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath,
-    }):wrap()
+    })):wrap()
     local context = {
       workspace = Workspace.new({ root = root, cwd = root }),
       agent = "Windows sandbox",
@@ -231,7 +253,7 @@ describe("neoagent Windows sandbox", function()
     ---@param value Neoagent.ToolResult
     local function assert_restricted(value)
       assert.is_true(value.isError)
-      assert.is_true(assert(value.execution).sandbox.ran_restricted)
+      assert.is_true(assert(value.execution, vim.inspect(value)).sandbox.ran_restricted)
       assert.matches("blocked by the sandbox",
         content(value), 1, true)
     end
@@ -398,7 +420,52 @@ describe("neoagent Windows sandbox", function()
     assert.is_true(accepted)
   end)
 
-  it("kills descendants on timeout and reconciles interrupted ACL leases", function()
+  it("blocks network access from the target's restricted primary token", function()
+    local value = run({ "python", "-c", table.concat({
+      "import socket, sys",
+      "with socket.socket() as s:",
+      " s.settimeout(2)",
+      " code = s.connect_ex(('127.0.0.1', 9))",
+      " print(code)",
+      " sys.exit(0 if code == 10013 else 1)",
+    }, "\n") }, options())
+    assert.are.equal(0, value.code, value.stdout .. value.stderr)
+    assert.are.equal("10013", vim.trim(value.stdout))
+  end)
+
+  it("preserves failed native ACL revocation after eventual recovery releases its authority", function()
+    local worker = require("neoagent.rpc.worker_lease")
+    local nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath
+    ---@type Neoagent.SandboxExecutionServices
+    local services = { fs = fs, nvim = nvim, capabilities = assert(status.capabilities) }
+    services.start_worker = function(request)
+      for index, value in ipairs(request.argv) do
+        if value:match("sandbox_windows_runtime%.lua$") then
+          request.argv[index] = assert(vim.uv.fs_realpath("tests/fixtures/sandbox_windows_cleanup.lua"))
+        end
+      end
+      return worker.start(request)
+    end
+    local lease = require("tests.helpers.sandbox").start_worker(windows, {
+      argv = { "cmd.exe", "/d", "/s", "/c", "exit 7" }, cwd = root, env = environment,
+      profile = windows.compile(profile()),
+    }, services)
+    local checked, failure = pcall(function()
+      local result = wait(async.run(function() return lease:wait() end))
+      assert.are.equal(7, result.code, vim.inspect(result))
+      assert.is_nil(result.error)
+      assert.matches("acl-build (errno=5)", tostring(assert(result.cleanup_error).detail), 1, true)
+      assert.is_true(require("tests.helpers.subprocess").complete(function() return lease:wait_release() end, 15000))
+      assert.are.same(result.cleanup_error, lease:wait().cleanup_error)
+    end)
+    lease:dispose("native cleanup test finished")
+    local recovered = windows.check(services)
+    assert.is_true(recovered.ok, vim.inspect(recovered))
+    assert.is_true(lease:is_released())
+    assert(checked, vim.inspect(failure))
+  end)
+
+  it("kills descendants on forced shutdown and recovers through retained Job evidence", function()
     local escaped = vim.fs.joinpath(root, "escaped.txt")
     local child = vim.fs.joinpath(root, "child.cmd")
     local parent = vim.fs.joinpath(root, "parent.ps1")
@@ -414,20 +481,33 @@ describe("neoagent Windows sandbox", function()
       "$arguments = '/d /c \"' + $child + '\"'",
       "Start-Process -FilePath $env:COMSPEC "
         .. "-ArgumentList $arguments -WindowStyle Hidden",
+      "Write-Output 'CHILD-STARTED'",
       "Start-Sleep -Seconds 30",
       "",
     }, "\r\n")))
-    local value = run({
-      "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-      "-ExecutionPolicy", "Bypass", "-File", parent,
-    }, options({ timeout_ms = 500, kill_grace_ms = 0 }))
-    assert.is_true(value.timed_out)
-    assert.is_false((vim.wait(5000, function()
-      return vim.uv.fs_stat(escaped) ~= nil
-    end, 20)))
-    assert.is_nil(vim.uv.fs_stat(escaped))
+    local output = ""
+    local lease = require("tests.helpers.sandbox").start_worker(windows, {
+      argv = { "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", parent },
+      cwd = root, env = environment, profile = windows.compile(profile()), kill_grace_ms = 0,
+      on_stdout = function(bytes) output = output .. bytes end,
+    }, { fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+    local checked, failure = pcall(function()
+      wait(async.run(function() return assert(lease.wait_ready)(lease) end))
+      assert(vim.wait(30000, function() return output:find("CHILD-STARTED", 1, true) ~= nil end, 10))
+      lease:dispose("native command deadline")
+      wait(async.run(function() return lease:wait() end))
+      assert.is_true(require("tests.helpers.subprocess").complete(function() return lease:wait_release() end, 15000))
+      assert.is_false((vim.wait(5000, function() return vim.uv.fs_stat(escaped) ~= nil end, 20)))
+      assert.is_nil(vim.uv.fs_stat(escaped))
+    end)
+    lease:dispose("forced shutdown test finished")
+    wait(async.run(function() return lease:wait() end))
+    local recovered = windows.check({ fs = fs, nvim = vim.env.NEOAGENT_NVIM })
+    assert.is_true(recovered.ok, vim.inspect(recovered))
+    if not checked then error(failure, 0) end
 
-    value = run({
+    local value = run({
       "cmd.exe", "/d", "/s", "/c",
       'echo changed>"' .. vim.fs.joinpath(readonly, "config") .. '"',
     }, options())

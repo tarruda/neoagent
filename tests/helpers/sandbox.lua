@@ -3,6 +3,17 @@ local async = require("neoagent.async")
 local M = {}
 local leases = {}
 
+---@param platform Neoagent.SandboxPlatform
+---@param request Neoagent.SandboxWorkerRequest
+---@param services Neoagent.SandboxExecutionServices
+---@return Neoagent.WorkerOwner
+function M.start_worker(platform, request, services)
+  local lease = platform.create_worker(request, services)
+  leases[#leases + 1] = lease
+  lease:start()
+  return lease
+end
+
 ---@class Neoagent.TestSandboxCommandOptions: Neoagent.SandboxCheckServices
 ---@field stdin? string
 ---@field capture? boolean
@@ -59,7 +70,7 @@ function M.execute(argv, opts)
       opts.on_output(data, is_stderr, stdout, stderr, output)
     end
   end
-  local lease = platform.start_worker({
+  local lease = M.start_worker(platform, {
     argv = argv,
     cwd = opts.cwd,
     env = opts.env,
@@ -72,7 +83,6 @@ function M.execute(argv, opts)
       receive(data, true)
     end,
   }, services)
-  leases[#leases + 1] = lease
   local timed_out = false
   local timer
   local completed, value = pcall(function()

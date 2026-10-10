@@ -330,6 +330,9 @@ local function make_neo(configured, auth, runtimes, runtime, profile_id, profile
         restore_session_selection = context.restore_session_selection,
         commit_workspace_preference = context.commit_workspace_preference,
         workspace_trust = trust,
+        process_placement = function(environment, spec)
+          return sandbox_runtime:process_factory({ context = environment, process = spec })
+        end,
         runtimes = runtimes,
         auth = auth,
         presenter = applet:presenter(),

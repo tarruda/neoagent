@@ -3,6 +3,7 @@ local http = require("neoagent.transport.http")
 local util = require("neoagent.util")
 local waiting = require("neoagent.files.wait")
 local files = require("neoagent.files")
+local file_http = require("neoagent.files.http")
 local M = {}
 
 local ROOT = "https://chatgpt.com/backend-api/files"
@@ -24,24 +25,9 @@ local function storage_url(value)
 end
 
 ---@param result Neoagent.HttpResult
----@return number?
-local function status(result)
-  if result.ok then
-    return result.status
-  end
-  local response = rawget(result.error, "response")
-  return type(response) == "table" and response.status or nil
-end
-
----@param result Neoagent.HttpResult
 ---@return Neoagent.JsonValue?
 local function checked(result)
-  local code = status(result)
-  if not result.ok or not code or code < 200 or code >= 300 then
-    -- Raw transport errors may include signed URLs or provider response bodies.
-    error(util.error("files", "Codex Files request failed" .. (code and " (HTTP " .. code .. ")" or "")), 0)
-  end
-  return result.body
+  return file_http.checked(result, "Codex Files")
 end
 
 ---@param value unknown
@@ -96,18 +82,19 @@ function M.new(opts)
     if body then
       headers["Content-Type"] = "application/json"
     end
-    return client
-      .fetch({
-        request = {
-          method = method,
-          url = ROOT .. path,
-          headers = headers,
-          body = body and util.json_encode(body),
-          timeout_ms = remaining(),
-          max_response_bytes = 65536,
-        },
-      })
-      :await()
+    ---@type Neoagent.HttpRequest
+    local spec = {
+      method = method,
+      url = ROOT .. path,
+      headers = headers,
+      body = body and util.json_encode(body),
+      max_response_bytes = 65536,
+    }
+    if method == "GET" then
+      return file_http.get(client, spec, remaining())
+    end
+    spec.timeout_ms = remaining()
+    return client.fetch({ request = spec }):await()
   end
   return {
     identity = ROOT .. ":codex:image",
@@ -170,7 +157,7 @@ function M.new(opts)
         end
         local remaining = budget(timeout_ms)
         local result = request("GET", "/" .. object.locator .. "/download", access, remaining)
-        if status(result) == 404 then
+        if file_http.status(result) == 404 then
           return { ok = true }
         end
         return { ok = true, object = metadata(checked(result), object.locator) }

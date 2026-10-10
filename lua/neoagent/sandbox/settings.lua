@@ -6,7 +6,7 @@ local M = {}
 
 ---@class Neoagent.SandboxSettings<C = unknown>
 ---@field enabled boolean
----@field profile? Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>
+---@field profile? Neoagent.SandboxProfileSetting<Neoagent.SandboxContext<C>>
 ---@field parent_tools? Neoagent.Tool<C>[]
 
 ---@generic C

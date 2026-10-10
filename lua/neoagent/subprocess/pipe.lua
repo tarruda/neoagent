@@ -4,12 +4,16 @@ local streams = require("neoagent.subprocess.streams")
 
 local M = {}
 
+---@alias Neoagent.NativeExecution "not_started"|"started"|"unknown"
+
 ---@class Neoagent.SubprocessCallbacks
 ---@field output fun(stream: "stdout"|"stderr"|"pty", bytes: string)
 ---@field exited fun(code: integer, signal: integer)
 ---@field closed fun() Output and tracked handles drained; dispose finalizes retained native ownership.
+---@field released fun() All native components have released their ownership after disposal.
 ---@field failed fun(code: string, message: string)
 ---@field input_failed? fun() Accepted input failed asynchronously.
+---@field execution? fun(state: Neoagent.NativeExecution) Pipe launch evidence, independent of driver readiness.
 
 ---@class Neoagent.SubprocessDriver
 -- The owner retains the driver before start() allocates native resources.
@@ -24,6 +28,7 @@ local M = {}
 ---@field flush async fun(): true
 ---@field writable fun(): boolean
 ---@field resize fun(columns: integer, rows: integer): true
+---@field interrupt fun(): boolean Interrupt input or request a native process interrupt.
 ---@field stop fun(): boolean Request the backend's graceful stop sequence.
 ---@field kill fun(): boolean Request forced termination of owned native resources.
 ---@field dispose fun()
@@ -43,8 +48,29 @@ local M = {}
 function M.new(spec, env, callbacks, input_limits)
   local uv = vim.uv
   local posix_child = jit.os ~= "Windows" and require("neoagent.subprocess.posix_child") or nil
-  local io = streams.new(callbacks, input_limits)
+  local release = require("neoagent.subprocess.release").new(callbacks.released)
+  ---@type Neoagent.WindowsProcessTree?
+  local tree
+  local drained, notified = false, false
+  local function closed()
+    if drained and not notified and (not tree or tree.empty) then
+      notified = true
+      callbacks.closed()
+    end
+  end
+  local io = streams.new({
+    output = callbacks.output,
+    exited = callbacks.exited,
+    closed = function()
+      drained = true
+      closed()
+    end,
+    failed = callbacks.failed,
+    input_failed = callbacks.input_failed,
+    released = release.retain(),
+  }, input_limits)
   local exited = false
+  local release_process
   ---@type uv.uv_pipe_t?
   local stdin
 
@@ -54,12 +80,10 @@ function M.new(spec, env, callbacks, input_limits)
   local process
   ---@type Neoagent.PosixChild?
   local child
-  ---@type Neoagent.WindowsProcessTree?
-  local tree
   local function dispose()
     local cleaned, err = pcall(function()
       if tree then
-        tree:close(true)
+        tree:close()
       end
       if child then
         child.terminate(true)
@@ -67,6 +91,7 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end)
     io.dispose()
+    release.close()
     if not cleaned then
       error(err, 0)
     end
@@ -76,13 +101,32 @@ function M.new(spec, env, callbacks, input_limits)
     local env_list = environment.for_pipes(env)
     local function complete(code, signal)
       exited = true
-      io.close(process)
+      if release_process then
+        assert(process):close(release_process)
+      else
+        io.close(process)
+      end
       callbacks.exited(code, signal)
       io.exited()
     end
     if jit.os == "Windows" then
-      tree = require("neoagent.process.windows").new()
-      if not tree then
+      ---@type fun()?
+      local release_tree
+      tree = require("neoagent.process.windows").new({
+        callbacks = {
+          empty = function()
+            vim.schedule(closed)
+          end,
+          released = function()
+            assert(release_tree)()
+          end,
+          failed = function(message)
+            callbacks.failed("process_supervision", message)
+          end,
+        },
+      })
+      release_tree = release.retain()
+      if not tree:start() then
         error(validate.error("process_supervision", "Failed to create process supervisor"), 0)
       end
     elseif posix_child then
@@ -90,6 +134,7 @@ function M.new(spec, env, callbacks, input_limits)
         exited = complete,
         output = callbacks.output,
         closed = callbacks.closed,
+        released = release.retain(),
         failed = callbacks.failed,
       })
     end
@@ -108,6 +153,11 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end
     local _, spawn_code
+    -- A binding exception cannot prove whether native execution occurred.
+    -- Only an ordinary failed spawn return restores proof of no execution.
+    if callbacks.execution then
+      callbacks.execution("unknown")
+    end
     process, _, spawn_code = uv.spawn(assert(argv[1]), {
       args = vim.list_slice(argv, 2),
       cwd = spec.cwd,
@@ -118,10 +168,22 @@ function M.new(spec, env, callbacks, input_limits)
       verbatim = verbatim,
     }, complete)
     if not process then
+      if callbacks.execution then
+        callbacks.execution("not_started")
+      end
       local code = type(spawn_code) == "string" and spawn_code:match("^E[A-Z0-9]+$") or "UNKNOWN"
       error(validate.error("process_start", "Failed to start process (" .. code .. ")"), 0)
     end
-    io.own(process)
+    if callbacks.execution then
+      callbacks.execution("started")
+    end
+    if jit.os == "Windows" then
+      -- Keep uv's process handle and the Job until native exit, even when
+      -- the owner's bounded cleanup observation has already failed.
+      release_process = release.retain()
+    else
+      io.own(process)
+    end
     local pid = process:get_pid()
     if child then
       child.attach(pid)
@@ -185,6 +247,9 @@ function M.new(spec, env, callbacks, input_limits)
       if not ok then
         -- Failed admission may precede read_start. Those pipes cannot report
         -- EOF, but the retained process must still deliver its native exit.
+        if tree then
+          tree:close()
+        end
         io.close(stdout)
         io.close(stderr)
         error(failure, 0)
@@ -202,6 +267,14 @@ function M.new(spec, env, callbacks, input_limits)
     writable = io.writable,
     resize = function()
       error(validate.error("unsupported_control", "Pipe processes cannot be resized"), 0)
+    end,
+    interrupt = function()
+      if child then
+        return child.interrupt()
+      end
+      -- Windows redirected processes have no portable console interrupt.
+      -- Match the explicit stop behavior of their native Job owner.
+      return terminate(true)
     end,
     stop = function()
       return terminate(false)
