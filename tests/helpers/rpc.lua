@@ -49,6 +49,8 @@ function M.transport(remote, handle)
     wait = function()
       return { code = 0, signal = 0, stderr = "" }
     end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function()
       state.closed = true
     end,

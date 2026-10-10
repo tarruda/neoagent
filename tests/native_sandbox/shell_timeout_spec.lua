@@ -37,13 +37,16 @@ describe("restricted shell deadlines", function()
       assert(fs.mkdirp(root))
       root = assert(vim.uv.fs_realpath(root))
       local started = root .. "/started"
-      local shell = require("neoagent.tools.shell").new({ default_timeout = not explicit and 0.05 or false })
+      -- Reach the stopped-worker condition before expiry on loaded native
+      -- runners. A 50 ms budget can validly expire during command startup.
+      local timeout = 1
+      local shell = require("neoagent.tools.shell").new({ default_timeout = not explicit and timeout or false })
       local selected = assert(platform)
       ---@type Neoagent.SandboxCompositionOptions<unknown>
       local options = {
         platform = vim.tbl_extend("force", selected, {
-          start_worker = function(request, services)
-            local lease = selected.start_worker(request, services)
+          create_worker = function(request, services)
+            local lease = selected.create_worker(request, services)
             leases[#leases + 1] = lease
             return lease
           end,
@@ -58,7 +61,7 @@ describe("restricted shell deadlines", function()
           command = 'kill -STOP "$PPID"; printf started > ' .. vim.fn.shellescape(started) .. "; sleep 30",
         },
       }
-      if explicit then call.arguments.timeout = 0.05 end
+      if explicit then call.arguments.timeout = timeout end
       ---@type Neoagent.ToolResult?
       local result
       local run = agent_loop.run({

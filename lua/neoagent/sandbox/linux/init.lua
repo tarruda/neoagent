@@ -344,64 +344,54 @@ end
 
 ---@param request Neoagent.SandboxWorkerRequest
 ---@param services Neoagent.SandboxExecutionServices<string|string[]>
----@return Neoagent.WorkerLease
-function M.start_worker(request, services)
-  local runtime = runtime_file()
-  if not runtime then
-    error(util.error("sandbox_unavailable", "Linux sandbox runtime was not found"), 0)
-  end
-  require("neoagent.sandbox.policy").require_read(request.profile, request.bootstrap_paths or {}, nil, "bootstrap")
-  local root, root_err = temporary_root(assert(services.fs), request.profile)
-  if not root then
-    error(util.error("sandbox_unavailable", "Could not create Linux sandbox root", root_err), 0)
-  end
-  local prepared, spec, command =
-    pcall(specification, request --[[@as Neoagent.LinuxSandboxRequest]], root, services.capabilities, "exec")
-  if not prepared then
-    local cleaned, cleanup_err = cleanup(root)
-    if not cleaned then
-      error(util.error("sandbox_unavailable", "Could not remove Linux sandbox root", cleanup_err), 0)
-    end
-    error(spec, 0)
-  end
-  spec.protected_create = protected_create_paths(spec.profile)
-  if not valid_root(root) then
-    cleanup(root)
-    error(util.error("sandbox_unavailable", "Linux sandbox root identity changed before use"), 0)
-  end
-  local relay = require("neoagent.sandbox.relay_lease").new({
+---@return Neoagent.WorkerOwner
+function M.create_worker(request, services)
+  local root
+  return require("neoagent.sandbox.relay_lease").new({
     on_failure = request.on_failure,
     on_stdout = request.on_stdout,
     on_stderr = request.on_stderr,
     on_exit = request.on_exit,
     cleanup = function()
+      if not root then
+        return true
+      end
       local cleaned, cleanup_err = cleanup(root)
       return cleaned and true or nil, cleanup_err
     end,
-  })
-  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
-  local started, child = pcall(start, {
-    argv = runtime_argv(nvim_command(services.nvim), runtime, command),
-    cwd = "/",
-    env = environment(spec),
-    clear_env = true,
-    kill_grace_ms = request.kill_grace_ms,
-    on_stdout = function(data)
-      relay:feed(data)
+    start = function(relay)
+      local runtime = runtime_file()
+      if not runtime then
+        error(util.error("sandbox_unavailable", "Linux sandbox runtime was not found"), 0)
+      end
+      require("neoagent.sandbox.policy").require_read(request.profile, request.bootstrap_paths or {}, nil, "bootstrap")
+      local root_err
+      root, root_err = temporary_root(assert(services.fs), request.profile)
+      if not root then
+        error(util.error("sandbox_unavailable", "Could not create Linux sandbox root", root_err), 0)
+      end
+      local spec, command =
+        specification(request --[[@as Neoagent.LinuxSandboxRequest]], root, services.capabilities, "exec")
+      spec.protected_create = protected_create_paths(spec.profile)
+      if not valid_root(root) then
+        error(util.error("sandbox_unavailable", "Linux sandbox root identity changed before use"), 0)
+      end
+      local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+      relay:attach(start({
+        argv = runtime_argv(nvim_command(services.nvim), runtime, command),
+        cwd = "/",
+        env = environment(spec),
+        clear_env = true,
+        kill_grace_ms = request.kill_grace_ms,
+        on_stdout = function(data)
+          relay:feed(data)
+        end,
+        on_exit = function(result)
+          relay:host_exited(result)
+        end,
+      }))
     end,
-    on_exit = function(result)
-      relay:host_exited(result)
-    end,
   })
-  if not started then
-    local cleaned, cleanup_err = cleanup(root)
-    if not cleaned then
-      error(util.error("sandbox_unavailable", "Could not remove Linux sandbox root", cleanup_err), 0)
-    end
-    error(util.error("sandbox_unavailable", "Could not start Linux sandbox runtime", child), 0)
-  end
-  relay:attach(child)
-  return relay
 end
 
 ---@param services? Neoagent.SandboxCheckServices

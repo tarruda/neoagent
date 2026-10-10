@@ -57,11 +57,18 @@ describe("real curl HTTP backend", function()
     assert.are.equal(429, result.status)
     assert.are.equal("limited", assert(assert(result.body).error).message)
     assert.are.equal("final", result.headers["x-request-id"])
-    local disconnected = wait(curl.request({ request = { url = server.url .. "/disconnect", method = "GET" } }))
-    assert.is_false(disconnected.ok)
-    assert.are.equal("transport", assert(disconnected.error).kind)
-    assert.is_number(rawget(assert(disconnected.error), "exit_code"))
-    assert.is_string(rawget(assert(disconnected.error), "stderr"))
+    for _, method in ipairs({ "fetch", "request" }) do
+      local disconnected = wait(require("neoagent.async").run(function()
+        local opts = { request = { url = server.url .. "/disconnect", method = "GET" } }
+        if method == "fetch" then return curl.fetch(opts):await() end
+        return curl.request(opts):await()
+      end))
+      assert.is_false(disconnected.ok)
+      assert.are.equal("transport", assert(disconnected.error).kind)
+      assert.are.equal("empty_response", assert(disconnected.error).code)
+      assert.is_number(rawget(assert(disconnected.error), "exit_code"))
+      assert.is_string(rawget(assert(disconnected.error), "stderr"))
+    end
   end)
 
   it("delivers SSE before EOF and cancels the process and temporary files", function()

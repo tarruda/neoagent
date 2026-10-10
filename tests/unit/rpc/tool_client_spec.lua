@@ -466,27 +466,62 @@ describe("neoagent Tool RPC connection", function()
   it("cancels a real worker request without closing its connection or lease", function()
     local root = temp()
     local active_call = call(root)
+    local ready = false
+    active_call.on_update = function(update)
+      ready = assert(assert(update.content[1]).text):find("PARENT_READY", 1, true) ~= nil
+    end
+    local gate, descendant_ready = root .. "/spawn-child", root .. "/child-ready"
+    local fixture = vim.fs.joinpath(assert(vim.uv.cwd()), "tests", "fixtures", "rpc_cancel_tree.lua")
     local remote, child, exited = start_remote(root)
     children[#children + 1] = child
     local run = async.run(function()
       remote:open(codec.encode_context(active_call))
       return tool_client.invoke(remote, "shell", {
-        argv = { "sh", "-c", "sleep 30" },
+        argv = {
+          assert(vim.env.NEOAGENT_NVIM),
+          "--headless",
+          "--noplugin",
+          "-u",
+          "NONE",
+          "-i",
+          "NONE",
+          "-n",
+          "-l",
+          fixture,
+          assert(vim.env.NEOAGENT_NVIM),
+          gate,
+          descendant_ready,
+        },
         timeout_ms = 60000,
       }, active_call)
     end)
-    assert(vim.wait(5000, function()
-      return remote._state == "request"
-    end), vim.inspect(remote._failure))
+    assert(
+      vim.wait(5000, function()
+        return ready or run:is_done()
+      end),
+      "command parent did not announce readiness"
+    )
+    assert.is_false(run:is_done(), vim.inspect(run:result()))
+    assert(fs.write_all(gate, "start"))
+    assert(
+      vim.wait(5000, function()
+        return vim.uv.fs_stat(descendant_ready) ~= nil or run:is_done()
+      end),
+      "command descendant did not announce readiness"
+    )
+    assert.is_false(run:is_done(), vim.inspect(run:result()))
 
     run:cancel()
 
     local value = wait(run)
     assert.is_false(value.ok)
     assert.are.equal("cancelled", value.error.kind)
-    assert(vim.wait(3000, function()
-      return remote._state == "open"
-    end), vim.inspect({ state = remote._state, failure = remote._failure }))
+    assert(
+      vim.wait(3000, function()
+        return remote._state == "open"
+      end),
+      vim.inspect({ state = remote._state, failure = remote._failure })
+    )
     assert.is_nil(exited())
     local shutdown = wait(async.run(function()
       remote:close()

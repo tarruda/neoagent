@@ -145,7 +145,7 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field name? string
 ---@field default_registry? boolean
 ---@field shell_timeout? number|false
----@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>, parent_tools?: Neoagent.Tool<C>[]}
+---@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.SandboxContext<C>>, parent_tools?: Neoagent.Tool<C>[]}
 ---@field workspace_trust? {path?: string}|false
 ---@field default_thinking_level? Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection

@@ -164,13 +164,26 @@ jobs:
         run: |
           $state = Join-Path $env:RUNNER_TEMP "neoagent-windows-sandbox"
           $nvim = (Get-Command nvim).Source
-          $script = (Resolve-Path "scripts/sandbox_windows_runtime.lua").Path
           $env:NEOAGENT_WINDOWS_SANDBOX_STATE = $state
+          $env:NEOAGENT_NVIM = $nvim
           "NEOAGENT_WINDOWS_SANDBOX_STATE=$state" >> $env:GITHUB_ENV
           "NEOAGENT_NVIM=$nvim" >> $env:GITHUB_ENV
-          & $nvim --headless -u NONE -i NONE -n `
-            -l $script -- --setup
-          if ($LASTEXITCODE -ne 0) { throw "sandbox setup failed" }
+          # Fail initial account creation after coordinator registration, then
+          # verify that setup can resume from its incomplete registration.
+          $fixture = (Resolve-Path "tests/fixtures/sandbox_windows_account_failure.lua").Path
+          $env:NEOAGENT_ACCOUNT_TEST_FAILURE = "setup-journal-missing"
+          try {
+            $first = & $nvim --headless -u NONE -i NONE -n `
+              -l $fixture -- --setup 2>&1 | Out-String
+            $firstExit = $LASTEXITCODE
+          } finally {
+            Remove-Item Env:NEOAGENT_ACCOUNT_TEST_FAILURE
+          }
+          if ($firstExit -ne 1 -or $first -notmatch '"stage"\s*:\s*"account-create"') {
+            throw "Initial setup did not reach the injected account failure: $first"
+          }
+          & $nvim --headless -u NONE -i NONE -n -l tests/windows_setup.lua
+          if ($LASTEXITCODE -ne 0) { throw "sandbox setup recovery failed" }
       - name: Run Windows sandbox suite
         shell: pwsh
         run: |
@@ -193,7 +206,8 @@ jobs:
             "api_messages", "tool_schema", "sse", "http",
             "openai_completions", "openai_responses", "anthropic_messages",
             "openai_codex_responses", "api_timeouts", "model_rules", "thinking",
-            "attachment_storage", "health_process"
+            "attachment_storage", "health_process",
+            "files_http", "codex_files", "anthropic_files", "sandbox_failed_host"
           ) | ForEach-Object { "tests/unit/${_}_spec.lua" }
           $specs += "tests/integration/session_validation_spec.lua"
           $specs += "tests/integration/file_lock_lifecycle_spec.lua"

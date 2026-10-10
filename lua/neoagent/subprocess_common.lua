@@ -12,7 +12,7 @@ end
 
 ---@return Neoagent.SubprocessScope
 function M.scope()
-  return scopes.new()
+  return (scopes.new())
 end
 
 return M

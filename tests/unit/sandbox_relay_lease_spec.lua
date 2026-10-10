@@ -21,6 +21,8 @@ local function base_child()
     wait = function()
       return { code = 0, signal = 0, stderr = "" }
     end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function()
       state.closed = true
     end,
@@ -37,6 +39,192 @@ local function exited(code, signal)
 end
 
 describe("neoagent native sandbox relay lease", function()
+  it("rejects startup after unstarted ownership was disposed", function()
+    local starts = 0
+    local relay = relay_lease.new({ start = function() starts = starts + 1 end })
+    relay:dispose("admission revoked")
+    assert.is_false((pcall(relay.start, relay)))
+    assert.are.equal(0, starts)
+    assert.are.equal("cancelled", assert(relay:wait().error).kind)
+    assert.is_true(relay:is_released())
+  end)
+
+  it("keeps native release independent of completion and observer cancellation", function()
+    local helper = require("tests.helpers.subprocess")
+    local base = base_child()
+    local released = false
+    ---@type Neoagent.AwaitCallbacks<true>?
+    local release
+    base.is_released = function() return released end
+    base.wait_release = function()
+      return async.await(function(done) release = done end)
+    end
+    local relay = relay_lease.new()
+    relay:attach(base)
+    relay:feed(ready() .. exited())
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    assert.are.equal(0, relay:wait().code)
+    assert.is_false(relay:is_released())
+    local observing = async.run(function() return relay:wait_release() end)
+    assert.is_false(observing:is_done())
+    observing:cancel()
+    assert.are.equal("cancelled", assert(helper.wait(observing).error).kind)
+    observing = async.run(function() return relay:wait_release() end)
+    released = true
+    local observed = release or error("release observer was not installed")
+    observed.resolve(true)
+    assert.is_true(helper.wait(observing))
+    assert.is_true(relay:is_released())
+  end)
+
+  it("does not report native release as successful staging cleanup", function()
+    local helper = require("tests.helpers.subprocess")
+    local relay = relay_lease.new({ cleanup = function() return nil, "staging remains" end })
+    relay:attach(base_child())
+    relay:feed(ready() .. exited())
+    relay:host_exited({ code = 0, signal = 0, stderr = "" })
+    assert.is_not_nil(relay:wait().cleanup_error)
+    assert.is_false(relay:is_released())
+    local observing = async.run(function() return relay:wait_release() end)
+    local completed = observing:is_done()
+    if not completed then observing:cancel() end
+    local result = helper.wait(observing)
+    assert.is_true(completed, "permanent staging failure must reject release observation")
+    assert.matches("Could not clean native sandbox resources", assert(result.error).message, 1, true)
+    assert.is_false(relay:is_released())
+  end)
+
+  for _, operation_failed in ipairs({ false, true }) do
+    it("preserves native permission cleanup independently of operation failure=" .. tostring(operation_failed), function()
+      local util = require("neoagent.util")
+      local host_failure = util.error("worker_exit", "host reaping failed", "errno=10")
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
+      relay:attach(base_child())
+      local terminal = operation_failed and { v = 1, type = "error", stage = "runner-start", errno = 2 }
+        or { v = 1, type = "exit", code = 7, signal = 0 }
+      terminal.cleanup = { released = false, error = { stage = "acl-write", errno = 5 } }
+      relay:feed(ready() .. protocol.encode(terminal))
+      relay:host_exited({ code = 0, signal = 0, stderr = "", cleanup_error = host_failure })
+      local result = relay:wait()
+      local failure = assert(result.cleanup_error)
+      assert.are.equal("acl-write", failure.detail)
+      assert.are.same(host_failure, rawget(failure, "cause"))
+      assert.is_false(relay:is_released())
+      local released, release_error = pcall(relay.wait_release, relay)
+      assert.is_false(released)
+      assert.are.same(failure, release_error)
+      if operation_failed then
+        assert.matches("runner-start", assert(result.error).message, 1, true)
+      else
+        assert.are.equal(7, result.code)
+        assert.is_nil(result.error)
+      end
+    end)
+  end
+
+  it("releases native permission ownership after acknowledged cleanup of failed startup", function()
+    local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
+    relay:attach(base_child())
+    relay:feed(protocol.encode({ v = 1, type = "error", stage = "runner-start", errno = 2,
+      cleanup = { released = true } }))
+    relay:host_exited({ code = 125, signal = 0, stderr = "" })
+    assert.is_not_nil(relay:wait().error)
+    assert.is_nil(relay:wait().cleanup_error)
+    assert.is_true(relay:wait_release())
+    assert.is_true(relay:is_released())
+  end)
+
+  for _, stopped in ipairs({ "disposal", "output failure", "admission timeout" }) do
+    it("observes native cleanup acknowledgement after " .. stopped, function()
+      local output, failures = {}, {}
+      local relay = relay_lease.new({
+        admission_timeout_ms = 1,
+        cleanup = function(_, terminal)
+          assert.is_true(assert(assert(terminal).cleanup).released)
+          return true
+        end,
+        on_stdout = function(data)
+          output[#output + 1] = data
+          if stopped == "output failure" then error("consumer failed") end
+        end,
+        on_failure = function(err) failures[#failures + 1] = err end,
+      })
+      relay:attach(base_child())
+      if stopped == "admission timeout" then
+        local observer = async.run(function() return relay:wait_ready() end)
+        local completed = vim.wait(1000, function() return observer:is_done() end, 5)
+        observer:cancel()
+        assert.is_true(completed)
+      end
+      relay:feed(ready())
+      if stopped == "disposal" then relay:dispose("observer no longer owns output") end
+      relay:feed(protocol.encode({ v = 1, type = "output", stream = "stdout", seq = 1, data = "late" }))
+      -- Cleanup is a separate native fact and can arrive in a later read even
+      -- after publication has stopped or admission has failed.
+      relay:feed(protocol.encode({ v = 1, type = "exit", code = 7, signal = 0, cleanup = { released = true } }))
+      relay:host_exited({ code = 0, signal = 0, stderr = "" })
+      local result = relay:wait()
+      assert.is_nil(result.cleanup_error, "a valid native cleanup acknowledgement was discarded")
+      assert.are.equal(7, result.code)
+      assert.is_true(relay:is_released())
+      assert.are.same(stopped == "output failure" and { "late" } or {}, output)
+      assert.are.same(failures[1], result.error)
+    end)
+  end
+
+  it("rejects malformed cleanup acknowledgements without releasing native ownership", function()
+    for _, observation in ipairs({
+      true, {}, { released = "true" }, { released = true, extra = true },
+      { released = true, error = { stage = "acl-write", errno = 5 } },
+      { released = false, error = false }, { released = false, error = {} },
+      { released = false, error = { stage = "", errno = 5 } },
+      { released = false, error = { stage = "acl-write", errno = -1 } },
+    }) do
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
+      relay:attach(base_child())
+      relay:feed(ready() .. protocol.encode({ v = 1, type = "exit", code = 0, signal = 0, cleanup = observation }))
+      relay:feed(protocol.encode({ v = 1, type = "exit", code = 0, signal = 0, cleanup = { released = true } }))
+      relay:host_exited({ code = 0, signal = 0, stderr = "" })
+      assert.is_not_nil(relay:wait().error)
+      assert.is_not_nil(relay:wait().cleanup_error)
+      assert.is_false(relay:is_released())
+    end
+  end)
+
+  for _, suffix in ipairs({ "\0", "\0\0\0\1\255", exited() }) do
+    it("rejects a cached release acknowledgement when trailing protocol bytes are invalid: " .. #suffix, function()
+      local relay = relay_lease.new({ cleanup = function(_, terminal)
+        if not terminal or not terminal.cleanup then return nil, "valid cleanup evidence is missing" end
+        if terminal.cleanup.error then return nil, terminal.cleanup.error.stage end
+        return terminal.cleanup.released and true or nil
+      end })
+      relay:attach(base_child())
+      relay:feed(ready() .. protocol.encode({ v = 1, type = "exit", code = 7, signal = 0,
+        cleanup = { released = true } }))
+      relay:feed(suffix)
+      relay:host_exited({ code = 0, signal = 0, stderr = "" })
+      local result = relay:wait()
+      assert.is_not_nil(result.error)
+      assert.is_not_nil(result.cleanup_error, "invalid protocol reused an earlier cleanup acknowledgement")
+      assert.is_false(relay:is_released())
+      local released, release_error = pcall(relay.wait_release, relay)
+      assert.is_false(released)
+      assert.are.same(result.cleanup_error, release_error)
+    end)
+  end
+
   it("preserves host cleanup separately from an earlier protocol failure", function()
     local util = require("neoagent.util")
     local relay = relay_lease.new({

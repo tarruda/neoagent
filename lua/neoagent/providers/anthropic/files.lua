@@ -3,6 +3,7 @@ local files = require("neoagent.files")
 local http = require("neoagent.transport.http")
 local multipart = require("neoagent.transport.multipart")
 local util = require("neoagent.util")
+local file_http = require("neoagent.files.http")
 local M = {}
 local URL = "https://api.anthropic.com/v1/files"
 local extensions = { ["image/png"] = "png", ["image/jpeg"] = "jpg", ["image/gif"] = "gif", ["image/webp"] = "webp" }
@@ -47,25 +48,11 @@ local function deadline(value)
 end
 
 ---@param result Neoagent.HttpResult
----@return number?
-local function status(result)
-  if result.ok then
-    return result.status
-  end
-  local response = rawget(result.error, "response")
-  return type(response) == "table" and response.status or nil
-end
-
----@param result Neoagent.HttpResult
 ---@param asset? Neoagent.FileAsset
 ---@param previous? Neoagent.RemoteFile
 ---@return Neoagent.RemoteFile
 local function metadata(result, asset, previous)
-  local code = status(result)
-  if not result.ok or not code or code < 200 or code >= 300 then
-    error(util.error("files", "Anthropic Files request failed" .. (code and " (HTTP " .. code .. ")" or "")), 0)
-  end
-  local value = result.body
+  local value = file_http.checked(result, "Anthropic Files")
   if
     type(value) ~= "table"
     or value.type ~= "file"
@@ -138,18 +125,13 @@ function M.new(opts)
         if not object.locator:match("^[%w_-]+$") then
           return { ok = true }
         end
-        local result = client
-          .fetch({
-            request = {
-              method = "GET",
-              url = URL .. "/" .. object.locator,
-              headers = util.copy(access.headers),
-              timeout_ms = timeout_ms,
-              max_response_bytes = 65536,
-            },
-          })
-          :await()
-        if status(result) == 404 then
+        local result = file_http.get(client, {
+          method = "GET",
+          url = URL .. "/" .. object.locator,
+          headers = util.copy(access.headers),
+          max_response_bytes = 65536,
+        }, timeout_ms)
+        if file_http.status(result) == 404 then
           return { ok = true }
         end
         return { ok = true, object = metadata(result, nil, object) }

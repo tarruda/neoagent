@@ -29,6 +29,8 @@ describe("Windows native Tool RPC", function()
     return
   end
 
+  local custody_module = require("neoagent.sandbox.windows.custody")
+  local new_custody = custody_module.new
   ---@type string
   local root
   ---@type Neoagent.WorkerLease[]
@@ -41,6 +43,7 @@ describe("Windows native Tool RPC", function()
   end)
 
   after_each(function()
+    custody_module.new = new_custody
     for _, child in ipairs(children) do
       child:dispose("native RPC scenario teardown")
       wait(async.run(function()
@@ -77,7 +80,7 @@ describe("Windows native Tool RPC", function()
     environment.TMP = environment.TEMP
     environment.TMPDIR = environment.TEMP
     local connection = require("neoagent.rpc.connection").new()
-    local child = windows.start_worker({
+    local child = require("tests.helpers.sandbox").start_worker(windows, {
       argv = worker.argv(nvim, source),
       cwd = root,
       env = environment,
@@ -147,43 +150,121 @@ describe("Windows native Tool RPC", function()
   end)
 
   it("cancels a command tree, reuses its connection, and releases the native lease", function()
+    ---@type Neoagent.WindowsSandboxCustody?
+    local custody
+    custody_module.new = function(directory, recover)
+      custody = new_custody(directory, recover)
+      return custody
+    end
     local connection, child, call = start()
-    local ready, late = root .. "/ready", root .. "/late"
-    local program = root .. "/child.cmd"
-    assert(fs.write_all(
-      program,
-      table.concat({
-        "@echo off",
-        'echo started>"' .. ready .. '"',
-        "ping.exe -n 5 127.0.0.1 >nul",
-        'echo survived>"' .. late .. '"',
-        "",
-      }, "\r\n")
-    ))
+    custody_module.new = new_custody
+    local job = assert(assert(custody)._job)
+    local ffi = require("ffi")
+    ffi.cdef([[
+typedef struct {
+  unsigned long assigned;
+  unsigned long count;
+  uintptr_t ids[64];
+} NATestRpcJobProcessIds;
+]])
+    local kernel = ffi.load("kernel32")
+    ---@class Neoagent.TestRpcJobProcessIds: ffi.cdata*
+    ---@field assigned integer
+    ---@field count integer
+    ---@field ids Neoagent.FfiArray<integer>
+    local ids = ffi.new("NATestRpcJobProcessIds") --[[@as Neoagent.TestRpcJobProcessIds]]
+    ---@param pid number
+    ---@return boolean
+    local function contains(pid)
+      assert(kernel.QueryInformationJobObject(assert(job.handle), 3, ids, ffi.sizeof(ids), nil) ~= 0)
+      assert.are.equal(ids.assigned, ids.count, "Job process list was truncated")
+      for index = 0, ids.count - 1 do
+        if tonumber(ids.ids[index]) == pid then
+          return true
+        end
+      end
+      return false
+    end
+    local fixture = vim.fs.joinpath(assert(vim.uv.cwd()), "tests", "fixtures", "rpc_cancel_tree.lua")
+    local gate, descendant_ready = root .. "/spawn-child", root .. "/child-ready"
+    ---@type number?
+    local parent_pid
     local request = connection:start_request("shell", {
-      argv = { assert(vim.env.COMSPEC), "/d", "/s", "/c", 'call "' .. program .. '"' },
+      argv = {
+        assert(vim.env.NEOAGENT_NVIM),
+        "--headless",
+        "--noplugin",
+        "-u",
+        "NONE",
+        "-i",
+        "NONE",
+        "-n",
+        "-l",
+        fixture,
+        assert(vim.env.NEOAGENT_NVIM),
+        gate,
+        descendant_ready,
+      },
       timeout_ms = 30000,
-    }, { on_event = function() end })
-    assert(vim.wait(60000, function()
-      return vim.uv.fs_stat(ready) ~= nil
-    end, 10))
+    }, {
+      on_event = function(message)
+        if message.name == codec.events.update then
+          local content = assert(message.value.content[1]).text
+          parent_pid = tonumber(content:match("PARENT_READY (%d+)%D"))
+        end
+      end,
+    })
+    -- RPC progress proves that the parent is attached to its request Job.
+    -- Only then let it create a descendant, which must inherit that ownership.
+    assert(
+      vim.wait(60000, function()
+        return parent_pid ~= nil or request._run:is_done()
+      end, 10),
+      "command parent did not announce readiness"
+    )
+    assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
+    assert.is_true(contains(assert(parent_pid)), "command parent is absent from its sandbox Job")
+    assert(fs.write_all(gate, "start"))
+    ---@type number?
+    local descendant_pid
+    assert(
+      vim.wait(60000, function()
+        local bytes = fs.read(descendant_ready)
+        descendant_pid = bytes and tonumber(bytes) or nil
+        return descendant_pid ~= nil or request._run:is_done()
+      end, 10),
+      "command descendant did not announce readiness"
+    )
+    assert.is_false(request._run:is_done(), vim.inspect(request._run:result()))
+    assert.is_true(contains(assert(descendant_pid)), "command descendant is absent from its sandbox Job")
     request:cancel()
     wait(async.run(function()
       connection:wait_cancelled()
-      local value =
-        tool_client.invoke(connection, "write_file", { path = "after.txt", resolved_path = root .. "/after.txt", content = "reused" }, call)
+      -- Check before closing the sandbox worker: its outer Job must not hide
+      -- a failure to terminate the request's own process tree.
+      assert(
+        vim.wait(5000, function()
+          return not contains(assert(parent_pid)) and not contains(assert(descendant_pid))
+        end, 10),
+        "cancelled command or descendant remains in the sandbox Job"
+      )
+      local value = tool_client.invoke(
+        connection,
+        "write_file",
+        { path = "after.txt", resolved_path = root .. "/after.txt", content = "reused" },
+        call
+      )
       assert.is_nil(value.isError)
       connection:close()
       assert.are.equal(0, child:wait().code)
     end))
-    assert.is_false((vim.wait(5500, function()
-      return vim.uv.fs_stat(late) ~= nil
-    end, 10)))
     assert.are.equal("reused", fs.read(root .. "/after.txt"))
     -- A new invocation must acquire the restored ACL lease after shutdown.
     local next_connection, next_child, next_call = start()
     wait(async.run(function()
-      tool_client.invoke(next_connection, "write_file",
+      tool_client.invoke(
+        next_connection,
+        "write_file",
         { path = "after.txt", resolved_path = root .. "/after.txt", content = "new lease" },
         next_call
       )

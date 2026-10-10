@@ -24,6 +24,37 @@ function M.complete(fn, timeout)
   return M.wait(async.run(fn), timeout)
 end
 
+---@generic T
+---@param fn async fun(): T
+---@param timeout? integer
+---@return T
+function M.success(fn, timeout)
+  local result = M.complete(function()
+    return { value = fn() }
+  end, timeout)
+  return (assert(result.value, vim.inspect(result)))
+end
+
+-- Blocking behavioral scenarios keep the admission alongside its first
+-- observation. Cancellation/delivery tests reserve their owner explicitly.
+---@class Neoagent.TestProcessAdmission: Neoagent.ProcessAdmission
+---@field result Neoagent.ProcessSessionResult
+
+---@async
+---@param owner Neoagent.ProcessSessions
+---@param spec Neoagent.SubprocessSpec
+---@param wait_ms integer
+---@return Neoagent.TestProcessAdmission
+function M.admit(owner, spec, wait_ms)
+  local admission = owner:reserve(spec)
+  local ok, result = pcall(admission.start, wait_ms)
+  if not ok then
+    admission.abort("test admission failed")
+    error(result, 0)
+  end
+  return { result = result, start = admission.start, commit = admission.commit, abort = admission.abort }
+end
+
 ---@param command string
 ---@param options? {argv?: string[], cwd?: string, stdio?: Neoagent.SubprocessStdio, environment?: Neoagent.SubprocessEnvironment, timeout_ms?: integer, kill_grace_ms?: integer}
 ---@return Neoagent.SubprocessSpec

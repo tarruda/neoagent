@@ -49,6 +49,7 @@ local flags = 1 + 4 + (jit.os == "OSX" and 0x20 or 0x1000000) -- WNOHANG | WEXIT
 ---@class Neoagent.PosixChild
 ---@field attach fun(pid: integer)
 ---@field poll fun(): boolean
+---@field interrupt fun(): boolean
 ---@field terminate fun(force: boolean): boolean
 ---@field close fun()
 
@@ -76,31 +77,48 @@ end
 function M.new(callbacks)
   local failure = M.platform_error()
   if failure then
+    callbacks.released()
     error(failure, 0)
   end
-  local info = ffi.new("NeoagentChildInfo") --[[@as Neoagent.ChildInfo]]
-  local watcher = vim.uv.new_signal()
-  if not watcher then
-    error(validate.error("process_supervision", "Could not allocate process watcher"), 0)
+  local ownership = require("neoagent.subprocess.release").new(callbacks.released)
+  local resources = {}
+  local function stop()
+    for resource, released in pairs(resources) do
+      if not resource:is_closing() then
+        resource:stop()
+        resource:close(released)
+      end
+    end
+    ownership.close()
   end
-  local allocated, retry = pcall(vim.uv.new_timer)
-  if not allocated or not retry then
-    watcher:close()
-    error(validate.error("process_supervision", "Could not allocate process reap timer"), 0)
+  local function retain(resource)
+    resources[resource] = ownership.retain()
+    return resource
   end
+  local allocation_error = validate.error("process_supervision", "Could not allocate process watcher")
+  local allocated, info, watcher, retry = pcall(function()
+    local info = ffi.new("NeoagentChildInfo") --[[@as Neoagent.ChildInfo]]
+    local watcher = vim.uv.new_signal()
+    if not watcher then
+      error(allocation_error, 0)
+    end
+    retain(watcher)
+    allocation_error = validate.error("process_supervision", "Could not allocate process reap timer")
+    local retry = vim.uv.new_timer()
+    if not retry then
+      error(allocation_error, 0)
+    end
+    retain(retry)
+    return info, watcher, retry
+  end)
+  if not allocated then
+    stop()
+    error(allocation_error, 0)
+  end
+  local watcher, retry = assert(watcher), assert(retry)
   ---@type integer?
   local pid
   local owned, exited, closing = false, false, false
-  local function stop()
-    if not watcher:is_closing() then
-      watcher:stop()
-      watcher:close()
-    end
-    if not retry:is_closing() then
-      retry:stop()
-      retry:close()
-    end
-  end
   ---@return Neoagent.Error?
   local function release()
     if not owned then
@@ -167,18 +185,23 @@ function M.new(callbacks)
       0
     )
   end
+  local function signal(number)
+    if not owned then
+      return false
+    end
+    return vim.uv.kill(-assert(pid), number) ~= nil or vim.uv.kill(assert(pid), number) ~= nil
+  end
   return {
     attach = function(value)
       pid = value
       owned = true
     end,
     poll = poll,
+    interrupt = function()
+      return signal(2)
+    end,
     terminate = function(force)
-      if not owned then
-        return false
-      end
-      local signal = force and 9 or 15
-      return vim.uv.kill(-assert(pid), signal) ~= nil or vim.uv.kill(assert(pid), signal) ~= nil
+      return signal(force and 9 or 15)
     end,
     close = function()
       -- Native ownership outlives a reported cleanup failure. A running child

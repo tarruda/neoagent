@@ -127,6 +127,10 @@ local function loopback_child(request)
     wait = function()
       return util.copy(result)
     end,
+    start = function() end,
+    wait_ready = function() return true end,
+    is_released = function() return true end,
+    wait_release = function() return true end,
     dispose = function()
       if not closed then
         closed = true
@@ -139,7 +143,7 @@ local function loopback_child(request)
 end
 
 ---@param on_start? fun(request: Neoagent.SandboxWorkerRequest)
----@return Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
+---@return Neoagent.SandboxPlatform<Neoagent.SandboxContext<Neoagent.TestSandboxEnvironment>>
 local function test_platform(on_start)
   return {
     name = "test",
@@ -147,7 +151,7 @@ local function test_platform(on_start)
       return { ok = true, platform = "test", capabilities = {} }
     end,
 
-    start_worker = function(request)
+    create_worker = function(request)
       if on_start then
         on_start(request)
       end
@@ -278,8 +282,10 @@ describe("neoagent sandbox composition", function()
       function(value) value.filesystem.entries[1].path = "bad\0path" end,
       function(value) value.environment.clear = "yes" end,
       function(value) value.environment.inherit = {} value.environment.inherit.bad = true end,
-      function(value) value.environment.inherit = { "NOT-VALID" } end,
-      function(value) value.environment.set = { ["NOT-VALID"] = "x" } end,
+      function(value) value.environment.inherit = { "NOT=VALID" } end,
+      function(value) value.environment.inherit = { "" } end,
+      function(value) value.environment.inherit = { "NUL\0NAME" } end,
+      function(value) value.environment.set = { ["NOT=VALID"] = "x" } end,
       function(value) value.environment.set = { VALID = "x\0y" } end,
       function(value) value.extra = true end,
     }
@@ -416,14 +422,14 @@ describe("neoagent sandbox composition", function()
       network = "restricted",
       environment = {
         clear = true,
-        inherit = { "Path", "PATH", "TEMP" },
-        set = { path = "C:\\bin", Temp = "C:\\Temp" },
+        inherit = { "Path", "PATH", "TEMP", "ProgramFiles(x86)" },
+        set = { path = "C:\\bin", Temp = "C:\\Temp", ["programfiles(X86)"] = "C:\\Applications" },
       },
     }
     local normalized = require("neoagent.sandbox.profile").validate(
       source, { paths = paths })
-    assert.are.same({ "Path", "TEMP" }, normalized.environment.inherit)
-    assert.are.same({ Path = "C:\\bin", TEMP = "C:\\Temp" },
+    assert.are.same({ "Path", "TEMP", "ProgramFiles(x86)" }, normalized.environment.inherit)
+    assert.are.same({ Path = "C:\\bin", TEMP = "C:\\Temp", ["ProgramFiles(x86)"] = "C:\\Applications" },
       normalized.environment.set)
     assert.are.equal("write", assert(normalized.filesystem.entries[1]).access)
     assert.are.equal("read", assert(normalized.filesystem.entries[2]).access)
@@ -469,7 +475,7 @@ describe("neoagent sandbox composition", function()
       return {
         name = name,
         check = function() return { ok = true, platform = name } end,
-        start_worker = function() error("dispatch must not execute") end,
+        create_worker = function() error("dispatch must not execute") end,
       }
     end
     local linux, macos, windows = platform("linux"), platform("macos"), platform("windows")
@@ -506,7 +512,7 @@ describe("neoagent sandbox composition", function()
     }
     local checked = 0
     local starts = 0
-    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
+    ---@type Neoagent.SandboxPlatform<Neoagent.SandboxContext<Neoagent.TestSandboxEnvironment>>
     local platform = test_platform(function()
       starts = starts + 1
     end)
@@ -616,7 +622,7 @@ describe("neoagent sandbox composition", function()
       } },
 
     }
-    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
+    ---@type Neoagent.SandboxPlatform<Neoagent.SandboxContext<Neoagent.TestSandboxEnvironment>>
     local platform = test_platform()
     local composition = require("neoagent.sandbox.composition")
     local toolset, status = composition.compose({
@@ -642,7 +648,7 @@ describe("neoagent sandbox composition", function()
     local checks = 0
     local tool = require("neoagent.tools.write_file").new()
     local starts = 0
-    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
+    ---@type Neoagent.SandboxPlatform<Neoagent.SandboxContext<Neoagent.TestSandboxEnvironment>>
     local platform = test_platform(function()
       starts = starts + 1
     end)
@@ -828,7 +834,7 @@ describe("neoagent sandbox composition", function()
           name = "broken",
           check = function() return { ok = true, platform = "broken" } end,
           temporary_root = function() error("temporary root failed") end,
-          start_worker = function() error("must not execute") end,
+          create_worker = function() error("must not execute") end,
 
         },
       })
@@ -856,7 +862,7 @@ describe("neoagent sandbox composition", function()
         check = function() return { ok = true, platform = "test" } end,
         temporary_root = function() error("backend setup failed") end,
 
-        start_worker = function() error("must not execute") end,
+        create_worker = function() error("must not execute") end,
       } })
 
     local status, err = runtime:set_enabled(true)
@@ -929,7 +935,7 @@ describe("neoagent sandbox composition", function()
       require("neoagent.sandbox.path").posix, "")
     assert.are.equal(vim.uv.fs_realpath("/tmp"), fallback.environment.set.TMPDIR)
 
-    ---@type {default: Neoagent.SandboxProfile, ctx: Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>}?
+    ---@type {default: Neoagent.SandboxProfile, ctx: Neoagent.SandboxContext<Neoagent.TestSandboxEnvironment>}?
     local seen
     ---@type Neoagent.SandboxProfile?
     local started_profile
@@ -984,7 +990,7 @@ describe("neoagent sandbox composition", function()
       platform = {
         name = "broken",
 
-        start_worker = function() error("probe failed") end,
+        create_worker = function() error("probe failed") end,
         check = function() error("probe exploded") end,
       },
     })

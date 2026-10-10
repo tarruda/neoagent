@@ -54,7 +54,8 @@ local M = {}
 local access = { deny = true, read = true, write = true }
 ---@type table<string, boolean>
 local network = { restricted = true, enabled = true }
-local environment_name = "^[A-Za-z_][A-Za-z0-9_]*$"
+-- Native environment blocks do not require shell identifier syntax.
+local environment_name = "^[^=%z]+$"
 
 ---@param message string
 ---@return never

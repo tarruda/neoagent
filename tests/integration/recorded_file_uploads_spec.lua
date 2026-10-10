@@ -107,6 +107,43 @@ describe("recorded conversations with uploaded images", function()
     assert.are.equal(50, assert(assert(result.message).usage).input)
   end
 
+  it("retries a transient DeepSeek image inspection before continuing inference", function()
+    local session, start = conversation("deepseek", {
+      "upload", "conversation", "inspect-dns-failure", "inspect", "reuse",
+    })
+    send(session, start(), "Describe the tile.")
+    -- Reopening the provider forces validation of the persisted image mapping.
+    send(session, start(), "Describe it again.")
+    local requests = assert(scenario).requests
+    assert.are.equal(5, #requests)
+    local first, second = assert(requests[3]), assert(requests[4])
+    assert.are.equal("GET", first.method)
+    assert.are.equal(first.url, second.url)
+    assert.is_true(assert(second.timeout_ms) < assert(first.timeout_ms))
+    assert.are.equal("https://api.deepseek.com/chat/completions", assert(requests[5]).url)
+    assert.are.same(first.headers, second.headers)
+  end)
+
+  it("retains a safe DNS explanation after exhausting image inspection retries", function()
+    local session, start = conversation("deepseek", {
+      "upload", "conversation", "inspect-dns-failure", "inspect-dns-failure", "inspect-dns-failure",
+    })
+    send(session, start(), "Describe the tile.")
+    local result = wait(chat.send(session, "Describe it again.", { model = start() }))
+    assert.is_false(result.ok)
+    local err = assert(result.error)
+    assert.are.equal("files", err.kind)
+    assert.are.equal("dns", err.code)
+    assert.are.equal(6, rawget(err, "exit_code"))
+    assert.is_false(err.retryable, "outer request recovery must not reset the file retry budget")
+    assert.matches("DNS resolution failed", err.message, 1, true)
+    assert.is_nil((vim.inspect(result):find("private-", 1, true)))
+    assert.are.equal(5, #assert(scenario).requests, "exhaustion must stop before inference or another upload")
+    local messages = session:messages()
+    assert.are.equal("user", messages[#messages].role)
+    assert.are.equal("Describe it again.", messages[#messages].content)
+  end)
+
   it("preserves received DeepSeek reasoning when an uploaded-image conversation is cancelled", function()
     local exchange = replay.read("tests/recordings/deepseek/files/conversation.yaml")
     -- Keep the captured protocol body; split playback after its reasoning

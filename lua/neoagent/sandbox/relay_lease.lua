@@ -7,16 +7,24 @@ local M = {}
 local MAX_STDERR = 16 * 1024
 M.DEFAULT_ADMISSION_TIMEOUT_MS = 60 * 1000
 
+---@class Neoagent.SandboxReleaseOwner
+---@field is_released fun(): boolean
+---@field wait_release async fun(): true
+
 ---@class Neoagent.SandboxRelayLeaseOptions
+---@field start? fun(lease: Neoagent.SandboxRelayLease) Prepares resources, then attaches the native worker.
 ---@field on_stdout? fun(data: string)
 ---@field on_stderr? fun(data: string)
 ---@field on_exit? fun(result: Neoagent.WorkerResult)
 ---@field on_failure? fun(error: Neoagent.Error)
----@field cleanup? async fun(result: Neoagent.WorkerResult): true?, string?
+---@field cleanup? async fun(result: Neoagent.WorkerResult, terminal?: Neoagent.SandboxTerminalEvent, host?: Neoagent.WorkerLease): true?, string?
+---@field release? Neoagent.SandboxReleaseOwner Native owner continues after its cleanup observation fails.
 ---@field framed_input? boolean
 ---@field admission_timeout_ms? integer
 
----@class Neoagent.SandboxRelayLease: Neoagent.WorkerLease
+---@class Neoagent.SandboxRelayLease: Neoagent.WorkerOwner
+---@field _started boolean
+---@field _preparing boolean
 ---@field _base? Neoagent.WorkerLease
 ---@field _decoder Neoagent.SandboxProtocolDecoder
 ---@field _opts Neoagent.SandboxRelayLeaseOptions
@@ -32,6 +40,7 @@ M.DEFAULT_ADMISSION_TIMEOUT_MS = 60 * 1000
 ---@field _stdin_closed boolean
 ---@field _dispose_reason? string
 ---@field _admission_timeout_ms integer
+---@field _cleanup_released boolean
 local Relay = {}
 Relay.__index = Relay
 
@@ -69,6 +78,28 @@ local function record_failure(self, value, kind)
   end
   if self._base then
     self._base:terminate("native sandbox relay failed")
+  end
+end
+
+-- The invocation owns this object before preparation or native allocation.
+-- Startup failure settles through the same cleanup owner as a running worker.
+function Relay:start()
+  assert(not self._started and not self._disposed, "sandbox worker already started or disposed")
+  self._started = true
+  self._preparing = true
+  local ok, err = pcall(function()
+    assert(self._opts.start)(self)
+  end)
+  self._preparing = false
+  if not ok then
+    self:host_exited({
+      stderr = "",
+      execution = "not_started",
+      error = util.normalize_error(err, "sandbox_unavailable"),
+    })
+    error(util.normalize_error(err, "sandbox_unavailable"), 0)
+  elseif self._host_result then
+    self:_finish_host()
   end
 end
 
@@ -128,6 +159,22 @@ local function finish(self)
   if self._host_result.error and not self._failure then
     record_failure(self, util.copy(self._host_result.error))
   end
+  -- Finish the possibly yielding owner cleanup before validating the complete
+  -- wire stream. No cached terminal can authorize release after that stream
+  -- has been rejected, including input received while cleanup was suspended.
+  local owner_cleanup_error
+  if self._opts.cleanup then
+    local terminal = self._decoder:finish()
+    local called, cleaned, cleanup_err = pcall(self._opts.cleanup, util.copy(self._host_result), terminal, self._base)
+    if not called or not cleaned then
+      ---@type unknown
+      local detail = cleanup_err
+      if not called then
+        detail = cleaned
+      end
+      owner_cleanup_error = util.error("sandbox_unavailable", "Could not clean native sandbox resources", detail)
+    end
+  end
   local terminal, finish_err = self._decoder:finish()
   if not terminal and not self._failure then
     record_failure(self, util.error("sandbox_unavailable", "Invalid native sandbox protocol", finish_err))
@@ -154,19 +201,10 @@ local function finish(self)
     )
   end
   local cleanup_error = self._host_result.cleanup_error
-  if self._opts.cleanup then
-    local called, cleaned, cleanup_err = pcall(self._opts.cleanup, util.copy(self._host_result))
-    if not called or not cleaned then
-      ---@type unknown
-      local detail = cleanup_err
-      if not called then
-        detail = cleaned
-      end
-      cleanup_error = util.with_cause(
-        util.error("sandbox_unavailable", "Could not clean native sandbox resources", detail),
-        cleanup_error
-      )
-    end
+  self._cleanup_released = true
+  if owner_cleanup_error then
+    self._cleanup_released = false
+    cleanup_error = util.with_cause(owner_cleanup_error, cleanup_error)
   end
   -- Cleanup can yield while protocol failures still arrive. Readiness retains
   -- the first operation failure; completion also accounts for cleanup failure.
@@ -201,13 +239,21 @@ end
 
 ---@param data string
 function Relay:feed(data)
-  if self._result or self._disposed or self._failure then
+  if self._result then
     return
   end
+  -- Publication can end before native cleanup. Keep decoding lifecycle
+  -- evidence until completion; the decoder itself latches invalid input.
   local ok, err = pcall(self._decoder.feed, self._decoder, data)
   if not ok then
     record_failure(self, util.error("sandbox_unavailable", "Invalid native sandbox protocol", err))
   end
+end
+
+function Relay:_finish_host()
+  async.run(function()
+    finish(self)
+  end)
 end
 
 ---@param result Neoagent.WorkerResult
@@ -216,9 +262,9 @@ function Relay:host_exited(result)
     return
   end
   self._host_result = util.copy(result)
-  async.run(function()
-    finish(self)
-  end)
+  if not self._preparing then
+    self:_finish_host()
+  end
 end
 
 ---@param bytes string
@@ -287,6 +333,30 @@ function Relay:wait()
   end)
 end
 
+function Relay:is_released()
+  return self._result ~= nil
+    and (self._opts.release and self._opts.release.is_released() or not self._opts.release and self._cleanup_released)
+    and (not self._base or self._base:is_released())
+end
+
+---@async
+---@return true
+function Relay:wait_release()
+  local result = self:wait()
+  if self._opts.release then
+    self._opts.release.wait_release()
+  elseif not self._cleanup_released then
+    -- Failed staging removal has no eventual release observer. Retain the
+    -- reservation and report the known failure.
+    -- The base lease independently retains any outstanding native resources.
+    error(assert(result.cleanup_error), 0)
+  end
+  if self._base then
+    self._base:wait_release()
+  end
+  return true
+end
+
 ---@param reason string
 function Relay:dispose(reason)
   assert(type(reason) == "string" and reason ~= "", "native sandbox worker disposal reason is required")
@@ -297,6 +367,8 @@ function Relay:dispose(reason)
   self._dispose_reason = reason
   if self._base then
     self._base:dispose(reason)
+  elseif not self._started then
+    self:host_exited({ stderr = "", execution = "not_started", error = util.error("cancelled", reason) })
   end
 end
 
@@ -313,22 +385,32 @@ function M.new(opts)
   ---@type Neoagent.SandboxRelayLease
   local relay = setmetatable({
     _opts = opts,
+    _started = false,
+    _preparing = false,
     _waiters = {},
     _ready = false,
     _ready_waiters = {},
     _stderr = "",
     _disposed = false,
+    _cleanup_released = false,
     _stdin_closed = false,
     _admission_timeout_ms = admission_timeout_ms,
   }, Relay)
   relay._decoder = protocol.new({
     on_event = function(event)
+      if event.type == "exit" or event.type == "error" then
+        relay._terminal = util.copy(event --[[@as Neoagent.SandboxTerminalEvent]])
+        return
+      end
       if relay._failure then
         return
       end
       if event.type == "ready" then
         announce_ready(relay)
       elseif event.type == "output" then
+        if relay._disposed then
+          return
+        end
         ---@cast event Neoagent.SandboxOutputEvent
         local callback
         if event.stream == "stdout" then
@@ -345,8 +427,6 @@ function M.new(opts)
             record_failure(relay, util.error("protocol", "Native sandbox output callback failed", err), "protocol")
           end
         end
-      elseif event.type == "exit" or event.type == "error" then
-        relay._terminal = util.copy(event --[[@as Neoagent.SandboxTerminalEvent]])
       end
     end,
   })

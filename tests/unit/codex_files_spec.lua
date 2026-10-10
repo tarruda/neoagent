@@ -151,6 +151,19 @@ describe("Codex file protocol", function()
     end
   end)
 
+  it("reports a failed blob transfer without repeating creation or upload", function()
+    local state = fixture()
+    state.responses.put = { ok = false, error = { kind = "transport", exit_code = 7,
+      message = "https://storage.example.test/?sig=private-capability" } }
+    local result = wait(state.backend.upload(asset, access, 1000))
+    assert.is_false(result.ok)
+    assert.are.equal("connection", assert(result.error).code)
+    assert.is_false(assert(result.error).retryable)
+    assert.is_nil((vim.inspect(result):find("private-capability", 1, true)))
+    assert.are.equal(2, #state.requests)
+    assert.are.equal("PUT", assert(state.requests[2]).method)
+  end)
+
   it("rejects invalid cached identifiers without an authenticated request", function()
     local state = fixture()
     local invalid = util.copy(object)

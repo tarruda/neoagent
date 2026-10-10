@@ -1,75 +1,44 @@
 # HTTP regression recordings
 
-Fixtures replay `neoagent-http-recording` version 1 through the HTTP decoder,
-API adapters, Authentication, catalogs, and Services without network access.
-Run `make test-integration`; YAML fixtures require Mike Farah `yq` v4 on `PATH`.
-Use `make test-http-live` for curl and callback socket checks.
+Fixtures replay `neoagent-http-recording` version 1 through real HTTP decoding
+and provider compositions without network access. Run `make test-integration`
+with Mike Farah `yq` v4 on `PATH`. Curl and callback sockets belong in
+`make test-http-live`.
 
-## Reproducing a reported provider issue
+## Reproducing a provider issue
 
-Start with the user's recordings under `~/.local/state/nvim/neoagent`
-(or their configured `recording.directory`). Locate the relevant provider,
-Session and time before reading bodies. Workspace exchanges live under
-`workspaces/*/recordings/*/`; shared provider/authentication exchanges live
-under `provider/recordings/<provider>/<date>/`. Do not copy the whole directory
-into the repository or print entire conversations or credential material.
+Find the relevant provider, Session, and time under the user's recording root
+(default `~/.local/state/nvim/neoagent`). Workspace exchanges are in
+`workspaces/*/recordings/*/`; shared exchanges are in
+`provider/recordings/<provider>/<date>/`. Read metadata before bodies. Never
+copy whole directories or print private conversations and credentials.
 
-If the exchange is missing, ask the user to add this to their existing setup,
-restart Neovim and reproduce the interaction:
+If evidence is missing, ask the user to enable `recording = { enabled = true }`,
+restart, and reproduce. Use rolling retention unless earlier exchanges matter;
+use JSON when exact serialization matters or YAML fails. Restore prior settings
+after capture. The user performs account actions; regression work does not
+itself authorize live API access.
 
-```lua
-recording = { enabled = true },
-```
+1. Read with `neoagent.http_replay.read(path)`. It accepts JSONL, partial NDJSON,
+   and YAML through `yq`. A partial filename does not establish completeness;
+   missing bodies cannot be recovered. Invalid YAML needs inspection or recapture.
+2. Create a minimal fixture with invented prompts, responses, thinking, Tool
+   arguments/results, attachments, paths, and account data. Originals are local
+   evidence, never test inputs. Masking, trimming, excerpts, or paraphrasing
+   private conversations is insufficient. Preserve protocol structure and any
+   triggering syntax, encoding, size, or fragmentation using unrelated content.
+   Use nonfunctional credentials and token envelopes; never disable masking.
+3. Recompute byte counts after edits. YAML native JSON values lose original
+   whitespace and byte cuts; use string or base64 bodies for byte-sensitive
+   cases. Review fixtures, assertions, and comments for private material. Keep
+   originals unchanged; hashes can record provenance without private paths.
+4. Inject replay below the real HTTP decoder in the affected composition.
+   Assert the product failure and fixture consumption. Verify the regression
+   fails before the fix and passes afterward.
 
-Ask for the provider, approximate time, Session, and observed behavior. The
-user performs login and model requests; regression development does not
-authorize live account access. Use rolling retention unless earlier exchanges
-are needed to explain the failure. Use JSON when exact serialization matters
-or YAML cannot be parsed. Restore previous recording settings afterward.
+## Replay scenarios
 
-1. Inspect metadata and completion first. `neoagent.http_replay.read(path)`
-   validates complete JSONL and `.partial.ndjson` files, and imports YAML with
-   Mike Farah `yq` v4. A partial filename alone does not prove that
-   the exchange is incomplete. Missing bodies/completions cannot be recovered.
-   Invalid YAML needs inspection or a new JSON capture.
-2. Create a minimal YAML fixture with synthetic content. Original recordings
-   are local evidence, never reproduction or test inputs. Replace all prompts,
-   assistant responses and thinking, tool arguments/results, code, attachments,
-   and personal/account metadata with invented values. Do not retain excerpts
-   or paraphrases of the personal conversation, even when relevant to the bug.
-   Masking credentials or trimming history alone is insufficient.
-
-   Preserve relevant protocol structure, ordering, types, and request/response
-   relationships. Use consistent synthetic IDs, paths, and credentials. For
-   content-triggered failures, invent unrelated content with the same relevant
-   syntax, encoding, size, or malformed bytes. Verify the adaptation reproduces
-   the failure; never substitute the original conversation.
-
-   Authentication-classified response bodies are deliberately masked: use
-   synthetic token envelopes, unsigned fake JWT claims, and nonfunctional
-   signed storage URLs when needed. Never disable masking.
-3. Rebuild response chunk/body byte counts after editing bytes. Lua string
-   lengths count bytes, including UTF-8. Retain fragmentation when it matters.
-   YAML native JSON values need serialization; their original whitespace and
-   byte cuts cannot be recovered. Record that adaptation rather than claiming
-   an exact byte capture. For byte-sensitive regressions, retain a string or
-   base64 body instead of converting it to a native JSON value. The reader
-   also accepts JSONL, so existing JSON recordings need no format migration.
-4. Review the complete adaptation, assertions and provenance comments for
-   personal content and credentials before adding them to the repository.
-   A source recording hash can identify provenance without copying its private
-   path or conversation. Leave originals unchanged.
-5. Add a test through the real affected composition. Supply replay below the
-   shared HTTP decoder, assert the product failure, and check consumption in
-   teardown. Verify a bug regression fails against the unmodified code for
-   the reported reason, then passes with the fix.
-
-## Scenarios and matching
-
-Define replay scenarios as Lua tables beside the test assertions.
-`tests/helpers/http_replay.lua` accepts an exchange list with repo-relative
-recording paths and exposes `scenario.url` as `https://api.test`, the origin
-used by these fixtures:
+Keep matching rules and dependencies beside assertions:
 
 ```lua
 local scenario = require("tests.helpers.http_replay").open({
@@ -77,41 +46,26 @@ local scenario = require("tests.helpers.http_replay").open({
 })
 ```
 
-The YAML files contain recorded protocol data; matching rules and dependencies
-belong to the tests. A direct
-`require("neoagent.http_replay").new({ exchanges = { path } })` also works.
-Pass the result as the existing internal `transport`/`http` dependency.
+Inject `scenario` through the existing internal `transport` or `http`
+dependency. `scenario.url` is `https://api.test`. Direct replay also supports
+`neoagent.http_replay.new({ exchanges = { path } })`. Upload fixtures retain
+native provider URLs because eligibility depends on the endpoint.
 
-Requests match method, URL, headers and body. Header names and URL percent-hex
-case are normalized. JSON objects and form fields compare structurally; arrays,
-null, missing values and empty objects remain distinct. Multipart uploads ignore
-the generated boundary while checking part order, part headers, field values,
-and binary content byte for byte. A declared Content-Length is validated
-before boundary normalization. `body_exact = true` requires identical body
-bytes. There is no network fallback. Missing, extra
-and mismatched requests fail locally; `assert_consumed()` also rejects unused
-exchanges and errors caught by product retry logic. Diagnostics name exchange
-IDs and differing dimensions without exposing actual request values.
+Matching checks method, URL, headers, and body. Header names and URL percent-hex
+case normalize; JSON objects and forms compare structurally. Arrays, null,
+missing values, and empty objects stay distinct. Multipart matching ignores
+boundary text but checks parts, order, headers, bytes, and Content-Length.
+`body_exact = true` requires identical bytes. There is no network fallback.
 
-File-upload fixtures retain native provider URLs because upload eligibility
-depends on the final endpoint.
+Use `headers_subset` or `body_subset` only for intentionally partial fixtures.
+Body subsets select top-level fields but compare their nested values fully.
+Keep credentials and meaningful options checked; do not hide mismatches.
+Generated PKCE verifiers are instead checked against the authorization challenge.
 
-For fixtures containing only selected request fields, declare
-`headers_subset = true` and, where needed, `body_subset = true` in the test.
-Body projection checks every recorded top-level field, including nested values
-in full. Keep credentials and meaningful request options among the checked
-fields. Generated PKCE verifiers are omitted from the token fixture and checked
-against the authorization challenge by the OAuth integration test. Do not use
-projections to conceal a request mismatch.
-
-Matching reserves the first unused matching exchange before yielding. Repeated
-identical requests therefore consume entries in their declared sequence;
-distinct concurrent requests can arrive independently. Each response chunk is
-scheduled asynchronously with no delay by default. `timing = true` applies
-recorded relative delays, but does not promise operating-system scheduling
-precision or provide transcript/UI replay.
-
-Concurrency uses explicit dependencies, not sleeps. An entry may declare:
+Repeated identical requests consume exchanges in order; distinct requests may
+arrive concurrently. Chunks deliver asynchronously. `timing = true` uses recorded
+delays without promising OS scheduling or UI replay. Coordinate with dependencies,
+not sleeps:
 
 ```lua
 {
@@ -124,44 +78,39 @@ Concurrency uses explicit dependencies, not sleeps. An entry may declare:
 }
 ```
 
-Signals are `<id>:request`, `<id>:chunk:<index>` and `<id>:complete`; a test can
-also call `scenario.release("inspected")` after a product observation.
-`open = true` keeps a subscription open until its caller cancels it. A recorded
-cancellation is not injected into a new caller. Dependencies are bounded by
-`timeout_ms` (default 5000); teardown calls `close()` to cancel outstanding
-playback and then `assert_consumed()`. Decoder and Model failures must reproduce
-from the response body. Network failures replay as transport failures; curl
-HTTP exit code 22 replays as an HTTP response.
+Signals are `<id>:request`, `<id>:chunk:<index>`, and `<id>:complete`;
+`scenario.release("inspected")` supplies a test signal. `open = true` waits for
+caller cancellation; recorded cancellation is not injected. Dependencies use
+`timeout_ms` (default 5000).
 
-## Coverage and capture inventory
+Teardown calls `close()` then `assert_consumed()`, which catches missing, extra,
+mismatched, and unused exchanges even when product retries swallowed an error.
+Diagnostics omit request values. Decoder and Model errors must arise from
+response bodies; network failures replay as transport errors, while curl exit 22
+replays an HTTP response.
 
-The inventory distinguishes adapted captures from synthetic scenarios and
-lists missing captures. All credentials and account IDs are synthetic.
+## Capture inventory
 
-| Surface | Integration coverage | Real capture status |
+All fixture content and credentials are synthetic. Adapted captures preserve
+observed protocol behavior; purely synthetic cases are not live validation.
+Tests under `tests/integration/` define the assertions.
+
+| Provider/surface | Adapted captures | Remaining capture gaps |
 | --- | --- | --- |
-| OpenAI Completions and Responses, tools, reasoning, usage, errors, cancellation | `openai_http_spec.lua` | Synthetic; real OpenAI inference needed. |
-| OpenAI Platform and DeepSeek `/files`, metadata lookup and image references | `managed_file_conversations_spec.lua`, `recorded_file_uploads_spec.lua`, `file_upload_lifecycle_spec.lua` | DeepSeek upload and restart captured for Completions, Responses and Messages; the latter two also cover missing-file replacement and inline opt-out. OpenAI upload, lookup, missing-object, unauthorized lookup and credit-exhaustion responses are captured; successful OpenAI inference remains unverified. Both providers have real upload authentication failures. Local failure injection and malformed-response variants are synthetic. |
-| Codex subscription file creation, blob PUT, finalization, inspection and image references | `managed_file_conversations_spec.lua`, `codex_file_uploads_spec.lua`, `file_upload_lifecycle_spec.lua` | Upload, reuse, restart and configuration opt-out captured with Luna, including Responses Lite and a complete image-producing tool loop. Real upload authentication failure captured. Signed-capability and classified error bodies use synthetic envelopes; polling and deletion scenarios remain synthetic. |
-| Anthropic Messages, thinking signatures, tools/results, cache usage, cancellation | `anthropic_http_spec.lua`, `anthropic_provider_spec.lua` | Synthetic protocol cases plus authorized live Sonnet 5 first-prompt and signed-thinking continuation captures in `anthropic/sonnet-5/`. |
-| Anthropic image upload, optimistic reuse, restart, stale-file repair, inline opt-out | `managed_file_conversations_spec.lua` | Authorized synthetic Sonnet 5 captures in `anthropic/managed-files/`; includes the real file-specific 404, inspection, replacement upload and resubmission. `anthropic/validation/` adds successful metadata lookup and an upload rejected with invalid credentials. |
-| DeepSeek Completions; Z.AI metered and Coding Plan Completions | `openai_http_spec.lua`, `recorded_providers_spec.lua` | Minimized real DeepSeek and Coding Plan frames; ordinary Z.AI inference needed. |
-| Alibaba Token Plan Completions and dedicated `sk-sp-` login | `recorded_providers_spec.lua` | Minimized real inference; synthetic credential. |
-| OpenCode Go Completions, Responses and Messages routing, both credential headers, Session header | `recorded_providers_spec.lua` | Minimized real Completions; real Responses and Messages needed. |
-| OpenAI `/models`, organization usage/completions and costs | `provider_management_spec.lua`, `provider_surfaces_spec.lua` | Synthetic success/reporting denial; successful real organization reports needed. |
-| Anthropic paginated `/models`, organization messages usage and cost reports | Same two management suites | Synthetic; real catalog and reports needed. |
-| DeepSeek `/models`, `/user/balance` | `provider_management_spec.lua`, `provider_surfaces_spec.lua` | Balance adapted from a real response; catalog remains synthetic. |
-| Z.AI and Coding Plan `/models`, balance and quota/limit | `provider_management_spec.lua` | Synthetic adaptations; real management recordings exist locally for follow-up promotion. |
-| OpenCode Go `/models`, `/usage` | `provider_surfaces_spec.lua` | Catalog adapted from a real response; usage remains synthetic. |
-| Alibaba console callback and TokenPlanOverview gateway query | `alibaba_token_plan_auth_spec.lua`, `provider_management_spec.lua` | Synthetic JSON/form/multipart callbacks and query; real overview exists, real login capture needed. |
-| Codex browser PKCE callback, pasted redirect, device code/pending/slow-down, code exchange, refresh rotation and concurrent resolution | `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; real browser, manual and device flows plus refresh needed. Token bodies will remain masked. |
-| Codex Responses, retry, usage headers and OAuth-wrapped inference | `openai_http_spec.lua`, `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua`, `codex_file_uploads_spec.lua` | Uploaded-image inference adapted from a real capture. Retry and usage-header scenarios remain synthetic. |
-| Codex `/codex/models` including conditional 304; wham usage, profiles/me, accounts/check, reset credits and consume | `codex_management_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; local real wham usage exists. Other real endpoints needed; credit consumption must be a user-chosen account action. |
-| llama.cpp anonymous/key probes, `/models`, load/unload, downloads, `/models/sse`, polling, catalog reload, multimodal Completions and reasoning-only stop continuation | `llama_http_spec.lua`, `provider_surfaces_spec.lua`, `recorded_providers_spec.lua`, `openai_http_spec.lua` | Minimized real inference; router workflows and the reasoning-only stop replay are synthetic. Real load/download/cancel flows needed. |
-| Hugging Face model search and repository details with optional token | `provider_surfaces_spec.lua` | Synthetic; real public and authenticated queries needed. |
+| OpenAI Platform | Upload, lookup, missing-file and authentication failures, credit exhaustion. | Successful inference, catalog, organization usage and cost reports. |
+| Codex | Image upload/reuse/restart/opt-out, Responses Lite, Tool loop, upload denial. | Browser/device login, refresh, retry/usage headers, management, polling/deletion. |
+| Anthropic | Sonnet 5 inference and signed thinking; image lifecycle, stale-file repair, lookup, upload denial. | Catalog and organization reports. |
+| DeepSeek | Completions/Responses/Messages with images, replacement and opt-out; metadata DNS failure; upload denial; balance. | Catalog. |
+| Z.AI | Coding Plan inference. | Metered inference and management. |
+| Alibaba Token Plan | Inference. | Login and quota reporting. |
+| OpenCode Go | Completions and catalog. | Responses, Messages, usage. |
+| llama.cpp | Inference. | Router load/unload/download/cancel and reasoning-only continuation. |
+| Hugging Face | None. | Public and authenticated search and repository inspection. |
 
-These fixtures preserve protocol evidence with synthetic content and rebuilt
-byte counts. Source hashes identify their provenance:
+Fill gaps only through account actions the user wants. Synthetic coverage does
+not justify spending credits, logging in, or changing subscriptions.
+
+Source hashes identify adapted fixture provenance:
 
 | Fixture | Original recording SHA-256 |
 | --- | --- |
@@ -175,11 +124,3 @@ byte counts. Source hashes identify their provenance:
 | [`real/zai-coding-plan.yaml`](real/zai-coding-plan.yaml) | `f6db25a27b2a167a2d27b2d5c5cfb5519c2eab520bcaf7fe8c9cf4956750b43c` |
 | [`providers/management-02.yaml`](providers/management-02.yaml) | `a34c98f253bf912178695881b56bf75c09925b305c8cab222f652496088cdc77` |
 | [`opencode-go/management-01.yaml`](opencode-go/management-01.yaml) | `cbc3b82891cb3392d1cf7f2fa5c64fb2525c88a16058d05b10d8690ac1e02ae2` |
-
-To fill the remaining real-capture gaps, use the corresponding provider in a
-short conversation (include a tool turn or cancellation if relevant), refresh
-its Provider Shell/catalog, or perform the listed login flow interactively.
-For llama.cpp, separately load/unload and download/cancel a model. For Hugging
-Face, search and inspect a model through the download dialog. Capture only
-account actions the user actually wants; existing synthetic coverage does not
-require spending credits or changing subscriptions.

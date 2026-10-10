@@ -13,6 +13,39 @@ local function reader(options, stream)
 end
 
 describe("neoagent.transport.curl", function()
+  for _, method in ipairs({ "fetch", "request" }) do
+    it("classifies " .. method .. " failures without losing received HTTP status", function()
+      local original_system = vim.system
+      vim.system = function(command, _, on_exit)
+        for index, argument in ipairs(command) do
+          if argument == "--dump-header" then
+            vim.fn.writefile({ "HTTP/1.1 401 Unauthorized", "" }, (assert(command[index + 1])))
+          end
+        end
+        assert(on_exit)({ code = 56, signal = 0, stderr = "synthetic partial transfer" })
+        return { kill = function() end } --[[@as vim.SystemObj]]
+      end
+      local run = require("neoagent.async").run(function()
+        local opts = { request = { url = "https://example.test", method = "GET" } }
+        if method == "fetch" then
+          return curl.fetch(opts):await()
+        end
+        return curl.request(opts):await()
+      end)
+      local settled = vim.wait(2000, function() return run:is_done() end)
+      run:cancel()
+      vim.system = original_system
+      assert.is_true(settled)
+      local result = assert(run:result())
+      assert.is_false(result.ok)
+      local err = assert(result.error)
+      assert.are.equal("receive", err.code)
+      assert.are.equal(56, rawget(err, "exit_code"))
+      local response = assert(rawget(err, "response"))
+      assert.are.equal(401, response.status)
+    end)
+  end
+
   it("bounds stderr and reports stream read failures", function()
     local original_system = vim.system
     ---@return Neoagent.ByteStreamResult

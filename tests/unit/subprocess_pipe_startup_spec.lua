@@ -9,14 +9,16 @@ describe("native pipe admission ownership", function()
       local argv = platform == "Windows" and { vim.fn.exepath("cmd.exe"), "/d", "/s", "/c", "set /p value=" }
         or { vim.fn.exepath("sh"), "-c", "read line" }
       local closed, exited = false, false
+      local failures = {}
       local restore_kill
-      trees.new = function()
-        if rejected == "allocation" then
-          return nil, "native Job allocation failed"
-        end
+      trees.new = function(options)
         return new_tree({
+          callbacks = options.callbacks,
           backend = {
             create = function()
+              if rejected == "allocation" then
+                return nil, "native Job allocation failed"
+              end
               return 1
             end,
             open = function()
@@ -33,6 +35,9 @@ describe("native pipe admission ownership", function()
             end,
             terminate = function()
               return nil, "native Job termination failed"
+            end,
+            empty = function()
+              return true
             end,
             close = function() end,
           },
@@ -65,6 +70,7 @@ describe("native pipe admission ownership", function()
         assert(vim.uv.os_environ()),
         {
           output = function() end,
+          released = function() end,
           exited = function()
             exited = true
           end,
@@ -72,7 +78,7 @@ describe("native pipe admission ownership", function()
             closed = true
           end,
           failed = function(code)
-            error(code)
+            failures[#failures + 1] = code
           end,
         }
       )
@@ -97,6 +103,9 @@ describe("native pipe admission ownership", function()
       driver.dispose()
       assert.is_true(drained, "failed native admission left unobserved pipes open")
       assert.are.equal(rejected ~= "allocation", exited)
+      if rejected == "attachment" then
+        assert.are.same({ "process_supervision" }, failures)
+      end
       assert.is_true(ok, vim.inspect(failure))
     end)
   end

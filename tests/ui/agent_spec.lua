@@ -4096,9 +4096,9 @@ describe("neoagent default agent", function()
       return {
         name = "test",
         exec = function() error("must not execute") end,
-        start_worker = function(request)
+        create_worker = function(request)
           child_starts = child_starts + 1
-          return require("neoagent.rpc.worker_lease").start(request)
+          return require("neoagent.rpc.worker_lease").new(request)
         end,
       }, {
         ok = true,
@@ -4207,7 +4207,7 @@ describe("neoagent default agent", function()
       return {
         name = "test",
         exec = function() error("must not execute") end,
-        start_worker = function() error("must not start") end,
+        create_worker = function() error("must not start") end,
       }, { ok = true, platform = "test", capabilities = {} }
     end
     local ok, err = pcall(function()

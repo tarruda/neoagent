@@ -76,6 +76,9 @@ describe("subprocess ownership and terminal races", function()
         resize = function()
           return true
         end,
+        interrupt = function()
+          return true
+        end,
         stop = function()
           signals[#signals + 1] = "term"
           return true
@@ -92,6 +95,7 @@ describe("subprocess ownership and terminal races", function()
           if close_fails then
             error("private cleanup failure")
           end
+          callbacks.released()
         end,
       }
     end
@@ -105,6 +109,7 @@ describe("subprocess ownership and terminal races", function()
     if events then
       events.exited(0, 9)
       events.closed()
+      events.released()
     end
     for _, handle in ipairs(handles) do
       helper.complete(function()
@@ -156,6 +161,16 @@ describe("subprocess ownership and terminal races", function()
     assert.are.equal("process_cleanup", assert(helper.wait(waiter).error).code)
   end)
 
+  it("observes an already released handle and validates scope release deadlines", function()
+    local handle = spawn()
+    events.exited(0, 0)
+    events.closed()
+    assert.is_true(helper.complete(function() return handle:wait_release() end))
+    assert.are.equal("process_validation", assert(helper.complete(function()
+      return owner:wait_release(0)
+    end).error).code)
+  end)
+
   for _, thrown in ipairs({ false, true }) do
     it("owns completed native resources when startup " .. (thrown and "throws" or "reports failure"), function()
       during_start = function(callbacks)
@@ -170,6 +185,7 @@ describe("subprocess ownership and terminal races", function()
       end)
       assert.are.equal("process_start", failure.code)
       assert.is_true(owner:is_settled())
+      assert.is_true(owner:is_released())
       assert.are.equal(1, disposals)
     end)
   end
@@ -183,6 +199,10 @@ describe("subprocess ownership and terminal races", function()
         events.closed()
       end
       assert.is_true(owner:is_settled())
+      if completion == "failure" then
+        events.released()
+      end
+      assert.is_true(owner:is_released())
       local new_timer = vim.uv.new_timer
       vim.uv.new_timer = function()
         error("timer allocation unavailable")
@@ -190,7 +210,11 @@ describe("subprocess ownership and terminal races", function()
       local waiting = async.run(function()
         return owner:wait(500)
       end)
+      local releasing = async.run(function()
+        return owner:wait_release(500)
+      end)
       vim.uv.new_timer = new_timer
+      assert.is_true(helper.wait(releasing))
       local result = helper.wait(waiting)
       if completion == "failure" then
         assert.are.equal("process_cleanup", assert(result.error).kind)
@@ -272,6 +296,28 @@ describe("subprocess ownership and terminal races", function()
     )
     assert.are.equal("process_cleanup", assert(handle:state().failure).code)
     assert.are.equal(1, disposals)
+  end)
+
+  it("retains the native cleanup result after a delayed failed session startup", function()
+    limits.REAP_MS = 2000
+    attach_fails = true
+    local beginning = vim.uv.hrtime()
+    delivery_delay = function(now)
+      return now - beginning
+    end
+    local reported
+    local controller = require("neoagent.process_sessions.local").new(helper.spec("unused"), 64, function(err)
+      reported = err
+    end)
+    assert.are.equal("process_supervision", helper.failure(controller.start).code)
+    assert.is_true(helper.complete(function() return controller:wait_cleanup() end, 6000))
+    local failure = assert(controller:state().cleanup_error)
+    assert.are.equal("Process cleanup did not settle before its deadline", failure.message)
+    local cause = rawget(failure, "cause")
+    assert(type(cause) == "table")
+    assert.are.equal("process_supervision", cause.code)
+    assert.are.same(failure, reported)
+    assert.is_true(controller:state().released)
   end)
 
   it("stops controls after native exit and preserves its later status", function()

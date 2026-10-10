@@ -26,7 +26,7 @@ function M.new(callbacks, input_limits)
   input_limits = input_limits or { bytes = validate.PENDING_BYTES, writes = validate.PENDING_WRITES }
   ---@type table<uv.uv_handle_t, boolean>
   local resources = {}
-  local exited, closed = false, false
+  local exited, closed, disposed, released = false, false, false, false
   local deliveries = 0
   ---@type number
   local delivery_delay = 0
@@ -67,9 +67,15 @@ function M.new(callbacks, input_limits)
   end
 
   local function settled()
-    if exited and not next(resources) and deliveries == 0 and not closed then
-      closed = true
-      vim.schedule(callbacks.closed)
+    if not next(resources) and deliveries == 0 then
+      if exited and not closed then
+        closed = true
+        vim.schedule(callbacks.closed)
+      end
+      if disposed and not released then
+        released = true
+        vim.schedule(callbacks.released)
+      end
     end
   end
 
@@ -162,10 +168,12 @@ function M.new(callbacks, input_limits)
       settled()
     end,
     dispose = function()
+      disposed = true
       input_closed = true
       for resource in pairs(resources) do
         close(resource)
       end
+      settled()
     end,
     write = function(bytes)
       local stream = assert(stdin)

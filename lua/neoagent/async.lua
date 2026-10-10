@@ -651,6 +651,55 @@ end
 M.Run = Run
 M.cancelled_error = cancelled_error
 
+---@class Neoagent.Notification
+---@field notify fun()
+---@field wait async fun(timeout_ms?: integer): boolean False when the observation budget expires.
+
+-- A wakeup has no stored value. Owners check their predicate before waiting
+-- and again after waking; cancelling a waiter removes only that observation.
+---@return Neoagent.Notification
+function M.notification()
+  ---@type table<Neoagent.AwaitCallbacks<boolean>, fun()>
+  local waiters = {}
+  return {
+    notify = function()
+      local current = waiters
+      waiters = {}
+      for waiter, cleanup in pairs(current) do
+        cleanup()
+        waiter.resolve(true)
+      end
+    end,
+    ---@async
+    wait = function(timeout_ms)
+      return M.await(function(waiter)
+        local timer
+        local function cleanup()
+          waiters[waiter] = nil
+          if timer and not timer:is_closing() then
+            timer:stop()
+            timer:close()
+          end
+        end
+        if timeout_ms then
+          timer = assert(vim.uv.new_timer())
+          vim.uv.update_time()
+          local ok, started, err = pcall(timer.start, timer, timeout_ms, 0, function()
+            cleanup()
+            waiter.resolve(false)
+          end)
+          if not ok or not started then
+            cleanup()
+            error(ok and err or started, 0)
+          end
+        end
+        waiters[waiter] = cleanup
+        return cleanup
+      end)
+    end,
+  }
+end
+
 -- Give the editor an event-loop turn, rather than adding more work to the
 -- current scheduled-callback drain. Cancellation owns the pending timer.
 ---@async

@@ -184,51 +184,28 @@ end
 
 ---@param request Neoagent.SandboxWorkerRequest
 ---@param services Neoagent.SandboxExecutionServices<string|string[]>
----@return Neoagent.WorkerLease
-function M.start_worker(request, services)
-  local runtime = sandbox_runtime()
-  if not runtime then
-    error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
-  end
-  local nvim = nvim_launch.command(services.nvim)
-  local nvim_program = assert(nvim[1])
-  local internal = { nvim_program, runtime, "/bin/sh" }
-  vim.list_extend(internal, request.bootstrap_paths or {})
-  access_policy.require_read(request.profile, internal, nil, "bootstrap")
-  ---@type Neoagent.SandboxFilesystemEntry[]
-  local internal_entries = {}
-  for _, path in ipairs(internal) do
-    internal_entries[#internal_entries + 1] = { path = path, access = "read" }
-  end
-  local policy, parameters = profile_compiler.compile(request.profile, internal_entries)
-  local random = assert(vim.uv.random(16))
-  local scope = "neoagent.sandbox."
-    .. (random:gsub(".", function(byte)
-      return string.format("%02x", byte:byte())
-    end))
-  policy = policy .. '\n(allow mach-lookup (global-name "' .. scope .. '"))'
-  local worker_argv =
-    profile_compiler.argv(executable(services.sandbox_exec or SANDBOX_EXEC) or SANDBOX_EXEC, policy, parameters)
-  vim.list_extend(worker_argv, {
-    "/bin/sh",
-    "-c",
-    'printf "ready\\n" >&3; exec 3>&-; exec "$@"',
-    "neoagent-worker",
-  })
-  vim.list_extend(worker_argv, request.argv)
-  local argv = runtime_argv(nvim, runtime)
-  local relay = require("neoagent.sandbox.relay_lease").new({
+---@return Neoagent.WorkerOwner
+function M.create_worker(request, services)
+  ---@type string?
+  local scope
+  ---@type string[]?
+  local argv
+  return require("neoagent.sandbox.relay_lease").new({
     framed_input = true,
     on_failure = request.on_failure,
     on_stdout = request.on_stdout,
     on_stderr = request.on_stderr,
     on_exit = request.on_exit,
     cleanup = function(result)
-      if result.code == 0 and not result.error and not result.cleanup_error then
+      if
+        not scope
+        or result.execution == "not_started"
+        or result.code == 0 and not result.error and not result.cleanup_error
+      then
         return true
       end
       local recovered = require("neoagent.subprocess_common").run({
-        argv = argv,
+        argv = assert(argv),
         cwd = "/",
         environment = { inherit = false, set = runtime_environment({ mode = "cleanup", scope = scope }) },
         stdio = { kind = "pipes" },
@@ -239,26 +216,60 @@ function M.start_worker(request, services)
       end
       return true
     end,
-  })
-  local start = services.start_worker or require("neoagent.rpc.worker_lease").start
-  local started, child = pcall(start, {
-    argv = argv,
-    cwd = request.cwd,
-    env = runtime_environment({ mode = "run", scope = scope, argv = worker_argv, cwd = request.cwd, env = request.env }),
-    clear_env = true,
-    kill_grace_ms = math.max(request.kill_grace_ms or 0, SUPERVISOR_GRACE_MS),
-    on_stdout = function(data)
-      relay:feed(data)
+    start = function(relay)
+      local runtime = sandbox_runtime()
+      if not runtime then
+        error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
+      end
+      local nvim = nvim_launch.command(services.nvim)
+      local nvim_program = assert(nvim[1])
+      local internal = { nvim_program, runtime, "/bin/sh" }
+      vim.list_extend(internal, request.bootstrap_paths or {})
+      access_policy.require_read(request.profile, internal, nil, "bootstrap")
+      ---@type Neoagent.SandboxFilesystemEntry[]
+      local internal_entries = {}
+      for _, path in ipairs(internal) do
+        internal_entries[#internal_entries + 1] = { path = path, access = "read" }
+      end
+      local policy, parameters = profile_compiler.compile(request.profile, internal_entries)
+      local random = assert(vim.uv.random(16))
+      scope = "neoagent.sandbox."
+        .. (random:gsub(".", function(byte)
+          return string.format("%02x", byte:byte())
+        end))
+      policy = policy .. '\n(allow mach-lookup (global-name "' .. scope .. '"))'
+      local worker_argv =
+        profile_compiler.argv(executable(services.sandbox_exec or SANDBOX_EXEC) or SANDBOX_EXEC, policy, parameters)
+      vim.list_extend(worker_argv, {
+        "/bin/sh",
+        "-c",
+        'printf "ready\\n" >&3; exec 3>&-; exec "$@"',
+        "neoagent-worker",
+      })
+      vim.list_extend(worker_argv, request.argv)
+      argv = runtime_argv(nvim, runtime)
+      local start = services.start_worker or require("neoagent.rpc.worker_lease").start
+      relay:attach(start({
+        argv = argv,
+        cwd = request.cwd,
+        env = runtime_environment({
+          mode = "run",
+          scope = scope,
+          argv = worker_argv,
+          cwd = request.cwd,
+          env = request.env,
+        }),
+        clear_env = true,
+        kill_grace_ms = math.max(request.kill_grace_ms or 0, SUPERVISOR_GRACE_MS),
+        on_stdout = function(data)
+          relay:feed(data)
+        end,
+        on_exit = function(result)
+          relay:host_exited(result)
+        end,
+      }))
     end,
-    on_exit = function(result)
-      relay:host_exited(result)
-    end,
   })
-  if not started then
-    error(util.error("sandbox_unavailable", "Could not start macOS sandbox runtime", child), 0)
-  end
-  relay:attach(child)
-  return relay
 end
 
 return M

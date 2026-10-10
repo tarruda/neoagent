@@ -11,7 +11,7 @@ describe("RPC transport failures", function()
     connections = {}
   end)
 
-  for _, phase in ipairs({ "open", "request", "close", "stdin" }) do
+  for _, phase in ipairs({ "open", "request", "dispatch", "close", "stdin" }) do
     it("reports a thrown " .. phase .. " failure once and rejects further work", function()
       local failures = {}
       local connection = require("neoagent.rpc.connection").new({
@@ -37,8 +37,12 @@ describe("RPC transport failures", function()
       emit({ type = "ready", marker = protocol.MARKER })
       local run = async.run(function()
         connection:open({})
-        if phase == "request" then
-          return connection:request("probe", {})
+        if phase == "request" or phase == "dispatch" then
+          return connection:request("probe", {}, {
+            on_dispatch = function()
+              if phase == "dispatch" then error("synthetic transport failure", 0) end
+            end,
+          })
         end
         return connection:close()
       end)

@@ -261,7 +261,7 @@ describe("neoagent shared sandbox contract", function()
   end
 
   ---@param selected_tools Neoagent.Tool<Neoagent.TestNativeEnvironment>[]
-  ---@param profile_callback? fun(default: Neoagent.SandboxProfile, ctx: Neoagent.ToolContext<Neoagent.TestNativeEnvironment>): Neoagent.SandboxProfile
+  ---@param profile_callback? fun(default: Neoagent.SandboxProfile, ctx: Neoagent.SandboxContext<Neoagent.TestNativeEnvironment>): Neoagent.SandboxProfile
   ---@return Neoagent.SandboxComposition<Neoagent.TestNativeEnvironment>
   local function sandboxed_config(selected_tools, profile_callback)
     local toolset = composition.compose({ tools = selected_tools }, {
@@ -575,14 +575,14 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.01)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local child
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local lease
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          lease = assert(platform).create_worker(request, services)
           return lease
         end,
       })
@@ -647,14 +647,14 @@ describe("neoagent shared sandbox contract", function()
         "    time.sleep(0.05)",
       }, "\n")
       local shell = require("neoagent.tools.shell").new({ default_timeout = false })
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local child
-      ---@type Neoagent.WorkerLease?
+      ---@type Neoagent.WorkerOwner?
       local lease
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          lease = assert(platform).create_worker(request, services)
           return lease
         end,
       })
@@ -721,8 +721,8 @@ describe("neoagent shared sandbox contract", function()
       local leases = {}
       ---@type Neoagent.SandboxPlatform<unknown>
       local selected_platform = vim.tbl_extend("force", assert(platform), {
-        start_worker = function(request, services)
-          local lease = assert(platform).start_worker(request, services)
+        create_worker = function(request, services)
+          local lease = assert(platform).create_worker(request, services)
           leases[#leases + 1] = lease
           return lease
         end,
@@ -772,6 +772,19 @@ describe("neoagent shared sandbox contract", function()
       end
       assert.is_true(checked, tostring(failure))
     end)
+
+  sandbox_test("passes native environment names through sandbox admission", function()
+    local active_profile = profile(composition.default_profile({ context = context }))
+    active_profile.environment.set["tool.option"] = "native-value"
+    local value = wait(async.run(function()
+      return require("tests.helpers.sandbox").execute({ "env" }, {
+        profile = active_profile, cwd = workspace, env = active_profile.environment.set,
+        timeout_ms = 5000,
+      })
+    end), 15000)
+    assert.are.equal(0, value.code, value.stderr)
+    assert.matches("tool.option=native-value", value.stdout, 1, true)
+  end)
 
   macos_sandbox_test("keeps the native lease alive after closing worker stdin", function()
     local active_profile = profile(composition.default_profile({ context = context }))

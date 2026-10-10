@@ -12,6 +12,7 @@ describe("Windows PTY native ownership", function()
     pipe_allocation = "releases native descriptors when stream allocation fails",
     observation = "retains ownership after native liveness observation fails",
     exit_status = "retains ownership when native exit status is unavailable",
+    exit_status_persistent = "releases a terminated process even when its exit status stays unavailable",
     queue_failure = "reports rejected resize work and still releases the console",
     close_failure = "retries failed console release after reporting its operation failure",
   }) do
@@ -40,6 +41,7 @@ describe("Windows PTY native ownership", function()
         pipe_allocation = 0,
         observation = 1,
         exit_status = 1,
+        exit_status_persistent = 1,
         queue_failure = 1,
         close_failure = 2,
         environment = 1,
@@ -134,6 +136,9 @@ describe("Windows PTY native ownership", function()
                 return 0
               end,
               GetExitCodeProcess = function(_, result)
+                if inject_failure and scenario == "exit_status_persistent" then
+                  return 0
+                end
                 if inject_failure and scenario == "exit_status" then
                   inject_failure = false
                   return 0
@@ -177,8 +182,9 @@ describe("Windows PTY native ownership", function()
             return check_strings and "program\237\160\128.exe" or "unused"
           end,
         }
-        trees.new = function()
+        trees.new = function(options)
           return original_tree({
+            callbacks = options.callbacks,
             backend = {
               create = function()
                 return native.cast("void *", 4)
@@ -199,6 +205,9 @@ describe("Windows PTY native ownership", function()
               terminate = function()
                 stopped = true
                 return true
+              end,
+              empty = function()
+                return stopped
               end,
               close = function() end,
             },
@@ -264,9 +273,9 @@ describe("Windows PTY native ownership", function()
           return
         end
         handle = owner:spawn(selected)
-        if scenario == "observation" or scenario == "exit_status" then
+        if scenario == "observation" or scenario == "exit_status" or scenario == "exit_status_persistent" then
           inject_failure = true
-          stopped = scenario == "exit_status"
+          stopped = scenario ~= "observation"
           assert(vim.wait(1000, function()
             return handle:state().failure ~= nil
           end, 5))
@@ -336,13 +345,23 @@ describe("Windows PTY native ownership", function()
         assert.is_false(owner:is_settled())
       end)
       owner:close("test finished")
-      local settled = vim.wait(4000, function()
+      local function deliver_work()
         local callbacks = pending
         pending = {}
         for _, finish in ipairs(callbacks) do
           finish()
         end
-        return owner:is_settled()
+      end
+      local released = vim.wait(4000, function()
+        deliver_work()
+        return owner:is_released()
+      end, 5)
+      -- Permit recovery during teardown against an implementation that keeps
+      -- retrying status instead of releasing its already-terminated child.
+      inject_failure = false
+      local settled = vim.wait(4000, function()
+        deliver_work()
+        return owner:is_settled() and owner:is_released()
       end, 5)
       package.loaded.ffi, package.loaded[module], package.loaded[executable] =
         original_ffi, original_module, original_executable
@@ -353,10 +372,16 @@ describe("Windows PTY native ownership", function()
         restore_queue()
       end
       assert.is_true(settled, "native console work did not finish")
+      assert.is_true(released, "observed native termination did not release resources while status reads failed")
       assert.is_true(helper.complete(function()
         return owner:wait(2000)
       end))
       assert.is_true(ok, vim.inspect(failure))
+      if scenario == "exit_status_persistent" then
+        local state = assert(handle):state()
+        assert.is_nil(state.terminal, "status-read failure must not invent an exit status")
+        assert.matches("exit status", assert(state.failure).message, 1, true)
+      end
       assert.are.equal(expected_completed, completed, "cleanup must close the console after pending work")
     end)
   end

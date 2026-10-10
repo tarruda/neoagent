@@ -1,266 +1,133 @@
 # Neoagent contributor guide
 
 Read [architecture.md](architecture.md) before changing ownership or data flow.
-Update this guide when the development workflow or a hard invariant changes.
+This guide covers contributor constraints and workflow; keep subsystem contracts
+in architecture and implementation details in code.
 
-## Design rules
+## Development rules
 
 - Use plain Lua tables, functions, and constructors with explicit dependencies.
-  Add abstractions only for concrete shipped use cases. Fix problems at their
-  ownership boundary, including cohesive refactors when they simplify it.
-- Keep the LLM API and Agent Loop reusable without configuration, Sessions,
-  storage, Workspace, bundled tools, Agents, or UI.
+  Add abstractions for concrete uses. Prefer a cohesive refactor to patches that
+  preserve a flawed ownership boundary.
+- Preserve the dependency boundaries in architecture. Keep execution policy in
+  the composition and effects in the component that owns them.
+- Establish resource ownership before asynchronous work. Cancellation must not
+  abandon cleanup or its diagnostic recipient. Use predicate-based, bounded
+  waits and prevent stale callbacks from changing newer state.
 - Keep test injection internal. Public extension points need a shipped
   composition or concrete integration, not just a test double.
-- Before the project has users, maintain one configuration and data shape. Remove
-  superseded formats. Add versions, negotiation, or migrations only for
-  independently released components or existing user data. Exact markers for
-  safe storage validation and separate runtime processes are allowed.
-- Put approval, logging, sandbox delegation, and other execution policy in
-  `execute_tool(tool, arguments, ctx)`; the core has no permission policy.
-- Keep bundled effects in their Tool modules with explicit dependencies.
-  Tools do not select their execution location. Parent-only Tools stay out
-  of RPC.
-- Keep the local subprocess API independent of sandboxing, RPC, Tools, and UI.
-  Process supervision uses Neovim/libuv and the native process helpers; it
-  does not introduce an interpreter or a per-target worker process.
-  Retained spawning requires an explicit scope that owns failed-start cleanup.
-  WorkerLeases share native pipe ownership with local handles. Failed native
-  worker startup returns its lease; readiness and cleanup remain independently
-  observable. Driver state observation must not wait for process or I/O completion.
-  Native PTYs share bounded stream ownership with pipes. The macOS fork child
-  must only perform prepared native setup and exec or _exit; it must never
-  return to editor execution or run inherited hooks or finalizers.
-- Keep Tool worker dependencies free of Agent, Session, provider,
-  authentication, Applet, and UI modules.
-- Support metered and subscription access when the provider documents a
-  third-party integration surface for that mode.
-- Runtime code has no Lua plugin dependencies. Resolve executables and test
-  dependencies through `PATH`, Make/environment variables, or repo-relative
-  paths. Keep machine-specific overrides in gitignored `local.mk`.
+- Maintain one configuration and data shape. Remove superseded formats; add
+  migrations or negotiation only for existing user data or independently
+  released components. Exact storage and process protocol markers are allowed.
+- Runtime code has no Lua plugin dependencies. Resolve executables through
+  `PATH`, Make/environment variables, or repo-relative paths. Put machine
+  overrides in gitignored `local.mk`.
+- Support metered and subscription access where a provider documents a
+  third-party integration surface.
+- Work in this canonical checkout. Editing or deploying copied installations
+  requires an explicit request. Preserve unrelated changes and local config.
+- Keep generated `.deps/`, `.coverage/`, `.test-data/`, and `.nvimlog` artifacts
+  out of commits. Use `TODO.md` for multi-step tracking when requested.
 
-## Invariants
-
-Architecture is the canonical ownership reference. Changes must preserve:
-
-- Complete, validated dependencies for Models and the Agent Loop; message
-  commits precede dependent work, including provider recovery prompts. Request
-  accounting acknowledges only the final validated preparation before inference;
-  credential refresh cannot authorize unbudgeted request content.
-- Cancellation through Models, tools, child Runs, provider leases, and
-  deferred destruction; completion and disposal once; stale callbacks unable
-  to mutate newer state. Detached cleanup retains a diagnostic recipient after
-  Run completion.
-- Tool-free Sessions and fixed Profile, Workspace, and Session identity per
-  Agent, with one independent activity lifecycle.
-- Local compaction never replaces encrypted native context. Native checkpoints
-  retain selected user messages before the encrypted item and omit consumed
-  assistant and Tool history from later requests. Native transcript projection
-  keeps the complete journal path. Local checkpoints may consume an oversized
-  completed exchange without retaining a suffix. Checkpoint candidates pass
-  Session projection validation and Model request budgeting before the Agent
-  publishes them against the unchanged source leaf.
-- Explicit runtime sharing and coordination at the Service or Authentication
-  boundary; request shaping receives copied request identity from the owning
-  composition, and shared provider operations receive no Agent state.
-- Resolved Model estimation, inference, and native compaction acquire shared
-  Service leases before Authentication, independently of attachment support.
-  Request-scoped file preparation uses independent shared Service leases and
-  content-key coordination. Credential changes and mutating management remain
-  exclusive. Sessions retain image bytes; remote references stay in request
-  copies and the separate provider cache.
-- Copied semantic state for Views, content Trees from Renderers, Pane-owned
-  interaction, Applet-owned native surfaces, and transactional publication.
-  Headless Agents do not load UI modules.
-- Verified regular-file replacement for bundled file tools.
-- Restricted Tool execution blocked when requested sandbox activation
-  fails, without host fallback. Explicitly granted parent Tools remain
-  available independently of sandbox activation. Finite invocation deadlines
-  remain enforceable outside restricted workers.
-- Worker and runtime bootstrap dependencies never weaken explicit filesystem
-  denials; conflicting profiles block the invocation before Tool execution.
-- Private atomic credential storage; credentials excluded from provider state
-  and diagnostics; HTTP and conversation bodies excluded from provider
-  diagnostics. Persistence uncertainty blocks later Store mutations.
-- HTTP recording cannot change provider results. It masks protocol credentials
-  and Authentication-classified response bodies, preserves ordinary bodies,
-  and never writes sensitive response content to temporary storage.
-
-## Repository and documentation
-
-- Work in this canonical checkout. Deployment or edits to copied
-  installations require an explicit request.
-- Preserve unrelated changes and generated local configuration.
-- Track multi-step implementation in `TODO.md` when requested.
-- Keep generated artifacts out of source changes: `.deps/`, `.coverage/`,
-  `.test-data/`, and `.nvimlog`.
-
-Each document has one job:
+## Documentation
 
 | Document | Purpose |
 | --- | --- |
-| `README.md` | Project introduction and concise setup |
-| `doc/neoagent.txt` | Configuration, behavior, and APIs needed to use or extend Neoagent |
-| `doc/applet.txt` | Applet package usage and API contracts |
-| `architecture.md` | Stable ownership, lifecycle, and data flow needed to reason about system boundaries |
-| `AGENTS.md` | Contributor constraints and development workflow |
+| `README.md` | Introduction and quick setup |
+| `doc/neoagent.txt` | User behavior, configuration, and Lua APIs |
+| `doc/applet.txt` | Applet usage and API contracts |
+| `architecture.md` | System boundaries, ownership, and data flow |
+| `AGENTS.md` | Contributor constraints and workflow |
+| `tests/recordings/README.md` | Provider reproduction and replay fixtures |
 
-Update docs when guidance is wrong or readers need missing information.
-Code changes alone do not require documentation changes. Keep implementation
-mechanics in code and regression scenarios in tests. Architecture documents
-ownership and system-wide contracts; user and API docs explain what readers
-can do and rely on. This guide covers workflow and contributor constraints.
+Update the canonical explanation when a contract changes. Do not append a
+narrative for each fix or repeat implementation details across documents.
+Keep algorithms and local sequencing in code, regression scenarios in tests,
+and examples short and copyable. Code changes alone do not require doc changes.
 
-Revise the canonical explanation rather than appending a note for each fix.
-Remove obsolete or duplicate guidance. Keep copyable examples and use real
-provider/model names where helpful. Omit inventories available in the UI,
-incidental styling, test mechanics, and narratives of fixed bugs or discarded
-alternatives. Repeat facts only when needed to make a section usable on its
-own; otherwise link. Use direct language; negative wording is appropriate for
-guarantees, prohibitions, and errors.
+## Setup and checks
 
-## Dependencies and tests
-
-Minimum: Neovim 0.10, curl 7.76, `rg`, `fd`, Python 3, Git, and Make.
-Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
-`make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
-Coverage also requires a C compiler (`CC`, or `cc`) for CLuaCov on Linux or
-macOS; `make coverage-deps` installs it. Windows collection uses LuaCov alone.
-The test bootstrap also instruments libuv worker Lua states and records their
-actual execution in separate per-thread counter files.
-`yq` remains optional for runtime recording; JSON recording needs no `yq`.
-The large inline-image integration regressions require ImageMagick's `magick`
-on `PATH`; they are skipped when it is unavailable. Native macOS CI installs
-ImageMagick and runs them; the default image budget is also tested without it.
-
-`make typecheck-deps` installs pinned EmmyLua checker/language-server binaries
-and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck`
-for static checking; it needs no network or running Neovim after setup. CI runs
-the same target. `EMMYLUA_CHECK` in `local.mk` can override the checker executable.
-Editors can use `.deps/emmylua/bin/emmylua_ls` with `.emmyrc.json`.
-
-Every repository Lua file is checked, including tests, helpers, platform code,
-and development scripts. New files are checked by default. All configured
-warning/error diagnostics fail the gate; the full report is written to
-`.test-data/typecheck/diagnostics.json`. Keep type contracts at their ownership
-boundary, preserve runtime validation, and fix inaccurate contracts rather
-than spreading `any`, casts, or diagnostic suppressions.
-Redundant-condition diagnostics remain hints because typed entrypoints still
-validate callers at runtime.
-
-Typed tests import their assertions with `local assert = require("luassert")`.
-Production keeps Lua's standard `assert` contract. Type existing behavioral
-tests without adding tests of annotations or of the third-party checker itself.
-
-`NVIM` defaults to `nvim` and `PLENARY_DIR` to `.deps/plenary.nvim`.
-Copy `local.mk.example` to `local.mk` for machine-specific executable,
-dependency, and `PATH` overrides.
-
-Use the narrowest relevant suite during iteration:
+Development requires Neovim 0.10+, curl 7.76+, `rg`, `fd`, Python 3, Git, Make,
+and Mike Farah `yq` v4. Image conversion regressions also need ImageMagick's
+`magick`; native macOS CI runs them. Install pinned test and checker dependencies:
 
 ```sh
-make test-unit
-make test-integration
-make test-ui
-make test
+make deps
+make typecheck-deps
 ```
 
-`make lint` checks shipped Lua statement layout with Neovim's bundled Lua
-parser. Statements, including compound bodies, occupy separate lines from
-surrounding code. LuaCov counts lines, so inline bodies can hide unexecuted
-statements. Comments, string contents, and empty function bodies are allowed.
-`make test` and CI run this check. StyLua 2.5.2 with `.stylua.toml` produces
-the required layout; use `--verify` when reformatting shipped Lua.
+Copy `local.mk.example` to `local.mk` for overrides such as `NVIM`,
+`PLENARY_DIR`, `EMMYLUA_CHECK`, and `PATH`. The defaults use `nvim` from `PATH`
+and dependencies under `.deps/`.
 
-`make test` (also `make test-fast`) runs all three suites without coverage or
-terminal images. Integration tests replay HTTP recordings through the real
-HTTP decoder and use in-memory browser callback connections, so they need no
-network access. UI tests inspect isolated headless Neovim children.
-`make test-http-live` runs the small localhost curl/callback suite;
-`make test-native-sandbox` runs native enforcement tests and requires working
-platform isolation. Neither is part of `make test`.
-Windows CI also runs portable core, API, and storage tests alongside its
-native platform suite.
+| Command | Checks |
+| --- | --- |
+| `make test-unit` | Unit behavior |
+| `make test-integration` | HTTP replay and composition, without network access |
+| `make test-ui` | UI behavior in isolated Neovim children |
+| `make test` | All three suites and Lua layout lint |
+| `make typecheck` | Every repository Lua file, including tests and scripts |
+| `make test-http-live` | Localhost curl and callback transport |
+| `make test-native-sandbox` | Native sandbox enforcement on the current host |
+| `make test-windows` | Native Windows behavior |
 
-`make benchmark-applet` checks container update budgets.
-`make benchmark-transcript` measures streaming latency and memory use.
-`make benchmark-submission` measures Session resume and prompt submission.
-`make benchmark-compaction` measures local planning across long suffix searches.
-Run benchmarks separately from other suites for useful timings. Linux stable
-CI runs all four targets once; any failed budget check fails CI.
+Use the narrowest relevant suite during iteration. Run suites sequentially;
+they share test state. Before completing code changes, run relevant suites and
+`make test`; run `make typecheck` for Lua or checker changes. Check platform
+behavior on its actual host and keep health checks accurate. For documentation
+only, verify examples, links, help tags, and `git diff --check`.
 
-Coverage and terminal-image tests run in CI. Run `make coverage` or
-`make test-terminal-images` locally only when the user requests those checks.
-An explicit request to improve coverage authorizes coverage runs.
-Terminal-image CI uses Kitty and Konsole under Xvfb, including selected tmux
-paths; local runs skip missing terminal dependencies.
+`make lint` requires Lua statements and compound bodies on separate lines so
+line coverage cannot hide unexecuted statements. StyLua 2.5.2 with
+`.stylua.toml` produces this layout; use `--verify` when reformatting.
 
-For every bug report, add a focused behavioral regression and verify that it
+Fix type contracts at their owner. Preserve runtime validation; do not spread
+`any`, casts, or diagnostic suppressions to pass the checker. Its report is
+`.test-data/typecheck/diagnostics.json`. Typed tests use
+`local assert = require("luassert")`; production uses Lua's standard assertion.
+
+For bug fixes, first add a focused behavioral regression and verify that it
 fails against the unmodified implementation for the reported reason. Then
-implement the fix and verify the same test passes.
+verify it passes with the fix. Test product behavior, not test helpers,
+fixtures, annotations, or third-party infrastructure. Do not weaken validation,
+cancellation, or coverage collection to pass tests. Restore injected
+dependencies and clean up processes, timers, files, buffers, and windows.
 
-Tests must exercise product behavior or protect a concrete regression. Do not
-test test-only helpers, fixtures, mock servers, runners, or coverage
-infrastructure, or add module-loading assertions already implied by behavior.
-Do not weaken validation, cancellation, or coverage collection to pass tests.
+Run benchmarks separately from suites for useful timings:
+`make benchmark-applet`, `make benchmark-transcript`,
+`make benchmark-submission`, and `make benchmark-compaction`. CI enforces
+their budgets.
 
-All waits must be predicate-based and bounded. Teardown must clean up
-processes, timers, temporary directories, buffers, and windows.
+## Coverage
 
-Before completion:
+CI requires zero missed shipped Lua lines, including every file under
+`lua/applet/`, `lua/neoagent/`, and `plugin/`. The authoritative report merges
+Linux, macOS, and Windows execution. The sole approved exception is marked in
+[fork_exec.lua](lua/neoagent/subprocess/fork_exec.lua); preserve its native
+behavioral tests. Do not expand exclusions to pass the gate.
 
-- Run the relevant fast suites and `make test`; keep health behavior valid.
-- Run `make typecheck` when changing Lua code or type-check configuration.
-- Check documentation against the reader needs above; edit only where needed.
-- Require 100% shipped Lua line coverage, with zero missed lines rather
-  than a rounded percentage. The sole exception is the marked hook-free
-  critical section and child routine in `subprocess/fork_exec.lua`: macOS
-  fork/exec suspends Lua hooks there, so LuaCov cannot observe execution.
-  Keep the native macOS startup, failure, cancellation, and cleanup regressions;
-  their behavior remains required even though these lines have no counters.
-  Code before hook suspension and after restoration remains in the line gate.
-  Every file under `lua/applet/`, `lua/neoagent/`,
-  and `plugin/` must appear, including files normal tests do not load.
-  CI merges native Linux, macOS, and Windows counters before enforcing the
-  requirement; run platform-specific tests on their actual host.
-  CI also enforces terminal-image behavior.
+Run coverage and `make test-terminal-images` locally only when requested.
+A request to improve coverage authorizes coverage runs. CI runs both.
+Linux and macOS coverage need a C compiler (`CC`, or `cc`);
+`make coverage-deps` installs CLuaCov. Windows uses LuaCov.
 
-### Improving coverage
+When improving coverage:
 
-1. Run `make coverage` for a fresh local baseline. It clears `.coverage/`,
-   records source hashes, runs the instrumented unit, replay integration and
-   UI suites, generates the LuaCov report, and checks for missed lines.
-   A threshold failure leaves the report available; resolve test failures
-   before using it. `make coverage-ci` additionally runs live HTTP and native
-   sandbox tests. A single host's report can still miss foreign-platform
-   behavior; the authoritative gate uses the union of all three native hosts.
-2. Read `.coverage/luacov.report.out`: its final summary lists hits and misses
-   per file; annotated source marks missed lines with `***0` (the number of
-   asterisks varies). Find them with:
-
-   ```sh
-   rg -n '\*+0' .coverage/luacov.report.out
-   ```
-
-   These are report line numbers; locate the corresponding source. Choose
-   uncovered behavior worth protecting, such as failure recovery or
-   cancellation, and assert its observable outcome. Keep injection internal
-   and restore patched dependencies during cleanup. Prefer replay integration
-   and real native platform tests to simulated environments.
-3. Iterate with the relevant suite. For example, after a fresh baseline:
+1. Run `make coverage` for a fresh baseline. Resolve test failures before using
+   `.coverage/luacov.report.out`; find missed lines with
+   `rg -n '\*+0' .coverage/luacov.report.out`.
+2. Add behavioral coverage for the missing paths. Prefer real native execution
+   over simulating another platform. With only test changes, accumulate runs:
 
    ```sh
    NEOAGENT_COVERAGE=1 make test-integration
    make coverage-report coverage-check
    ```
 
-   Runs can accumulate when only tests change. Shipped-source changes require
-   a fresh collection; source hashes prevent using stale counters.
-   Run suites sequentially because they share other test state.
-4. Finish with `make test` and a fresh `make coverage`. CI uses
-   `make coverage-collect` on Linux and macOS, and the native and portable
-   Windows suites with LuaCov enabled. Each exports `.coverage/collection.json`.
-   To reproduce the matrix report from downloaded collections:
+   Shipped-source changes require fresh collection. Finish with `make test`
+   and a fresh `make coverage`.
+3. CI collects all three native platforms; `make coverage-collect` covers Linux
+   and macOS. Reproduce the combined report from downloaded artifacts:
 
    ```sh
    python3 scripts/coverage.py merge .coverage/native/*/collection.json \
@@ -268,32 +135,19 @@ Before completion:
    make coverage-render coverage-check
    ```
 
-   Merging requires identical shipped sources and a complete file inventory.
-   A foreign platform is never excluded to pass the gate.
+   Sources must match and every shipped file must be present. Do not exclude
+   foreign-platform code to make a local report pass.
 
-## Reproducing provider issues
+## Reproducing issues
 
-Look for the user's relevant recordings under `~/.local/state/nvim/neoagent`
-(or their configured recording directory) before inventing provider responses.
-If evidence is missing, ask them to enable recording, restart and
-reproduce the interaction. Start with default rolling retention; use
-`retention = "all"` only when the last exchange cannot explain the issue.
-Inspect metadata first and read only the content needed to understand the
-failure. Originals remain unchanged local evidence. Reproduction inputs,
-fixtures, assertions, and docs must use synthetic conversation content,
-attachments, metadata, and credentials; trimming or masking alone is
-insufficient. Keep real Authentication and HTTP decoding in the regression.
-Do not invoke a live API merely to create test data.
+For provider issues, inspect relevant recordings under
+`~/.local/state/nvim/neoagent` before inventing responses. Follow the
+[recording workflow](tests/recordings/README.md): inspect metadata first,
+preserve originals, and use wholly synthetic content in regression fixtures.
+Do not call live APIs merely to create test data.
 
-See [HTTP regression recordings](tests/recordings/README.md) for the capture,
-validation and promotion workflow, scenario matching/dependencies, and the
-provider/API inventory with missing real captures. Run regression scenarios
-with `make test-integration`; curl parsing belongs in `make test-http-live`.
-
-## Interactive UI debugging
-
-Use a disposable tmux session for visual behavior that needs a real terminal.
-Start from this checkout with it prepended to `runtimepath`:
+For real-terminal UI debugging, use a disposable tmux session with this checkout
+first on `runtimepath`:
 
 ```sh
 tmux new-session -d -s neoagent-debug -c "$PWD" \
@@ -304,25 +158,18 @@ tmux attach-session -t neoagent-debug
 tmux kill-session -t neoagent-debug
 ```
 
-Use `nvim` from `PATH` or the machine's `NVIM` override in `local.mk`.
-The normal user config loads intentionally; use a disposable config when
-isolation is required. `-n -i NONE` avoids swap and ShaDa side effects.
-
-Send prompt text with `tmux send-keys -l`, then send control keys separately.
-The default submit key is Enter. Do not submit to a metered or external Model
-without explicit user authorization. Capture both streaming and completed
-states, retaining ANSI escapes (`capture-pane -e`) when inspecting colors.
-Always close the disposable session.
+Use the configured `NVIM` executable when applicable. This loads the user's
+config; use a disposable config when isolation is needed. Send text with
+`tmux send-keys -l`, then control keys separately. Capture streaming and final
+states with ANSI colors. Always close the session. Do not submit to an external
+or metered Model without explicit user authorization.
 
 ## Commits
 
-Use Conventional Commit subjects: `<type>(<scope>): <summary>`. Omit scope
-when there is no single subsystem. Choose the direct type: `feat`, `fix`,
-`test`, `docs`, `refactor`, or `chore`. Use an imperative, lowercase summary
-with no final period; proper names retain capitalization.
+Use Conventional Commit subjects: `<type>(<scope>): <summary>`. Choose `feat`,
+`fix`, `test`, `docs`, `refactor`, or `chore`; omit scope when none fits. Use an
+imperative, lowercase summary without a final period; retain proper-name case.
 
-For non-trivial commits, follow the subject with a blank line, a concise
-paragraph explaining the change's structure, another blank line, and bullets
-describing behavior and coverage. Start bullets with imperative verbs, end
-them with periods, and wrap every body line at 72 columns. Keep commits
-focused and describe only staged changes.
+For non-trivial changes, add a concise paragraph and bullets describing behavior
+and validation. Start bullets with imperative verbs, end them with periods,
+and wrap body lines at 72 columns. Keep commits focused on their staged changes.

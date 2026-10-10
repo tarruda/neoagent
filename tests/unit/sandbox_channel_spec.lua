@@ -32,8 +32,8 @@ describe("sandbox channel failure ordering", function()
       local platform = {
         name = "test",
         ---@param request Neoagent.SandboxWorkerRequest
-        start_worker = function(request)
-          local relay = failure == "native protocol" and require("neoagent.sandbox.relay_lease").new({
+        create_worker = function(request)
+          local relay = failure == "native protocol" and require("neoagent.sandbox.relay_lease").new({ start = function() end,
             on_stdout = request.on_stdout,
             on_exit = request.on_exit,
             on_failure = request.on_failure,
@@ -76,6 +76,10 @@ describe("sandbox channel failure ordering", function()
           end
           ---@type Neoagent.WorkerLease
           local base = {
+            start = function() end,
+            wait_ready = function() return true end,
+            is_released = function() return result ~= nil end,
+            wait_release = function(self) self:wait() return true end,
             write = function(_, bytes) decoder:feed(bytes) return true end,
             close_stdin = function()
               vim.schedule(function()
@@ -102,14 +106,14 @@ describe("sandbox channel failure ordering", function()
           return lease
         end,
       }
-      local interceptor = require("neoagent.sandbox.interceptor").new({
+      local interceptor = require("neoagent.sandbox.interceptor").new(require("neoagent.sandbox.placement").new({
         platform = platform,
         profile = {
           id = "channel-order", filesystem = { default = "read", entries = { { path = root, access = "write" } } },
           network = "restricted", environment = { clear = true, inherit = {}, set = {} },
         },
         nvim = vim.env.NEOAGENT_NVIM,
-      })
+      }))
       local fake_model = require("tests.helpers.fake_model")
       local run = require("neoagent.agent_loop").run({
         model = fake_model.new({

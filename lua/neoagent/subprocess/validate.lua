@@ -87,7 +87,7 @@ end
 ---@class Neoagent.ValidatedSubprocessSpec: Neoagent.SubprocessSpec
 ---@field kill_grace_ms integer
 
----@param value Neoagent.SubprocessSpec
+---@param value unknown
 ---@return Neoagent.ValidatedSubprocessSpec
 function M.spec(value)
   M.fields(
@@ -140,6 +140,7 @@ function M.spec(value)
     value.kill_grace_ms == nil or M.integer(value.kill_grace_ms, 0, 60000),
     "Process kill grace must be an integer from 0 to 60000"
   )
+  ---@cast value Neoagent.SubprocessSpec
   local result = util.copy(value)
   result.kill_grace_ms = result.kill_grace_ms or M.KILL_GRACE_MS
   return result
