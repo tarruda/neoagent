@@ -7,6 +7,7 @@
 ---@field workspace Neoagent.Workspace
 ---@field session_id table
 ---@field toolset Neoagent.AgentToolset
+---@field process_sessions Neoagent.ProcessSessions
 ---@field applet? Neoagent.AgentApplet
 ---@field dialogs Neoagent.Dialogs
 ---@field workspace_settings? Neoagent.WorkspaceSettings
@@ -130,6 +131,7 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field result? Neoagent.AgentCompletion
 
 ---@class Neoagent.AgentRuntimeOptions
+---@field process_sessions? Neoagent.ProcessSessionsOptions
 ---@field workspace_trust? Neoagent.WorkspaceTrust
 ---@field runtimes? Neoagent.ProviderRuntimes
 ---@field destroy_runtimes? fun()
@@ -438,6 +440,9 @@ function M.from_config(options, runtime)
     last_activity = nil,
     run_id = 0,
     destroyed = false,
+    process_sessions = require("neoagent.process_sessions").new(runtime.process_sessions, function(err)
+      notify("Retained process cleanup failed: " .. util.safe_message(err.message), vim.log.levels.ERROR)
+    end),
     pending_warning = options._sandbox_warning,
     toolset = {
       tools = tools,
@@ -1478,6 +1483,11 @@ function M.from_config(options, runtime)
   function agent:get_workspace()
     return state.workspace
   end
+  ---@return Neoagent.ProcessSessions
+  function agent:get_process_sessions()
+    assert(not state.destroyed, "Agent is destroyed")
+    return state.process_sessions
+  end
   ---@return Neoagent.Dialogs
   function agent:dialogs()
     return state.dialogs
@@ -1525,6 +1535,7 @@ function M.from_config(options, runtime)
       return
     end
     state.destroyed = true
+    state.process_sessions:close("Agent destroyed")
     local activity = state.activity
     if activity and activity.run then
       activity.run:cancel()

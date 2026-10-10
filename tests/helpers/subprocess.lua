@@ -24,6 +24,17 @@ function M.complete(fn, timeout)
   return M.wait(async.run(fn), timeout)
 end
 
+---@generic T
+---@param fn async fun(): T
+---@param timeout? integer
+---@return T
+function M.success(fn, timeout)
+  local result = M.complete(function()
+    return { value = fn() }
+  end, timeout)
+  return (assert(result.value, vim.inspect(result)))
+end
+
 ---@param command string
 ---@param options? {argv?: string[], cwd?: string, stdio?: Neoagent.SubprocessStdio, environment?: Neoagent.SubprocessEnvironment, timeout_ms?: integer, kill_grace_ms?: integer}
 ---@return Neoagent.SubprocessSpec

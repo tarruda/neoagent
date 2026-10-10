@@ -9,10 +9,13 @@ describe("Agent Applet boundaries", function()
   local applets
   ---@type Neoagent.Agent[]
   local agents
+  ---@type Neoagent.ProcessSessions[]
+  local process_owners
 
   before_each(function()
     applets = {}
     agents = {}
+    process_owners = {}
   end)
 
   after_each(function()
@@ -21,6 +24,11 @@ describe("Agent Applet boundaries", function()
     end
     for _, agent in ipairs(agents) do
       if not agent:is_destroyed() then agent:destroy() end
+    end
+    for _, owner in ipairs(process_owners) do
+      assert.is_true(require("tests.helpers.subprocess").complete(function()
+        return owner:wait_release(5000)
+      end))
     end
   end)
 
@@ -1441,6 +1449,83 @@ describe("Agent Applet boundaries", function()
     end)
     vim.notify = original_notify
     assert(ok, err)
+  end)
+
+  it("owns retained processes across activity and Applet lifetimes", function()
+    local helper = require("tests.helpers.subprocess")
+    local value = agent({ process_sessions = { capacity = 1 } })
+    local owner = value:get_process_sessions()
+    process_owners[#process_owners + 1] = owner
+    local argv = jit.os == "Windows" and { "python", "-u", "-c", "import sys; print(sys.stdin.readline(), end='')" }
+      or { "sh", "-c", "read line; printf '%s' \"$line\"" }
+    local admission = helper.success(function()
+      return owner:prepare({ argv = argv, cwd = assert(vim.uv.cwd()), stdio = { kind = "pipes", stdin = "open" } }, 0)
+    end)
+    local id = assert(admission.commit())
+    value:stop()
+    local presentation = applet({ agent = value, presenter = value:presenter(), dialogs = value:dialogs(), view = view_factory({}) })
+    presentation:close()
+    assert.are.equal(owner, value:get_process_sessions())
+    assert.are.equal(1, owner:status().reserved)
+    assert.is_false(owner:status().closed)
+    assert.are.equal("process_capacity", assert(helper.complete(function()
+      return owner:prepare({ argv = argv, cwd = assert(vim.uv.cwd()), stdio = { kind = "pipes" } }, 0)
+    end).error).code)
+    local response = helper.success(function()
+      return owner:interact(id, 1000, { kind = "write", data = "still-owned\n" })
+    end)
+    assert.matches("still-owned", response.text, 1, true)
+    local provisional = helper.success(function()
+      assert.is_true(owner:wait_release(5000))
+      return owner:prepare({ argv = argv, cwd = assert(vim.uv.cwd()), stdio = { kind = "pipes", stdin = "open" } }, 0)
+    end)
+    value:destroy()
+    assert.is_true(owner:status().closed)
+    assert.are.equal("process_disposed", helper.failure(provisional.commit).code)
+    assert.has_error(function() value:get_process_sessions() end)
+  end)
+
+  it("reports retained native cleanup failures after the Agent and its Presenter are destroyed", function()
+    local helper = require("tests.helpers.subprocess")
+    local value = agent()
+    local owner = value:get_process_sessions()
+    process_owners[#process_owners + 1] = owner
+    local messages = {}
+    local notify = vim.notify
+    vim.notify = function(message) messages[#messages + 1] = message end
+    local pipe = require("neoagent.subprocess.pipe")
+    local create = pipe.new
+    pipe.new = function(spec, environment, callbacks, limits)
+      local driver = create(spec, environment, callbacks, limits)
+      local dispose = driver.dispose
+      driver.dispose = function()
+        dispose()
+        error(util.error("process_cleanup", "synthetic native finalization failure"), 0)
+      end
+      return driver
+    end
+    ---@type Neoagent.ProcessAdmission?
+    local admission
+    local launched, launch_error = pcall(function()
+      admission = helper.success(function()
+        return owner:prepare(helper.spec("exec sleep 30", {
+          argv = jit.os == "Windows" and { "python", "-c", "import time; time.sleep(30)" } or nil,
+        }), 0)
+      end)
+    end)
+    pipe.new = create
+    local checked, err = pcall(function()
+      assert.is_true(launched, vim.inspect(launch_error))
+      assert(assert(admission).commit())
+      value:destroy()
+      assert.is_true(value:presenter().destroyed)
+      local cleanup = helper.complete(function() return owner:wait_cleanup(5000) end, 6000)
+      assert.are.equal("process_cleanup", assert(cleanup.error).code)
+      assert(vim.wait(1000, function() return #messages > 0 end, 5), "Agent cleanup had no diagnostic recipient")
+      assert.matches("Could not close process resources", table.concat(messages, "\n"), 1, true)
+    end)
+    vim.notify = notify
+    assert.is_true(checked, vim.inspect(err))
   end)
 
   it("owns headless presentation and dialog sources", function()
