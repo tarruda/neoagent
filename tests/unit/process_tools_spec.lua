@@ -633,6 +633,28 @@ describe("Codex process Tools", function()
       end)
     end
   else
+    for _, source in ipairs({ "shell", "flags", "option operand" }) do
+      it("enables Bash login mode with configured long options in " .. source, function()
+        local saved_shell, saved_flags = vim.o.shell, vim.o.shellcmdflag
+        vim.o.shell = source == "flags" and "bash" or "bash --noprofile"
+        vim.o.shellcmdflag = source == "flags" and "--noprofile -c" or "-c"
+        if source == "option operand" then
+          vim.o.shell = 'bash --rcfile "-l" --noprofile'
+        end
+        local ok, err = pcall(function()
+          local observed = details(call("exec_command", {
+            cmd = "if shopt -q login_shell; then printf LOGIN; else printf PLAIN; fi",
+            yield_time_ms = 5000,
+          }))
+          assert.are.equal("LOGIN", observed.output)
+        end)
+        vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
+        if not ok then
+          error(err, 0)
+        end
+      end)
+    end
+
     for _, source in ipairs({ "shell", "flags", "long option", "option operand" }) do
       it("disables configured login mode in " .. source, function()
         local saved_shell, saved_flags = vim.o.shell, vim.o.shellcmdflag

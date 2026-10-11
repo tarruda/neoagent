@@ -47,7 +47,8 @@ local function mode(argv, name, login, powershell)
   if powershell and not login then
     result[#result + 1] = "-NoProfile"
   elseif not powershell and login then
-    result[#result + 1] = "-l"
+    -- Bash recognizes long options only before single-character options.
+    result[#result + 1] = name == "bash" and "--login" or "-l"
   end
   local operand, ended = false, false
   for index = 2, #argv do
