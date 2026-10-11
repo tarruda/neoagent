@@ -11,16 +11,24 @@ local M = {}
 ---@field output_bytes? integer Defaults to 65536 per pending buffer and retained tail.
 
 ---@class Neoagent.ProcessSessionResult: Neoagent.ProcessCollection
----@field session_id? integer Provisional until admission.commit() succeeds.
+---@field session_id? string Provisional until admission.commit() succeeds; identifies this manager lifetime.
 ---@field text string Incremental UTF-8 text; binary/control bytes are escaped.
 
 ---@class Neoagent.ProcessAdmission
+---@field state fun(): Neoagent.ProcessControllerState Copied execution facts, including failed startup before publication.
 ---@field start async fun(wait_ms: integer): Neoagent.ProcessSessionResult Start once; return only copied process observations.
----@field commit fun(): integer? Call only after accepting publication of this result.
+---@field commit fun(accept_output?: boolean): string? Publish the reference; accept initial output unless explicitly false.
 ---@field abort fun(reason: string)
 
+---@class Neoagent.ProcessInteraction
+---@field state fun(): Neoagent.ProcessControllerState Copied current facts, independent of output acknowledgement.
+---@field collect async fun(wait_ms: integer, control?: Neoagent.ProcessControl): Neoagent.ProcessSessionResult
+---@field commit fun() Acknowledge output publication; controls have already taken effect.
+---@field abort fun() Preserve collected output for another observer without repeating controls.
+---@field metadata? Neoagent.JsonObject Copied admission metadata owned by the composition.
+
 ---@class Neoagent.ProcessReservation
----@field session_id integer Identifies ownership even before handoff or after forgetting.
+---@field session_id string Identifies ownership even before handoff or after forgetting.
 ---@field committed boolean
 ---@field discarded boolean
 ---@field done boolean Target cleanup observation has finished.
@@ -41,27 +49,31 @@ local M = {}
 ---@field cleanup_error? Neoagent.Error
 
 ---@class Neoagent.ProcessSessions
----@field reserve fun(self: Neoagent.ProcessSessions, spec: Neoagent.SubprocessSpec): Neoagent.ProcessAdmission Own publication synchronously before starting async work.
----@field interact async fun(self: Neoagent.ProcessSessions, id: integer, wait_ms: integer, control?: Neoagent.ProcessControl): Neoagent.ProcessSessionResult
----@field history fun(self: Neoagent.ProcessSessions, id: integer): Neoagent.SubprocessOutputEvent[]
----@field forget fun(self: Neoagent.ProcessSessions, id: integer)
+---@field reserve fun(self: Neoagent.ProcessSessions, spec: Neoagent.SubprocessSpec, factory?: Neoagent.ProcessControllerFactory, metadata?: Neoagent.JsonObject): Neoagent.ProcessAdmission Caller owns commit/abort; explicit admission authority overrides the default.
+---@field begin_interaction fun(self: Neoagent.ProcessSessions, id: string): Neoagent.ProcessInteraction Reserve output observation before asynchronous collection.
+---@field interact async fun(self: Neoagent.ProcessSessions, id: string, wait_ms: integer, control?: Neoagent.ProcessControl): Neoagent.ProcessSessionResult
+---@field history fun(self: Neoagent.ProcessSessions, id: string): Neoagent.SubprocessOutputEvent[]
+---@field forget fun(self: Neoagent.ProcessSessions, id: string)
 ---@field close fun(self: Neoagent.ProcessSessions, reason: string)
 ---@field status fun(self: Neoagent.ProcessSessions): Neoagent.ProcessSessionsStatus
 ---@field wait_cleanup async fun(self: Neoagent.ProcessSessions, timeout_ms: integer): true
 ---@field wait_release async fun(self: Neoagent.ProcessSessions, timeout_ms: integer): true
 
 ---@class Neoagent.ProcessSessionEntry
----@field id integer
+---@field id string
 ---@field controller? Neoagent.ProcessController
 ---@field constructing boolean
 ---@field started boolean
----@field text fun(events: Neoagent.SubprocessOutputEvent[], dropped: integer, done: boolean): string
+---@field text Neoagent.ProcessTextDecoder Accepted stream position.
+---@field preview? Neoagent.ProcessTextDecoder Stream position after the current observation.
 ---@field history Neoagent.ProcessOutputBuffer
 ---@field committed boolean
 ---@field discarded boolean
 ---@field busy boolean
+---@field pending Neoagent.ProcessOutputBuffer Unacknowledged bytes, independent of lifecycle observations.
+---@field dropped integer Native output discarded before entering the publication buffer.
+---@field metadata? Neoagent.JsonObject
 ---@field complete_order? integer
----@field remove_cancel? fun()
 ---@field dispose_attempted? boolean
 
 local function integer(value, minimum, maximum, label)
@@ -87,11 +99,16 @@ function M.new(options, on_cleanup, default_factory)
   local output_bytes =
     integer(options.output_bytes == nil and 65536 or options.output_bytes, 1, 262144, "Process output budget")
   local next_id, completion_order = 0, 0
+  local identity = (
+    assert(vim.uv.random(16)):gsub(".", function(byte)
+      return string.format("%02x", byte:byte())
+    end)
+  )
   local closed = false
   local notification = async.notification()
   ---@type Neoagent.Error?
   local cleanup_error
-  ---@type table<integer, Neoagent.ProcessSessionEntry>
+  ---@type table<string, Neoagent.ProcessSessionEntry>
   local entries = {}
 
   ---@param entry Neoagent.ProcessSessionEntry
@@ -216,10 +233,6 @@ function M.new(options, on_cleanup, default_factory)
   end
   local function abort(entry, reason)
     entry.discarded = true
-    if entry.remove_cancel then
-      entry.remove_cancel()
-      entry.remove_cancel = nil
-    end
     if entry.controller and not entry.dispose_attempted then
       entry.dispose_attempted = true
       local disposed, err = pcall(entry.controller.dispose, entry.controller, reason)
@@ -230,7 +243,9 @@ function M.new(options, on_cleanup, default_factory)
     changed()
   end
   local function lookup(id)
-    integer(id, 1, 9007199254740991, "Process session ID")
+    if type(id) ~= "string" or #id > 64 then
+      error(validate.error("process_validation", "Process session ID must be an opaque string"), 0)
+    end
     local entry = entries[id]
     if not entry or not entry.committed or entry.discarded then
       error(validate.error("process_session_missing", "Process session is unavailable"), 0)
@@ -239,37 +254,110 @@ function M.new(options, on_cleanup, default_factory)
   end
   ---@async
   local function collect(entry, wait_ms, control, until_exit)
-    integer(wait_ms, 0, 30000, "Process wait budget")
+    integer(wait_ms, 0, controls.MAX_WAIT_MS, "Process wait budget")
     local run = assert(async.current(), "Process interaction requires a managed Run")
     if run:is_cancelled() then
       error(async.cancelled_error, 0)
     end
     local controller = assert(entry.controller)
+    if control then
+      controller:control(controls.validate(control))
+    end
+    if run:is_cancelled() then
+      error(async.cancelled_error, 0)
+    end
+    -- Replayed bytes never freeze lifecycle facts. A fresh collection also
+    -- drains final output before publishing completion. Pending bytes make
+    -- this a non-waiting poll; they retain their original ordering and bound.
+    local result = controller:collect(entry.pending.empty() and entry.dropped == 0 and wait_ms or 0, until_exit)
+    if result.dropped_bytes > 0 then
+      -- Keep one contiguous surviving tail. An upstream gap also retires
+      -- older unpublished bytes, so UTF-8 cannot join across missing output.
+      local previous, lost = entry.pending.take()
+      entry.dropped = entry.dropped + lost
+      for _, event in ipairs(previous) do
+        entry.dropped = entry.dropped + #event.data
+      end
+    end
+    for _, event in ipairs(result.events) do
+      entry.history.append(event)
+      entry.pending.append(event)
+    end
+    entry.dropped = entry.dropped + result.dropped_bytes
+    local events, dropped = entry.pending.snapshot()
+    result.events, result.dropped_bytes = events, dropped + entry.dropped
+    local preview = entry.text.fork()
+    result.text = preview.decode(events, result.dropped_bytes, result.done)
+    result.session_id = entry.id
+    entry.preview = preview
+    return result
+  end
+  local function accept_output(entry)
+    entry.text = assert(entry.preview)
+    entry.preview = nil
+    entry.pending.take()
+    entry.dropped = 0
+  end
+  ---@param id string
+  ---@return Neoagent.ProcessInteraction
+  local function begin_interaction(id)
+    if closed then
+      error(validate.error("process_disposed", "Process sessions are closed"), 0)
+    end
+    local entry = lookup(id)
     if entry.busy then
       error(validate.error("process_session_busy", "Process session already has an interaction"), 0)
     end
     entry.busy = true
-    local ok, result = pcall(function()
-      if control then
-        controller:control(controls.validate(control))
+    local finished, used, collecting, observed = false, false, false, false
+    local function release_observer()
+      if finished and not collecting then
+        entry.busy = false
+        changed()
       end
-      if run:is_cancelled() then
-        error(async.cancelled_error, 0)
-      end
-      local result = controller:collect(wait_ms, until_exit)
-      for _, event in ipairs(result.events) do
-        entry.history.append(event)
-      end
-      result.text = entry.text(result.events, result.dropped_bytes, result.done)
-      result.session_id = entry.id
-      return result
-    end)
-    entry.busy = false
-    changed()
-    if not ok then
-      error(result, 0)
     end
-    return result
+    local function finish(accepted)
+      if finished then
+        return
+      end
+      finished = true
+      if accepted and observed then
+        accept_output(entry)
+      end
+      -- Aborting observation cannot let another collector race an in-flight
+      -- native read. Its bounded collection still owns output until return.
+      release_observer()
+    end
+    return {
+      metadata = util.copy(entry.metadata),
+      state = function()
+        return util.copy(state(entry))
+      end,
+      ---@async
+      collect = function(wait_ms, control)
+        if finished or used then
+          error(validate.error("process_validation", "Process interaction has already been used"), 0)
+        end
+        used, collecting = true, true
+        local ok, value = pcall(collect, entry, wait_ms, control)
+        collecting = false
+        release_observer()
+        if not ok then
+          error(value, 0)
+        end
+        if finished then
+          error(validate.error("process_disposed", "Process observation was abandoned"), 0)
+        end
+        observed = true
+        return value
+      end,
+      commit = function()
+        finish(true)
+      end,
+      abort = function()
+        finish(false)
+      end,
+    }
   end
   ---@async
   local function wait(timeout_ms, release)
@@ -298,14 +386,11 @@ function M.new(options, on_cleanup, default_factory)
     return true
   end
   return {
-    reserve = function(_, spec)
+    reserve = function(_, spec, factory, metadata)
+      assert(factory == nil or type(factory) == "function", "Process admission factory must be a function")
       spec = validate.spec(spec)
       if closed then
         error(validate.error("process_disposed", "Process sessions are closed"), 0)
-      end
-      local run = assert(async.current(), "Process admission requires a managed Run")
-      if run:is_cancelled() then
-        error(async.cancelled_error, 0)
       end
       if status().reserved >= capacity then
         error(validate.error("process_capacity", "Process session capacity is reserved"), 0)
@@ -313,7 +398,7 @@ function M.new(options, on_cleanup, default_factory)
       next_id = next_id + 1
       ---@type Neoagent.ProcessSessionEntry
       local entry = {
-        id = next_id,
+        id = identity .. ":" .. next_id,
         constructing = false,
         started = false,
         committed = false,
@@ -321,18 +406,21 @@ function M.new(options, on_cleanup, default_factory)
         busy = false,
         text = require("neoagent.process_sessions.text").new(),
         history = require("neoagent.process_sessions.buffer").new(output_bytes),
+        pending = require("neoagent.process_sessions.buffer").new(output_bytes),
+        dropped = 0,
+        metadata = util.copy(metadata),
       }
       entries[entry.id] = entry
-      entry.remove_cancel = run:on_cancel(function()
-        abort(entry, "Process admission cancelled before handoff")
-      end)
       ---@type Neoagent.ProcessSessionResult?
       local initial
       return {
+        state = function()
+          return util.copy(state(entry))
+        end,
         ---@async
         start = function(wait_ms)
           integer(wait_ms, 0, 30000, "Process wait budget")
-          if entry.discarded or closed or run:is_cancelled() then
+          if entry.discarded or closed then
             error(validate.error("process_disposed", "Process admission is no longer available"), 0)
           end
           if entry.started then
@@ -348,14 +436,19 @@ function M.new(options, on_cleanup, default_factory)
               -- The publication owner already holds this admission before
               -- placement or startup can yield. Only observations cross the
               -- producing Run's result-delivery boundary.
-              local controller = (default_factory or native.new)(spec, output_bytes, record_cleanup, function()
-                -- Native release can arrive from a fast callback and can
-                -- make a previously completed record eligible for eviction.
-                util.schedule(changed)
-              end)
+              local controller = (factory or default_factory or native.new)(
+                spec,
+                output_bytes,
+                record_cleanup,
+                function()
+                  -- Native release can arrive from a fast callback and can
+                  -- make a previously completed record eligible for eviction.
+                  util.schedule(changed)
+                end
+              )
               entry.controller = controller
               entry.constructing = false
-              if entry.discarded or closed or run:is_cancelled() or observer:is_cancelled() then
+              if entry.discarded or closed or observer:is_cancelled() then
                 error(validate.error("process_disposed", "Process admission was revoked during placement"), 0)
               end
               controller:start()
@@ -374,9 +467,9 @@ function M.new(options, on_cleanup, default_factory)
           else
             notification.notify()
           end
-          if not ok or run:is_cancelled() or observer:is_cancelled() then
+          if not ok or observer:is_cancelled() then
             abort(entry, "Process admission failed")
-            error((run:is_cancelled() or observer:is_cancelled()) and async.cancelled_error or result, 0)
+            error(observer:is_cancelled() and async.cancelled_error or result, 0)
           end
           if result.done then
             result.session_id = nil
@@ -384,17 +477,14 @@ function M.new(options, on_cleanup, default_factory)
           initial = result
           return util.copy(result)
         end,
-        commit = function()
-          if entry.discarded or closed or run:is_cancelled() then
+        commit = function(accepted_output)
+          assert(accepted_output == nil or type(accepted_output) == "boolean", "Output acceptance must be boolean")
+          if entry.discarded or closed then
             abort(entry, "Process handoff was revoked")
             error(validate.error("process_disposed", "Process admission is no longer available"), 0)
           end
           if not initial then
             error(validate.error("process_validation", "Process admission has not completed startup"), 0)
-          end
-          if entry.remove_cancel then
-            entry.remove_cancel()
-            entry.remove_cancel = nil
           end
           if not initial.session_id then
             abort(entry, "Completed process result accepted")
@@ -402,6 +492,9 @@ function M.new(options, on_cleanup, default_factory)
           end
           local published = not entry.committed
           entry.committed = true
+          if published and accepted_output ~= false then
+            accept_output(entry)
+          end
           prune(published and entry or nil)
           return entry.id
         end,
@@ -412,15 +505,22 @@ function M.new(options, on_cleanup, default_factory)
         end,
       }
     end,
+    begin_interaction = function(_, id)
+      return begin_interaction(id)
+    end,
     ---@async
     interact = function(_, id, wait_ms, control)
-      if closed then
-        error(validate.error("process_disposed", "Process sessions are closed"), 0)
+      local interaction = begin_interaction(id)
+      local ok, result = pcall(interaction.collect, wait_ms, control)
+      if not ok then
+        interaction.abort()
+        error(result, 0)
       end
-      return collect(lookup(id), wait_ms, control)
+      interaction.commit()
+      return result
     end,
     history = function(_, id)
-      return lookup(id).history.snapshot()
+      return (lookup(id).history.snapshot())
     end,
     forget = function(_, id)
       abort(lookup(id), "Process session forgotten")

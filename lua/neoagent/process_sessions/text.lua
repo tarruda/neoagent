@@ -38,10 +38,14 @@ local function split(value)
   return value, ""
 end
 
----@return fun(events: Neoagent.SubprocessOutputEvent[], dropped: integer, done: boolean): string
-function M.new()
-  local pending = { stdout = "", stderr = "", pty = "" }
-  return function(events, dropped, done)
+---@class Neoagent.ProcessTextDecoder
+---@field decode fun(events: Neoagent.SubprocessOutputEvent[], dropped: integer, done: boolean): string
+---@field fork fun(): Neoagent.ProcessTextDecoder Preview output without advancing the accepted stream position.
+
+---@param pending table<string, string>
+---@return Neoagent.ProcessTextDecoder
+local function decoder(pending)
+  local function decode(events, dropped, done)
     local parts = {}
     if dropped > 0 then
       -- Never join bytes across an output gap.
@@ -63,6 +67,17 @@ function M.new()
     end
     return table.concat(parts)
   end
+  return {
+    decode = decode,
+    fork = function()
+      return decoder(util.copy(pending))
+    end,
+  }
+end
+
+---@return Neoagent.ProcessTextDecoder
+function M.new()
+  return decoder({ stdout = "", stderr = "", pty = "" })
 end
 
 return M

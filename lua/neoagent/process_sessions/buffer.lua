@@ -3,7 +3,7 @@ local M = {}
 ---@class Neoagent.ProcessOutputBuffer
 ---@field append fun(event: Neoagent.SubprocessOutputEvent)
 ---@field take fun(): Neoagent.SubprocessOutputEvent[], integer
----@field snapshot fun(): Neoagent.SubprocessOutputEvent[]
+---@field snapshot fun(): Neoagent.SubprocessOutputEvent[], integer
 ---@field empty fun(): boolean
 
 -- Bound event overhead as well as bytes. Dropping old output never stops
@@ -43,7 +43,7 @@ function M.new(maximum)
       return current, lost
     end,
     snapshot = function()
-      return require("neoagent.util").copy(events)
+      return require("neoagent.util").copy(events), dropped
     end,
     empty = function()
       return #events == 0

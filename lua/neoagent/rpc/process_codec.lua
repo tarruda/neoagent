@@ -193,7 +193,7 @@ end
 ---@return integer, boolean
 function M.collect(value)
   object(value, { wait_ms = true, until_exit = true }, "Process collect")
-  integer(value.wait_ms, 30000)
+  integer(value.wait_ms, require("neoagent.process_sessions.control").MAX_WAIT_MS)
   assert(type(value.until_exit) == "boolean", "invalid process collection mode")
   return value.wait_ms, value.until_exit
 end

@@ -1,6 +1,7 @@
 local util = require("neoagent.util")
 local validate = require("neoagent.subprocess.validate")
 local M = {}
+M.MAX_WAIT_MS = 300000
 
 ---@class Neoagent.ProcessTargetState
 ---@field execution Neoagent.NativeExecution Native or RPC dispatch evidence; unknown is not proof of no execution.

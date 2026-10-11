@@ -1343,7 +1343,8 @@ constructor:
 
 Pending output and returned history each have this byte budget and a 128-event
 limit. Excess old bytes are discarded while reads continue. Results report
-`dropped_bytes` since the last collection. IDs and records are in memory only.
+`dropped_bytes` since the last accepted collection. IDs are opaque strings
+valid only within the current Agent lifetime; records are not persisted.
 
 Reserve an admission before asynchronous startup: >lua
 
@@ -1364,23 +1365,30 @@ Reserve an admission before asynchronous startup: >lua
     end
   end)
 <
-`reserve(spec)` is synchronous inside the publishing Run and returns the owner
-before placement or startup. `admission.start(wait_ms)` starts once and
-returns a copied observation. If the target completed, the result has no
-`session_id` and `commit()` returns nil; otherwise commit publishes the
-provisional ID.
+`reserve(spec, controller_factory?, metadata?)` is synchronous. The optional
+factory selects placement; copied metadata remains available on interactions.
+`admission.start(wait_ms)` starts once in a managed Run and returns a copied
+observation. `commit()` acknowledges output and publishes its `session_id`,
+or returns nil if startup reported completion.
+`commit(false)` publishes the ID while leaving initial output for the next poll.
 
-Commit or abort every reservation, including unstarted ones. Keep the
-admission with the publication owner when startup runs in a child Run.
-Cancellation of the publishing Run aborts it; normal Run completion does not.
-Future Tool integration must tie commit to durable result acceptance.
+Settle every reservation with `commit()` or `abort(reason)`. If `start()` fails
+or is cancelled, it aborts automatically. After startup returns, the publication
+owner must handle failed publication and cancellation; ending a Run does not
+settle the reservation. Tool authors use `ctx.on_result` in |neoagent-composition|.
 
-`interact(id, wait_ms[, control])` collects new output and optionally sends
-one control. Wait budgets are 0–30000 ms, separate from the target lifetime
-deadline. Polls wake on output or completion. Concurrent interactions raise
-`process_session_busy`. Cancelling a poll preserves the target and unread
-output; a later remote interaction waits for any outstanding acknowledgement.
-Cancellation does not shorten worker supervision deadlines.
+`begin_interaction(id)` reserves one async `collect(wait_ms, control?)`.
+Call `commit()` to acknowledge output or `abort()` to leave it for the next
+poll. Replay includes current lifecycle state without repeating controls.
+Admissions and interactions provide `state()` for copied observations without
+consuming output.
+
+`interact(id, wait_ms, control?)` collects and acknowledges output immediately.
+It can also send one control. Wait budgets are 0–300000 ms, separate from the
+target lifetime deadline. Polls wake on output or completion. Concurrent
+interactions raise `process_session_busy`. Cancelling a poll preserves the
+target and unread output; a later remote interaction waits for any outstanding
+acknowledgement. Cancellation does not shorten worker supervision deadlines.
 
 Controls are `write` with `data`, `close_stdin`, `resize` with `columns` and
 `rows`, `interrupt`, and `terminate` with `reason`, each in a table with
