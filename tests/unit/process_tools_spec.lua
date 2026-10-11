@@ -6,6 +6,7 @@ local helper = require("tests.helpers.subprocess")
 local util = require("neoagent.util")
 local tools = require("neoagent.tools.process")
 local pipe = require("neoagent.subprocess.pipe")
+local result_receipt = require("neoagent.result_receipt")
 local new_pipe = pipe.new
 
 describe("Codex process Tools", function()
@@ -258,39 +259,100 @@ describe("Codex process Tools", function()
     )
   end)
 
-  for _, transformation in ipairs({ "split text", "reference only", "hidden reference", "different reference" }) do
+  for _, transformation in ipairs({
+    "split text",
+    "reference only",
+    "hidden reference",
+    "different reference",
+    "unacknowledged edit",
+  }) do
     it("acknowledges references separately from output after " .. transformation, function()
       local command = jit.os == "Windows" and [[python -u -c "print('FIRST', flush=True); input()"]]
         or "printf 'FIRST\\n'; read line"
       local id, output
-      local run = start("exec_command", {
-        cmd = command, shell = shell, login = false, tty = true, yield_time_ms = 5000,
-      }, nil, function(tool, args, ctx)
-        local value = tool.execute(args, ctx)
-        id, output = assert(value.details).session_id, assert(value.details).output
-        assert(type(id) == "string" and type(output) == "string")
-        assert.matches("FIRST", output, 1, true)
-        if transformation == "hidden reference" then
-          value.content = { { type = "text", text = output } }
-        else
-          value.content = { { type = "text", text = "Retained: " .. id
-            .. (transformation == "different reference" and "0" or "") } }
-          if transformation ~= "reference only" then
-            value.content[#value.content + 1] = { type = "text", text = "Command output:" }
-            value.content[#value.content + 1] = { type = "text", text = output }
+      local run = start(
+        "exec_command",
+        {
+          cmd = command,
+          shell = shell,
+          login = false,
+          tty = true,
+          yield_time_ms = 5000,
+        },
+        nil,
+        function(tool, args, ctx)
+          local value = tool.execute(args, ctx)
+          local receipt = assert(result_receipt.read(value))
+          id, output = assert(value.details).session_id, assert(value.details).output
+          assert(type(id) == "string" and type(output) == "string")
+          assert.matches("FIRST", output, 1, true)
+          if transformation == "hidden reference" then
+            value.content = { { type = "text", text = output } }
+            receipt.session_id = nil
+          else
+            value.content = {
+              {
+                type = "text",
+                text = "Retained: " .. id .. (transformation == "different reference" and "0" or ""),
+              },
+            }
+            if transformation ~= "reference only" then
+              value.content[#value.content + 1] = { type = "text", text = "Command output:" }
+              value.content[#value.content + 1] = { type = "text", text = output }
+            end
           end
+          if transformation == "unacknowledged edit" then
+            return value
+          end
+          if transformation == "different reference" then
+            receipt.session_id = id .. "0"
+          elseif transformation == "reference only" then
+            receipt.output = false
+          end
+          return result_receipt.bind(value, receipt)
         end
-        return value
-      end)
+      )
       assert.is_true(helper.wait(run, 15000).ok)
-      if transformation == "hidden reference" or transformation == "different reference" then
-        assert.is_true(helper.complete(function() return owner:wait_release(5000) end, 8000))
+      if
+        transformation == "hidden reference"
+        or transformation == "different reference"
+        or transformation == "unacknowledged edit"
+      then
+        assert.is_true(helper.complete(function()
+          return owner:wait_release(5000)
+        end, 8000))
         assert.are.equal(0, owner:status().reserved)
       else
         local replay = details(call("write_stdin", { session_id = assert(id), yield_time_ms = 0 }))
         assert.are.equal(id, replay.session_id)
         assert.are.equal(transformation == "reference only" and output or "", replay.output)
       end
+    end)
+  end
+
+  for _, replacement in ipairs({ "session reference", "unrelated text" }) do
+    it("replays omitted output that also appears in " .. replacement, function()
+      local command = jit.os == "Windows"
+          and "while (-not [IO.File]::Exists('output-gate')) { Start-Sleep -Milliseconds 10 }; [Console]::Write('1'); " .. sleeper
+        or "while [ ! -f output-gate ]; do sleep 0.01; done; printf 1; " .. sleeper
+      local id = assert(launch(command, false).session_id)
+      vim.fn.writefile({ "ready" }, root .. "/output-gate")
+      local captured
+      local run = start("write_stdin", { session_id = id, yield_time_ms = 5000 }, nil, function(tool, args, ctx)
+        local value = tool.execute(args, ctx)
+        captured = assert(value.details).output
+        value.content = {
+          {
+            type = "text",
+            text = replacement == "session reference" and "Retained: " .. id or "Request 1: output omitted",
+          },
+        }
+        return value
+      end)
+      assert.is_true(helper.wait(run, 15000).ok)
+      assert.are.equal("1", captured)
+      local replay = details(call("write_stdin", { session_id = id, yield_time_ms = 0 }))
+      assert.are.equal("1", replay.output)
     end)
   end
 

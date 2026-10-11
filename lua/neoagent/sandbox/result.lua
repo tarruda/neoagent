@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local result_receipt = require("neoagent.result_receipt")
 
 local M = {}
 
@@ -78,6 +79,7 @@ end
 ---@param fields? Neoagent.JsonObject
 ---@return Neoagent.ToolResult
 function M.append(value, text, fields)
+  local receipt = result_receipt.read(value)
   value = util.copy(value)
   local appended = false
   for _, block in ipairs(value.content or {}) do
@@ -92,7 +94,7 @@ function M.append(value, text, fields)
     table.insert(value.content, 1, { type = "text", text = text })
   end
   merge_sandbox(value, fields)
-  return value
+  return receipt and result_receipt.bind(value, receipt) or value
 end
 
 ---@param value Neoagent.ToolResult
@@ -100,6 +102,7 @@ end
 ---@param fields? Neoagent.JsonObject
 ---@return Neoagent.ToolResult
 function M.cleanup(value, message, fields)
+  local receipt = result_receipt.read(value)
   value = util.copy(value)
   value.content = value.content or {}
   local notice = fields
@@ -112,7 +115,7 @@ function M.cleanup(value, message, fields)
   }, "\n")
   value.content[#value.content + 1] = { type = "text", text = text }
   merge_sandbox(value, util.deep_merge(fields, { cleanup_notice = #value.content }))
-  return value
+  return receipt and result_receipt.bind(value, receipt) or value
 end
 
 return M

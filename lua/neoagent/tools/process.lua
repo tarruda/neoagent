@@ -1,6 +1,7 @@
 local common = require("neoagent.tools.common")
 local identities = require("neoagent.tools.identities")
 local schema = require("neoagent.api.tool_schema")
+local result_receipt = require("neoagent.result_receipt")
 local util = require("neoagent.util")
 local M = {}
 
@@ -26,10 +27,6 @@ local M = {}
 ---@field cleanup_done boolean
 ---@field released boolean
 
----@class Neoagent.ProcessPublication
----@field id? string Reference actually offered to the model.
----@field output string Output actually offered within the requested budget.
-
 ---@param ctx Neoagent.ToolContext<unknown>
 ---@return Neoagent.ToolProcesses
 local function processes(ctx)
@@ -40,37 +37,6 @@ local function processes(ctx)
   )
   ---@cast value Neoagent.ToolProcesses
   return value
-end
-
--- The reference handoff and output receipt are independent of presentation.
--- Hidden details cannot establish delivery; inspect the accepted visible data.
----@param accepted? Neoagent.ToolResultMessage
----@param receipt? Neoagent.ProcessPublication
----@return boolean
-local function reference_published(accepted, receipt)
-  if not accepted or not receipt then
-    return false
-  end
-  if not receipt.id then
-    return true
-  end
-  for _, block in ipairs(accepted.content) do
-    if block.type == "text" then
-      for token in (block.text or ""):gmatch("[%w:]+") do
-        if token == receipt.id then
-          return true
-        end
-      end
-    end
-  end
-  return false
-end
-
----@param accepted? Neoagent.ToolResultMessage
----@param receipt? Neoagent.ProcessPublication
----@return boolean
-local function output_published(accepted, receipt)
-  return accepted ~= nil and receipt ~= nil and util.text_content(accepted.content):find(receipt.output, 1, true) ~= nil
 end
 
 ---@param err? Neoagent.Error
@@ -114,7 +80,7 @@ end
 ---@param started number
 ---@param tokens integer
 ---@param request_error? Neoagent.Error
----@return Neoagent.ToolResult, Neoagent.ProcessPublication
+---@return Neoagent.ToolResult
 local function result(observation, started, tokens, request_error)
   local shortened = require("neoagent.tools.truncate").tail(observation.text, { max_bytes = tokens * 4 })
   local output = shortened.content
@@ -190,7 +156,7 @@ local function result(observation, started, tokens, request_error)
       cleanup_done = observation.cleanup_done,
       released = observation.released,
     },
-  }, { id = id, output = shortened.content }
+  }
 end
 
 -- Recovery precedes abandonment, so it observes execution before disposal
@@ -204,24 +170,22 @@ local function request_failed(state, err, started, id)
   if not state then
     return { content = { { type = "text", text = util.safe_message(err.message) } }, isError = true }
   end
-  return (
-    result({
-      session_id = id,
-      events = {},
-      text = "",
-      dropped_bytes = 0,
-      done = state.done,
-      cleanup_done = state.cleanup_done,
-      released = state.released,
-      stdin_writable = state.stdin_writable,
-      resize_supported = state.resize_supported,
-      execution = state.execution,
-      outcome = state.outcome,
-      error = state.error,
-      cleanup_error = state.cleanup_error,
-      release_error = state.release_error,
-    }, started, 0, err)
-  )
+  return result({
+    session_id = id,
+    events = {},
+    text = "",
+    dropped_bytes = 0,
+    done = state.done,
+    cleanup_done = state.cleanup_done,
+    released = state.released,
+    stdin_writable = state.stdin_writable,
+    resize_supported = state.resize_supported,
+    execution = state.execution,
+    outcome = state.outcome,
+    error = state.error,
+    cleanup_error = state.cleanup_error,
+    release_error = state.release_error,
+  }, started, 0, err)
 end
 
 ---@param tool_schema Neoagent.ToolSchema
@@ -294,14 +258,14 @@ local function exec_command(prepared)
       local on_result = assert(ctx.on_result, "exec_command requires Tool result acceptance")
       ---@type Neoagent.ProcessAdmission?
       local admission
-      ---@type Neoagent.ProcessPublication?
-      local receipt
+      ---@type string?
+      local offered_id
       local started = vim.uv.hrtime()
       on_result({
-        finish = function(accepted)
+        finish = function(accepted, receipt)
           if admission then
-            if reference_published(accepted, receipt) then
-              admission.commit(output_published(accepted, receipt))
+            if accepted and receipt and receipt.session_id == offered_id then
+              admission.commit(receipt.output == true)
             else
               admission.abort("Tool result was not accepted")
             end
@@ -313,9 +277,8 @@ local function exec_command(prepared)
       })
       admission = owner:reserve(prepare(arguments, {}, call))
       local observation = admission.start(wait_ms)
-      local value
-      value, receipt = result(observation, started, tokens)
-      return value
+      offered_id = not observation.done and observation.session_id or nil
+      return result_receipt.bind(result(observation, started, tokens), { session_id = offered_id, output = true })
     end,
     render = require("neoagent.tools.activity_presentation").exec_command,
   }, { token = identities.exec_command, settings = {}, prepare = prepare })
@@ -401,12 +364,10 @@ function M.write_stdin()
       local started = vim.uv.hrtime()
       ---@type Neoagent.ProcessInteraction?
       local interaction
-      ---@type Neoagent.ProcessPublication?
-      local receipt
       assert(ctx.on_result, "write_stdin requires Tool result acceptance")({
-        finish = function(accepted)
+        finish = function(accepted, receipt)
           if interaction then
-            if output_published(accepted, receipt) then
+            if accepted and receipt and receipt.output == true then
               interaction.commit()
             else
               interaction.abort()
@@ -419,9 +380,7 @@ function M.write_stdin()
       })
       interaction = owner:begin_interaction(request.id)
       local observation = interaction.collect(request.wait_ms, request.control)
-      local value
-      value, receipt = result(observation, started, request.tokens)
-      return value
+      return result_receipt.bind(result(observation, started, request.tokens), { output = true })
     end,
   }, {
     token = identities.write_stdin,

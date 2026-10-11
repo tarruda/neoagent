@@ -3,6 +3,8 @@ local async = require("neoagent.async")
 local loop = require("neoagent.agent_loop")
 local fake_model = require("tests.helpers.fake_model")
 local helper = require("tests.helpers.subprocess")
+local result_receipt = require("neoagent.result_receipt")
+local util = require("neoagent.util")
 
 describe("Tool result publication", function()
   for _, failure in ipairs({ "executor", "validation", "recovery throws", "invalid recovery" }) do
@@ -140,8 +142,9 @@ describe("Tool result publication", function()
             description = "",
             input_schema = { type = "object" },
             execute = function(_, ctx)
-              assert(ctx.on_result)({ finish = function(accepted)
+              assert(ctx.on_result)({ finish = function(accepted, receipt)
                 decisions[#decisions + 1] = accepted ~= nil
+                assert.are.same(accepted and { output = true } or nil, receipt)
                 order[#order + 1] = "settled"
               end })
               if scenario == "execute throws" then
@@ -154,7 +157,7 @@ describe("Tool result publication", function()
               if scenario == "invalid" then
                 return {} --[[@as Neoagent.ToolResult]]
               end
-              return { content = { { type = "text", text = "retained" } } }
+              return result_receipt.bind({ content = { { type = "text", text = "retained" } } }, { output = true })
             end,
           },
         },
@@ -185,6 +188,151 @@ describe("Tool result publication", function()
       if scenario == "accepted" then
         assert.is_true(result.ok)
       end
+    end)
+  end
+
+  for _, transformation in ipairs({
+    "copy",
+    "metadata",
+    "notice",
+    "cleanup",
+    "rebind",
+    "mutate",
+    "replace",
+    "stale notice",
+    "stale cleanup",
+  }) do
+    it("delivers only the receipt bound to accepted content after " .. transformation, function()
+      local sandbox_result = require("neoagent.sandbox.result")
+      local model = fake_model.new({
+        {
+          result = fake_model.assistant(
+            { { type = "toolCall", name = "publish", id = "p1", arguments = {} } },
+            "toolUse"
+          ),
+        },
+        { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+      })
+      local finished = false
+      local result = helper.wait(loop.run({
+        model = model,
+        messages = {},
+        tools = {
+          {
+            name = "publish",
+            description = "",
+            input_schema = { type = "object" },
+            execute = function(_, ctx)
+              assert(ctx.on_result)({
+                finish = function(accepted, receipt)
+                  assert.is_not_nil(accepted)
+                  finished = true
+                  if
+                    transformation == "mutate"
+                    or transformation == "replace"
+                    or transformation == "stale notice"
+                    or transformation == "stale cleanup"
+                  then
+                    assert.is_nil(receipt)
+                  else
+                    assert.are.same({ output = transformation ~= "rebind" }, receipt)
+                  end
+                end,
+              })
+              local value = { content = { { type = "text", text = "original" } } }
+              local receipt = { output = true }
+              local bound = result_receipt.bind(value, receipt)
+              value.content[1].text = "changed after binding"
+              receipt.output = false
+              return bound
+            end,
+          },
+        },
+        execute_tool = function(tool, args, ctx)
+          local value = tool.execute(args, ctx)
+          if transformation == "copy" then
+            return util.copy(value)
+          elseif transformation == "metadata" then
+            return sandbox_result.annotate(value, { kind = "allowed" })
+          elseif transformation == "notice" then
+            return sandbox_result.append(value, "Policy notice")
+          elseif transformation == "cleanup" then
+            return sandbox_result.cleanup(value, "Cleanup notice")
+          elseif transformation == "replace" then
+            return { content = util.copy(value.content) }
+          end
+          value.content[1] = { type = "text", text = "edited" }
+          if transformation == "rebind" then
+            return result_receipt.bind(value, { output = false })
+          elseif transformation == "stale notice" then
+            return sandbox_result.append(value, "Policy notice")
+          elseif transformation == "stale cleanup" then
+            return sandbox_result.cleanup(value, "Cleanup notice")
+          end
+          return value
+        end,
+        commit_message = function(message)
+          assert.is_nil(rawget(message, "receipt"))
+          return true
+        end,
+      }))
+      assert.is_true(result.ok, vim.inspect(result))
+      assert.is_true(finished)
+      for _, message in ipairs(assert(result.new_messages)) do
+        assert.is_nil(rawget(message, "receipt"))
+      end
+      for _, message in ipairs(assert(model.requests[2]).messages) do
+        assert.is_nil(rawget(message, "receipt"))
+      end
+    end)
+  end
+
+  for _, malformed in ipairs({
+    false,
+    { content = {}, value = {}, unexpected = true },
+    { content = { { type = "thinking", thinking = "hidden" } }, value = {} },
+    { content = {}, value = "invalid" },
+    { content = {}, value = { invalid = function() end } },
+  }) do
+    it("abandons ownership when the returned receipt is malformed: " .. vim.inspect(malformed), function()
+      local finished = false
+      local result = helper.wait(loop.run({
+        model = fake_model.new({
+          {
+            result = fake_model.assistant(
+              { { type = "toolCall", name = "publish", id = "p1", arguments = {} } },
+              "toolUse"
+            ),
+          },
+          { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+        }),
+        messages = {},
+        tools = {
+          {
+            name = "publish",
+            description = "",
+            input_schema = { type = "object" },
+            execute = function(_, ctx)
+              assert(ctx.on_result)({
+                finish = function(accepted, receipt)
+                  assert.is_nil(accepted)
+                  assert.is_nil(receipt)
+                  finished = true
+                end,
+              })
+              return { content = {}, receipt = malformed } --[[@as Neoagent.ToolResult]]
+            end,
+          },
+        },
+        commit_message = function(message)
+          if message.role == "toolResult" then
+            assert.is_true(message.isError)
+          end
+          return true
+        end,
+      }))
+      assert.is_true(result.ok)
+      assert.is_true(finished)
     end)
   end
 end)

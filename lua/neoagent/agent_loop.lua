@@ -1,6 +1,7 @@
 local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local semantic_message = require("neoagent.semantic_message")
+local result_receipt = require("neoagent.result_receipt")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
@@ -38,7 +39,7 @@ end
 ---@alias Neoagent.ToolExecutor<C> async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 
 ---@class Neoagent.ToolResultOwner
----@field finish fun(accepted?: Neoagent.ToolResultMessage) Settle ownership once, after storage or on abandonment.
+---@field finish fun(accepted?: Neoagent.ToolResultMessage, receipt?: Neoagent.JsonObject) Settle ownership once, with a valid delivery receipt only after storage.
 ---@field recover? fun(error: Neoagent.Error): Neoagent.ToolResult Preserve operation facts after execution or result-validation failure, before abandonment.
 
 ---@class Neoagent.ToolContext<C>
@@ -668,12 +669,12 @@ function M.run(opts)
           for _, call in ipairs(calls) do
             ---@type Neoagent.ToolResultOwner?
             local result_owner
-            local function settle(accepted)
+            local function settle(accepted, receipt)
               local owner = result_owner
               result_owner = nil
               if owner then
                 if accepted then
-                  owner.finish(accepted)
+                  owner.finish(accepted, receipt)
                 else
                   local disposed, err = pcall(owner.finish, nil)
                   if not disposed then
@@ -791,7 +792,7 @@ function M.run(opts)
                   message = util.copy(observed),
                 })
               end, function(_, accepted)
-                settle(accepted)
+                settle(accepted, result_receipt.read(result))
               end)
               if not committed then
                 return commit_failure(candidate, commit_err)
