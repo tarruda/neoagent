@@ -3,10 +3,16 @@ local M = {}
 ---@class Neoagent.ToolPresetOptions
 ---@field shell_timeout? number|false
 
----@alias Neoagent.BundledToolName "read_file"|"write_file"|"edit_file"|"shell"|"grep"|"find"|"read_agent_documentation"|"update_plan"
+---@alias Neoagent.BundledToolName "read_file"|"write_file"|"edit_file"|"shell"|"grep"|"find"|"read_agent_documentation"|"update_plan"|"exec_command"|"write_stdin"
 
 ---@type table<Neoagent.BundledToolName, fun(options: Neoagent.ToolPresetOptions): Neoagent.Tool<unknown>>
 local constructors = {
+  exec_command = function()
+    return require("neoagent.tools.process").exec_command()
+  end,
+  write_stdin = function()
+    return require("neoagent.tools.process").write_stdin()
+  end,
   read_file = function()
     return require("neoagent.tools.read_file").new()
   end,
@@ -60,6 +66,11 @@ function M.coding(options)
 end
 
 ---@return Neoagent.Tool<unknown>[]
+function M.codex()
+  return tools({ "read_file", "write_file", "edit_file", "exec_command", "write_stdin", "read_agent_documentation" })
+end
+
+---@return Neoagent.Tool<unknown>[]
 function M.read_only()
   return tools({ "read_file", "grep", "find" })
 end
@@ -81,6 +92,8 @@ function M.all(options)
     "find",
     "read_agent_documentation",
     "update_plan",
+    "exec_command",
+    "write_stdin",
   }, options)
 end
 

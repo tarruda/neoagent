@@ -551,8 +551,9 @@ end
 ---@generic C
 ---@param placement Neoagent.SandboxPlacement<C>
 ---@param context C
+---@param tool_command? boolean Normalize editor addresses after profile filtering for Tool commands.
 ---@return Neoagent.ProcessControllerFactory
-function M.factory(placement, context)
+function M.factory(placement, context, tool_command)
   local paths = placement.paths
   local profile = placement.resolve(context)
   local environment = placement.environment(profile)
@@ -575,6 +576,10 @@ function M.factory(placement, context)
     local values = normalize({ inherit = false, set = (not selected or selected.inherit) and environment or {} })
     for name, value in pairs(normalize({ inherit = false, set = selected and selected.set or {} })) do
       values[name] = value
+    end
+    if tool_command then
+      values.NVIM = ""
+      values.NVIM_LISTEN_ADDRESS = nil
     end
     spec.environment = { inherit = false, set = values }
     return controller(spec, maximum, {

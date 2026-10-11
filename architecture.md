@@ -120,11 +120,11 @@ provider, Authentication, or UI state. Results cross as semantic values;
 artifact bytes are verified and imported before publication. Tool details and
 executor metadata have separate owners.
 
-Sandbox composition resolves authority for both Tool calls and retained process
-admissions. Activation or policy failure blocks restricted execution without
-host fallback. Explicitly granted parent Tools remain available. Bootstrap
-dependencies cannot override filesystem denials. Parent supervision keeps
-deadlines enforceable when a worker becomes unresponsive.
+Sandbox composition binds Tool execution and retained process admissions to the
+same authority and approval policy. Activation or policy failure blocks
+restricted execution without host fallback. Explicitly granted parent Tools
+remain available. Bootstrap dependencies cannot override filesystem denials.
+Parent supervision enforces deadlines even when a worker is unresponsive.
 
 RPC owns framing, ordering, bounded delivery, and request cancellation. Tool and
 process domains define their own execution lifetimes. A `WorkerLease` owns
@@ -161,17 +161,16 @@ requirements and limitations.
 ## Retained process sessions
 
 `ProcessSessions` is Agent-owned, independent of activities, UI, the reusable
-Loop, and durable Sessions. It owns in-memory IDs, capacity reservations,
+Loop, and durable Sessions. It owns process identities, capacity reservations,
 controllers, and bounded output. Local controllers own subprocess scopes;
 sandbox controllers own a worker for each target and retain their admitted
 authority across sandbox toggles.
 
-The publication owner reserves an admission before asynchronous construction or
-startup, then commits or aborts the handoff. Controller construction acquires
-no resources; the manager owns it before start. Cancelling startup revokes
-publication, while cancelling a later poll preserves the target and unread
-output. Model-facing Tools and durable Tool-result acceptance are still separate
-integration work.
+The publication owner reserves an admission before startup and commits the
+handoff after durable Tool-result acceptance. Failed publication aborts
+provisional work. Tools own delivery of process references and output; the
+Loop supplies a generic acceptance boundary without depending on processes or
+Agents. Cancelling a later poll preserves the target and unread output.
 
 Target completion, controller cleanup, and native release are distinct. Remote
 cleanup includes worker shutdown; capacity stays reserved until release is

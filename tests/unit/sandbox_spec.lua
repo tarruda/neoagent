@@ -2461,12 +2461,12 @@ describe("neoagent sandbox execution", function()
       read_agent_documentation = {},
     }
     for name, arguments in pairs(cases) do
-      local summary = summarize({ name = name, description = "Probe summary", input_schema = { type = "object", properties = {} } }, arguments, ctx)
+      local summary = summarize({ name = name, description = "Probe summary", input_schema = { type = "object", properties = {} }, execute = function() return { content = {} } end }, arguments, ctx)
       assert.is_string(summary)
       assert.is_true(summary ~= "")
       assert.is_nil((summary:find("private contents", 1, true)))
     end
     assert.matches("custom",
-      summarize({ name = "custom", description = "Probe summary", input_schema = { type = "object", properties = {} } }, {}, ctx))
+      summarize({ name = "custom", description = "Probe summary", input_schema = { type = "object", properties = {} }, execute = function() return { content = {} } end }, {}, ctx))
   end)
 end)

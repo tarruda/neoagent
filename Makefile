@@ -5,6 +5,7 @@ EMMYLUA_CHECK ?= $(CURDIR)/.deps/emmylua/bin/emmylua_check
 PLENARY_DIR ?= $(CURDIR)/.deps/plenary.nvim
 TEST_CMD = $(NVIM) --headless --noplugin -u tests/minimal_init.lua
 TEST_ENV = PATH=$(dir $(NVIM)):$(PATH) NEOAGENT_NVIM=$(NVIM) PLENARY_DIR=$(PLENARY_DIR)
+UNIT_TEST_TIMEOUT ?= 120000
 UI_TEST_TIMEOUT ?= 120000
 INTEGRATION_TEST_TIMEOUT ?= 50000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
@@ -38,7 +39,7 @@ test: test-fast
 test-fast: lint test-unit test-integration test-ui
 
 test-unit:
-	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/unit { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
+	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/unit { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true, timeout = $(UNIT_TEST_TIMEOUT) }"
 
 test-integration:
 	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/integration { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true, timeout = $(INTEGRATION_TEST_TIMEOUT) }"

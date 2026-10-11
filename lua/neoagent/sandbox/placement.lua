@@ -3,6 +3,22 @@ local profiles = require("neoagent.sandbox.profile")
 local worker = require("neoagent.sandbox.worker")
 local M = {}
 
+-- Agent-owned host commands use the current editor's address. Keep this at
+-- placement: copying the host environment into restricted specs bypasses the
+-- profile's filtering. Explicit programmatic environments remain exact.
+---@param spec Neoagent.SubprocessSpec
+---@param maximum integer
+---@param on_cleanup fun(error: Neoagent.Error)
+---@param on_released? fun()
+---@return Neoagent.ProcessController
+function M.host_process(spec, maximum, on_cleanup, on_released)
+  spec = util.copy(spec)
+  if not spec.environment then
+    spec.environment = require("neoagent.tools.common").process_environment()
+  end
+  return require("neoagent.process_sessions.local").new(spec, maximum, on_cleanup, on_released)
+end
+
 ---@class Neoagent.SandboxContext<C>
 ---@field context? C
 ---@field call? Neoagent.ToolCallBlock Present for Tool execution.

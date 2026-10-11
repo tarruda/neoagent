@@ -80,15 +80,15 @@ end
 
 local sandbox_guidance_template = [[Sandboxed execution:
 - Tool calls run inside a native {platform} sandbox with restricted filesystem, network, and process authority.
-- Some operations the sandbox blocks fail with an explicit sandbox error. Networking command failures might fail with a different error, so always request escalation to run those.
-- To run one tool call with full user authority, keep the same arguments and merge `require_escalation` and `escalation_justification` to the tool params.
+- Some operations the sandbox blocks fail with an explicit sandbox error. Networking command failures might fail with a different error.
+- For Tools whose schema exposes escalation options, request full user authority by keeping the arguments and adding `require_escalation` and `escalation_justification` inside `options`.
 - The user approves or denies each request. After a denial, continue inside the sandbox or use a different approach; do not repeat the same request.
 ]]
 
 local switchable_guidance = [[Sandbox controls:
 - The editor's current sandbox toggle selects native restricted or host execution for each tool call.
-- Restricted operations can fail with an explicit sandbox error. Networking command failures can use a different error, so request escalation when the sandbox blocks required work.
-- To request one tool call with full user authority, keep the same arguments and merge `require_escalation` and `escalation_justification` into the tool params.
+- Restricted operations can fail with an explicit sandbox error. Networking command failures can use a different error.
+- For Tools whose schema exposes escalation options, request full user authority by keeping the arguments and adding `require_escalation` and `escalation_justification` inside `options`.
 - Escalation options apply only while restricted execution is active.
 ]]
 
@@ -296,6 +296,80 @@ local function copy_toolset(toolset)
   }
 end
 
+-- Process Tools execute in the parent, but their admission capability comes
+-- from this executor's authority. Never trust the manager's independently
+-- configured default placement when routing a restricted Tool call.
+---@generic C
+---@param base async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@param select fun(ctx: Neoagent.ToolContext<C>, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
+---@param metadata Neoagent.JsonObject
+---@param ordinary? async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@return async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+local function process_executor(base, select, metadata, ordinary)
+  ---@generic T: table
+  ---@param value T
+  ---@return T
+  local function shallow(value)
+    local copied = {}
+    for key, item in pairs(value) do
+      copied[key] = item
+    end
+    return copied
+  end
+  ---@async
+  return function(tool, arguments, ctx)
+    local identity = identities.identity(tool)
+    if not identity or identity.token ~= identities.exec_command and identity.token ~= identities.write_stdin then
+      return (ordinary or base)(tool, arguments, ctx)
+    end
+    local context = ctx.context
+    assert(type(context) == "table", "Process execution requires a Tool context")
+    local owner = rawget(context, "processes")
+    assert(
+      type(owner) == "table" and type(owner.reserve) == "function" and type(owner.begin_interaction) == "function",
+      "Process execution requires an Agent process manager"
+    )
+    ---@cast owner Neoagent.ProcessSessions
+    local authority = util.copy(metadata)
+    local kind = identity.token == identities.write_stdin and "interaction" or "command"
+    ---@type (fun(): Neoagent.ProcessControllerState)?
+    local inspect
+    local failure = require("neoagent.sandbox.failure")
+    local capability = {
+      reserve = function(_, spec)
+        local admission = owner:reserve(spec, function(prepared, maximum, cleanup, released)
+          return select(ctx, prepared)(prepared, maximum, cleanup, released)
+        end, authority)
+        inspect = admission.state
+        return admission
+      end,
+      begin_interaction = function(_, id)
+        local interaction = owner:begin_interaction(id)
+        authority = interaction.metadata or {}
+        inspect = interaction.state
+        return interaction
+      end,
+    }
+    local forwarded = shallow(ctx)
+    forwarded.context = shallow(context)
+    rawset(forwarded.context, "processes", capability)
+    ---@param publication Neoagent.ToolResultOwner
+    forwarded.on_result = function(publication)
+      local recover = assert(publication.recover, "Process result owner must recover failures")
+      assert(ctx.on_result)({
+        finish = publication.finish,
+        recover = function(err)
+          -- The Tool owns operation recovery in every composition. Add only
+          -- authority and denial facts, including post-executor validation.
+          return failure.process(recover(err), authority, kind, inspect and inspect(), err)
+        end,
+      })
+    end
+    local value = base(tool, arguments, forwarded)
+    return failure.process(value, authority, kind, inspect and inspect())
+  end
+end
+
 ---@generic C
 ---@param toolset Neoagent.SandboxToolset<C>
 ---@param settings Neoagent.SandboxSettings<C>
@@ -355,9 +429,20 @@ local function compose_restricted(toolset, settings, opts, escalation)
   })
   local interceptor = require("neoagent.sandbox.interceptor").new(placement)
   local base = executor(toolset)
+  local restricted = process_executor(base, function(ctx, spec)
+    return require("neoagent.sandbox.process_session").factory(placement, {
+      context = ctx.context,
+      call = ctx.call,
+      process = spec,
+    }, true)
+  end, { restricted = true, backend = selected.name }, interceptor:wrap(base))
+  -- The process adapter itself stays local; ordinary recognized Tools still
+  -- execute through the interceptor. Share approval selection between them.
   local execute_tool = escalation:wrap({
-    restricted = interceptor:wrap(base),
-    elevated = base,
+    restricted = restricted,
+    elevated = process_executor(base, function()
+      return require("neoagent.sandbox.placement").host_process
+    end, { elevated = true }),
   })
   ---@cast execute_tool fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
   return execute_tool, recorded, placement
@@ -374,7 +459,7 @@ end
 ---@return Neoagent.ProcessControllerFactory
 function Runtime:process_factory(context)
   if not self._enabled then
-    return require("neoagent.process_sessions.local").new
+    return require("neoagent.sandbox.placement").host_process
   end
   if not self._placement then
     error(
@@ -448,7 +533,9 @@ local function build(toolset, settings, opts, allow_toggle)
   ---@type Neoagent.SandboxEscalationOptions<C>
   local escalation_options = { parent = is_parent }
   local escalation = require("neoagent.sandbox.escalation").new(escalation_options)
-  local base = executor(toolset)
+  local base = process_executor(executor(toolset), function()
+    return require("neoagent.sandbox.placement").host_process
+  end, { restricted = false })
   local needs_escalation = settings.enabled or allow_toggle
   ---@type Neoagent.SandboxRuntime<C>
   local runtime = setmetatable({

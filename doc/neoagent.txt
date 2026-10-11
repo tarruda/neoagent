@@ -277,7 +277,8 @@ Neo, Chat, and Codex Profiles. Neo and Codex are configured for coding; Chat
 has an empty system prompt and no tools. Codex offers Models using the
 `openai-codex-responses` API. A global default using another API is ignored
 for Codex; its draft has no selected Model when none is compatible. Agents and
-Sessions are created when work begins.
+Sessions are created when work begins. Codex uses `exec_command` and
+`write_stdin`; Neo uses `shell`. An explicit `tools` list overrides the preset.
 
 `:Neoagent` opens the Neo draft for the current Workspace. Drafts retain
 model, thinking, sandbox, and input choices per Profile and Workspace until
@@ -1318,8 +1319,7 @@ control.
 RETAINED PROCESSES                                 *neoagent-process-sessions*
 
 `agent:get_process_sessions()` owns retained processes across activities and
-UI closure. Agent destruction disposes them. This API adds no model-facing
-Tools. Standalone callers can construct
+UI closure. Agent destruction disposes them. Standalone callers can construct
 `neoagent.process_sessions.new(options, on_cleanup?, controller_factory?)` and
 must close the manager themselves. The default factory runs locally. Cleanup
 observers receive failures on the editor loop despite caller cancellation;
@@ -1461,7 +1461,8 @@ Tools that retain resources through result publication register
 
 Both functions are synchronous. Later cancellation or presentation failure
 does not undo accepted storage. Custom executors must forward this registration
-and preserve model-visible references and output.
+and preserve model-visible references and output. Process Tools acknowledge
+their ID and output separately; omitted output remains available for polling.
 
 Bundled `read_file` receives the Session's managed writer as
 `ctx.context.files`. It stores the processed image bytes before returning a
@@ -1498,6 +1499,7 @@ Optional Tool fields are:
 Bundled presets are: >lua
 
   require("neoagent.tools").coding()
+  require("neoagent.tools").codex()
   require("neoagent.tools").read_only()
   require("neoagent.tools").update_plan()
   require("neoagent.tools").all()
@@ -1507,7 +1509,10 @@ The coding preset provides file read, write, edit, shell, and Neoagent
 documentation tools. The optional plan tool derives its state from successful
 calls on the active Session path.
 
-Restricted execution recognizes only the shipped `read_file`, `write_file`,
+The Codex preset replaces `shell` with `exec_command` and `write_stdin` for
+commands that can outlive a Tool call.
+
+Restricted workers recognize the shipped `read_file`, `write_file`,
 `edit_file`, `shell`, `grep`, and `find` implementations. The executor
 receives a copy with restricted `execute`; its other fields are unchanged.
 Custom Tool grants are described in |neoagent-sandbox|.
@@ -1530,6 +1535,37 @@ becomes unresponsive.
 Command-backed Tools set `NVIM` to the executing editor's server address and
 omit `NVIM_LISTEN_ADDRESS`. A restricted worker with no server supplies an
 empty address. The local subprocess API itself inherits the OS environment.
+
+`exec_command` accepts `cmd`, optional `workdir`, `shell`, `login` (default true),
+`tty` (default false), and optional lifetime `timeout_ms`. It uses Neovim's
+`shell` arguments and `shellcmdflag` unless an explicit shell is selected. `login`
+overrides POSIX login flags or PowerShell `NoProfile`; other arguments remain.
+Commands without a PTY receive closed stdin. A running command returns a
+`session_id` for later calls; see |neoagent-process-sessions| for its lifetime
+and capacity limits.
+
+`write_stdin` accepts that ID and optional `chars` (at most 65536 bytes).
+Empty input polls; nonempty input requires a PTY, except a single Ctrl-C
+(`"\u0003"` in JSON) interrupts either mode. `terminate=true`, incompatible with
+nonempty `chars`, requests termination even if the target ignores Ctrl-C.
+Platform interruption behavior is described in |neoagent-subprocess|.
+
+`yield_time_ms` accepts zero through the maxima below and limits observation:
+
+  Operation             Default (ms)    Maximum (ms)
+  exec_command          10000           30000
+  write_stdin, polling   5000          300000
+  write_stdin, input      250           30000
+
+Cancelling a poll preserves the process and unread output. Both Tools accept
+`max_output_tokens` (0–10000, default 10000; four bytes per token). Results
+contain incremental output, truncation notices, and the exit status when known.
+Details separate `request_error`, target `error`, and `cleanup_error`;
+`outcome_uncertain` warns that effects may have completed without a known result.
+A cleanup failure does not invalidate a confirmed command outcome.
+
+Sandbox compositions expose escalation options on `exec_command`. Approval
+applies for the process's lifetime; polling does not change its authority.
 
 `write_file` and `edit_file` replace regular files, preserve existing modes,
 reject symbolic links, and request mode `0644` for new files.

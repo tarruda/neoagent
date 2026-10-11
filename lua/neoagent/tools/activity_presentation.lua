@@ -97,4 +97,11 @@ function M.shell(opts)
   return activity(opts, "command", "Running", "Ran", command, true)
 end
 
+---@param opts? Neoagent.ToolPresentationOptions
+---@return Neoagent.ToolActivityPresentation?
+function M.exec_command(opts)
+  local values = arguments(opts)
+  return activity(opts, "command", "Running", "Ran", string_argument(values, "cmd", "…"), true)
+end
+
 return M

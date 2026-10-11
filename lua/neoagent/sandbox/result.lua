@@ -65,6 +65,15 @@ local function merge_sandbox(value, fields)
 end
 
 ---@param value Neoagent.ToolResult
+---@param fields Neoagent.JsonObject
+---@return Neoagent.ToolResult
+function M.annotate(value, fields)
+  value = util.copy(value)
+  merge_sandbox(value, fields)
+  return value
+end
+
+---@param value Neoagent.ToolResult
 ---@param text string
 ---@param fields? Neoagent.JsonObject
 ---@return Neoagent.ToolResult

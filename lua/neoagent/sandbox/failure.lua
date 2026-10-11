@@ -133,4 +133,40 @@ function M.error(err, profile, platform, ran_restricted, evidence)
   error(err, 0)
 end
 
+---@param value Neoagent.ToolResult
+---@param authority Neoagent.JsonObject
+---@param kind "command"|"interaction"
+---@param observation? Neoagent.ProcessControllerState
+---@param err? Neoagent.Error
+---@return Neoagent.ToolResult
+function M.process(value, authority, kind, observation, err)
+  authority = util.copy(authority)
+  if err then
+    authority.kind = err.kind
+    authority.denied = err.kind == "sandbox_denied" or FILESYSTEM_DENIALS[err.code] or nil
+  end
+  if observation then
+    local outcome = observation.outcome
+    local failed = observation.error ~= nil
+      or outcome and (outcome.code ~= 0 or outcome.signal ~= 0 or outcome.timed_out)
+    if authority.restricted and failed and (value.isError or value.is_error) then
+      authority.denied = authority.denied
+        or denied_evidence(tostring(authority.backend), {
+          denial_output = observation.output_match,
+          process_exit = outcome,
+        })
+        or nil
+    end
+  end
+  if authority.restricted then
+    if authority.denied then
+      authority.denied, authority.can_escalate = true, true
+      local guidance = kind == "command" and result.SANDBOX_FAILURE
+        or "The retained command was blocked by its sandbox. To request full user authority, submit the original exec_command with escalation options. Do not retry automatically; earlier effects may have completed."
+      value = result.append(value, guidance)
+    end
+  end
+  return result.annotate(value, authority)
+end
+
 return M

@@ -116,6 +116,7 @@ end
 ---@field workspace Neoagent.Workspace
 ---@field agent string
 ---@field files Neoagent.Files
+---@field processes? Neoagent.ProcessSessions
 
 describe("neoagent shared sandbox contract", function()
   ---@type string
@@ -192,6 +193,13 @@ describe("neoagent shared sandbox contract", function()
 
   after_each(function()
     require("tests.helpers.sandbox").cleanup()
+    if context and context.processes then
+      local owner = context.processes
+      owner:close("native Tool test finished")
+      assert.is_true(require("tests.helpers.subprocess").complete(function()
+        return owner:wait_release(15000)
+      end, 20000))
+    end
     vim.env.NEOAGENT_SANDBOX_TEST_INHERITED = original_inherited
     vim.env.PATH = original_path
     vim.env.NEOAGENT_SANDBOX_TEST_SECRET = original_secret
@@ -369,11 +377,23 @@ describe("neoagent shared sandbox contract", function()
         }),
         tool_call("documentation", "read_agent_documentation", {}),
         tool_call("image", "read_file", { path = "image.png" }),
+        tool_call("exec", "exec_command", {
+          cmd = 'read line; printf "%s" "$line" > retained.txt',
+          shell = "sh", login = false, tty = true, yield_time_ms = 0,
+        }),
       }
       local selected = tools_module.all()
-      local options = sandboxed_config(selected)
+      local options, _, _, runtime = composition.switchable({ tools = selected }, {
+        enabled = true, profile = profile,
+      }, { platform = platform, status = status })
+      local owner = require("neoagent.process_sessions").new(nil, nil, function(spec, maximum, cleanup, released)
+        return runtime:process_factory({ context = context, process = spec })(spec, maximum, cleanup, released)
+      end)
+      context.processes = owner
+      local followup = tool_call("stdin", "write_stdin", { chars = "go\n", yield_time_ms = 5000 })
       local model = fake_model.new({
         { result = fake_model.assistant(calls, "toolUse") },
+        { result = fake_model.assistant({ followup }, "toolUse") },
         { result = fake_model.assistant({
           { type = "text", text = "complete" },
         }) },
@@ -383,7 +403,15 @@ describe("neoagent shared sandbox contract", function()
         messages = {},
         tools = options.tools,
         execute_tool = options.execute_tool,
-        commit_message = function() return true end,
+        commit_message = function(message)
+          if message.role == "toolResult" and message.toolName == "exec_command" then
+            ---@cast message Neoagent.ToolResultMessage
+            local id = assert(message.details).session_id
+            assert.is_string(id, text(message))
+            followup.arguments.session_id = id
+          end
+          return true
+        end,
         context = context,
       }), 60000)
       assert.is_true(completed.ok)
@@ -398,6 +426,8 @@ describe("neoagent shared sandbox contract", function()
         plan = true,
         documentation = true,
         image = true,
+        exec = true,
+        stdin = true,
       }) do
         assert.is_false(results[id].isError, text(results[id]))
       end
@@ -409,6 +439,10 @@ describe("neoagent shared sandbox contract", function()
       assert.matches("search.txt", text(results.grep), 1, true)
       assert.matches("found.txt", text(results.find), 1, true)
       assert.are.equal("Plan updated", text(results.plan))
+      assert.is_true(require("tests.helpers.subprocess").complete(function()
+        return owner:wait_release(15000)
+      end, 20000))
+      assert.are.equal("go", fs.read(vim.fs.joinpath(workspace, "retained.txt")))
       assert.matches("# Neoagent API map", text(results.documentation))
       local image_block = assert(results.image.content[2])
       assert(image_block.type == "image")
@@ -422,6 +456,7 @@ describe("neoagent shared sandbox contract", function()
 
       local observed = {}
       for _, call in ipairs(calls) do observed[call.name] = true end
+      observed[followup.name] = true
       local expected = {}
       for _, tool in ipairs(tools_module.all()) do expected[tool.name] = true end
       assert.are.same(expected, observed)
@@ -429,7 +464,7 @@ describe("neoagent shared sandbox contract", function()
         assert.is_nil(tool.input_schema.properties.options)
         local composed = assert(assert(options.tools)[index])
         local options_schema = assert(composed.input_schema.properties).options
-        if tool.name == "read_agent_documentation" or tool.name == "update_plan" then
+        if require("neoagent.tools.identities").is_parent(tool) then
           assert.is_nil(options_schema)
         else
           assert.is_table(options_schema)
