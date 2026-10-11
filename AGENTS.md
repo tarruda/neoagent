@@ -45,6 +45,11 @@ narrative for each fix or repeat implementation details across documents.
 Keep algorithms and local sequencing in code, regression scenarios in tests,
 and examples short and copyable. Code changes alone do not require doc changes.
 
+Before committing documentation changes, review the full branch diff against
+its base; verify each addition belongs in that document and is not already
+explained elsewhere. See commit 18bd3dff8ab87dfdc877119cafc3804b9c329fd2 for a
+practical guidance on removing documentation slop.
+
 ## Setup and checks
 
 Development requires Neovim 0.10+, curl 7.76+, `rg`, `fd`, Python 3, Git, Make,
