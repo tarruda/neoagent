@@ -1443,6 +1443,18 @@ or local image references:
 `ctx.on_update` require stable `id` and changing `revision` values; these
 fields are removed from persisted image blocks.
 
+Tools that retain resources through result publication register
+`ctx.on_result({ finish = finish, recover = recover })`:
+
+  finish(message?)   Called once after storage accepts the result, or with nil
+                     on abandonment. Commit or dispose resources here.
+  recover(error)     Optional failure result for execution or result-validation
+                     errors, before abandonment; not called for cancellation.
+
+Both functions are synchronous. Later cancellation or presentation failure
+does not undo accepted storage. Custom executors must forward this registration
+and preserve model-visible references and output.
+
 Bundled `read_file` receives the Session's managed writer as
 `ctx.context.files`. It stores the processed image bytes before returning a
 reference; the original file can then change or disappear without changing the
