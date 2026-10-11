@@ -70,30 +70,6 @@ function M.decode_policy(value)
   return result
 end
 
----@param value unknown
----@return string[]
-local function denial_keywords(value)
-  if value == nil then
-    return {}
-  end
-  assert(
-    type(value) == "table" and util.is_list(value) and #value <= 32,
-    "Tool RPC denial keywords must be a bounded list"
-  )
-  local selected = {}
-  local total = 0
-  for index, keyword in ipairs(value) do
-    assert(
-      type(keyword) == "string" and keyword ~= "" and #keyword <= 128 and util.is_valid_utf8(keyword),
-      "Tool RPC denial keyword[" .. index .. "] must be bounded UTF-8 text"
-    )
-    total = total + #keyword
-    assert(total <= 1024, "Tool RPC denial keywords exceed the aggregate limit")
-    selected[index] = keyword
-  end
-  return selected
-end
-
 ---@param call Neoagent.ToolOperationCall
 ---@param options? Neoagent.ToolRpcContextOptions
 ---@return Neoagent.JsonObject
@@ -108,7 +84,7 @@ function M.encode_context(call, options)
       cwd = selected.workspace.cwd,
     },
   }
-  local keywords = denial_keywords(options.denial_keywords)
+  local keywords = require("neoagent.rpc.output_matcher").keywords(options.denial_keywords)
   if #keywords > 0 then
     result.denial_keywords = keywords
   end
@@ -128,7 +104,7 @@ function M.decode_context(value)
       root = path(value.workspace.root, "Tool RPC workspace root"),
       cwd = path(value.workspace.cwd, "Tool RPC workspace cwd"),
     },
-    denial_keywords = denial_keywords(value.denial_keywords),
+    denial_keywords = require("neoagent.rpc.output_matcher").keywords(value.denial_keywords),
   }
 end
 
