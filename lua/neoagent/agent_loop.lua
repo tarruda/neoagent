@@ -1,6 +1,7 @@
 local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local semantic_message = require("neoagent.semantic_message")
+local result_receipt = require("neoagent.result_receipt")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
@@ -37,6 +38,10 @@ end
 
 ---@alias Neoagent.ToolExecutor<C> async fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 
+---@class Neoagent.ToolResultOwner
+---@field finish fun(accepted?: Neoagent.ToolResultMessage, receipt?: Neoagent.JsonObject) Settle ownership once, with a valid delivery receipt only after storage.
+---@field recover? fun(error: Neoagent.Error): Neoagent.ToolResult Preserve operation facts after execution or result-validation failure, before abandonment.
+
 ---@class Neoagent.ToolContext<C>
 ---@field model Neoagent.Model
 ---@field run Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
@@ -44,6 +49,7 @@ end
 ---@field context? C
 ---@field call Neoagent.ToolCallBlock
 ---@field on_update fun(update: Neoagent.ToolResult)
+---@field on_result? fun(owner: Neoagent.ToolResultOwner) Register the result owner before acquisition.
 
 ---@class Neoagent.ObservedUserMessage: Neoagent.UserMessage
 ---@field _neoagent_entry_id? string
@@ -445,7 +451,7 @@ function M.run(opts)
       ---@param expected_role "assistant"|"user"|"toolResult"
       ---@param owner string
       ---@param before_observe? fun(observation: Neoagent.ObservedMessage)
-      ---@param on_committed? fun(observation?: Neoagent.ObservedMessage)
+      ---@param on_committed? fun(observation: Neoagent.ObservedMessage?, message: Neoagent.Message)
       ---@return Neoagent.Message?, Neoagent.Error?, Neoagent.Message?
       ---@return_overload Neoagent.Message
       ---@return_overload nil, Neoagent.Error, Neoagent.Message?
@@ -460,15 +466,15 @@ function M.run(opts)
             err and util.normalize_error(err, "session") or util.error("session", "Message commit failed"),
             normalized
         end
+        record(normalized)
         if on_committed then
-          local acknowledged, acknowledge_err = pcall(on_committed, util.copy(observation))
+          local acknowledged, acknowledge_err = pcall(on_committed, util.copy(observation), util.copy(normalized))
           if not acknowledged then
             return nil, util.normalize_error(acknowledge_err, "session"), normalized
           end
         end
 
         local observed, observation_err = observation_message(normalized, observation)
-        record(normalized)
         if not observed then
           return nil, observation_err, nil
         end
@@ -661,96 +667,143 @@ function M.run(opts)
           end
           recovering_model = false
           for _, call in ipairs(calls) do
-            run:emit({ type = "tool_start", call = util.copy(call) })
-            ---@type Neoagent.ToolResult
-            local result
-            local tool = lookup[call.name]
-            if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
-              result = error_result(util.error("tool", call.argumentsError))
-            elseif not tool then
-              result = error_result(util.error("tool", "Unknown tool: " .. tostring(call.name)))
-            else
-              local valid_arguments, arguments_error, arguments = validate_arguments(tool, call.arguments)
-              if not valid_arguments then
-                result = error_result(util.error("tool", arguments_error))
-              else
-                local active = true
-                ---@param update Neoagent.ToolResult
-                local function on_update(update)
-                  if not active or run:is_cancelled() or run:is_done() then
-                    return
-                  end
-                  local valid, normalized = pcall(validate_tool_result, update, true)
-                  if valid then
-                    run:emit({ type = "tool_update", call = util.copy(call), result = util.copy(normalized) })
-                  end
-                end
-                ---@type Neoagent.ToolContext<C>
-                local ctx = {
-                  model = prepared.model,
-                  run = run,
-                  execute_tool = execute,
-                  context = prepared.context,
-                  call = util.copy(call),
-                  on_update = on_update,
-                }
-                ctx.call.arguments = util.copy(arguments)
-                local executed, value = pcall(function()
-                  return execute(tool, util.copy(arguments), ctx)
-                end)
-                active = false
-                if executed then
-                  local valid, normalized = pcall(validate_tool_result, value)
-                  if valid then
-                    -- Returning a final result acknowledges completed work.
-                    -- Commit it before cancellation stops further observation.
-                    result = normalized
-                  elseif run:is_cancelled() then
-                    error(async.cancelled_error, 0)
-                  else
-                    result = error_result(normalized)
-                  end
-                elseif run:is_cancelled() then
-                  error(async.cancelled_error, 0)
+            ---@type Neoagent.ToolResultOwner?
+            local result_owner
+            local function settle(accepted, receipt)
+              local owner = result_owner
+              result_owner = nil
+              if owner then
+                if accepted then
+                  owner.finish(accepted, receipt)
                 else
-                  local err = util.normalize_error(value, "tool")
-                  if err.kind == "cancelled" then
-                    error(err, 0)
+                  local disposed, err = pcall(owner.finish, nil)
+                  if not disposed then
+                    run:_diagnose("dispose", err)
                   end
-                  result = error_result(err)
                 end
               end
             end
+            local function recover(value)
+              local err = util.normalize_error(value, "tool")
+              if run:is_cancelled() or err.kind == "cancelled" then
+                error(async.cancelled_error, 0)
+              end
+              local owner = result_owner
+              local result = owner and owner.recover and owner.recover(err) or error_result(err)
+              result = validate_tool_result(result)
+              settle(nil)
+              return result
+            end
+            -- Publication owns the final handoff, including failure to store
+            -- the result. Cancellation during a synchronous successful store
+            -- cannot revoke work whose ID has already been accepted.
+            local published, failure = pcall(function()
+              run:emit({ type = "tool_start", call = util.copy(call) })
+              ---@type Neoagent.ToolResult
+              local result
+              local tool = lookup[call.name]
+              if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
+                result = error_result(util.error("tool", call.argumentsError))
+              elseif not tool then
+                result = error_result(util.error("tool", "Unknown tool: " .. tostring(call.name)))
+              else
+                local valid_arguments, arguments_error, arguments = validate_arguments(tool, call.arguments)
+                if not valid_arguments then
+                  result = error_result(util.error("tool", arguments_error))
+                else
+                  local active = true
+                  ---@param update Neoagent.ToolResult
+                  local function on_update(update)
+                    if not active or run:is_cancelled() or run:is_done() then
+                      return
+                    end
+                    local valid, normalized = pcall(validate_tool_result, update, true)
+                    if valid then
+                      run:emit({ type = "tool_update", call = util.copy(call), result = util.copy(normalized) })
+                    end
+                  end
+                  ---@type Neoagent.ToolContext<C>
+                  local ctx = {
+                    model = prepared.model,
+                    run = run,
+                    execute_tool = execute,
+                    context = prepared.context,
+                    call = util.copy(call),
+                    on_update = on_update,
+                    on_result = function(owner)
+                      assert(
+                        active and result_owner == nil,
+                        "Tool result acknowledgement is already registered or closed"
+                      )
+                      assert(
+                        type(owner) == "table" and type(owner.finish) == "function",
+                        "Tool result owner must finish"
+                      )
+                      assert(owner.recover == nil or type(owner.recover) == "function", "Invalid Tool result recovery")
+                      result_owner = owner
+                    end,
+                  }
+                  ctx.call.arguments = util.copy(arguments)
+                  local executed, value = pcall(function()
+                    return execute(tool, util.copy(arguments), ctx)
+                  end)
+                  active = false
+                  if executed then
+                    local valid, normalized = pcall(validate_tool_result, value)
+                    if valid then
+                      -- Returning a final result acknowledges completed work.
+                      -- Commit it before cancellation stops further observation.
+                      result = normalized
+                    else
+                      result = recover(normalized)
+                    end
+                  elseif run:is_cancelled() then
+                    error(async.cancelled_error, 0)
+                  else
+                    result = recover(value)
+                  end
+                end
+              end
 
-            ---@type Neoagent.ToolResultMessage
-            local message = {
-              role = "toolResult",
-              toolCallId = call.id,
-              toolName = call.name,
-              content = util.copy(result.content),
-              isError = result.isError == true or result.is_error == true,
-              timestamp = util.now_ms(),
-            }
-            if result.details ~= nil then
-              message.details = util.copy(result.details)
-            end
-            if result.execution ~= nil then
-              message.execution = util.copy(result.execution)
-            end
-            if result.usage ~= nil then
-              message.usage = util.copy(result.usage)
-            end
-            local committed
-            committed, commit_err, candidate = commit(message, "toolResult", "tool", function(observed)
-              ---@cast observed Neoagent.ObservedToolResultMessage
-              run:emit({
-                type = "tool_end",
-                call = util.copy(call),
-                message = util.copy(observed),
-              })
+              ---@type Neoagent.ToolResultMessage
+              local message = {
+                role = "toolResult",
+                toolCallId = call.id,
+                toolName = call.name,
+                content = util.copy(result.content),
+                isError = result.isError == true or result.is_error == true,
+                timestamp = util.now_ms(),
+              }
+              if result.details ~= nil then
+                message.details = util.copy(result.details)
+              end
+              if result.execution ~= nil then
+                message.execution = util.copy(result.execution)
+              end
+              if result.usage ~= nil then
+                message.usage = util.copy(result.usage)
+              end
+              local committed
+              committed, commit_err, candidate = commit(message, "toolResult", "tool", function(observed)
+                ---@cast observed Neoagent.ObservedToolResultMessage
+                run:emit({
+                  type = "tool_end",
+                  call = util.copy(call),
+                  message = util.copy(observed),
+                })
+              end, function(_, accepted)
+                settle(accepted, result_receipt.read(result))
+              end)
+              if not committed then
+                return commit_failure(candidate, commit_err)
+              end
             end)
-            if not committed then
-              return commit_failure(candidate, commit_err)
+            settle(nil)
+            if not published then
+              error(failure, 0)
+            end
+            if failure then
+              return failure
             end
           end
 

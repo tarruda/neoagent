@@ -1030,11 +1030,16 @@ describe("neoagent.agent_loop", function()
 
   it("contains steering acknowledgement failures after durable commit", function()
     local offered = false
+    local stored = {}
     local result = wait(agent_loop.run({
       model = fake_model.new({ {
         result = fake_model.assistant({ { type = "text", text = "first" } }),
       } }),
       messages = {},
+      commit_message = function(message)
+        stored[#stored + 1] = message
+        return true
+      end,
       get_steering_messages = function()
         if offered then return {} end
         offered = true
@@ -1046,7 +1051,8 @@ describe("neoagent.agent_loop", function()
 
     assert.is_false(result.ok)
     assert.matches("acknowledgement failed", assert(result.error).message)
-    assert.are.equal(1, #result.new_messages)
+    assert.are.equal(2, #stored)
+    assert.are.same(stored, result.new_messages)
   end)
 
   it("contains commit failure for a partial failed Model response", function()

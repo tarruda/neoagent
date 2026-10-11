@@ -498,6 +498,11 @@ function Escalation:_request(tool, arguments, escalation, ctx)
   body[#body + 1] = ""
   body[#body + 1] =
     "This grants the tool your full user filesystem, process, environment, and network authority for this call."
+  local identity = identities.identity(tool)
+  if identity and identity.token == identities.exec_command then
+    body[#body + 1] =
+      "The started process retains this authority until it exits or is terminated, including after sandbox toggles."
+  end
   local candidate = self:_candidate(tool, arguments)
   local actions = {
     { id = "approve", label = "approve", key = "y" },
@@ -715,6 +720,10 @@ function Escalation:wrap(executors)
     self:_sync_session(ctx)
     if not escalation then
       return executors.restricted(tool, stripped, ctx)
+    end
+    local identity = identities.identity(tool)
+    if identity and identity.token == identities.exec_command then
+      tool = require("neoagent.tools.process").prepare_command(tool, stripped, ctx)
     end
     local decision, approval_err, decision_metadata
     if self:_matches(tool, stripped) then

@@ -57,10 +57,7 @@ local ESCAPE = "\27"
 ---@param command string
 ---@return string[]
 local function shell_argv(command)
-  local argv = vim.fn.split(vim.o.shell)
-  vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
-  argv[#argv + 1] = command
-  return argv
+  return require("neoagent.tools.command").argv(command)
 end
 
 ---@param value unknown

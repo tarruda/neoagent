@@ -17,6 +17,8 @@ describe("retained process RPC", function()
   local owner
   ---@type Neoagent.ProcessControllerFactory
   local factory
+  ---@type Neoagent.SandboxPlacement<unknown>
+  local placement
   ---@type Neoagent.WorkerLease[]
   local leases
   ---@type string?
@@ -53,7 +55,7 @@ describe("retained process RPC", function()
       return factory(spec, maximum, cleanup, released)
     end)
     local root = assert(vim.uv.cwd())
-    factory = remote.factory(require("neoagent.sandbox.placement").new({
+    placement = require("neoagent.sandbox.placement").new({
       profile = {
         id = "retained-test",
         filesystem = { default = "read", entries = {} },
@@ -182,7 +184,8 @@ describe("retained process RPC", function()
         end,
       },
       nvim = vim.env.NEOAGENT_NVIM,
-    }), { context = { workspace = { root = root, cwd = root } } })
+    })
+    factory = remote.factory(placement, { context = { workspace = { root = root, cwd = root } } })
   end)
   after_each(function()
     hold_completion, deliver_completion = false, nil
@@ -435,7 +438,9 @@ describe("retained process RPC", function()
   end)
 
   it("quarantines target capacity when its worker exits during a pending poll", function()
-    local admission = start("read line", { kind = "pipes", stdin = "open" })
+    local admission = owner:reserve(helper.spec("read line", { stdio = { kind = "pipes", stdin = "open" } }), nil,
+      { restricted = true, backend = "test" })
+    helper.success(function() return admission.start(0) end)
     local id = assert(admission.commit())
     local collecting = false
     inspect_request = function(message)
@@ -459,12 +464,59 @@ describe("retained process RPC", function()
     assert.is_false(reservation.discarded)
     assert.are.equal("quarantined", reservation.release)
     assert.matches("Target release could not be confirmed", assert(reservation.release_error).message, 1, true)
+    local fake = require("tests.helpers.fake_model")
+    local selected = require("neoagent.sandbox.composition").compose({
+      tools = { require("neoagent.tools.process").write_stdin() },
+    }, { enabled = false })
+    local response = helper.wait(require("neoagent.agent_loop").run({
+      model = fake.new({
+        { result = fake.assistant({ { type = "toolCall", id = "lost", name = "write_stdin",
+          arguments = { session_id = id, yield_time_ms = 0 } } }, "toolUse") },
+        { result = fake.assistant({ { type = "text", text = "reported" } }) },
+      }),
+      messages = {}, tools = selected.tools, execute_tool = selected.execute_tool,
+      context = { processes = owner }, commit_message = function() return true end,
+    }))
+    assert.is_true(response.ok, vim.inspect(response))
+    local message = assert(assert(response.new_messages)[2])
+    assert.is_true(message.isError)
+    assert.is_nil(assert(message.details).exit_code)
+    assert.matches("exit status is unconfirmed", require("neoagent.util").text_content(message.content), 1, true)
+    assert.is_true(assert(message.details).outcome_uncertain)
+    assert.matches("Do not retry automatically", require("neoagent.util").text_content(message.content), 1, true)
     assert(reservation.release_error).message = "caller mutation"
     owner:forget(id)
     status = owner:status()
     assert.are.equal(1, status.reserved)
     assert.is_true(assert(status.reservations[1]).discarded)
     assert.matches("Target release could not be confirmed", assert(assert(status.reservations[1]).release_error).message, 1, true)
+  end)
+
+  it("returns a failed poll while worker cleanup remains pending without spinning", function()
+    hold_worker_wait, quarantined = true, true
+    local admission = start("read line", { kind = "pipes", stdin = "open" })
+    local id = assert(admission.commit())
+    assert(leases[1]):dispose("worker channel lost")
+    assert(vim.wait(5000, function() return finish_worker_wait ~= nil end, 5))
+    assert.is_false(assert(owner:status().reservations[1]).done)
+    local calls = 0
+    local collect = owner.begin_interaction
+    function owner:begin_interaction(...)
+      calls = calls + 1
+      return collect(self, ...)
+    end
+    local fake = require("tests.helpers.fake_model")
+    local response = helper.wait(require("neoagent.agent_loop").run({
+      model = fake.new({
+        { result = fake.assistant({ { type = "toolCall", id = "poll", name = "write_stdin",
+          arguments = { session_id = id, yield_time_ms = 100 } } }, "toolUse") },
+        { result = fake.assistant({ { type = "text", text = "done" } }) },
+      }), messages = {}, tools = { require("neoagent.tools.process").write_stdin() },
+      context = { processes = owner }, commit_message = function() return true end,
+    }))
+    assert.is_true(response.ok, vim.inspect(response))
+    assert.is_true(assert(assert(response.new_messages)[2]).isError)
+    assert.are.equal(1, calls, "Tool retried an immediately returned failure without yielding")
   end)
 
   it("contains a stop whose independent supervision timer cannot be armed", function()
@@ -993,6 +1045,72 @@ describe("retained process RPC", function()
     assert.are.equal(1, owner:status().reserved)
     assert(vim.wait(1000, function() return #diagnostics == 1 end, 5), "watchdog cleanup diagnostic was lost")
     assert.matches("Target release could not be confirmed", assert(diagnostics[1]).message, 1, true)
+  end)
+
+  it("reports uncertain execution when startup acknowledgement misses its watchdog", function()
+    local probe = assert(vim.uv.new_timer())
+    local methods = getmetatable(probe).__index
+    probe:close()
+    local timer_start = methods.start
+    ---@type fun()?
+    local deadline
+    local startup_request, target_ended
+    inspect_request = function(message)
+      if message.type == "request" and message.method == "process_start" then
+        startup_request = message.request_id
+      end
+    end
+    intercept_reply = function(message)
+      if message.type == "event" then
+        if message.name == "process_complete" then
+          target_ended = message.value.released
+        elseif message.name == "process_released" then
+          target_ended = true
+        end
+        return true
+      end
+      return message.type == "response" and message.request_id == startup_request
+    end
+    methods.start = function(timer, timeout, interval, callback)
+      if timeout == require("neoagent.subprocess.validate").START_MS + 5000 and interval == 0 then
+        deadline = callback
+        return timer_start(timer, 60000, interval, callback)
+      end
+      return timer_start(timer, timeout, interval, callback)
+    end
+    quarantined = true
+    exit_gate = vim.fn.tempname()
+    local marker = exit_gate
+    local checked, err = pcall(function()
+      local selected = require("neoagent.sandbox.composition").compose(
+        { tools = require("neoagent.tools").codex() }, { enabled = true }, { platform = placement.platform }
+      )
+      local fake = require("tests.helpers.fake_model")
+      local root = assert(vim.uv.cwd())
+      local run = require("neoagent.agent_loop").run({
+        model = fake.new({
+          { result = fake.assistant({ { type = "toolCall", id = "startup", name = "exec_command", arguments = {
+            cmd = "printf effect > " .. vim.fn.shellescape(marker), shell = "sh", login = false,
+          } } }, "toolUse") },
+          { result = fake.assistant({ { type = "text", text = "reported" } }) },
+        }), messages = {}, tools = selected.tools, execute_tool = selected.execute_tool,
+        context = { processes = owner, workspace = require("neoagent.workspace").new({ root = root, cwd = root }) },
+        commit_message = function() return true end,
+      })
+      pending[#pending + 1] = run
+      assert(vim.wait(5000, function() return target_ended == true end, 5), "target did not execute and release")
+      assert.are.same({ "effect" }, vim.fn.readfile(marker))
+      assert(deadline)()
+      local response = helper.wait(run)
+      assert.is_true(response.ok, vim.inspect(response))
+      local message = assert(assert(response.new_messages)[2])
+      assert.is_true(message.isError)
+      assert.are.equal("process_supervision", assert(assert(message.execution).sandbox).kind, vim.inspect(message))
+      assert.is_true(assert(message.details).outcome_uncertain, vim.inspect(message))
+      assert.matches("Do not retry automatically", require("neoagent.util").text_content(message.content), 1, true)
+    end)
+    methods.start = timer_start
+    if not checked then error(err, 0) end
   end)
 
   it("reports later worker cleanup failure without requiring another session read", function()

@@ -13,7 +13,9 @@ describe("neoagent Windows image filenames", function()
   local directory
   ---@type Neoagent.ChatRun?
   local run
+  local original_path = vim.env.PATH
   after_each(function()
+    vim.env.PATH = original_path
     if run and not run:is_done() then
       run:cancel()
       assert(vim.wait(1000, function() return assert(run):is_done() end))
@@ -24,6 +26,9 @@ describe("neoagent Windows image filenames", function()
   it("commits an image read from a native long Unicode filename", function()
     directory = vim.fn.tempname()
     assert(fs.mkdirp(directory))
+    -- Exercise native filename and attachment storage without depending on
+    -- optional ImageMagick startup on the runner. Conversion has native tests.
+    vim.env.PATH = directory
     local filename = string.rep("界", 200) .. ".png"
     local png = vim.base64.decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==")
     local path = fs.join(directory, filename)
@@ -50,7 +55,8 @@ describe("neoagent Windows image filenames", function()
     assert(image.type == "image")
     assert.is_nil(image.filename)
     assert(vim.uv.fs_unlink(path))
-    assert.are.equal(image.bytes, #source.read(image))
+    assert.are.equal(png, source.read(image))
+    assert.are.equal(#png, image.bytes)
     assert.are.same(result, assert(model.requests[2]).messages[3])
   end)
 end)

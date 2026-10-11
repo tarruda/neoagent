@@ -12,36 +12,6 @@ local M = {}
 ---@field update_bytes integer
 ---@field policy? Neoagent.ToolRpcPolicyEvidence
 
----@param active Neoagent.ToolServerFacts
----@param keywords string[]
----@return fun(output: string, is_stderr: boolean)?
-local function policy_output_observer(active, keywords)
-  if #keywords == 0 then
-    return nil
-  end
-  local lowered = {}
-  local overlap_bytes = 0
-  for index, keyword in ipairs(keywords) do
-    lowered[index] = keyword:lower()
-    overlap_bytes = math.max(overlap_bytes, #keyword - 1)
-  end
-  local overlaps = { [false] = "", [true] = "" }
-  return function(output, is_stderr)
-    if active.policy and active.policy.denial_output or output == "" then
-      return
-    end
-    local text = (overlaps[is_stderr] .. output):lower()
-    for index, keyword in ipairs(lowered) do
-      if text:find(keyword, 1, true) then
-        active.policy = active.policy or {}
-        active.policy.denial_output = assert(keywords[index])
-        return
-      end
-    end
-    overlaps[is_stderr] = overlap_bytes > 0 and text:sub(-overlap_bytes) or ""
-  end
-end
-
 ---@param dependencies Neoagent.ToolDependencyOverrides
 ---@param dispatch? async fun(name: string, payload: unknown, call: Neoagent.ToolOperationCall, options: Neoagent.ToolDependencyOverrides): Neoagent.ToolResult
 ---@return Neoagent.RpcServerDomain
@@ -108,7 +78,10 @@ function M.new(dependencies, dispatch)
             return request_processes:run(spec, options)
           end,
         }
-      local observe = policy_output_observer(active, selected_context.denial_keywords)
+      local observe = require("neoagent.rpc.output_matcher").new(selected_context.denial_keywords, function(keyword)
+        active.policy = active.policy or {}
+        active.policy.denial_output = keyword
+      end)
       dependency_options.subprocesses = {
         ---@async
         run = function(spec, options)
@@ -117,8 +90,8 @@ function M.new(dependencies, dispatch)
           selected.on_output = function(event)
             -- Search stdout contains matched file content and names, not diagnostics.
             -- Shell commands may report failures on either stream.
-            if observe and (event.stream == "stderr" or active.method == "shell") then
-              observe(event.data, event.stream == "stderr")
+            if event.stream == "stderr" or active.method == "shell" then
+              observe(event.stream, event.data)
             end
             if on_output then
               on_output(event)

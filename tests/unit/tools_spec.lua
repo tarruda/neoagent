@@ -146,7 +146,7 @@ describe("neoagent bundled tools", function()
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
     assert.are.same({
       "read_file", "write_file", "edit_file", "shell", "grep", "find",
-      "read_agent_documentation", "update_plan",
+      "read_agent_documentation", "update_plan", "exec_command", "write_stdin",
     }, vim.tbl_map(function(t) return t.name end, tools.all()))
     assert.is_true(coding[1].capabilities.read_files)
     assert.are_not.equal(coding[1], tools.coding()[1])

@@ -29,6 +29,7 @@ local util = require("neoagent.util")
 ---@field workspace? Neoagent.Workspace
 ---@field agent? string
 ---@field session_id table
+---@field processes? Neoagent.ProcessSessions
 
 ---@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>: Neoagent.SandboxToolset<C>
 ---@field system_prompt? string
@@ -1271,6 +1272,7 @@ function M.new(opts)
           workspace = state.workspace,
           agent = config.name,
           session_id = state.session_id,
+          processes = state.process_sessions,
         },
         execute_tool = toolset.execute_tool,
         thinking_level = thinking_level,

@@ -13,7 +13,7 @@ local M = {}
 ---@field released fun() All native components have released their ownership after disposal.
 ---@field failed fun(code: string, message: string)
 ---@field input_failed? fun() Accepted input failed asynchronously.
----@field execution? fun(state: Neoagent.NativeExecution) Pipe launch evidence, independent of driver readiness.
+---@field execution? fun(state: Neoagent.NativeExecution) Native launch evidence, independent of driver readiness.
 
 ---@class Neoagent.SubprocessDriver
 -- The owner retains the driver before start() allocates native resources.

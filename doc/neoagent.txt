@@ -277,7 +277,8 @@ Neo, Chat, and Codex Profiles. Neo and Codex are configured for coding; Chat
 has an empty system prompt and no tools. Codex offers Models using the
 `openai-codex-responses` API. A global default using another API is ignored
 for Codex; its draft has no selected Model when none is compatible. Agents and
-Sessions are created when work begins.
+Sessions are created when work begins. Codex uses `exec_command` and
+`write_stdin`; Neo uses `shell`. An explicit `tools` list overrides the preset.
 
 `:Neoagent` opens the Neo draft for the current Workspace. Drafts retain
 model, thinking, sandbox, and input choices per Profile and Workspace until
@@ -1274,8 +1275,11 @@ stream, observer, and cleanup failures raise structured errors without
 inventing an exit status. Disposal rejects outcome waiters with
 `process_disposed` unless an earlier failure won. `wait_cleanup()` rejects
 only cleanup failures. After cleanup observation, `state().terminal` retains
-any observed exit outcome even when `wait()` raises. Native identifiers are
-not exposed.
+any observed exit outcome even when `wait()` raises. State reports operation
+failure or disposal in `failure`, and cleanup failure in `cleanup_error`.
+`execution` is `"not_started"`, `"started"`, or `"unknown"`, also reported on
+startup errors. Unknown execution may have produced effects. Native
+identifiers are not exposed.
 
 `scope:run()` uses the same spec. `scope:close(reason)` disposes live handles
 and rejects new work. `scope:is_settled()` means cleanup observation finished,
@@ -1315,8 +1319,7 @@ control.
 RETAINED PROCESSES                                 *neoagent-process-sessions*
 
 `agent:get_process_sessions()` owns retained processes across activities and
-UI closure. Agent destruction disposes them. This API adds no model-facing
-Tools. Standalone callers can construct
+UI closure. Agent destruction disposes them. Standalone callers can construct
 `neoagent.process_sessions.new(options, on_cleanup?, controller_factory?)` and
 must close the manager themselves. The default factory runs locally. Cleanup
 observers receive failures on the editor loop despite caller cancellation;
@@ -1340,7 +1343,8 @@ constructor:
 
 Pending output and returned history each have this byte budget and a 128-event
 limit. Excess old bytes are discarded while reads continue. Results report
-`dropped_bytes` since the last collection. IDs and records are in memory only.
+`dropped_bytes` since the last accepted collection. IDs are opaque strings
+valid only within the current Agent lifetime; records are not persisted.
 
 Reserve an admission before asynchronous startup: >lua
 
@@ -1361,23 +1365,30 @@ Reserve an admission before asynchronous startup: >lua
     end
   end)
 <
-`reserve(spec)` is synchronous inside the publishing Run and returns the owner
-before placement or startup. `admission.start(wait_ms)` starts once and
-returns a copied observation. If the target completed, the result has no
-`session_id` and `commit()` returns nil; otherwise commit publishes the
-provisional ID.
+`reserve(spec, controller_factory?, metadata?)` is synchronous. The optional
+factory selects placement; copied metadata remains available on interactions.
+`admission.start(wait_ms)` starts once in a managed Run and returns a copied
+observation. `commit()` acknowledges output and publishes its `session_id`,
+or returns nil if startup reported completion.
+`commit(false)` publishes the ID while leaving initial output for the next poll.
 
-Commit or abort every reservation, including unstarted ones. Keep the
-admission with the publication owner when startup runs in a child Run.
-Cancellation of the publishing Run aborts it; normal Run completion does not.
-Future Tool integration must tie commit to durable result acceptance.
+Settle every reservation with `commit()` or `abort(reason)`. If `start()` fails
+or is cancelled, it aborts automatically. After startup returns, the publication
+owner must handle failed publication and cancellation; ending a Run does not
+settle the reservation. Tool authors use `ctx.on_result` in |neoagent-composition|.
 
-`interact(id, wait_ms[, control])` collects new output and optionally sends
-one control. Wait budgets are 0–30000 ms, separate from the target lifetime
-deadline. Polls wake on output or completion. Concurrent interactions raise
-`process_session_busy`. Cancelling a poll preserves the target and unread
-output; a later remote interaction waits for any outstanding acknowledgement.
-Cancellation does not shorten worker supervision deadlines.
+`begin_interaction(id)` reserves one async `collect(wait_ms, control?)`.
+Call `commit()` to acknowledge output or `abort()` to leave it for the next
+poll. Replay includes current lifecycle state without repeating controls.
+Admissions and interactions provide `state()` for copied observations without
+consuming output.
+
+`interact(id, wait_ms, control?)` collects and acknowledges output immediately.
+It can also send one control. Wait budgets are 0–300000 ms, separate from the
+target lifetime deadline. Polls wake on output or completion. Concurrent
+interactions raise `process_session_busy`. Cancelling a poll preserves the
+target and unread output; a later remote interaction waits for any outstanding
+acknowledgement. Cancellation does not shorten worker supervision deadlines.
 
 Controls are `write` with `data`, `close_stdin`, `resize` with `columns` and
 `rows`, `interrupt`, and `terminate` with `reason`, each in a table with
@@ -1387,8 +1398,8 @@ sandbox placement; channel failures remain separate. Terminating a completed
 target or repeating acknowledged stdin closure succeeds.
 
 Results contain `events` (raw stream bytes), incremental UTF-8 `text`,
-`dropped_bytes`, `stdin_writable`, `resize_supported`, and three lifecycle
-flags:
+`dropped_bytes`, `execution`, `stdin_writable`, `resize_supported`, and three
+lifecycle flags:
 
   done           Target cleanup observation finished.
   cleanup_done   All controller cleanup outcomes, including worker shutdown, known.
@@ -1440,6 +1451,19 @@ or local image references:
 `ctx.on_update` require stable `id` and changing `revision` values; these
 fields are removed from persisted image blocks.
 
+Tools that retain resources through result publication register
+`ctx.on_result({ finish = finish, recover = recover })`:
+
+  finish(message?)   Called once after storage accepts the result, or with nil
+                     on abandonment. Commit or dispose resources here.
+  recover(error)     Optional failure result for execution or result-validation
+                     errors, before abandonment; not called for cancellation.
+
+Both functions are synchronous. Later cancellation or presentation failure
+does not undo accepted storage. Custom executors must forward this registration
+and preserve model-visible references and output. Process Tools acknowledge
+their ID and output separately; omitted output remains available for polling.
+
 Bundled `read_file` receives the Session's managed writer as
 `ctx.context.files`. It stores the processed image bytes before returning a
 reference; the original file can then change or disappear without changing the
@@ -1475,6 +1499,7 @@ Optional Tool fields are:
 Bundled presets are: >lua
 
   require("neoagent.tools").coding()
+  require("neoagent.tools").codex()
   require("neoagent.tools").read_only()
   require("neoagent.tools").update_plan()
   require("neoagent.tools").all()
@@ -1484,7 +1509,10 @@ The coding preset provides file read, write, edit, shell, and Neoagent
 documentation tools. The optional plan tool derives its state from successful
 calls on the active Session path.
 
-Restricted execution recognizes only the shipped `read_file`, `write_file`,
+The Codex preset replaces `shell` with `exec_command` and `write_stdin` for
+commands that can outlive a Tool call.
+
+Restricted workers recognize the shipped `read_file`, `write_file`,
 `edit_file`, `shell`, `grep`, and `find` implementations. The executor
 receives a copy with restricted `execute`; its other fields are unchanged.
 Custom Tool grants are described in |neoagent-sandbox|.
@@ -1507,6 +1535,37 @@ becomes unresponsive.
 Command-backed Tools set `NVIM` to the executing editor's server address and
 omit `NVIM_LISTEN_ADDRESS`. A restricted worker with no server supplies an
 empty address. The local subprocess API itself inherits the OS environment.
+
+`exec_command` accepts `cmd`, optional `workdir`, `shell`, `login` (default true),
+`tty` (default false), and optional lifetime `timeout_ms`. It uses Neovim's
+`shell` arguments and `shellcmdflag` unless an explicit shell is selected. `login`
+overrides POSIX login flags or PowerShell `NoProfile`; other arguments remain.
+Commands without a PTY receive closed stdin. A running command returns a
+`session_id` for later calls; see |neoagent-process-sessions| for its lifetime
+and capacity limits.
+
+`write_stdin` accepts that ID and optional `chars` (at most 65536 bytes).
+Empty input polls; nonempty input requires a PTY, except a single Ctrl-C
+(`"\u0003"` in JSON) interrupts either mode. `terminate=true`, incompatible with
+nonempty `chars`, requests termination even if the target ignores Ctrl-C.
+Platform interruption behavior is described in |neoagent-subprocess|.
+
+`yield_time_ms` accepts zero through the maxima below and limits observation:
+
+  Operation             Default (ms)    Maximum (ms)
+  exec_command          10000           30000
+  write_stdin, polling   5000          300000
+  write_stdin, input      250           30000
+
+Cancelling a poll preserves the process and unread output. Both Tools accept
+`max_output_tokens` (0–10000, default 10000; four bytes per token). Results
+contain incremental output, truncation notices, and the exit status when known.
+Details separate `request_error`, target `error`, and `cleanup_error`;
+`outcome_uncertain` warns that effects may have completed without a known result.
+A cleanup failure does not invalidate a confirmed command outcome.
+
+Sandbox compositions expose escalation options on `exec_command`. Approval
+applies for the process's lifetime; polling does not change its authority.
 
 `write_file` and `edit_file` replace regular files, preserve existing modes,
 reject symbolic links, and request mode `0644` for new files.

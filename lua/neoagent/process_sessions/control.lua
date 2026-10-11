@@ -1,14 +1,17 @@
 local util = require("neoagent.util")
 local validate = require("neoagent.subprocess.validate")
 local M = {}
+M.MAX_WAIT_MS = 300000
 
 ---@class Neoagent.ProcessTargetState
+---@field execution Neoagent.NativeExecution Native or RPC dispatch evidence; unknown is not proof of no execution.
 ---@field done boolean
 ---@field stdin_writable boolean
 ---@field resize_supported boolean
 ---@field outcome? Neoagent.SubprocessOutcome
 ---@field error? Neoagent.Error
 ---@field cleanup_error? Neoagent.Error
+---@field output_match? string Bounded keyword evidence from the execution adapter, independent of output eviction.
 
 ---@class Neoagent.ProcessControllerState: Neoagent.ProcessTargetState
 ---@field cleanup_done boolean Target and controller cleanup outcomes are known, independently of native release.

@@ -6,6 +6,8 @@ local M = {
   write_file = {},
   edit_file = {},
   shell = {},
+  exec_command = {},
+  write_stdin = {},
   grep = {},
   find = {},
 }
@@ -62,7 +64,8 @@ end
 ---@param tool Neoagent.Tool<C>
 ---@return boolean
 function M.is_parent(tool)
-  return implementations[tool.execute] == true
+  local identity = implementations[tool.execute]
+  return identity == true or type(identity) == "table" and identity.token == M.write_stdin
 end
 
 return M

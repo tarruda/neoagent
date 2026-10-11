@@ -1,3 +1,5 @@
+local identities = require("neoagent.tools.identities")
+local util = require("neoagent.util")
 local M = {}
 
 ---@alias Neoagent.SandboxApprovalContext {context?: {cwd?: string}|{workspace?: {cwd?: string}}}
@@ -45,11 +47,23 @@ local summaries = {
   end,
 }
 
----@param tool Neoagent.ToolDefinition
+---@generic C
+---@param tool Neoagent.Tool<C>
 ---@param arguments Neoagent.JsonObject
 ---@param ctx? Neoagent.SandboxApprovalContext
 ---@return string
 function M.for_tool(tool, arguments, ctx)
+  local identity = identities.identity(tool)
+  if identity and identity.token == identities.exec_command then
+    local directory = assert(cwd(ctx), "Command approval requires a working directory")
+    local spec = require("neoagent.subprocess.validate").spec(identity.prepare(arguments, identity.settings, {
+      workspace = { root = directory, cwd = directory },
+      on_update = function() end,
+    }))
+    local argv = util.copy(spec.argv)
+    local command = table.remove(argv)
+    return "Shell argv: " .. vim.json.encode(argv) .. "\nWorking directory: " .. spec.cwd .. "\n$ " .. command
+  end
   local summarize = summaries[tool.name]
   if summarize then
     return summarize(arguments, ctx)

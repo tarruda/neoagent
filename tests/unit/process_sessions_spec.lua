@@ -42,7 +42,7 @@ describe("retained process sessions", function()
       return prepare(command, 0, stdio)
     end)
     local id = assert(admission.commit())
-    assert.is_number(id)
+    assert.is_string(id)
     return id
   end
   local function poll(id, control, wait_ms)
@@ -76,9 +76,10 @@ describe("retained process sessions", function()
     local delivered = false
     publisher = async.run(function()
       local admission = owner:reserve(helper.spec("exec sleep 30"))
-      async.run(function()
+      local ok, err = pcall(function() return async.run(function()
         return admission.start(0)
-      end, { on_done = function() assert(publisher):cancel() end }):await()
+      end, { on_done = function() assert(publisher):cancel() end }):await() end)
+      if not ok then admission.abort("publication cancelled"); error(err, 0) end
       delivered = true
       admission.commit()
     end)
@@ -98,8 +99,9 @@ describe("retained process sessions", function()
     end)
     ---@type Neoagent.ProcessAdmission?
     local admission
-    local publisher = async.run(function()
+    local publisher = async.run(function(run)
       admission = owner:reserve(helper.spec("exit 0"))
+      run:on_cancel(function() assert(admission).abort("publication cancelled") end)
       assert.are.equal("process_validation", helper.failure(assert(admission).commit).code)
       assert.are.equal("process_capacity", helper.failure(function() owner:reserve(helper.spec("exit 0")) end).code)
       async.await(function() end)
@@ -150,6 +152,9 @@ describe("retained process sessions", function()
       assert.are.equal(0, owner:status().reserved)
     end
     local id = background("cat", { kind = "pipes", stdin = "open" })
+    for _, reference in ipairs({ false, 1, {}, string.rep("x", 65) }) do
+      assert.are.equal("process_validation", poll_failure(reference).code)
+    end
     for _, command in ipairs({
       { kind = "write", data = string.rep("x", 65537) },
       { kind = "write" },
@@ -174,6 +179,157 @@ describe("retained process sessions", function()
     assert.is_true(result.stdin_writable)
     assert.are.equal("", result.text)
     assert.are.equal("later\n", poll(id, { kind = "write", data = "later\n" }).text)
+  end)
+
+  it("owns unaccepted output independently of input and enforces one interaction", function()
+    local admission =
+      owner:reserve(helper.spec("cat", { stdio = { kind = "pipes", stdin = "open" } }), nil, { authority = "original" })
+    helper.success(function()
+      return admission.start(0)
+    end)
+    local id = assert(admission.commit())
+    local reading = owner:begin_interaction(id)
+    assert(reading.metadata).authority = "changed copy"
+    assert.are.equal(
+      "process_session_busy",
+      helper.failure(function()
+        owner:begin_interaction(id)
+      end).code
+    )
+    local value = helper.success(function()
+      return reading.collect(1000, { kind = "write", data = "once\n" })
+    end)
+    assert.are.equal("once\n", value.text)
+    assert.are.equal(
+      "process_validation",
+      assert(helper.complete(function()
+        return reading.collect(0)
+      end).error).code
+    )
+    reading.abort()
+    reading.abort()
+    assert.are.equal(id, admission.commit())
+    reading = owner:begin_interaction(id)
+    assert.are.equal("original", assert(reading.metadata).authority)
+    assert.are.equal(
+      "once\n",
+      helper.success(function()
+        return reading.collect(0)
+      end).text
+    )
+    reading.commit()
+    reading.abort()
+    assert.are.equal("", poll(id, nil, 0).text)
+    reading = owner:begin_interaction(id)
+    reading.commit()
+    assert.are.equal(
+      "process_validation",
+      assert(helper.complete(function()
+        return reading.collect(0)
+      end).error).code
+    )
+    assert.are.equal("later\n", poll(id, { kind = "write", data = "later\n" }).text)
+  end)
+
+  it("keeps an abandoned in-flight collection exclusive until it settles", function()
+    local id = background("cat", { kind = "pipes", stdin = "open" })
+    local reading = owner:begin_interaction(id)
+    local waiting = async.run(function() return reading.collect(50) end)
+    assert.is_false(waiting:is_done())
+    reading.abort()
+    assert.are.equal("process_session_busy", helper.failure(function() owner:begin_interaction(id) end).code)
+    assert.are.equal("process_disposed", assert(helper.wait(waiting).error).code)
+    assert.are.equal("", poll(id, nil, 0).text)
+    assert.are.equal("alive\n", poll(id, { kind = "write", data = "alive\n" }).text)
+  end)
+
+  it("replays unpublished output with current completion and final output", function()
+    local id = background("read first; printf BEFORE; read last; printf FINAL; exit 7",
+      { kind = "pipes", stdin = "open" })
+    local reading = owner:begin_interaction(id)
+    local observed = helper.success(function()
+      return reading.collect(1000, { kind = "write", data = "first\n" })
+    end)
+    assert.are.equal("BEFORE", observed.text)
+    assert.is_false(observed.done)
+    reading.abort()
+    reading = owner:begin_interaction(id)
+    helper.success(function() return reading.collect(0, { kind = "close_stdin" }) end)
+    reading.abort()
+    assert.is_true(helper.complete(function() return owner:wait_cleanup(4000) end))
+    local replay = poll(id, nil, 0)
+    assert.is_true(replay.done, "unpublished output replayed obsolete process state")
+    assert.are.equal(7, assert(replay.outcome).code)
+    assert.are.equal("BEFOREFINAL", replay.text)
+    assert.are.equal("", poll(id, nil, 0).text)
+  end)
+
+  it("keeps UTF-8 preview independent of rejected publication", function()
+    local id = background("read first; printf '\\342\\202'; read last; printf '\\254'; read end; printf END",
+      { kind = "pipes", stdin = "open" })
+    local reading = owner:begin_interaction(id)
+    local first = helper.success(function() return reading.collect(1000, { kind = "write", data = "a\n" }) end)
+    assert.are.equal("", first.text)
+    reading.abort()
+    reading = owner:begin_interaction(id)
+    helper.success(function() return reading.collect(0, { kind = "write", data = "b\n" }) end)
+    reading.abort()
+    local replay = poll(id, nil, 1000)
+    if replay.text == "" then replay = poll(id, nil, 1000) end
+    assert.are.equal("€", replay.text)
+    local ending = poll(id, { kind = "write", data = "c\n" })
+    local text = ending.text
+    if not ending.done then text = text .. poll(id).text end
+    assert.are.equal("END", text)
+  end)
+
+  it("bounds the surviving unpublished tail across an upstream output gap", function()
+    local id = background("read first; printf old; read last; printf '%100s' x", { kind = "pipes", stdin = "open" })
+    local reading = owner:begin_interaction(id)
+    assert.are.equal("old", helper.success(function()
+      return reading.collect(1000, { kind = "write", data = "a\n" })
+    end).text)
+    reading.abort()
+    reading = owner:begin_interaction(id)
+    helper.success(function() return reading.collect(0, { kind = "close_stdin" }) end)
+    reading.abort()
+    assert.is_true(helper.complete(function() return owner:wait_cleanup(4000) end))
+    local replay = poll(id, nil, 0)
+    assert.are.equal(string.rep(" ", 63) .. "x", replay.text)
+    assert.are.equal(39, replay.dropped_bytes)
+    assert.is_true(replay.done)
+  end)
+
+  it("publishes a process reference while retaining its unaccepted initial output", function()
+    local admission = helper.success(function()
+      return prepare("printf INITIAL; read last; printf FINAL", 100, { kind = "pipes", stdin = "open" })
+    end)
+    assert.are.equal("INITIAL", admission.result.text)
+    local id = assert(admission.commit(false))
+    assert.are.equal("INITIAL", poll(id, nil, 0).text)
+    assert.are.equal("", poll(id, nil, 0).text)
+    local final = poll(id, { kind = "close_stdin" })
+    local text = final.text
+    if not final.done then text = text .. poll(id).text end
+    assert.are.equal("FINAL", text)
+  end)
+
+  it("preserves execution evidence after a failed interaction without publishing an outcome", function()
+    local id = background("exec sleep 30", { kind = "pipes", stdin = "closed" })
+    local reading = owner:begin_interaction(id)
+    assert.are.equal("stdin_closed", assert(helper.complete(function()
+      return reading.collect(0, { kind = "write", data = "rejected\n" })
+    end).error).code)
+    local observed = reading.state()
+    assert.are.equal("started", observed.execution)
+    assert.is_false(observed.done)
+    assert.is_nil(observed.outcome)
+    observed.execution, observed.done = "not_started", true
+    assert.are.equal("started", reading.state().execution)
+    assert.is_false(reading.state().done)
+    reading.abort()
+    assert.is_false(poll(id, nil, 0).done)
+    assert.are.equal(1, owner:status().reserved)
   end)
 
   it("refuses admission from an already cancelled Run", function()
@@ -206,7 +362,7 @@ describe("retained process sessions", function()
         assert.are.equal("process_capacity", assert(inner.error).code)
       else
         assert.is_not.equal(outer_id, assert(inner.result).session_id)
-        assert.is_number(assert(inner.commit)())
+        assert.is_string(assert(inner.commit)())
       end
       assert.are.equal(capacity, owner:status().reserved)
     end)
@@ -528,7 +684,7 @@ describe("retained process sessions", function()
         end
         return controller
       end)
-      ---@type integer?
+      ---@type string?
       local first, second
       ---@type Neoagent.Run<Neoagent.ProcessSessionResult, unknown>?
       local collecting

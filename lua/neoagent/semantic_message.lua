@@ -116,6 +116,11 @@ local M = {}
 ---@field details? Neoagent.JsonValue
 ---@field execution? Neoagent.JsonObject
 ---@field usage? Neoagent.Usage
+---@field receipt? Neoagent.ToolResultReceipt
+
+---@class Neoagent.ToolResultReceipt
+---@field content Neoagent.InputBlock[] Content for which the owner claims delivery.
+---@field value Neoagent.JsonObject Transient owner-defined delivery facts.
 
 ---@class Neoagent.AssistantValidationError: Neoagent.Error
 ---@field kind 'protocol'
@@ -910,6 +915,7 @@ function M.normalize_tool_result(result, opts)
     details = true,
     execution = true,
     usage = true,
+    receipt = true,
   }
   local valid, err = fields(result, accepted, "Tool result")
   if not valid then
@@ -922,6 +928,24 @@ function M.normalize_tool_result(result, opts)
   normalized.content, err = normalize_content(normalized.content, "toolResult", opts and opts.transient == true)
   if not normalized.content then
     return nil, err
+  end
+  if normalized.receipt ~= nil then
+    local receipt = normalized.receipt
+    valid, err = fields(receipt, { content = true, value = true }, "Tool result receipt")
+    if not valid then
+      return nil, err
+    end
+    receipt.content, err = normalize_content(receipt.content, "toolResult", opts and opts.transient == true)
+    if not receipt.content then
+      return nil, err
+    end
+    if not object(receipt.value) then
+      return failure("Tool result receipt value must be an object")
+    end
+    valid, err = json(receipt.value, "Tool result receipt value")
+    if not valid then
+      return nil, err
+    end
   end
   if
     normalized.isError ~= nil and type(normalized.isError) ~= "boolean"
@@ -948,7 +972,7 @@ function M.normalize_tool_result(result, opts)
   if result.usage ~= nil and normalized.usage == nil then
     return nil, err
   end
-  -- Input blocks, error flags, details and usage have all passed validation.
+  -- Content, receipts, error flags, metadata and usage have passed validation.
   ---@cast normalized Neoagent.ToolResult
   return normalized
 end

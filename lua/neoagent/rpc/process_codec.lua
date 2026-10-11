@@ -14,6 +14,13 @@ local function integer(value, maximum)
   assert(native.integer(value, 0, maximum), "invalid process RPC integer")
 end
 
+---@param value unknown
+---@return string[]
+function M.context(value)
+  object(value, { output_keywords = false }, "Process context")
+  return require("neoagent.rpc.output_matcher").keywords(value.output_keywords)
+end
+
 -- Neovim marks decoded MessagePack maps, including nonempty ones, with its
 -- dictionary metatable. Remove only that wire marker before calling the
 -- stricter local API; do not weaken its plain-table contract.
@@ -48,12 +55,14 @@ function M.encode(result)
   -- worker cleanup independently of the worker-local target observation.
   local value = {
     done = result.done,
+    execution = result.execution,
     released = result.released,
     stdin_writable = result.stdin_writable,
     resize_supported = result.resize_supported,
     outcome = util.copy(result.outcome),
     error = util.copy(result.error),
     cleanup_error = util.copy(result.cleanup_error),
+    output_match = result.output_match,
     events = util.copy(result.events),
     dropped_bytes = result.dropped_bytes,
   }
@@ -72,19 +81,34 @@ end
 function M.collection(value, maximum)
   object(value, {
     done = true,
+    execution = true,
     released = true,
     stdin_writable = true,
     resize_supported = true,
     outcome = false,
     error = false,
     cleanup_error = false,
+    output_match = false,
     events = true,
     dropped_bytes = true,
   }, "Process collection")
   for _, field in ipairs({ "done", "released", "stdin_writable", "resize_supported" }) do
     assert(type(value[field]) == "boolean", "invalid process RPC state")
   end
+  assert(
+    value.execution == "not_started" or value.execution == "started" or value.execution == "unknown",
+    "invalid process execution evidence"
+  )
   integer(value.dropped_bytes, 9007199254740991)
+  if value.output_match ~= nil then
+    assert(
+      type(value.output_match) == "string"
+        and value.output_match ~= ""
+        and #value.output_match <= 128
+        and util.is_valid_utf8(value.output_match),
+      "invalid process output evidence"
+    )
+  end
   assert(
     type(value.events) == "table" and util.is_list(value.events) and #value.events <= 128,
     "invalid process output events"
@@ -169,7 +193,7 @@ end
 ---@return integer, boolean
 function M.collect(value)
   object(value, { wait_ms = true, until_exit = true }, "Process collect")
-  integer(value.wait_ms, 30000)
+  integer(value.wait_ms, require("neoagent.process_sessions.control").MAX_WAIT_MS)
   assert(type(value.until_exit) == "boolean", "invalid process collection mode")
   return value.wait_ms, value.until_exit
 end

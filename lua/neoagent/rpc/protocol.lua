@@ -4,7 +4,7 @@ local validation = require("neoagent.validation")
 
 local M = {}
 
-M.MARKER = "neoagent-rpc/14/2026-10-03"
+M.MARKER = "neoagent-rpc/15/2026-10-11"
 M.MAX_FRAME = 1024 * 1024
 M.MAX_REQUEST_CHUNK = 256 * 1024
 M.MAX_REQUEST = 17 * 1024 * 1024

@@ -14,7 +14,8 @@ describe("Windows PTY native ownership", function()
     exit_status = "retains ownership when native exit status is unavailable",
     exit_status_persistent = "releases a terminated process even when its exit status stays unavailable",
     queue_failure = "reports rejected resize work and still releases the console",
-    close_failure = "retries failed console release after reporting its operation failure",
+    close_failure = "retries failed console release while retaining its cleanup failure",
+    start_close_queue_failure = "bounds failed-start cleanup when console-close scheduling also fails",
   }) do
     local reject_resize, check_environment = scenario == "resize_failure", scenario == "environment"
     local check_strings = scenario == "native_strings"
@@ -36,6 +37,7 @@ describe("Windows PTY native ownership", function()
       local directory = check_strings and (vim.fn.tempname() .. "\237\160\128") or nil
       local stopped, exit_observed, inline_resize, completed = false, false, 0, 0
       local inject_failure = false
+      local close_attempts = 0
       local expected_completed = ({
         unsupported = 0,
         pipe_allocation = 0,
@@ -44,6 +46,7 @@ describe("Windows PTY native ownership", function()
         exit_status_persistent = 1,
         queue_failure = 1,
         close_failure = 2,
+        start_close_queue_failure = 1,
         environment = 1,
         native_strings = 1,
       })[scenario] or 2
@@ -123,6 +126,9 @@ describe("Windows PTY native ownership", function()
               end,
               DeleteProcThreadAttributeList = function() end,
               CreateProcessW = function(application, command, _, _, _, _, block, cwd, _, info)
+                if scenario == "start_close_queue_failure" then
+                  return 0
+                end
                 environment_block = native_text(block, true)
                 launch_text = { native_text(application), native_text(command), native_text(cwd) }
                 info.process = native.cast("void *", 2)
@@ -233,14 +239,18 @@ describe("Windows PTY native ownership", function()
               finished(result)
             end
           end)
-          if scenario == "queue_failure" then
+          if scenario == "queue_failure" or scenario == "start_close_queue_failure" then
             local methods = getmetatable(context).__index
             local queue = methods.queue
             restore_queue = function()
               methods.queue = queue
             end
             methods.queue = function()
-              methods.queue = queue
+              if scenario == "queue_failure" then
+                methods.queue = queue
+              else
+                close_attempts = close_attempts + 1
+              end
               return false
             end
           end
@@ -265,11 +275,16 @@ describe("Windows PTY native ownership", function()
           kill_grace_ms = 0,
           environment = { inherit = false, set = env },
         })
-        if scenario == "unsupported" or scenario == "pipe_allocation" then
+        if scenario == "unsupported" or scenario == "pipe_allocation" or scenario == "start_close_queue_failure" then
           local err = helper.failure(function()
             owner:spawn(selected)
           end)
           assert.are.equal(scenario == "unsupported" and "pty_unavailable" or "process_start", err.code)
+          if scenario == "start_close_queue_failure" then
+            -- Startup and its first cleanup failure may each request a stop.
+            -- Repeated rejection must leave further retries to the monitor.
+            assert.are.equal(2, close_attempts, "console-close rejection recursively retried cleanup")
+          end
           return
         end
         handle = owner:spawn(selected)
@@ -296,7 +311,8 @@ describe("Windows PTY native ownership", function()
             return #pending > 0
           end, 5))
           table.remove(pending, 1)()
-          assert.are.equal("process_cleanup", assert(handle:state().failure).code)
+          assert.is_nil(handle:state().failure)
+          assert.are.equal("process_cleanup", assert(handle:state().cleanup_error).code)
           assert.is_false(owner:is_settled())
           return
         end
@@ -344,6 +360,9 @@ describe("Windows PTY native ownership", function()
         )
         assert.is_false(owner:is_settled())
       end)
+      if scenario == "start_close_queue_failure" and restore_queue then
+        restore_queue()
+      end
       owner:close("test finished")
       local function deliver_work()
         local callbacks = pending
@@ -373,9 +392,21 @@ describe("Windows PTY native ownership", function()
       end
       assert.is_true(settled, "native console work did not finish")
       assert.is_true(released, "observed native termination did not release resources while status reads failed")
-      assert.is_true(helper.complete(function()
+      local cleanup = helper.complete(function()
         return owner:wait(2000)
-      end))
+      end)
+      if scenario == "close_failure" or scenario == "start_close_queue_failure" then
+        assert.are.equal("process_cleanup", assert(cleanup.error).code)
+        if handle then
+          assert.is_not_nil(handle:state().cleanup_error)
+        else
+          local cause = rawget(assert(cleanup.error), "cause")
+          assert(type(cause) == "table")
+          assert.are.equal("process_start", cause.code)
+        end
+      else
+        assert.is_true(cleanup)
+      end
       assert.is_true(ok, vim.inspect(failure))
       if scenario == "exit_status_persistent" then
         local state = assert(handle):state()

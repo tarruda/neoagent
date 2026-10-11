@@ -160,6 +160,9 @@ function M.new(spec, env, callbacks)
         end
       end
     end))
+    if callbacks.execution then
+      callbacks.execution("unknown")
+    end
     local restored = require("neoagent.subprocess.fork_exec").launch(
       slave,
       channel.write,
@@ -180,9 +183,15 @@ function M.new(spec, env, callbacks)
       error(validate.error("process_start", "Process execution acknowledgement failed or expired"), 0)
     end
     if #bytes == 4 then
+      if callbacks.execution then
+        callbacks.execution("not_started")
+      end
       local code = ffi.new("int[1]") --[[@as Neoagent.DarwinPtyInts]]
       ffi.copy(code, bytes, 4)
       check("execution", code[0])
+    end
+    if callbacks.execution then
+      callbacks.execution("started")
     end
     child.poll()
     return true

@@ -54,12 +54,17 @@ local RequestSelection = require("neoagent.request_selection")
 local M = {}
 
 ---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param profile_id string
 ---@return Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
-local function configured_toolset(configured)
-  return {
-    tools = configured._tools_supplied and util.copy(configured.tools) or require("neoagent.tools").coding({
+local function configured_toolset(configured, profile_id)
+  local tools = configured.tools
+  if not configured._tools_supplied then
+    tools = profile_id == "codex" and require("neoagent.tools").codex() or require("neoagent.tools").coding({
       shell_timeout = configured.shell_timeout,
-    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]],
+    })
+  end
+  return {
+    tools = util.copy(assert(tools)),
     execute_tool = configured.execute_tool,
   }
 end
@@ -295,7 +300,7 @@ local function make_neo(configured, auth, runtimes, runtime, profile_id, profile
       local selected = agent_options(neo, context)
       local applet = context.applet
       local dialogs = applet:dialogs()
-      local host_toolset = configured_toolset(selected)
+      local host_toolset = configured_toolset(selected, profile_id)
       local composition = require("neoagent.sandbox.composition")
       local toolset, status, _, sandbox_runtime =
         composition.switchable(host_toolset, selected.sandbox, { dialogs = dialogs })

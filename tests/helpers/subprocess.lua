@@ -52,7 +52,7 @@ function M.admit(owner, spec, wait_ms)
     admission.abort("test admission failed")
     error(result, 0)
   end
-  return { result = result, start = admission.start, commit = admission.commit, abort = admission.abort }
+  return { result = result, state = admission.state, start = admission.start, commit = admission.commit, abort = admission.abort }
 end
 
 ---@param command string

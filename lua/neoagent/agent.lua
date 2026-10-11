@@ -406,7 +406,7 @@ function M.from_config(options, runtime)
   end
   local workspace = require("neoagent.workspace").new({ root = workspace_root, cwd = workspace_root })
   ---@type Neoagent.ProcessControllerFactory?
-  local process_factory
+  local process_factory = require("neoagent.sandbox.placement").host_process
   if runtime.process_placement then
     process_factory = function(spec, maximum, on_cleanup, on_released)
       local factory = runtime.process_placement({

@@ -74,6 +74,43 @@ describe("native retained process authority", function()
     admission.commit()
   end)
 
+  it("enforces filesystem denial through the default Codex process composition", function()
+    local tools = require("neoagent.tools.process")
+    local selected = require("neoagent.sandbox.composition").compose(
+      { tools = { tools.exec_command(), tools.write_stdin() } },
+      { enabled = true, profile = function(default)
+        default.filesystem.entries[#default.filesystem.entries + 1] = {
+          path = vim.fs.joinpath(root, "denied"), access = "deny",
+        }
+        return default
+      end },
+      { platform = assert(platform), status = assert(status), nvim = vim.env.NEOAGENT_NVIM })
+    local fake = require("tests.helpers.fake_model")
+    for _, tty in ipairs({ false, true }) do
+      local result = helper.wait(require("neoagent.agent_loop").run({
+        model = fake.new({
+          { result = fake.assistant({ { type = "toolCall", id = "denied", name = "exec_command", arguments = {
+            cmd = jit.os == "Windows" and "type denied\\value" or "cat denied/value",
+            shell = jit.os == "Windows" and "cmd.exe" or "sh", login = false,
+            tty = tty, yield_time_ms = 10000,
+          } } }, "toolUse") },
+          { result = fake.assistant({ { type = "text", text = "denied" } }) },
+        }),
+        messages = {}, tools = selected.tools, execute_tool = selected.execute_tool,
+        context = { workspace = { root = root, cwd = root }, processes = owner },
+        commit_message = function() return true end,
+      }), 30000)
+      assert.is_true(result.ok, vim.inspect(result))
+      local message = assert(assert(result.new_messages)[2])
+      assert.is_true(message.isError, vim.inspect(message))
+      assert.is_number(assert(message.details).exit_code)
+      assert.is_not.equal(0, assert(message.details).exit_code)
+      local output = require("neoagent.util").text_content(message.content)
+      assert.is_nil(output:find("private", 1, true), output)
+      assert.is_true(helper.complete(function() return owner:wait_release(15000) end, 20000))
+    end
+  end)
+
   it("executes a restricted Tool while a retained target waits for input", function()
     local tool = require("neoagent.tools.write_file").new()
     local selected, _, _, runtime = require("neoagent.sandbox.composition").switchable({ tools = { tool } },

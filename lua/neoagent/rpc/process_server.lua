@@ -13,6 +13,19 @@ function M.new()
   local closed = false
   local started = false
   local completion_sent = false
+  local keywords = {}
+  ---@type string?
+  local output_match
+  ---@async
+  ---@param owner Neoagent.ProcessController
+  ---@param wait_ms integer
+  ---@param until_exit? boolean
+  ---@return table
+  local function collection(owner, wait_ms, until_exit)
+    local value = owner:collect(wait_ms, until_exit)
+    value.output_match = output_match
+    return codec.encode(value)
+  end
   return {
     error_kind = "process",
     -- One completion and, if native resources remain, one later release.
@@ -21,7 +34,7 @@ function M.new()
       send_complete = send
     end,
     open = function(context)
-      assert(validation.object(context) and next(context) == nil, "process connection requires an empty context")
+      keywords = codec.context(context)
     end,
     request = function(method, payload)
       return {
@@ -31,18 +44,23 @@ function M.new()
             assert(not started, "process connection already admitted a target")
             started = true
             local spec, maximum = codec.start(payload)
+            local observe = require("neoagent.rpc.output_matcher").new(keywords, function(keyword)
+              output_match = keyword
+            end)
             -- Publish ownership before any native allocation or startup wait.
             local owner = local_process.new(spec, maximum, nil, function()
               if completion_sent and not closed then
                 send_complete(codec.RELEASED, {})
               end
+            end, function(event)
+              observe(event.stream, event.data)
             end)
             controller = owner
             local started, err = pcall(owner.start, owner)
             async.run(function()
               owner:wait_cleanup()
               if not closed then
-                send_complete(codec.COMPLETE, codec.encode(owner:collect(0)))
+                send_complete(codec.COMPLETE, collection(owner, 0))
                 completion_sent = true
               end
             end)
@@ -61,7 +79,7 @@ function M.new()
           local owner = assert(controller, "process connection has no target")
           if method == "process_collect" then
             local wait_ms, until_exit = codec.collect(payload)
-            return codec.encode(owner:collect(wait_ms, until_exit))
+            return collection(owner, wait_ms, until_exit)
           elseif method == "process_ping" then
             assert(validation.object(payload) and next(payload) == nil, "invalid process liveness probe")
             return {}
@@ -81,6 +99,7 @@ function M.new()
               codec.COMPLETE,
               codec.encode({
                 done = true,
+                execution = "not_started",
                 released = true,
                 stdin_writable = false,
                 resize_supported = false,
