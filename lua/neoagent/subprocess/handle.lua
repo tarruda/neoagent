@@ -23,6 +23,8 @@ local M = {}
 ---@field resize_supported boolean
 ---@field terminal? Neoagent.SubprocessOutcome
 ---@field failure? Neoagent.Error
+---@field cleanup_error? Neoagent.Error Independent native cleanup failure.
+---@field execution Neoagent.NativeExecution Whether target execution was admitted by the native launcher.
 ---@field released boolean
 
 ---@class Neoagent.SubprocessHandle
@@ -49,6 +51,7 @@ local M = {}
 ---@field kill_timer? uv.uv_timer_t
 ---@field cleanup? Neoagent.ProcessCleanupDeadline
 ---@field ready boolean
+---@field execution Neoagent.NativeExecution
 ---@field early Neoagent.SubprocessOutputEvent[]
 ---@field early_bytes integer
 ---@field started_at integer
@@ -159,6 +162,7 @@ function Owned:finish(err)
   if not driver_closed then
     err = err or validate.error("process_cleanup", "Could not close process resources")
   end
+  err = err or self.cleanup_error
   if err then
     self.cleanup_error = util.with_cause(err, self.failure or self.disposal)
   end
@@ -241,6 +245,18 @@ function Owned:fail(err)
   notify(self)
 end
 
+---@param err Neoagent.Error
+function Owned:cleanup_failed(err)
+  if self.settled or self.cleanup_error then
+    return
+  end
+  -- Forcing partial-startup cleanup can synchronously report this failure
+  -- again. Record the transition before asking the native owner to stop.
+  self.cleanup_error = err
+  self:force()
+  notify(self)
+end
+
 ---@param reason string
 function Owned:dispose(reason)
   if self.settled or self.disposal then
@@ -254,7 +270,7 @@ end
 
 ---@param reason string
 function Owned:terminate(reason)
-  if self.settled or self.terminating or self.disposal or self.failure then
+  if self.settled or self.terminating or self.disposal or self.failure or self.cleanup_error then
     return
   end
   self.terminating = true
@@ -340,6 +356,14 @@ function Owned:output(stream, bytes)
   end
 end
 
+---@param err Neoagent.Error
+---@return Neoagent.Error
+function Owned:start_failure(err)
+  local failure = util.copy(err)
+  rawset(failure, "execution", self.execution)
+  return failure
+end
+
 function Owned:start()
   local started, driver = pcall(function()
     -- Reserve every lifecycle timer before native startup. Termination and
@@ -354,6 +378,9 @@ function Owned:start()
     end
     ---@type Neoagent.SubprocessCallbacks
     local callbacks = {
+      execution = function(value)
+        self.execution = value
+      end,
       output = function(stream, bytes)
         self:output(stream, bytes)
       end,
@@ -374,7 +401,11 @@ function Owned:start()
         self:release()
       end,
       failed = function(code, message)
-        self:fail(validate.error(code, message))
+        if code == "process_cleanup" then
+          self:cleanup_failed(validate.error(code, message))
+        else
+          self:fail(validate.error(code, message))
+        end
       end,
     }
     local driver = (self.spec.stdio.kind == "pty" and pty or pipe).new(self.spec, self.env, callbacks)
@@ -385,7 +416,7 @@ function Owned:start()
     self.failure = type(driver) == "table" and driver.kind and driver
       or validate.error("process_start", "Failed to start process")
     self:finish()
-    error(self.failure, 0)
+    error(self:start_failure(self.failure), 0)
   end
   self.driver = driver
   local launched, failure = pcall(driver.start)
@@ -398,7 +429,7 @@ function Owned:start()
     if self.driver_closed then
       self:finish()
     end
-    error(self.failure or self.disposal or self.cleanup_error, 0)
+    error(self:start_failure(assert(self.failure or self.disposal or self.cleanup_error)), 0)
   end
   self.started_at = math.floor(vim.uv.hrtime())
   if self.failure or self.disposal or self.draining then
@@ -430,7 +461,7 @@ function Owned:start()
     if self.driver_closed then
       self:finish()
     end
-    error(self.failure or self.disposal or self.cleanup_error, 0)
+    error(self:start_failure(assert(self.failure or self.disposal or self.cleanup_error)), 0)
   end
   local function publish()
     self.ready = true
@@ -457,7 +488,7 @@ end
 ---@param self Neoagent.OwnedSubprocess
 ---@return Neoagent.SubprocessDriver
 local function control(self)
-  if self.settled or self.failure or self.disposal or self.terminating or self.draining then
+  if self.settled or self.failure or self.cleanup_error or self.disposal or self.terminating or self.draining then
     error(validate.error("process_terminal", "Process no longer accepts controls"), 0)
   end
   return assert(self.driver)
@@ -480,6 +511,7 @@ function M.new(spec, observer, on_cleanup, on_release, capture)
     capture = capture,
     handle = {},
     ready = false,
+    execution = "not_started",
     early = {},
     early_bytes = 0,
     started_at = 0,
@@ -494,7 +526,14 @@ function M.new(spec, observer, on_cleanup, on_release, capture)
   -- Only these closures cross the API boundary; native objects stay private.
   self.handle = {
     state = function()
-      local available = not (self.settled or self.failure or self.disposal or self.terminating or self.draining)
+      local available = not (
+        self.settled
+        or self.failure
+        or self.cleanup_error
+        or self.disposal
+        or self.terminating
+        or self.draining
+      )
       return {
         phase = (self.failure or self.cleanup_error) and "failed"
           or self.disposal and "disposed"
@@ -504,7 +543,9 @@ function M.new(spec, observer, on_cleanup, on_release, capture)
         stdin_writable = available and self.driver ~= nil and self.driver.writable(),
         resize_supported = available and spec.stdio.kind == "pty",
         terminal = util.copy(self.outcome),
-        failure = util.copy(self.failure or self.cleanup_error or self.disposal),
+        failure = util.copy(self.failure or self.disposal),
+        cleanup_error = util.copy(self.cleanup_error),
+        execution = self.execution,
         released = self.released,
       }
     end,

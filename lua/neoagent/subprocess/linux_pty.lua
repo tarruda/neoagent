@@ -245,6 +245,9 @@ function M.new(spec, env, callbacks)
     local pid = ffi.new("int[1]") --[[@as Neoagent.NativePid]]
     local function execute(path)
       local backing = assert(arguments)
+      if callbacks.execution then
+        callbacks.execution("unknown")
+      end
       local result = C.posix_spawn(pid, path, actions, attributes, backing.argv, backing.env)
       if result == 8 and glibc then -- Match glibc execvp's ENOEXEC behavior.
         local shell = { "/bin/sh", path }
@@ -252,7 +255,10 @@ function M.new(spec, env, callbacks)
           shell[#shell + 1] = spec.argv[index]
         end
         backing.strings[#backing.strings + 1] = shell
-        return C.posix_spawn(pid, "/bin/sh", actions, attributes, strings(shell), backing.env)
+        result = C.posix_spawn(pid, "/bin/sh", actions, attributes, strings(shell), backing.env)
+      end
+      if callbacks.execution then
+        callbacks.execution(result == 0 and "started" or "not_started")
       end
       return result
     end

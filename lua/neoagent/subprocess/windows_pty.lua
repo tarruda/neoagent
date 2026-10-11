@@ -363,6 +363,9 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
     for index, name in ipairs(names) do
       entries[index] = name .. "=" .. env[name]
     end
+    if callbacks.execution then
+      callbacks.execution("unknown")
+    end
     local created = kernel.CreateProcessW(
       wide(application),
       wide(require("neoagent.process.windows_command").line(spec.argv)),
@@ -376,6 +379,9 @@ long __stdcall ResizePseudoConsole(void *, NeoagentConsoleWorkSize);
       info
     )
     local failure = kernel.GetLastError()
+    if callbacks.execution then
+      callbacks.execution(created ~= 0 and "started" or "not_started")
+    end
     if created ~= 0 then
       kernel.CloseHandle(info.thread)
       tree:adopt(info.process)

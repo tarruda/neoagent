@@ -1274,8 +1274,11 @@ stream, observer, and cleanup failures raise structured errors without
 inventing an exit status. Disposal rejects outcome waiters with
 `process_disposed` unless an earlier failure won. `wait_cleanup()` rejects
 only cleanup failures. After cleanup observation, `state().terminal` retains
-any observed exit outcome even when `wait()` raises. Native identifiers are
-not exposed.
+any observed exit outcome even when `wait()` raises. State reports operation
+failure or disposal in `failure`, and cleanup failure in `cleanup_error`.
+`execution` is `"not_started"`, `"started"`, or `"unknown"`, also reported on
+startup errors. Unknown execution may have produced effects. Native
+identifiers are not exposed.
 
 `scope:run()` uses the same spec. `scope:close(reason)` disposes live handles
 and rejects new work. `scope:is_settled()` means cleanup observation finished,
@@ -1387,8 +1390,8 @@ sandbox placement; channel failures remain separate. Terminating a completed
 target or repeating acknowledged stdin closure succeeds.
 
 Results contain `events` (raw stream bytes), incremental UTF-8 `text`,
-`dropped_bytes`, `stdin_writable`, `resize_supported`, and three lifecycle
-flags:
+`dropped_bytes`, `execution`, `stdin_writable`, `resize_supported`, and three
+lifecycle flags:
 
   done           Target cleanup observation finished.
   cleanup_done   All controller cleanup outcomes, including worker shutdown, known.

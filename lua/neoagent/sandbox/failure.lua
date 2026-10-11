@@ -73,7 +73,7 @@ function M.denied_result(value, platform, evidence)
   if platform == "linux" and type(value.details) == "table" then
     local constants = (vim.uv --[[@as {constants?: table<string, integer>}]]).constants
     local sigsys = constants and constants.SIGSYS
-    if sigsys and rawget(value.details, "exit_code") == 128 + sigsys then
+    if sigsys and (rawget(value.details, "exit_code") == 128 + sigsys or rawget(value.details, "signal") == sigsys) then
       return true
     end
   end

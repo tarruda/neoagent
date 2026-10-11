@@ -104,6 +104,7 @@ function M.new(options, on_cleanup, default_factory)
     -- without returning a controller has not acquired native resources.
     return {
       done = not entry.constructing and (entry.started or entry.discarded),
+      execution = "not_started",
       cleanup_done = not entry.constructing and (entry.started or entry.discarded),
       released = not entry.constructing,
       stdin_writable = false,

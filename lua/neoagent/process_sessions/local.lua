@@ -7,8 +7,9 @@ local M = {}
 ---@param output_bytes integer
 ---@param on_cleanup? fun(error: Neoagent.Error)
 ---@param on_released? fun()
+---@param on_output? fun(event: Neoagent.SubprocessOutputEvent) Execution adapter evidence, before bounded output eviction.
 ---@return Neoagent.ProcessController
-function M.new(spec, output_bytes, on_cleanup, on_released)
+function M.new(spec, output_bytes, on_cleanup, on_released, on_output)
   local scope, wait_cleanup = require("neoagent.subprocess.scope").new(on_released)
   local buffer = require("neoagent.process_sessions.buffer").new(output_bytes)
   ---@type Neoagent.SubprocessHandle?
@@ -16,6 +17,8 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
   ---@type Neoagent.Error?
   local failure, cleanup_error
   local started, done, disposed = false, false, false
+  ---@type Neoagent.NativeExecution
+  local execution = "not_started"
   local notification = async.notification()
   local notify, changed = notification.notify, notification.wait
   local function state()
@@ -28,7 +31,8 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
       resize_supported = native ~= nil and native.resize_supported,
       outcome = native and native.terminal,
       error = util.copy(failure or native and native.failure),
-      cleanup_error = util.copy(cleanup_error),
+      cleanup_error = util.copy(cleanup_error or native and native.cleanup_error),
+      execution = native and native.execution or execution,
     }
   end
   return {
@@ -40,6 +44,9 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
       started = true
       local launched, value = pcall(scope.spawn, scope, spec, {
         on_output = function(event)
+          if on_output then
+            on_output(event)
+          end
           buffer.append(event)
           notify()
         end,
@@ -48,6 +55,8 @@ function M.new(spec, output_bytes, on_cleanup, on_released)
         handle = value
       else
         failure = util.normalize_error(value, "process_start")
+        local observed = rawget(failure, "execution")
+        execution = (observed == "not_started" or observed == "started") and observed or "unknown"
         scope:close("Process session failed to start")
       end
       -- This cleanup observer belongs to the controller, not to the caller

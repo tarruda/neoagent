@@ -163,9 +163,12 @@ describe("native subprocess contracts", function()
         owner:spawn(selected)
       end)
       assert.are.equal("process_start", err.code)
+      assert.are.equal("not_started", rawget(err, "execution"))
       for _, code in ipairs({ 122, 127 }) do
+        local handle = owner:spawn(helper.spec("exit " .. code, { stdio = stdio }))
+        assert.are.equal("started", handle:state().execution)
         local result = helper.complete(function()
-          return owner:run(helper.spec("exit " .. code, { stdio = stdio }), { capture = false })
+          return handle:wait()
         end)
         assert.are.equal(code, result.code)
       end

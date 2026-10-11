@@ -45,6 +45,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
   ---@type Neoagent.ProcessTargetState
   local target = {
     done = false,
+    execution = "not_started",
     stdin_writable = spec.stdio.kind == "pty" or spec.stdio.stdin == "open",
     resize_supported = spec.stdio.kind == "pty",
   }
@@ -113,6 +114,8 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       outcome = util.copy(target.outcome),
       error = util.copy(failure or target.error),
       cleanup_error = util.copy(cleanup_error or target.cleanup_error),
+      output_match = target.output_match,
+      execution = target.execution,
     }
   end
   local function remember(collection)
@@ -131,6 +134,8 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
       outcome = collection.outcome,
       error = collection.error,
       cleanup_error = target.cleanup_error or collection.cleanup_error,
+      output_match = target.output_match or collection.output_match,
+      execution = collection.execution,
     }
     report_cleanup(first_cleanup_error)
   end
@@ -390,6 +395,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
           -- Encoding and aggregate limits can reject the request locally.
           -- Once transport dispatch begins, failed writes may be partial.
           target_requested = true
+          target.execution = "unknown"
         end or nil,
       })
       if pending.peer_interrupted then
@@ -400,7 +406,9 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
         remember(codec.collection(value, maximum))
       else
         assert(require("neoagent.validation").object(value) and next(value) == nil, "invalid process acknowledgement")
-        if method == "process_control" and payload.kind == "close_stdin" then
+        if method == "process_start" then
+          target.execution = "started"
+        elseif method == "process_control" and payload.kind == "close_stdin" then
           stdin_closed = true
           target.stdin_writable = false
         elseif method == "process_control" and payload.kind == "terminate" then
@@ -455,7 +463,7 @@ local function controller(spec, maximum, launch, on_cleanup, on_released)
         if shutdown.requested then
           error(async.cancelled_error, 0)
         end
-        invocation:open({})
+        invocation:open({ output_keywords = require("neoagent.sandbox.failure").DENIAL_KEYWORDS })
         request("process_start", { spec = spec, output_bytes = maximum }, validate.START_MS + REQUEST_GRACE_MS)
         if lifetime_timer and not completion.received and not shutdown.requested then
           -- The worker owns the actual target deadline. This independent
