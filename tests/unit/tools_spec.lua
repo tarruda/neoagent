@@ -143,7 +143,7 @@ describe("neoagent bundled tools", function()
     local coding = tools.coding()
     local read_only = tools.read_only()
     assert.are.same({
-      "read_file", "write_file", "edit_file", "shell", "read_agent_documentation",
+      "read", jit.os == "Windows" and "powershell" or "bash", "edit", "write",
     }, vim.tbl_map(function(t) return t.name end, coding))
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
     assert.are.same({

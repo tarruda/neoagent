@@ -174,6 +174,7 @@ describe("Agent Applet boundaries", function()
       name = "boundary",
       workspace_trust = false,
       default_registry = false,
+      sandbox = { enabled = false },
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = {

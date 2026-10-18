@@ -58,7 +58,7 @@ local function assistant(content, stop_reason)
 end
 
 local session = assert(require("neoagent.profile_sessions").new({
-  profile_id = "neo",
+  profile_id = "pi",
   workspace = workspace,
   persistence = { enabled = true, directory = persistence },
 }))

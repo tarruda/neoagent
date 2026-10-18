@@ -15,6 +15,7 @@ local function options(name)
     name = name,
     default_registry = false,
     workspace_trust = false,
+    sandbox = { enabled = false },
     persistence = { enabled = false },
     default_model = { provider = "fake", model = "test" },
     providers = { fake = { api = "fake", models = { test = {} } } },

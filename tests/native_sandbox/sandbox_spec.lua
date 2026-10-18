@@ -1788,7 +1788,7 @@ describe("neoagent shared sandbox contract", function()
     end
     assert.is_nil(assert(assert(agent:get_toolset().tools[1])
       .input_schema.properties).options)
-    assert.are.equal("Neo", agent:config().name)
+    assert.are.equal("Pi", agent:config().name)
     -- Explicit execution settings also apply to Profiles without toggle controls.
     assert.is_true(assert(applet:_resolve("chat")).config.sandbox.enabled)
     applet, agent = setup_agent(false)

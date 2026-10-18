@@ -32,6 +32,62 @@ local function model(transport, custom_tools)
 end
 
 describe("Profile request context and freeform Tools", function()
+  it("publishes Codex skill locators and usage guidance as request-only instructions", function()
+    local project = require("neoagent.profiles.codex.context").prepare({
+      workspace = { root = "/project", cwd = "/project" },
+      prompt = "work",
+      tools = {},
+      agent_instructions = {},
+      skills = {
+        {
+          name = "review",
+          description = "Review changes",
+          path = "/skills/review/SKILL.md",
+          directory = "/skills/review",
+          source = "global",
+        },
+      },
+    }, "/bin/bash")
+    local history = { { role = "user", content = "review this" } }
+    local request = require("neoagent.api.request_preparation").project(project, history, "base", {})
+    local developer = assert(request.messages[1])
+    assert.are.equal("developer", developer.role)
+    local text = util.text_content(developer.content)
+    assert.matches("review: Review changes (file: /skills/review/SKILL.md)", text, 1, true)
+    assert.matches("How to use skills", text, 1, true)
+    assert.matches("open and read its `SKILL.md` completely", text, 1, true)
+    assert.are.same({ { role = "user", content = "review this" } }, history)
+  end)
+  it("attributes every Codex instruction source in broad-to-specific order", function()
+    local files = {
+      { path = "/home/example/global.md", content = "GLOBAL: see ./global-guide.md" },
+      { path = "/project/AGENTS.md", content = "REPOSITORY: see ./root-guide.md" },
+      { path = '/project/nested/quoted & "scope"/AGENTS.md', content = "NESTED: see ./local-guide.md" },
+    }
+    local project = require("neoagent.profiles.codex.context").prepare({
+      workspace = { root = "/project", cwd = "/project/nested" },
+      prompt = "work",
+      tools = {},
+      skills = {},
+      agent_instructions = files,
+    }, "/bin/bash")
+    local request = require("neoagent.api.request_preparation").project(project, {}, "base", {})
+    local message = assert(request.messages[1])
+    assert.are.equal("userContext", message.role)
+    local context = util.text_content(message.content)
+    local position = 1
+    for _, file in ipairs(files) do
+      local path = file.path:gsub("&", "&amp;"):gsub('"', "&quot;")
+      local first, last = context:find('<project_instructions path="' .. path .. '">', position, true)
+      assert(first, "missing instruction origin: " .. file.path)
+      local close = context:find("</project_instructions>", assert(last), true)
+      assert(close)
+      assert.matches(file.content, context:sub(assert(last) + 1, close - 1), 1, true)
+      position = close + 1
+    end
+    assert.matches("broadest to most specific", context, 1, true)
+  end)
+
   it("encodes projected image detail in Completions user and Tool images", function()
     local fixture = require("tests.helpers.attachments").new()
     local image = fixture.image("synthetic image bytes", "image/png")
@@ -197,6 +253,27 @@ describe("Profile request context and freeform Tools", function()
     assert.are.equal(1, estimates)
   end)
 
+  it("keeps trusted Profile context intact during bounded native reduction", function()
+    local target = model(fake_transport.new({}))
+    local profile = require("neoagent.profiles.codex.context").prepare({
+      workspace = { root = vim.fn.getcwd(), cwd = vim.fn.getcwd() },
+      prompt = "work",
+      tools = {},
+      skills = {},
+      agent_instructions = { { path = "AGENTS.md", content = string.rep("trusted instructions ", 300) } },
+    }, vim.o.shell)
+    local call =
+      assert(profile({ messages = { { role = "user", content = string.rep("history ", 2000) } }, tools = {} }))
+    local trusted = util.copy(call.messages[1])
+    local reduced, err = require("neoagent.compaction.reduction").request(target, {
+      messages = call.messages,
+      system_prompt = call.system_prompt,
+    }, 2500, true, "compact")
+    assert(reduced, err and err.message)
+    assert.are.same(trusted, reduced[1])
+    assert.matches("truncated for compaction", util.text_content(reduced[#reduced].content))
+  end)
+
   it("budgets request-only instructions through Responses", function()
     local target = model(fake_transport.new({}))
     local baseline = target:estimate_request({ messages = { { role = "user", content = "work" } } })
@@ -251,6 +328,91 @@ describe("Profile request context and freeform Tools", function()
     local body = vim.json.decode((assert(assert(transport.requests[1]).body)))
     assert.are.equal("string", type(body.input[1].input))
     assert.are.equal("custom_tool_call_output", body.input[2].type)
+  end)
+
+  it("streams canonical patch arguments and replays custom calls without accumulating context", function()
+    local root = vim.fn.tempname()
+    assert(require("neoagent.fs").mkdirp(root))
+    local patch = "*** Begin Patch\n*** Add File: result.txt\n+published\n*** End Patch"
+    local tool = require("neoagent.tools.codex.apply_patch").new()
+    local custom = { type = "custom_tool_call", id = "ct1", call_id = "call1", name = "apply_patch", input = patch }
+    local transport = fake_transport.new({
+      {
+        chunks = {
+          event({
+            type = "response.output_item.added",
+            output_index = 0,
+            item = { type = "custom_tool_call", id = "ct1", call_id = "call1", name = "apply_patch", input = "" },
+          }),
+          event({ type = "response.custom_tool_call_input.delta", output_index = 0, delta = patch:sub(1, 20) }),
+          event({ type = "response.custom_tool_call_input.done", output_index = 0, input = patch }),
+          event({ type = "response.completed", response = { status = "completed", output = { custom } } }),
+        },
+      },
+      { chunks = { event({ type = "response.completed", response = { status = "completed", output = { answer } } }) } },
+    })
+    local prompt = require("neoagent.profiles.codex.prompt").prepare({
+      workspace = { root = root, cwd = root },
+      prompt = "work",
+      tools = { tool },
+      agent_instructions = {},
+      skills = {},
+      base_prompt = "Instructions",
+      execution_guidance = "Host execution is enabled",
+    })
+    ---@type Neoagent.Message[]
+    local committed = {}
+    local result = require("neoagent.agent_loop")
+      .run({
+        model = model(transport),
+        messages = { { role = "user", content = "work" } },
+        tools = { tool },
+        context = { workspace = { root = root, cwd = root } },
+        system_prompt = prompt.system_prompt,
+        prepare_request = prompt.prepare_request,
+        commit_message = function(message)
+          committed[#committed + 1] = message
+          return true
+        end,
+      })
+      :await()
+    local output = require("neoagent.fs").read(root .. "/result.txt")
+    vim.fn.delete(root, "rf")
+    assert.is_true(result.ok, vim.inspect(result))
+    assert.are.equal("published\n", output)
+    assert.are.equal(3, #committed)
+    local assistant = committed[1]
+    assert(assistant and assistant.role == "assistant")
+    local call = assistant.content[1]
+    assert(call and call.type == "toolCall")
+    assert.are.same({ patch = patch }, call.arguments)
+    assert.are.equal("patch", call.text_input)
+    local first = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    local second = vim.json.decode((assert(assert(transport.requests[2]).body)))
+    assert.are.equal("custom", first.tools[1].type)
+    assert.are.equal("grammar", first.tools[1].format.type)
+    assert.are.equal("developer", first.input[2].role)
+    assert.matches("environment_context", first.input[3].content[1].text)
+    assert.are.equal(1, #vim.tbl_filter(function(message)
+      return message.role == "developer"
+    end, second.input))
+    local calls = vim.tbl_filter(function(message)
+      return message.type == "custom_tool_call"
+    end, second.input)
+    assert.are.equal(patch, calls[1].input)
+    assert.are.equal("custom_tool_call_output", second.input[#second.input].type)
+    local fallback = fake_transport.new({
+      { chunks = { event({ type = "response.completed", response = { status = "completed", output = { answer } } }) } },
+    })
+    local replay =
+      model(fallback, false):stream({ messages = { committed[1], committed[2] }, tools = { tool } }):await()
+    assert.is_true(replay.ok)
+    local json = vim.json.decode((assert(assert(fallback.requests[1]).body)))
+    assert.are.equal("function", json.tools[1].type)
+    assert.are.equal("function_call", json.input[1].type)
+    assert.are.same({ patch = patch }, vim.json.decode(json.input[1].arguments))
+    assert.are.equal("function_call_output", json.input[2].type)
+    assert.are.equal("patch", call.text_input)
   end)
 
   it("turns malformed text input into a Tool error before execution", function()

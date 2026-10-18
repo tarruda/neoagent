@@ -55,11 +55,11 @@ describe("neoagent sandbox activation warning", function()
     }
   end
 
-  ---@param active "Neo"|"Chat"
+  ---@param active "Pi"|"Chat"
   ---@param status? Neoagent.SandboxStatus
   ---@return Neoagent.NeoagentApplet
   local function build(active, status)
-    local neo_input = agent_options("Neo")
+    local neo_input = agent_options("Pi")
     neo_input.sandbox = { enabled = true }
     local neo_options = config.resolve(neo_input)
     status = status or {
@@ -84,7 +84,7 @@ describe("neoagent sandbox activation warning", function()
     local neo = require("neoagent").new(neo_input, {
       runtimes = {},
       dialogs = dialogs,
-      initial_warning = not activation.active and sandbox_composition.warning("Neo", activation) or nil,
+      initial_warning = not activation.active and sandbox_composition.warning("Pi", activation) or nil,
     })
     assert(neo:set_toolset(toolset))
     local chat = require("neoagent").new(chat_options, { runtimes = {} })
@@ -105,7 +105,7 @@ describe("neoagent sandbox activation warning", function()
     assert.are.equal(0, #notifications)
     assert.is_true((window:toggle()))
     assert.are.equal(0, #notifications)
-    assert.are.equal("Neo", assert(window:select(1)):config().name)
+    assert.are.equal("Pi", assert(window:select(1)):config().name)
     assert.are.equal(1, #notifications)
     assert.matches("tool execution is blocked",
       assert(notifications[1])[1])
@@ -116,7 +116,7 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   it("warns on the first toggle when Neo is active", function()
-    local window = build("Neo")
+    local window = build("Pi")
     assert.are.equal(0, #notifications)
     assert.is_true((window:toggle()))
     assert.are.equal(1, #notifications)
@@ -126,7 +126,7 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   it("keeps degraded activation silent", function()
-    local window = build("Neo", {
+    local window = build("Pi", {
       ok = true,
       platform = "linux",
       degraded = true,

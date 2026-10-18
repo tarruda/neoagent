@@ -19,7 +19,7 @@ function M.choose(policy, selection)
     error("default_profile failed: " .. util.normalize_error(selected, "profile").message, 0)
   end
   assert(selected == nil or type(selected) == "string" and selected ~= "", "default_profile returned an invalid ID")
-  return selected or "neo"
+  return selected or "pi"
 end
 
 ---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>

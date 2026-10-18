@@ -4,6 +4,39 @@ local fake_model = require("tests.helpers.fake_model")
 local summary = require("neoagent.compaction.summary")
 
 describe("Summary request projection", function()
+  it("budgets shipped Pi environment context before dedicated summary inference", function()
+    local prompt = require("neoagent.profiles.pi.prompt").prepare({
+      workspace = { root = "/project", cwd = "/project" },
+      prompt = "compact",
+      tools = {},
+      skills = {},
+      agent_instructions = { { path = "/project/AGENTS.md", content = string.rep("trusted context ", 4000) } },
+    })
+    local model = fake_model.new({})
+    model.context_window = 2000
+    local run = compaction.run({
+      model = model,
+      system_prompt = prompt.system_prompt,
+      prepare_request = prompt.prepare_request,
+      preparation = {
+        kind = "summary",
+        split_turn = false,
+        messages = { { role = "user", content = "short history" } },
+        turn_prefix = {},
+        first_kept_entry_id = "keep",
+        tokens_before = 100,
+        settings = compaction.settings({ reserve_tokens = 64 }),
+      },
+    })
+    assert(vim.wait(1000, function()
+      return run:is_done()
+    end, 5))
+    local result = assert(run:result())
+    assert.is_false(result.ok)
+    assert.matches("summary request exceeds the Model window", assert(result.error).message)
+    assert.are.equal(0, #model.requests)
+  end)
+
   it("projects both split-turn requests while retaining dedicated instructions", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "history summary" } }) },

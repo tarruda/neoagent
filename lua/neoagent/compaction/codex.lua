@@ -86,7 +86,7 @@ end
 local function run(options)
   return async.run(function(run)
     local model = options.model
-    if model.api ~= "openai-codex-responses" or type(model.compact) ~= "function" then
+    if type(model.compact) ~= "function" then
       return {
         ok = false,
         error = util.error("compaction", "Codex Profile requires a Codex Model with native compaction"),
@@ -252,6 +252,33 @@ M.component = {
   end,
   run = run,
   require_native = true,
+}
+
+-- The Profile admits metered Responses Models as well as subscription Models.
+-- Select an algorithm from the actual Model capability; checkpoint identity
+-- remains authoritative when the Agent later changes Models.
+---@type Neoagent.CompactionComponent
+M.profile_component = {
+  evaluate = compaction.evaluate_budget,
+  prepare = function(options)
+    local selected = options.model.compact and M.component or require("neoagent.compaction.prefix").component
+    return selected.prepare(options)
+  end,
+  run = function(options)
+    if options.preparation.kind == "native" then
+      return M.component.run(options)
+    end
+    local call = util.shallow_copy(options)
+    call.instructions = "Create a handoff summary for another LLM that will resume the task. Include progress, key decisions, important constraints and preferences, remaining work, and essential references. Be concise and structured."
+      .. (options.instructions and "\n\n" .. options.instructions or "")
+    return require("neoagent.compaction.prefix").component.run(call)
+  end,
+  fit = function(candidate, options)
+    if candidate.native then
+      return fit(candidate, options)
+    end
+    return candidate
+  end,
 }
 
 return M

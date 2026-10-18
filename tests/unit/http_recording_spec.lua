@@ -2436,7 +2436,7 @@ else:
         body = "server response",
       }),
     })
-    local draft = owner:draft("neo", workspace)
+    local draft = owner:draft("pi", workspace)
     assert(draft)
     local result = wait(assert(draft:send("record from setup")))
     assert(result.ok)

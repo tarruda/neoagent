@@ -141,6 +141,33 @@ describe("neoagent health", function()
     assert(ok, err)
   end)
 
+  it("checks the selected Pi shell when Bash is unavailable", function()
+    local executable = vim.fn.executable
+    local selected = jit.os == "Windows" and "powershell" or "sh"
+    local calls = {}
+    vim.fn.executable = function(name)
+      calls[name] = true
+      if name == "bash" or name == "pwsh" then
+        return 0
+      end
+      return executable(name)
+    end
+    local ok, err = pcall(function()
+      require("neoagent.config").setup({
+        default_registry = false,
+        providers = {},
+        persistence = { enabled = false },
+        ui = { images = false },
+      })
+      require("neoagent.health").check()
+      assert.is_true(calls[selected])
+      assert.is_true(contains(messages.ok, selected .. " is available"))
+      assert.is_false(contains(messages.error, "bash is required"))
+    end)
+    vim.fn.executable = executable
+    assert(ok, err)
+  end)
+
   it("reports an unsupported Neovim and explicitly disabled images", function()
     local original_has = vim.fn.has
     vim.fn.has = function(feature)

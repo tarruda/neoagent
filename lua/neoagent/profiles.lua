@@ -13,7 +13,7 @@ local resolution = require("neoagent.profiles.composition")
 ---@field prompt_snippet? string
 ---@field prompt_guidelines? string[]
 
----@class Neoagent.ProfilePromptContext: Neoagent.SystemPromptContext
+---@class Neoagent.ProfilePromptContext
 ---@field workspace {cwd: string, root: string}
 ---@field model? Neoagent.ProfilePromptModel
 ---@field tools Neoagent.ProfilePromptTool[]
@@ -359,34 +359,21 @@ function M.index(profiles)
   return indexed
 end
 
----@param context Neoagent.ProfilePromptContext
----@return Neoagent.PreparedProfilePrompt
-local function coding_prompt(context)
-  local prompts = require("neoagent.system_prompt")
-  local parts = { prompts.compose(context.base_prompt or prompts.default(context), context) }
-  local policy = require("neoagent.profiles.execution").describe(context.execution_policy, context.tools)
-  if policy ~= "" then
-    parts[#parts + 1] = policy
-  end
-  if context.execution_guidance and context.execution_guidance ~= "" then
-    parts[#parts + 1] = context.execution_guidance
-  end
-  return { system_prompt = table.concat(parts, "\n\n") }
-end
-
 ---@return Neoagent.Profile[]
 local function create_profiles()
   ---@type Neoagent.Profile[]
   local definitions = {
     {
-      id = "neo",
-      label = "Neo",
-      defaults = { ui = { style = "codex" }, sandbox = { enabled = false } },
+      id = "pi",
+      label = "Pi",
+      defaults = { ui = { style = "pi" }, sandbox = { enabled = true } },
       sandbox_controls = true,
       create_tools = function(options)
-        return require("neoagent.tools").coding({ shell_timeout = options.shell_timeout })
+        return require("neoagent.tools.pi").coding({ shell_timeout = options.shell_timeout })
       end,
-      prepare_prompt = coding_prompt,
+      prepare_prompt = function(context)
+        return require("neoagent.profiles.pi.prompt").prepare(context)
+      end,
     },
     {
       id = "chat",
@@ -415,15 +402,17 @@ local function create_profiles()
     {
       id = "codex",
       label = "Codex",
-      defaults = { ui = { style = "codex" }, sandbox = { enabled = false } },
+      defaults = { ui = { style = "codex" }, sandbox = { enabled = true } },
       sandbox_controls = true,
-      supported_apis = { "openai-codex-responses" },
+      supported_apis = { "openai-responses", "openai-codex-responses" },
       supports_native_context = true,
       create_tools = function()
         return require("neoagent.tools.codex").coding()
       end,
-      prepare_prompt = coding_prompt,
-      compaction = require("neoagent.compaction.codex").component,
+      prepare_prompt = function(context)
+        return require("neoagent.profiles.codex.prompt").prepare(context)
+      end,
+      compaction = require("neoagent.compaction.codex").profile_component,
     },
   }
   return definitions

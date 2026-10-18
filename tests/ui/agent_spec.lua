@@ -81,6 +81,7 @@ describe("neoagent default agent", function()
     local options = {
       workspace_trust = false,
       default_registry = false,
+      sandbox = { enabled = false },
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = api, base_url = "https://example.test/fake", models = { test = {} } } },
@@ -216,8 +217,8 @@ describe("neoagent default agent", function()
     local options = vim.tbl_extend("force", {
       directory = directory,
       cwd = vim.fn.getcwd(),
-      metadata = { neoagent = { profileId = "neo" } },
-      index_attributes = { profileId = "neo" },
+      metadata = { neoagent = { profileId = "pi" } },
+      index_attributes = { profileId = "pi" },
     }, extra or {})
     return require("neoagent.storage").new(options)
   end
@@ -1180,7 +1181,7 @@ describe("neoagent default agent", function()
     local run = assert(neoagent.send("inspect"))
     assert(type(run) == "table")
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.are.equal("Neo", captured[1].agent)
+    assert.are.equal("Pi", captured[1].agent)
     assert.are.equal(vim.fn.getcwd(), captured[1].workspace.cwd)
     assert.is_table(captured[1].session_id)
     assert.are.equal(4, synced[captured[1].session_id])
@@ -3956,7 +3957,7 @@ describe("neoagent default agent", function()
     }
     neoagent._setup(configured, profile_runtime(configured))
     assert(neoagent.open())
-    assert.matches("^ Neo ·", window_title((assert(view_handles.window(current_view(), "transcript")))))
+    assert.matches("^ Pi ·", window_title((assert(view_handles.window(current_view(), "transcript")))))
     assert(neoagent.send("inspect"))
     assert(vim.wait(1000, function() return captured ~= nil end))
     assert.are.same({ "read", "bash", "edit", "write" },
@@ -3998,7 +3999,7 @@ describe("neoagent default agent", function()
     assert.has_error(function() neoagent.setup({}) end)
     assert.is_true(neoagent.stop())
     assert(vim.wait(1000, is_idle))
-    assert.are.equal("Neo", assert(applet:select(
+    assert.are.equal("Pi", assert(applet:select(
       assert(applet:agents()[1]):id())):config().name)
   end)
 
@@ -4650,7 +4651,7 @@ describe("neoagent default agent", function()
     local model = fake_model.new({})
     ---@type Neoagent.TestAgentUIConfig
     local options = {
-      name = "Neo",
+      name = "Pi",
       workspace_trust = false,
       default_registry = false,
       persistence = {
@@ -5047,7 +5048,7 @@ describe("neoagent default agent", function()
     end
     ---@type Neoagent.TestAgentUIConfig
     local options = {
-      name = "Neo",
+      name = "Pi",
       workspace_trust = false,
       default_registry = false,
       persistence = { enabled = true, workspace_settings = true, directory = directory },
@@ -5106,7 +5107,7 @@ describe("neoagent default agent", function()
     saved = assert(settings:load())
     assert.are.same({ provider = "fake", model = "alpha" },
       saved.default_model)
-    assert.are.equal("high", assert(saved.agents.neo).default_thinking_level)
+    assert.are.equal("high", assert(saved.agents.pi).default_thinking_level)
 
     options.default_model = nil
     local replacement = neoagent.new(options)
@@ -5134,7 +5135,7 @@ describe("neoagent default agent", function()
       root = vim.fn.getcwd(),
     })
     assert(settings:write({ default_model = { provider = "fake", model = "reasoning" },
-      agents = { neo = {
+      agents = { pi = {
       default_thinking_level = "high",
     } } }))
     local models = {
@@ -5178,7 +5179,7 @@ describe("neoagent default agent", function()
     local saved = assert(settings:load())
     assert.are.same({ provider = "fake", model = "plain" },
       assert(saved).default_model)
-    assert.is_nil((saved.agents and saved.agents.neo or {}).default_thinking_level)
+    assert.is_nil((saved.agents and saved.agents.pi or {}).default_thinking_level)
     local stored = assert(require("neoagent.storage").open(assert(session_path), workspace_storage))
     assert.is_nil(stored:state().thinking_level)
     assert.are.equal(vim.NIL,
@@ -5424,7 +5425,7 @@ describe("neoagent default agent", function()
     })
     assert(settings:write({
       default_model = "invalid",
-      agents = { neo = {
+      agents = { pi = {
         default_thinking_level = "extreme",
       } },
       ui_position = "corner",
@@ -5449,7 +5450,7 @@ describe("neoagent default agent", function()
     setup_model(model, extra)
     assert(neoagent.available_thinking_levels())
     assert.are.equal("test", assert(neoagent.get_model()).id)
-    assert(settings:write({ agents = { neo = "invalid" } }))
+    assert(settings:write({ agents = { pi = "invalid" } }))
     setup_model(model, extra)
     assert(neoagent.available_thinking_levels())
     assert.are.equal("test", assert(neoagent.get_model()).id)
@@ -5992,14 +5993,14 @@ describe("neoagent default agent", function()
     assert.is_true(current_view():is_open())
     local _, request = presentation.active(neoagent.applet())
     assert.are.equal(8, #request.items)
-    assert.matches("^● parent preview%s+3d.*Neo$", assert(assert(request.items)[1]).label)
-    assert.matches("^  ├─ parent preview%s+1h.*Neo$", assert(assert(request.items)[2]).label)
-    assert.matches("^  │  └─ parent preview%s+10m.*Neo$", assert(assert(request.items)[3]).label)
-    assert.matches("^  └─ parent preview%s+30m.*Neo$", assert(assert(request.items)[4]).label)
-    assert.matches("^  Recent root%s+2h.*Neo$", assert(assert(request.items)[5]).label)
-    assert.matches("^  Weekly root%s+1w.*Neo$", assert(assert(request.items)[6]).label)
-    assert.matches("^  Monthly root%s+2mo.*Neo$", assert(assert(request.items)[7]).label)
-    assert.matches("^  Yearly root%s+2y.*Neo$", assert(assert(request.items)[8]).label)
+    assert.matches("^● parent preview%s+3d.*Pi$", assert(assert(request.items)[1]).label)
+    assert.matches("^  ├─ parent preview%s+1h.*Pi$", assert(assert(request.items)[2]).label)
+    assert.matches("^  │  └─ parent preview%s+10m.*Pi$", assert(assert(request.items)[3]).label)
+    assert.matches("^  └─ parent preview%s+30m.*Pi$", assert(assert(request.items)[4]).label)
+    assert.matches("^  Recent root%s+2h.*Pi$", assert(assert(request.items)[5]).label)
+    assert.matches("^  Weekly root%s+1w.*Pi$", assert(assert(request.items)[6]).label)
+    assert.matches("^  Monthly root%s+2mo.*Pi$", assert(assert(request.items)[7]).label)
+    assert.matches("^  Yearly root%s+2y.*Pi$", assert(assert(request.items)[8]).label)
     presentation.choose(neoagent.applet(), "session-2")
     assert(vim.wait(1000, function()
       return assert(current_session():metadata()).path == child:metadata().path

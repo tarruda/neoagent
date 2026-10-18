@@ -102,7 +102,7 @@ describe("Agent retained process placement", function()
     })
     applet = require("neoagent.profiles").create_applet({ composition = resolved, label = "placement", workspace = root })
     local session = assert(require("neoagent.profile_sessions").new({
-      profile_id = profile_id or "neo",
+      profile_id = profile_id or "pi",
       workspace = root,
       persistence = { enabled = false },
     }))

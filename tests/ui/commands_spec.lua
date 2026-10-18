@@ -231,10 +231,11 @@ describe("neoagent commands", function()
       notifications[#notifications + 1] = { message, level }
     end
     vim.cmd("NeoagentToggleSandbox")
-    assert.is_true(neoagent.sandbox_info().enabled)
-    assert.matches("next Neo Agent", notifications[#notifications][1])
-    vim.cmd("NeoagentToggleSandbox")
     assert.is_false(neoagent.sandbox_info().enabled)
+    assert.matches("tools execute on the host", notifications[#notifications][1])
+    vim.cmd("NeoagentToggleSandbox")
+    assert.is_true(neoagent.sandbox_info().enabled)
+    assert.matches("next Pi Agent", notifications[#notifications][1])
     vim.notify = original_notify
 
     vim.cmd("Neoagent")
@@ -274,7 +275,7 @@ describe("neoagent commands", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
     local session = assert(require("neoagent.profile_sessions").new({
-      profile_id = "neo",
+      profile_id = "pi",
       workspace = vim.fn.getcwd(),
       persistence = { enabled = true, directory = directory },
     }))

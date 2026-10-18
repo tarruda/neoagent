@@ -57,13 +57,7 @@ end
 ---@param options? Neoagent.ToolPresetOptions
 ---@return Neoagent.Tool<unknown>[]
 function M.coding(options)
-  return tools({
-    "read_file",
-    "write_file",
-    "edit_file",
-    "shell",
-    "read_agent_documentation",
-  }, options)
+  return require("neoagent.tools.pi").coding(options)
 end
 
 ---@return Neoagent.Tool<unknown>[]

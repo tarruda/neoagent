@@ -76,7 +76,25 @@ describe("Pi command shell selection", function()
   ---@param tool Neoagent.Tool<unknown>
   ---@return string
   local function prompt(tool)
-    return (assert(tool.prompt_snippet))
+    local prepared = require("neoagent.profiles.pi.prompt").prepare({
+      workspace = { root = root, cwd = root },
+      tools = { tool },
+      prompt = "work",
+      agent_instructions = {},
+      skills = {},
+    })
+    return helper.success(function()
+      return (
+        assert(
+          require("neoagent.api.request_preparation").project(
+            prepared.prepare_request,
+            {},
+            prepared.system_prompt,
+            { tool }
+          ).system_prompt
+        )
+      )
+    end)
   end
 
   it("executes commands without Bash installed", function()

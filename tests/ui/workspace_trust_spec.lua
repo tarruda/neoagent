@@ -63,6 +63,7 @@ describe("neoagent workspace trust UI", function()
     ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
     local options = {
       default_registry = false,
+      sandbox = { enabled = false },
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = {
@@ -197,7 +198,7 @@ describe("neoagent workspace trust UI", function()
     assert.are.equal(chat:applet(), current_applet():foreground_applet())
     assert.are.equal(chat:applet(), current_applet():selected_applet())
     assert.are.equal("newer chat turn", assert(assert(model.requests[1]).messages[1]).content)
-    assert.are.equal(provisional_applet, current_applet():retained_draft("neo"))
+    assert.are.equal(provisional_applet, current_applet():retained_draft("pi"))
     assert.are.equal("provisional request", provisional_applet:get_input())
   end)
 
@@ -212,7 +213,7 @@ describe("neoagent workspace trust UI", function()
         and draft:agent() == nil
     end, 5))
     assert.is_true(agent:is_destroyed())
-    assert.are.equal(draft, current_applet():retained_draft("neo"))
+    assert.are.equal(draft, current_applet():retained_draft("pi"))
     assert.are.equal("keep me", draft:get_input())
     assert.is_nil(draft:pending_message())
     assert.is_nil(vim.uv.fs_stat(trust_path))
@@ -250,7 +251,7 @@ describe("neoagent workspace trust UI", function()
     assert.is_nil(run)
     assert.matches("Invalid workspace trust store", assert(err).message)
     assert.are.same({}, current_applet():agents())
-    assert.are.equal(draft, current_applet():retained_draft("neo"))
+    assert.are.equal(draft, current_applet():retained_draft("pi"))
     assert.is_nil(draft:agent())
     assert.is_nil(draft:pending_message())
     assert.are.equal("preserve unreadable trust draft", draft:get_input())
@@ -271,7 +272,7 @@ describe("neoagent workspace trust UI", function()
     vim.fn.mkdir(second, "p")
     paths[#paths + 1] = second
     vim.cmd("cd " .. vim.fn.fnameescape(second))
-    assert(current_applet():new("neo"))
+    assert(current_applet():new("pi"))
     local run, create_err = current_applet():send("second workspace")
     assert.is_nil(run)
     assert.are.equal("workspace_trust", assert(create_err).kind)
@@ -304,6 +305,7 @@ describe("neoagent workspace trust UI", function()
     local opts = {
       name = "Review",
       default_registry = false,
+      sandbox = { enabled = false },
       providers = {},
       persistence = { enabled = false, workspace_settings = false },
       tools = { {

@@ -181,13 +181,16 @@ local renderer_styles = { codex = true, pi = true }
 ---@param selection? Neoagent.ModelSelection
 ---@return string
 local function default_profile(selection)
-  return "neo"
+  if selection and (selection.provider == "openai" or selection.provider == "openai-codex") then
+    return "codex"
+  end
+  return "pi"
 end
 
 local defaults = {
   default_registry = true,
   default_profile = default_profile,
-  shell_timeout = 300,
+  shell_timeout = false,
   sandbox = {},
   workspace_trust = {
     path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
@@ -252,7 +255,7 @@ local defaults = {
     base_delay_ms = 2000,
   },
   compaction = {
-    strategy = "summary",
+    strategy = "prefix",
     auto = true,
     reserve_tokens = 16384,
     keep_recent_tokens = 20000,

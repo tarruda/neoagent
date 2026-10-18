@@ -72,7 +72,7 @@ M.local_component = {
 ---@param configured? Neoagent.CompactionConfig|false
 ---@return Neoagent.CompactionComponent
 function M.for_config(configured)
-  if configured and configured.strategy == "prefix" then
+  if not configured or configured.strategy ~= "summary" then
     return require("neoagent.compaction.prefix").component
   end
   return M.local_component
