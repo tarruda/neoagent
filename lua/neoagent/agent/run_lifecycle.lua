@@ -25,7 +25,7 @@ local util = require("neoagent.util")
 ---@alias Neoagent.AgentRun Neoagent.Run<Neoagent.AgentRunResult, nil>
 ---@alias Neoagent.ProviderRelease fun(): boolean?, Neoagent.Error?
 
----@class Neoagent.AgentToolEnvironment
+---@class Neoagent.AgentToolEnvironment: Neoagent.WebSearchToolEnvironment
 ---@field files Neoagent.Files
 ---@field workspace? Neoagent.Workspace
 ---@field agent? string
@@ -89,6 +89,7 @@ local util = require("neoagent.util")
 ---@field compaction_run? fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 ---@field compaction_component? Neoagent.CompactionComponent
 ---@field acquire_provider fun(): Neoagent.ProviderRelease
+---@field web_search? Neoagent.WebSearch
 
 ---@class Neoagent.RunLifecycle
 ---@field send fun(text: string): Neoagent.AgentRun|true|nil, Neoagent.Error?, integer?, ('turn'|'steering')?
@@ -1301,6 +1302,7 @@ function M.new(opts)
           agent = config.name,
           session_id = state.session_id,
           processes = state.process_sessions,
+          web_search = opts.web_search,
         },
         thinking_level = thinking_level,
         session_state = selection:snapshot({ persisted = true }),

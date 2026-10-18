@@ -73,11 +73,13 @@ function M.new(opts)
   ---@class Neoagent.ProviderHttpClient
   local client = {}
 
+  ---@param method "GET"|"POST"
   ---@param path string
   ---@param resource string
   ---@param headers? table<string, unknown>
+  ---@param body? Neoagent.JsonObject
   ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
-  function client:get(path, resource, headers)
+  local function send(method, path, resource, headers, body)
     assert(type(path) == "string" and path:sub(1, 1) == "/", "provider HTTP path must be absolute")
     assert(type(resource) == "string" and resource ~= "", "provider HTTP resource is required")
     return async.run(
@@ -87,15 +89,19 @@ function M.new(opts)
           .fetch({
             request = {
               url = base_url .. path,
-              method = "GET",
+              method = method,
               headers = util.copy(headers or {}),
+              body = body and vim.json.encode(body) or nil,
               timeout_ms = timeout_ms,
               max_response_bytes = maximum,
             },
           })
           :await()
         if fetched.ok == false then
-          error(util.normalize_error(fetched.error, "provider"), 0)
+          local failure = util.normalize_error(fetched.error, "provider")
+          -- Protocol errors can carry raw response bodies. Provider diagnostics
+          -- retain the reason, without forwarding that private payload.
+          error(util.error(failure.kind, failure.message), 0)
         end
         local status = tonumber(fetched.status)
         if not status then
@@ -121,6 +127,32 @@ function M.new(opts)
         return { ok = true, value = decoded }
       end,
       { error_kind = "provider" }
+    )
+  end
+
+  ---@param path string
+  ---@param resource string
+  ---@param headers? table<string, unknown>
+  ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
+  function client:get(path, resource, headers)
+    return send("GET", path, resource, headers)
+  end
+
+  ---@param path string
+  ---@param resource string
+  ---@param body Neoagent.JsonObject
+  ---@param headers? table<string, unknown>
+  ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
+  function client:post(path, resource, body, headers)
+    return send(
+      "POST",
+      path,
+      resource,
+      util.deep_merge(headers or {}, {
+        Accept = "application/json",
+        ["Content-Type"] = "application/json",
+      }),
+      util.copy(body)
     )
   end
 

@@ -29,6 +29,7 @@ local util = require("neoagent.util")
 local M = {}
 local display = Applet.Pane.text
 local EDIT_PREVIEW_LINES = 10
+local SEARCH_PREVIEW_RESULTS = 3
 local compact_activities = {
   command = true,
   read = true,
@@ -462,6 +463,83 @@ local function text(value)
   }
 end
 
+---@param value Neoagent.ToolWebSearchPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
+local function web_search(value, opts)
+  if
+    type(value.backend) ~= "string"
+    or not one_line(value.backend)
+    or type(value.query) ~= "string"
+    or not one_line(value.query)
+    or value.sources ~= nil and not util.is_list(value.sources)
+    or value.truncated ~= nil and type(value.truncated) ~= "boolean"
+  then
+    return nil
+  end
+  for _, source in ipairs(value.sources or {}) do
+    if
+      type(source) ~= "table"
+      or type(source.title) ~= "string"
+      or not one_line(source.title)
+      or type(source.url) ~= "string"
+      or not one_line(source.url)
+    then
+      return nil
+    end
+  end
+  local failed = opts.state == "error"
+  local verb = failed and "Web search failed" or active(opts.state) and "Searching web" or "Searched web"
+  local title = {
+    { text = verb, style = "bold" },
+    { text = " · " .. value.backend, style = "muted" },
+  }
+  local sources = value.sources
+  if opts.state == "success" and sources then
+    title[#title + 1] = {
+      text = " · " .. #sources .. (#sources == 1 and " result" or " results"),
+      style = "muted",
+    }
+  end
+  if opts.presentation_surface == "details" or failed or opts.state == "success" and not sources then
+    title[#title + 1] = { text = ": " .. value.query, style = "accent" }
+    return { title = title, default = true, status = true }
+  end
+  local width = math.max(1, (opts.width or 80) - 2)
+  local lines = {}
+  for _, line in ipairs(compact_characters(value.query, math.max(1, width - 2))) do
+    lines[#lines + 1] = { { text = "  " .. line, style = "accent" } }
+  end
+  if opts.state == "success" and sources then
+    if #sources == 0 then
+      lines[#lines + 1] = { { text = "  No results found.", style = "muted" } }
+    end
+    for index = 1, math.min(#sources, SEARCH_PREVIEW_RESULTS) do
+      local source = assert(sources[index])
+      lines[#lines + 1] = {
+        { text = "  " .. index .. ". ", style = "muted" },
+        {
+          text = display.truncate(source.title ~= "" and source.title or "(untitled)", math.max(1, width - 5)),
+          style = "bold",
+        },
+      }
+      lines[#lines + 1] = {
+        { text = "     " .. display.truncate(source.url, math.max(1, width - 5)), style = "muted" },
+      }
+    end
+    local remaining = #sources - SEARCH_PREVIEW_RESULTS
+    if remaining > 0 then
+      lines[#lines + 1] = {
+        { text = "  … +" .. remaining .. (remaining == 1 and " more result" or " more results"), style = "muted" },
+      }
+    end
+    if value.truncated then
+      lines[#lines + 1] = { { text = "  Search output truncated", style = "muted" } }
+    end
+  end
+  return { title = title, lines = lines, status = true }
+end
+
 ---@param value unknown
 ---@param opts Neoagent.ToolViewOptions
 ---@param codex boolean
@@ -485,6 +563,9 @@ local function present(value, opts, codex)
   elseif value.kind == "text" then
     ---@cast value Neoagent.ToolTextPresentation
     return text(value)
+  elseif value.kind == "web_search" then
+    ---@cast value Neoagent.ToolWebSearchPresentation
+    return web_search(value, opts)
   end
 end
 

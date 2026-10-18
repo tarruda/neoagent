@@ -20,6 +20,7 @@ CONTENTS                                                   *neoagent-contents*
    Local subprocesses                                    |neoagent-subprocess|
    Retained processes                              |neoagent-process-sessions|
 6. Tools and sessions                                   |neoagent-composition|
+   Web search                                           |neoagent-web-search|
    Context compaction                                    |neoagent-compaction|
 
 ===============================================================================
@@ -72,6 +73,7 @@ Common defaults are: >lua
   {
     default_thinking_level = "medium",
     shell_timeout = false,
+    web_search = false,
     retry = { enabled = true, max_retries = 3, base_delay_ms = 2000 },
     compaction = {
       strategy = "prefix", auto = true,
@@ -1572,8 +1574,48 @@ Bundled presets are: >lua
 `codex()` provides `exec_command`, `write_stdin`, `apply_patch`, and `view_image`.
 The optional `update_plan` derives state from successful calls on the active
 Session path.
-Search and Neoagent documentation Tools remain available through individual
-constructors and `all()`.
+Filesystem search and Neoagent documentation Tools remain available through
+individual constructors and `all()`.
+
+                                                        *neoagent-web-search*
+
+Web search is opt-in. Enable it alongside your existing setup options: >lua
+
+  require("neoagent").setup({
+    web_search = { backend = "deepseek" },
+  })
+<
+
+This adds `web_search` to the selected Profile's Tools without pinning a Profile
+or replacing its Tool list. Automatic provider-aware Profile selection still
+applies when changing Models. Profiles that prohibit Tools, including Chat,
+remain tool-free. Set `web_search = false` to disable the addition.
+
+For an explicit Tool list, `require("neoagent.tools").web_search(options)`
+constructs the same Tool. An explicit `web_search` Tool takes precedence over
+the additive setting. No preset, including `all()`, includes `web_search` by
+default.
+
+`backend` defaults to `"deepseek"`, currently the only available backend.
+Search works with any inference provider. The DeepSeek provider must remain
+configured and have credentials in `DEEPSEEK_API_KEY` or its Authentication
+entry in `auth.json`; see |neoagent-built-in-providers|. Stored credentials
+take precedence and are resolved for each call, so login and credential changes
+apply without recreating the Agent. Missing credentials fail before sending a
+request.
+
+The Model calls `web_search` with `query`, optional `count` (default 10), and
+optional `include_content` (default false). DeepSeek accepts queries of 1–128
+Unicode characters and counts of 1–50. Results include titles, source URLs,
+summaries, available publication dates, and requested page content. Output is
+bounded; narrow the query or request fewer results if it is truncated.
+Compact cards preview the top sources. Expand a card to read the returned
+summaries and page content.
+
+Authentication is backend-specific and optional. Search requests run in the
+parent process, including when the Agent's filesystem and command Tools are
+sandboxed. Backend credentials are never sent to sandbox workers. The DeepSeek
+backend uses its metered Search API: https://api-docs.deepseek.com/guides/search/
 
 Responses advertises a Tool's `text_input` as a custom Tool with its grammar;
 local execution and Session storage use the canonical single-string argument

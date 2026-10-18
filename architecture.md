@@ -151,6 +151,12 @@ Explicitly granted parent Tools remain available. Bootstrap dependencies cannot
 override filesystem denials. Parent supervision enforces deadlines even when a
 worker is unresponsive.
 
+Opt-in web search receives a backend-neutral search capability from composition.
+Each backend defines its transport dependencies and optional authentication.
+DeepSeek borrows its provider's Authentication, transport, and Service use.
+Search requests run in the parent without exposing backend credentials to Tools
+or workers.
+
 RPC owns framing, ordering, bounded delivery, and request cancellation. Tool and
 process domains define their own execution lifetimes. A `WorkerLease` owns
 native execution and sandbox resources; an `Invocation` owns admission and one

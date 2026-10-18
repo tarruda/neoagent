@@ -136,6 +136,7 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field compaction Neoagent.CompactionConfig|false
 ---@field ui Neoagent.UIConfig
 ---@field tools? Neoagent.Tool<C>[]
+---@field web_search? Neoagent.WebSearchOptions|false
 ---@field decorate_tool? fun(execute: Neoagent.ToolExecutor<C>): Neoagent.ToolExecutor<C>
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
@@ -170,6 +171,7 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field compaction? Neoagent.CompactionConfigInput|false
 ---@field ui? Neoagent.UIConfigInput
 ---@field tools? Neoagent.Tool<C>[]
+---@field web_search? Neoagent.WebSearchOptions|false
 ---@field decorate_tool? fun(execute: Neoagent.ToolExecutor<C>): Neoagent.ToolExecutor<C>
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
@@ -191,6 +193,7 @@ local defaults = {
   default_registry = true,
   default_profile = default_profile,
   shell_timeout = false,
+  web_search = false,
   sandbox = {},
   workspace_trust = {
     path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
@@ -332,6 +335,7 @@ local input_fields = {
   ui = true,
   name = true,
   tools = true,
+  web_search = true,
   system_prompt = true,
   decorate_tool = true,
   _apis = true,
@@ -852,6 +856,9 @@ local function validate(opts)
     string_list(opts.skills.project_dirs, "skills.project_dirs")
   end
   validate_ui(opts.ui)
+  if opts.web_search then
+    require("neoagent.web_search").validate_options(opts.web_search)
+  end
   agent_loop.validate_toolset(opts.tools or {})
   assert(opts.decorate_tool == nil or type(opts.decorate_tool) == "function", "decorate_tool must be a function")
   if opts.system_prompt ~= nil then
@@ -971,6 +978,7 @@ function M.agent_settings(configured)
     compaction = configured.compaction,
     ui = configured.ui,
     tools = configured.tools,
+    web_search = configured.web_search,
     decorate_tool = configured.decorate_tool,
     system_prompt = configured.system_prompt,
     _view = configured._view,

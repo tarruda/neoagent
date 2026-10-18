@@ -55,6 +55,125 @@ describe("Profile coding environments", function()
     return configured, model
   end
 
+  it("adds opted-in search to the automatically selected Profile's Tools", function()
+    for _, provider in ipairs({ "openai", "anthropic" }) do
+      for _, enabled in ipairs({ false, true }) do
+        local options = configuration({
+          default_model = { provider = provider, model = "test" },
+          web_search = enabled and { backend = "deepseek" } or false,
+          ui = { style = "codex" },
+        })
+        local agent = require("neoagent").new(options)
+        local ok, err = pcall(function()
+          local codex = provider == "openai"
+          assert.are.equal(codex and "codex" or "pi", agent:profile_id())
+          local names = vim.tbl_map(function(tool)
+            return tool.name
+          end, agent:get_toolset().tools)
+          assert.are.equal(enabled and 5 or 4, #names)
+          assert.are.equal(enabled, vim.tbl_contains(names, "web_search"))
+          assert.is_true(vim.tbl_contains(names, codex and "exec_command" or "read"))
+          assert.is_true(vim.tbl_contains(names, codex and "apply_patch" or "edit"))
+        end)
+        agent:destroy()
+        assert(ok, err)
+      end
+    end
+  end)
+
+  it("retains search across automatic draft reselection and allows disabling it", function()
+    local options = configuration({ web_search = { backend = "deepseek" }, ui = { style = "codex" } })
+    local owner = require("neoagent")._setup(options, { startup = false })
+    local ok, err = pcall(function()
+      local draft = owner:draft()
+      assert(draft)
+      assert.are.equal("codex", draft.profile)
+      assert(owner:set_model("anthropic", "test"))
+      assert.are.equal("pi", draft.profile)
+      assert.are.equal("codex", draft.transcript_style)
+      local retained = owner.drafts_by_applet[draft]
+      assert(retained)
+      local function names()
+        return vim.tbl_map(function(tool)
+          return tool.name
+        end, require("neoagent.profiles.composition").tools(retained:snapshot()))
+      end
+      assert.is_true(vim.tbl_contains(names(), "read"))
+      assert.is_true(vim.tbl_contains(names(), "web_search"))
+      assert(owner:update_draft_options({ web_search = false }, draft))
+      assert.is_false(vim.tbl_contains(names(), "web_search"))
+      local updated, failure = owner:update_draft_options({ web_search = { backend = "unavailable" } }, draft)
+      assert.is_nil(updated)
+      assert.matches("Unknown web search backend", assert(failure).message)
+      assert.is_false(retained:snapshot().config.web_search)
+      assert(owner:update_draft_options({ web_search = {} }, draft))
+      assert(owner:set_model("openai", "test"))
+      assert.are.equal("codex", draft.profile)
+      local run = draft:send("work")
+      assert(type(run) == "table")
+      assert(vim.wait(2000, function()
+        return run:is_done()
+      end))
+      assert.is_true(assert(run:result()).ok)
+      local agent = draft:agent()
+      assert(agent)
+      local bound = vim.tbl_map(function(tool)
+        return tool.name
+      end, agent:get_toolset().tools)
+      assert.are.equal(5, #bound)
+      assert.is_true(vim.tbl_contains(bound, "web_search"))
+      assert.is_true(vim.tbl_contains(bound, "exec_command"))
+    end)
+    owner:destroy()
+    assert(ok, err)
+  end)
+
+  it("keeps Chat tool-free and preserves explicit search Tools", function()
+    local options = configuration({ profile = "chat", web_search = { backend = "deepseek" } })
+    local chat = require("neoagent").new(options)
+    local ok, err = pcall(function()
+      assert.are.same({}, chat:get_toolset().tools)
+    end)
+    chat:destroy()
+    assert(ok, err)
+
+    local search = require("neoagent.tools").web_search()
+    options.profile = "pi"
+    options.tools = { require("neoagent.tools.pi.read").new(), search }
+    local agent = require("neoagent").new(options)
+    ok, err = pcall(function()
+      local configured = agent:get_toolset().tools
+      assert.are.equal(2, #configured)
+      assert.are.equal(search.execute, assert(configured[2]).execute)
+    end)
+    agent:destroy()
+    assert(ok, err)
+  end)
+
+  it("adds search without mutating a supplied Profile's Tool list", function()
+    local tools = { require("neoagent.tools.pi.read").new() }
+    local options = configuration({ profile = "custom", web_search = {} })
+    local agent = require("neoagent").new(
+      options,
+      { profiles = { {
+        id = "custom",
+        label = "Custom",
+        create_tools = function()
+          return tools
+        end,
+      } } }
+    )
+    local ok, err = pcall(function()
+      assert.are.equal(1, #tools)
+      local selected = agent:get_toolset().tools
+      assert.are.equal(2, #selected)
+      assert.are.equal("read", assert(selected[1]).name)
+      assert.are.equal("web_search", assert(selected[2]).name)
+    end)
+    agent:destroy()
+    assert(ok, err)
+  end)
+
   it("resolves an automatic Profile when its first Model arrives before submission", function()
     local options = configuration()
     options.sandbox, options.default_model = nil, nil
@@ -421,13 +540,15 @@ describe("Profile coding environments", function()
 
   it("describes the actual execution owner in Profile request context", function()
     for _, external in ipairs({ false, true }) do
-      local options, target = configuration({
-      })
+      local options, target = configuration({})
       local agent = require("neoagent").new(options)
       if external then
-        assert(agent:set_toolset({ tools = agent:get_toolset().tools, execute_tool = function()
-          error("unexpected Tool execution")
-        end }))
+        assert(agent:set_toolset({
+          tools = agent:get_toolset().tools,
+          execute_tool = function()
+            error("unexpected Tool execution")
+          end,
+        }))
       end
       local ok, err = pcall(function()
         assert(agent:prepare())
@@ -558,8 +679,14 @@ describe("Profile coding environments", function()
     assert(first[1]).description = "changed"
     assert.are_not.equal(assert(first[1]).description, assert(second[1]).description)
     for _, id in ipairs({ "pi", "chat" }) do
-      local accepted = selection.resolve({ profiles = require("neoagent.profiles").index(bundled),
-        snapshot = configured, profile_id = id, policy = id, auth = resources.auth, runtimes = resources.runtimes })
+      local accepted = selection.resolve({
+        profiles = require("neoagent.profiles").index(bundled),
+        snapshot = configured,
+        profile_id = id,
+        policy = id,
+        auth = resources.auth,
+        runtimes = resources.runtimes,
+      })
       assert.are.equal(require("neoagent.compaction.prefix").component, accepted.compaction)
     end
     resources:destroy()
@@ -689,34 +816,37 @@ describe("Profile coding environments", function()
     end)
   end
 
-  require("tests.helpers.async_test")("publishes a complete contextual multi-file patch and reports verified effects", function()
-    local root = vim.fn.tempname()
-    local fs = require("neoagent.fs")
-    assert(fs.mkdirp(root))
-    assert(fs.write_all(root .. "/old.txt", "first\nlast\n"))
-    local published = {}
-    local call = {
-      workspace = { root = root, cwd = root },
-      on_update = function() end,
-      on_file_changed = function(path)
-        published[#published + 1] = path
-      end,
-    }
-    local patch = require("neoagent.tools.codex.apply_patch")
-    local input = {
-      patch = "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n first\n-last\n+changed\n*** Add File: added.txt\n+added\n*** End Patch\n",
-    }
-    local ok, err = pcall(function()
-      local request = patch.prepare(input, {}, call)
-      assert.are.same({ root .. "/old.txt", root .. "/new.txt", root .. "/added.txt" }, request.paths)
-      local result = patch.run(request, call, patch._dependencies())
-      assert.is_not_true(result.isError)
-      assert.are.equal("first\nchanged\n", fs.read(root .. "/new.txt"))
-      assert.are.equal("added\n", fs.read(root .. "/added.txt"))
-      assert.is_nil(fs.read(root .. "/old.txt"))
-      assert.are.same({ root .. "/new.txt", root .. "/old.txt", root .. "/added.txt" }, published)
-    end)
-    vim.fn.delete(root, "rf")
-    assert(ok, err)
-  end)
+  require("tests.helpers.async_test")(
+    "publishes a complete contextual multi-file patch and reports verified effects",
+    function()
+      local root = vim.fn.tempname()
+      local fs = require("neoagent.fs")
+      assert(fs.mkdirp(root))
+      assert(fs.write_all(root .. "/old.txt", "first\nlast\n"))
+      local published = {}
+      local call = {
+        workspace = { root = root, cwd = root },
+        on_update = function() end,
+        on_file_changed = function(path)
+          published[#published + 1] = path
+        end,
+      }
+      local patch = require("neoagent.tools.codex.apply_patch")
+      local input = {
+        patch = "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n first\n-last\n+changed\n*** Add File: added.txt\n+added\n*** End Patch\n",
+      }
+      local ok, err = pcall(function()
+        local request = patch.prepare(input, {}, call)
+        assert.are.same({ root .. "/old.txt", root .. "/new.txt", root .. "/added.txt" }, request.paths)
+        local result = patch.run(request, call, patch._dependencies())
+        assert.is_not_true(result.isError)
+        assert.are.equal("first\nchanged\n", fs.read(root .. "/new.txt"))
+        assert.are.equal("added\n", fs.read(root .. "/added.txt"))
+        assert.is_nil(fs.read(root .. "/old.txt"))
+        assert.are.same({ root .. "/new.txt", root .. "/old.txt", root .. "/added.txt" }, published)
+      end)
+      vim.fn.delete(root, "rf")
+      assert(ok, err)
+    end
+  )
 end)

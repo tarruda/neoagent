@@ -47,11 +47,23 @@ end
 ---@return Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
 function M.tools(resolved)
   local configured = resolved.config
-  if configured.tools then
-    return util.copy(configured.tools)
-  end
   local create = resolved.profile.create_tools
-  return create and create(config.agent_settings(configured)) or {}
+  if create == false then
+    return {}
+  end
+  local selected = configured.tools or create and create(config.agent_settings(configured)) or {}
+  local tools = util.copy(selected)
+  if configured.web_search then
+    -- Explicit Tools retain their definition; augment only when search is
+    -- absent, without mutating a recipe's or caller's borrowed Tool list.
+    for _, tool in ipairs(tools) do
+      if tool.name == "web_search" then
+        return tools
+      end
+    end
+    tools[#tools + 1] = require("neoagent.tools.web_search").new(configured.web_search)
+  end
+  return tools
 end
 
 ---@param resolved Neoagent.ProfileComposition

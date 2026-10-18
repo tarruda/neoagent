@@ -217,6 +217,14 @@ local function compose_agent(resolved, runtime)
         session = assert(selected.session),
         auth = assert(selected.auth),
         runtimes = assert(selected.runtimes),
+        web_search = require("neoagent.web_search").new({
+          deepseek = function()
+            return require("neoagent.web_search.deepseek").create({
+              auth = assert(selected.auth),
+              runtime = assert(selected.runtimes).deepseek,
+            })
+          end,
+        }),
         presenter = presenter,
         dialogs = dialogs,
         host_effects = host_effects,

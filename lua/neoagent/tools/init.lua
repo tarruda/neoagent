@@ -75,6 +75,12 @@ function M.update_plan()
   return constructors.update_plan({})
 end
 
+---@param options? Neoagent.WebSearchOptions
+---@return Neoagent.Tool<Neoagent.WebSearchToolEnvironment>
+function M.web_search(options)
+  return require("neoagent.tools.web_search").new(options)
+end
+
 ---@param options? Neoagent.ToolPresetOptions
 ---@return Neoagent.Tool<unknown>[]
 function M.all(options)

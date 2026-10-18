@@ -167,6 +167,7 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 -- Internal construction receives completed dependencies. Optional caller inputs
 -- are resolved by composition before ownership transfers to the Agent.
 ---@class Neoagent.AgentDependencies: Neoagent.AgentRuntime
+---@field web_search? Neoagent.WebSearch
 ---@field session Neoagent.Session
 ---@field auth Neoagent.AuthManager
 ---@field runtimes Neoagent.ProviderRuntimes
@@ -1095,6 +1096,7 @@ function M.from_config(options, runtime)
     interaction = runtime.interaction,
     compaction_run = runtime.compaction_run,
     compaction_component = runtime.compaction_component,
+    web_search = runtime.web_search,
     acquire_provider = function()
       local service = assert(model_service(), "selected Model has no Provider Service")
       local lease, err = provider_service.acquire_use(service)
