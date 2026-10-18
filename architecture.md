@@ -43,11 +43,24 @@ a time. Closing its UI preserves the Agent; stopping an activity preserves
 committed retained processes. Destroying the Agent disposes its resources.
 Headless Agents do not load UI modules.
 
-A Profile is an Agent recipe, including eligible Model APIs and execution
-policy. `neoagent.new()` creates an independent Agent. `neoagent.setup()` adds
-the command-facing Applet, which owns Profile drafts, Agent selection, live
-Session claims, shared provider runtimes, and the Provider Shell. A draft
-becomes an Agent when its first message is accepted.
+A Profile supplies eligible Model APIs, prompt/context composition, Tools,
+compaction, and execution and presentation defaults. Shared composition resolves
+these with caller overrides and Workspace preferences before constructing an
+Agent. It owns provider runtimes, storage, trust, and execution policy; Profiles
+receive copied facts rather than live resources. The Agent takes ownership of
+its completed Session and Toolset. Renderers remain lazy for headless use.
+
+`neoagent.new()` creates an independent Agent. `neoagent.setup()` adds the
+command-facing Applet, which owns drafts, Agent selection, live Session claims,
+shared provider runtimes, and the Provider Shell. Provider policy selects an
+unbound draft's Profile; explicit choices and bound Sessions retain theirs.
+
+A draft retains explicit overrides, scoped Workspace preferences, and one
+accepted composition. The Applet accepts selection and configuration changes
+transactionally; the Agent Applet owns presentation recovery. Rejected or stale
+changes preserve accepted state and input. First submission and Session
+derivation use the accepted composition's storage destination and dependencies.
+Preference writes belong to that destination and selection scope.
 
 Agents publish copied, revisioned semantic state. Session acceptance determines
 when a submission is durable; presentation observes that decision. Workspace
@@ -95,11 +108,16 @@ complete shaped request, including authentication, Tool schemas, attachments,
 and reserved output. A change to request content invalidates that preparation.
 Only the final validated preparation authorizes inference and request accounting.
 
-Profiles choose compaction components. Components propose checkpoints; the
-Session validates their context projection, the Model checks its budget, and
-the Agent publishes against the unchanged source state. Failed preparation
-leaves committed messages intact and prevents the next inference request.
-Compaction and recovery remain bounded and cancellable.
+The Agent discovers trusted resources once per turn. Its Profile composes
+instructions and ephemeral request context from copied facts. Estimation,
+inference, and compaction share that context; request-only messages never
+enter the Session journal or accumulate in the Loop's history.
+
+Profiles may supply compaction; otherwise composition selects the configured
+local strategy. Components propose checkpoints; the Session validates their
+context projection, the Model checks its budget, and the Agent publishes against
+the unchanged source state. Failed preparation leaves committed messages intact
+and prevents inference. Compaction and recovery remain bounded and cancellable.
 
 Local checkpoints contain summaries and retained history. Native checkpoints
 contain encrypted context tied to the original API, provider, and Model; local
@@ -109,22 +127,35 @@ Loop.
 
 ## Tools and sandbox placement
 
-Tools own schemas, effects, message hooks, and presentation. The composition's
-`execute_tool(tool, arguments, ctx)` applies approval, logging, and placement.
-Tools do not select where they run. File arguments are resolved and authorized
-before execution; bundled file replacement verifies regular-file identity.
+Tools own schemas, argument preparation, effects, message hooks, and
+presentation. A prepared invocation holds copied arguments and execution input
+separately from the Tool definition. Approval, local execution, and RPC consume
+that same input. Tools retain their dependencies and do not select placement.
+File arguments are resolved and authorized before effects; bundled file
+replacement verifies regular-file identity.
 
-Restricted execution runs the same recognized Tool implementation in a sandbox
+A Toolset carries Tools, executor, process placement, execution facts, and
+sandbox controls. Composition owns approval and placement; configuration may
+decorate its executor. Replacing the Toolset changes new admissions, while
+retained processes keep their authority. Profiles own prompt wording.
+
+Restricted execution runs the recognized Tool implementation in a sandbox
 worker. The worker receives copied execution input, never Agent, Session,
 provider, Authentication, or UI state. Results cross as semantic values;
-artifact bytes are verified and imported before publication. Tool details and
-executor metadata have separate owners.
+artifact bytes are verified and imported before publication. Verified filesystem
+effects reach the parent independently of final result observation. Tool details
+and executor metadata have separate owners.
 
-Sandbox composition binds Tool execution and retained process admissions to the
-same authority and approval policy. Activation or policy failure blocks
-restricted execution without host fallback. Explicitly granted parent Tools
-remain available. Bootstrap dependencies cannot override filesystem denials.
-Parent supervision enforces deadlines even when a worker is unresponsive.
+Activation or policy failure blocks restricted execution without host fallback.
+Explicitly granted parent Tools remain available. Bootstrap dependencies cannot
+override filesystem denials. Parent supervision enforces deadlines even when a
+worker is unresponsive.
+
+Opt-in web search receives a backend-neutral search capability from composition.
+Each backend defines its transport dependencies and optional authentication.
+DeepSeek borrows its provider's Authentication, transport, and Service use.
+Search requests run in the parent without exposing backend credentials to Tools
+or workers.
 
 RPC owns framing, ordering, bounded delivery, and request cancellation. Tool and
 process domains define their own execution lifetimes. A `WorkerLease` owns

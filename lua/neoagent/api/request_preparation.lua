@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 
+local semantic = require("neoagent.semantic_message")
 local M = {}
 
 ---@class Neoagent.PreparedRequest
@@ -15,10 +16,17 @@ local M = {}
 ---@field dependency? table
 ---@field value table
 
+---@class Neoagent.RequestBudget
+---@field owner Neoagent.Model Borrowed Model whose request was budgeted.
+---@field options table
+---@field operation "compact"|false
+
 ---@class Neoagent.RequestPreparation
 ---@field request? Neoagent.PreparedRequest Latest shaped candidate.
 ---@field estimated? Neoagent.PreparedRequest Candidate acknowledged by estimation.
 ---@field layers table<table, Neoagent.PreparedRequestLayer>
+---@field projection? {callback?: Neoagent.PrepareRequest, inputs: Neoagent.InferenceRequest, value: Neoagent.RequestProjection}
+---@field budget? Neoagent.RequestBudget
 
 -- The request owner retains this value through estimation and execution.
 -- Each boundary retains only its latest candidate; Models never retain it.
@@ -123,6 +131,60 @@ function M.estimate(call, plan)
   return plan.input_tokens
 end
 
+---@param owner Neoagent.Model
+---@param call Neoagent.RequestOptions
+---@param operation? "compact"
+function M.record_budget(owner, call, operation)
+  local scope = call._preparation
+  if scope then
+    scope.budget = {
+      owner = owner,
+      options = inputs(call),
+      operation = operation or false,
+    }
+  end
+end
+
+---@param call Neoagent.RequestOptions
+---@param owner? Neoagent.Model
+---@param operation? "compact"
+function M.validate_candidate(call, owner, operation)
+  local scope = call._preparation
+  local estimated = scope and scope.estimated
+  local budget = scope and scope.budget
+  local valid = true
+  if budget then
+    valid = (owner == nil or budget.owner == owner)
+      and budget.operation == (operation or false)
+      and vim.deep_equal(inputs(call), budget.options)
+  end
+  if estimated then
+    valid = valid
+      and vim.deep_equal(call.messages, estimated.options.messages)
+      and call.system_prompt == estimated.options.system_prompt
+      and vim.deep_equal(call.tools, estimated.options.tools)
+  end
+  if not valid then
+    local err = util.error("model", "Request content changed after budget validation; prepare the request again")
+    err.code, err.retryable = "stale_request_preparation", false
+    error(err, 0)
+  end
+end
+
+-- Callers supply the final projection. This gate owns the decision to estimate
+-- a new candidate or validate an earlier estimate before inference begins.
+---@async
+---@param owner Neoagent.Model
+---@param call Neoagent.RequestOptions
+---@param operation? "compact"
+function M.finalize(owner, call, operation)
+  local scope = assert(call._preparation, "Request preparation is required")
+  if not scope.estimated and not scope.budget then
+    require("neoagent.api.request_estimate").request(owner, call, operation)
+  end
+  M.validate_candidate(call, owner, operation)
+end
+
 ---@param call Neoagent.RequestOptions
 ---@param plan Neoagent.RequestPlan
 function M.validate_execution(call, plan)
@@ -148,6 +210,61 @@ function M.validate_execution(call, plan)
     err.retryable = false
     error(err, 0)
   end
+end
+
+---@class Neoagent.RequestProjection
+---@field messages Neoagent.RequestMessage[]
+---@field system_prompt? string
+
+---@class Neoagent.InferenceRequest: Neoagent.RequestProjection
+---@field tools Neoagent.ToolDefinition[]
+
+---@alias Neoagent.PrepareRequest async fun(request: Neoagent.InferenceRequest): Neoagent.RequestProjection?
+
+---@async
+---@param callback? Neoagent.PrepareRequest
+---@param messages Neoagent.RequestMessage[]
+---@param system_prompt? string
+---@param tools Neoagent.ToolDefinition[]
+---@param files? Neoagent.FileSource
+---@param preparation? Neoagent.RequestPreparation
+---@return Neoagent.RequestProjection
+function M.project(callback, messages, system_prompt, tools, files, preparation)
+  local inputs = { messages = messages, system_prompt = system_prompt, tools = tools }
+  local previous = preparation and preparation.projection
+  if previous and previous.callback == callback and vim.deep_equal(previous.inputs, inputs) then
+    return util.copy(previous.value)
+  end
+  local projection
+  if callback then
+    projection = callback({
+      messages = util.copy(messages),
+      system_prompt = system_prompt,
+      tools = util.copy(tools),
+    })
+  end
+  if projection == nil then
+    projection = { messages = util.copy(messages), system_prompt = system_prompt }
+  end
+  assert(type(projection) == "table" and not util.is_list(projection), "prepare_request must return a projection")
+  for key in pairs(projection) do
+    assert(key == "messages" or key == "system_prompt", "unsupported request projection field: " .. tostring(key))
+  end
+  assert(
+    projection.system_prompt == nil
+      or type(projection.system_prompt) == "string" and util.is_valid_utf8(projection.system_prompt),
+    "invalid projected system prompt"
+  )
+  local normalized, err = semantic.normalize_request_list(projection.messages)
+  assert(normalized, "invalid request projection: " .. tostring(err))
+  if callback then
+    require("neoagent.model").require_files({ messages = normalized, files = files })
+  end
+  local result = { messages = normalized, system_prompt = projection.system_prompt }
+  if preparation then
+    preparation.projection = { callback = callback, inputs = util.copy(inputs), value = util.copy(result) }
+  end
+  return result
 end
 
 return M

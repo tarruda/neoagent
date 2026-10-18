@@ -10,6 +10,7 @@ local M = {}
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]
 ---@field model_options? Neoagent.StreamOverrides
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field project fun(payload: Neoagent.CompactionPayload): Neoagent.RequestMessage[]?, Neoagent.Error?
 
 ---@param candidate Neoagent.CompactionSuccess
@@ -40,8 +41,15 @@ function M.evaluate(candidate, options)
     return nil, assert(compatibility_err)
   end
   model_contract.require_files({ messages = messages, files = options.model_options and options.model_options.files })
+  local request = require("neoagent.api.request_preparation").project(
+    options.prepare_request,
+    messages,
+    options.system_prompt,
+    options.tools or {},
+    options.model_options and options.model_options.files
+  )
   local tokens =
-    plan.request_tokens(options.model, messages, options.system_prompt, options.tools, options.model_options)
+    plan.request_tokens(options.model, request.messages, request.system_prompt, options.tools, options.model_options)
   return tokens, messages
 end
 

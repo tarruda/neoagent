@@ -42,9 +42,13 @@ function M.usage_tokens(usage)
   return total > 0 and total or nil
 end
 
----@param message Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage
+---@param message Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage|Neoagent.ContextMessage
 ---@return integer
 function M.estimate_tokens(message)
+  if message.role == "system" or message.role == "developer" or message.role == "userContext" then
+    assert(type(message.content) == "string", "Request context must contain text")
+    return math.ceil(vim.fn.strchars(message.content) / 4)
+  end
   if message.role == "user" then
     ---@cast message Neoagent.UserMessage
     return math.ceil(content_chars(message.content) / 4)
@@ -81,7 +85,7 @@ function M.estimate_tokens(message)
   return 0
 end
 
----@param message? Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage
+---@param message? Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage|Neoagent.ContextMessage
 ---@return number?
 function M.valid_assistant_usage(message)
   if not message or message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
@@ -90,7 +94,7 @@ function M.valid_assistant_usage(message)
   return M.usage_tokens(message.usage)
 end
 
----@param messages (Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage)[]
+---@param messages (Neoagent.ProjectionMessage|Neoagent.NativeCompactionMessage|Neoagent.ContextMessage)[]
 ---@return Neoagent.ContextEstimate
 function M.estimate_context(messages)
   for index = #messages, 1, -1 do

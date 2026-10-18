@@ -196,12 +196,22 @@ local function validate(tool_schema, arguments)
   common.request(arguments, "Process Tool arguments")
 end
 
----@param prepared? Neoagent.SubprocessSpec
 ---@return Neoagent.Tool<unknown>
-local function exec_command(prepared)
+local function exec_command()
   local input = {
     type = "object",
     properties = {
+      sandbox_permissions = {
+        type = "string",
+        enum = { "use_default", "require_escalated" },
+        description = "Per-command sandbox override; require_escalated requests user-approved host execution.",
+      },
+      justification = { type = "string", description = "User-facing approval question for require_escalated." },
+      prefix_rule = {
+        type = "array",
+        items = { type = "string" },
+        description = "Optional reusable approval prefix for require_escalated.",
+      },
       cmd = { type = "string", description = "Shell command to execute." },
       workdir = { type = "string", description = "Working directory; defaults to the workspace cwd." },
       shell = { type = "string", description = "Shell executable; defaults to Neovim's shell." },
@@ -215,15 +225,11 @@ local function exec_command(prepared)
       },
       yield_time_ms = {
         type = "integer",
-        description = "Initial wait, 0–30000 ms. Defaults to 10000. This does not stop the command.",
+        description = "Initial wait, 250–30000 ms. Defaults to 10000; this does not stop the command.",
       },
       max_output_tokens = {
         type = "integer",
         description = "Approximate output budget, 0–10000 tokens (four bytes each). Defaults to 10000.",
-      },
-      timeout_ms = {
-        type = "integer",
-        description = "Optional process lifetime limit in milliseconds. Omit for no lifetime limit.",
       },
     },
     required = { "cmd" },
@@ -234,77 +240,64 @@ local function exec_command(prepared)
   ---@param call Neoagent.ToolOperationCall
   ---@return Neoagent.SubprocessSpec
   local function prepare(arguments, _, call)
-    if prepared then
-      return util.copy(prepared)
-    end
+    validate(input, arguments)
+    local argv = require("neoagent.tools.command").resolve(command(arguments), call)
     return {
-      argv = command(arguments),
+      argv = argv,
       cwd = arguments.workdir and common.resolve_path(common.require_string(arguments, "workdir"), call)
         or call.workspace.cwd,
       stdio = arguments.tty and { kind = "pty", columns = 80, rows = 24 } or { kind = "pipes" },
-      timeout_ms = arguments.timeout_ms ~= nil and common.integer(arguments.timeout_ms, "timeout_ms") or nil,
     }
+  end
+  ---@async
+  ---@param request Neoagent.SubprocessSpec
+  ---@param arguments Neoagent.JsonObject
+  ---@param ctx Neoagent.ToolContext<unknown>
+  ---@return Neoagent.ToolResult
+  local function run(request, arguments, ctx)
+    validate(input, arguments)
+    local wait_ms = budget(arguments.yield_time_ms, 10000, 30000, "yield_time_ms")
+    wait_ms = math.max(250, wait_ms)
+    local tokens = budget(arguments.max_output_tokens, 10000, 10000, "max_output_tokens")
+    local owner = processes(ctx)
+    assert(type(ctx.on_result) == "function", "exec_command requires Tool result acceptance")
+    local on_result = ctx.on_result
+    ---@type Neoagent.ProcessAdmission?
+    local admission
+    ---@type string?
+    local offered_id
+    local started = vim.uv.hrtime()
+    on_result({
+      finish = function(accepted, receipt)
+        if admission then
+          if accepted and receipt and receipt.session_id == offered_id then
+            admission.commit(receipt.output == true)
+          else
+            admission.abort("Tool result was not accepted")
+          end
+        end
+      end,
+      recover = function(err)
+        return request_failed(admission and admission.state(), err, started)
+      end,
+    })
+    admission = owner:reserve(request)
+    local observation = admission.start(wait_ms)
+    offered_id = not observation.done and observation.session_id or nil
+    return result_receipt.bind(result(observation, started, tokens), { session_id = offered_id, output = true })
   end
   return identities.bind({
     name = "exec_command",
+    capabilities = { read_files = true },
     description = "Run a shell command, returning output and a session ID if it is still running. Use write_stdin to poll, send PTY input, or interrupt. New commands use the Agent's sandbox policy; retained processes keep their admitted authority.",
     input_schema = input,
-    execute = function(arguments, ctx)
-      validate(input, arguments)
-      local wait_ms = budget(arguments.yield_time_ms, 10000, 30000, "yield_time_ms")
-      local tokens = budget(arguments.max_output_tokens, 10000, 10000, "max_output_tokens")
-      local call = common.call(ctx)
-      local owner = processes(ctx)
-      local on_result = assert(ctx.on_result, "exec_command requires Tool result acceptance")
-      ---@type Neoagent.ProcessAdmission?
-      local admission
-      ---@type string?
-      local offered_id
-      local started = vim.uv.hrtime()
-      on_result({
-        finish = function(accepted, receipt)
-          if admission then
-            if accepted and receipt and receipt.session_id == offered_id then
-              admission.commit(receipt.output == true)
-            else
-              admission.abort("Tool result was not accepted")
-            end
-          end
-        end,
-        recover = function(err)
-          return request_failed(admission and admission.state(), err, started)
-        end,
-      })
-      admission = owner:reserve(prepare(arguments, {}, call))
-      local observation = admission.start(wait_ms)
-      offered_id = not observation.done and observation.session_id or nil
-      return result_receipt.bind(result(observation, started, tokens), { session_id = offered_id, output = true })
-    end,
     render = require("neoagent.tools.activity_presentation").exec_command,
-  }, { token = identities.exec_command, settings = {}, prepare = prepare })
+  }, { token = identities.exec_command, settings = {}, prepare = identities.workspace_prepare(prepare), run = run })
 end
 
 ---@return Neoagent.Tool<unknown>
 function M.exec_command()
   return exec_command()
-end
-
--- Bind approval to one resolved command without changing the shared Tool or
--- carrying execution policy into the process manager. Other call options
--- (such as output budgets) remain ordinary validated Tool arguments.
----@generic C
----@param tool Neoagent.Tool<C>
----@param arguments Neoagent.JsonObject
----@param ctx Neoagent.ToolContext<C>
----@return Neoagent.Tool<C>
-function M.prepare_command(tool, arguments, ctx)
-  local identity = assert(identities.identity(tool))
-  assert(identity.token == identities.exec_command, "Command preparation requires exec_command")
-  local spec =
-    require("neoagent.subprocess.validate").spec(identity.prepare(arguments, identity.settings, common.call(ctx)))
-  local prepared = util.copy(tool)
-  prepared.execute = exec_command(spec).execute
-  return prepared
 end
 
 ---@return Neoagent.Tool<unknown>
@@ -316,10 +309,6 @@ function M.write_stdin()
       chars = {
         type = "string",
         description = "PTY input (up to 65536 bytes). Empty polls; a single Ctrl-C interrupts pipes or PTYs.",
-      },
-      terminate = {
-        type = "boolean",
-        description = "End the owned process with forced escalation if needed. Cannot be combined with nonempty chars.",
       },
       yield_time_ms = {
         type = "integer",
@@ -335,57 +324,60 @@ function M.write_stdin()
   }
   ---@param arguments Neoagent.JsonObject
   local function prepare(arguments)
+    validate(input, arguments)
     local chars = arguments.chars and common.require_string(arguments, "chars", true) or ""
     assert(#chars <= 65536, "chars must not exceed 65536 bytes")
-    assert(not arguments.terminate or chars == "", "terminate cannot be combined with chars")
     local wait_ms =
       budget(arguments.yield_time_ms, chars == "" and 5000 or 250, chars == "" and 300000 or 30000, "yield_time_ms")
     local tokens = budget(arguments.max_output_tokens, 10000, 10000, "max_output_tokens")
     local id = common.require_string(arguments, "session_id")
     ---@type Neoagent.ProcessControl?
     local control
-    if arguments.terminate then
-      control = { kind = "terminate", reason = "Terminated through write_stdin" }
-    elseif chars == "\3" then
+    if chars == "\3" then
       control = { kind = "interrupt" }
     elseif chars ~= "" then
       control = { kind = "write", data = chars }
     end
     return { id = id, wait_ms = wait_ms, tokens = tokens, control = control }
   end
+  ---@async
+  ---@param request {id: string, wait_ms: integer, tokens: integer, control?: Neoagent.ProcessControl}
+  ---@param _ Neoagent.JsonObject
+  ---@param ctx Neoagent.ToolContext<unknown>
+  ---@return Neoagent.ToolResult
+  local function run(request, _, ctx)
+    local owner = processes(ctx)
+    local started = vim.uv.hrtime()
+    ---@type Neoagent.ProcessInteraction?
+    local interaction
+    assert(ctx.on_result, "write_stdin requires Tool result acceptance")({
+      finish = function(accepted, receipt)
+        if interaction then
+          if accepted and receipt and receipt.output == true then
+            interaction.commit()
+          else
+            interaction.abort()
+          end
+        end
+      end,
+      recover = function(err)
+        return request_failed(interaction and interaction.state(), err, started, request.id)
+      end,
+    })
+    interaction = owner:begin_interaction(request.id)
+    local observation = interaction.collect(request.wait_ms, request.control)
+    return result_receipt.bind(result(observation, started, request.tokens), { output = true })
+  end
   return identities.bind({
     name = "write_stdin",
-    description = "Send input to an existing process, poll new output, or terminate it. Cancelling this wait preserves the process and unpublished output. Sessions belong to this Agent and are unavailable after the Agent is destroyed or the editor restarts.",
+    description = "Send input to an existing process or poll new output. Cancelling this wait preserves the process and unpublished output. Sessions belong to this Agent and are unavailable after the Agent is destroyed or the editor restarts.",
     input_schema = input,
-    execute = function(arguments, ctx)
-      validate(input, arguments)
-      local request = prepare(arguments)
-      local owner = processes(ctx)
-      local started = vim.uv.hrtime()
-      ---@type Neoagent.ProcessInteraction?
-      local interaction
-      assert(ctx.on_result, "write_stdin requires Tool result acceptance")({
-        finish = function(accepted, receipt)
-          if interaction then
-            if accepted and receipt and receipt.output == true then
-              interaction.commit()
-            else
-              interaction.abort()
-            end
-          end
-        end,
-        recover = function(err)
-          return request_failed(interaction and interaction.state(), err, started, request.id)
-        end,
-      })
-      interaction = owner:begin_interaction(request.id)
-      local observation = interaction.collect(request.wait_ms, request.control)
-      return result_receipt.bind(result(observation, started, request.tokens), { output = true })
-    end,
+    render = require("neoagent.tools.activity_presentation").write_stdin,
   }, {
     token = identities.write_stdin,
     settings = {},
     prepare = prepare,
+    run = run,
   })
 end
 

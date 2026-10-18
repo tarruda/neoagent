@@ -25,6 +25,7 @@ local summary = require("neoagent.compaction.summary")
 ---@field model Neoagent.Model
 ---@field model_options? Neoagent.StreamOverrides
 ---@field instructions? string
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field reason? string
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]
@@ -49,7 +50,6 @@ local M = {
 ---@field fit? async fun(candidate: Neoagent.CompactionSuccess, options: Neoagent.CheckpointAcceptanceOptions): Neoagent.CompactionSuccess?, Neoagent.Error?
 ---@field run fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 ---@field require_native? boolean
----@field required_api? string
 
 ---@param options Neoagent.CompactionEvaluationOptions
 ---@return Neoagent.CompactionEvaluation
@@ -72,7 +72,7 @@ M.local_component = {
 ---@param configured? Neoagent.CompactionConfig|false
 ---@return Neoagent.CompactionComponent
 function M.for_config(configured)
-  if configured and configured.strategy == "prefix" then
+  if not configured or configured.strategy ~= "summary" then
     return require("neoagent.compaction.prefix").component
   end
   return M.local_component

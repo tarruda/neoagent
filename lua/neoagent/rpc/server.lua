@@ -41,7 +41,7 @@ Server.__index = Server
 
 ---@class Neoagent.RpcServerDomain
 ---@field error_kind string
----@field max_pending_events integer Maximum connection notifications queued during a request.
+---@field max_deferred_events? integer When set, defer connection notifications until the request's terminal frame, under this bound.
 ---@field open fun(context: unknown)
 ---@field events fun(send: fun(name: string, value: table))
 ---@field request fun(method: string, payload: unknown, emit: fun(name: string, value: table), cancelled: fun(): boolean): Neoagent.RpcServerOperation
@@ -328,8 +328,8 @@ local function new(opts, domain)
   }, Server)
   domain.events(function(name, value)
     assert(server._state == "open", "RPC connection event requires an open connection")
-    if server._active then
-      assert(#server._deferred_events < domain.max_pending_events, "RPC connection event queue exceeded its bound")
+    if server._active and domain.max_deferred_events then
+      assert(#server._deferred_events < domain.max_deferred_events, "RPC connection event queue exceeded its bound")
       server._deferred_events[#server._deferred_events + 1] = { name = name, value = value }
       return
     end

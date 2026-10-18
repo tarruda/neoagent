@@ -64,7 +64,7 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
----@param api? string
+---@param api? string[]
 ---@return string[]?, Neoagent.Error?
 function M.available(configured, manager, runtimes, api)
   configured = configured or config.get()
@@ -81,7 +81,7 @@ function M.available(configured, manager, runtimes, api)
     end
     if credential_state.usable then
       for model_id, model in pairs(runtime.catalog:snapshot().models) do
-        if model.hidden ~= true and (api == nil or (model.api or provider.api) == api) then
+        if model.hidden ~= true and (api == nil or vim.tbl_contains(api, model.api or provider.api)) then
           result[#result + 1] = provider_id .. "/" .. model_id
         end
       end
@@ -94,7 +94,7 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
----@param api? string
+---@param api? string[]
 ---@return Neoagent.ModelSelection?, Neoagent.Error?
 function M.first_available(configured, manager, runtimes, api)
   local available, err = M.available(configured, manager, runtimes, api)
@@ -113,7 +113,7 @@ end
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@param listener fun(choices?: string[], err?: Neoagent.Error)
----@param api? string
+---@param api? string[]
 ---@return fun(): boolean
 function M.subscribe_available(configured, manager, runtimes, listener, api)
   runtimes = assert_runtimes(runtimes)
@@ -179,6 +179,10 @@ local function api_factory(resolved)
     local path = type(selected) == "table" and selected.path or logger.codex_path()
     on_diagnostic = logger.callback(path, { report = resolved.report })
   end
+  local custom_tools = resolved.model.custom_tools
+  if custom_tools == nil then
+    custom_tools = resolved.provider.custom_tools
+  end
   local options = {
     provider = resolved.provider_id,
     model = resolved.model_id,
@@ -193,6 +197,8 @@ local function api_factory(resolved)
     reasoning_summary = resolved.model.reasoning_summary,
     reasoning_context = resolved.model.reasoning_context,
     responses_lite = resolved.model.responses_lite,
+    custom_tools = custom_tools,
+    supports_image_detail_original = resolved.model.supports_image_detail_original,
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
     prompt_caching = resolved.provider.prompt_caching,

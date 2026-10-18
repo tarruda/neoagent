@@ -160,17 +160,15 @@ local function new()
       required = { "pattern" },
       additionalProperties = false,
     },
-    ---@async
-    execute = function(arguments, ctx)
-      local call = common.call(ctx)
-      return run(prepare(arguments, {}, call), call, deps)
-    end,
     render = presentation.grep,
   }
   return identities.bind(tool, {
     token = identities.grep,
     settings = {},
-    prepare = prepare,
+    prepare = identities.workspace_prepare(prepare),
+    run = function(request, _, ctx)
+      return run(request, common.call(ctx), deps)
+    end,
   })
 end
 

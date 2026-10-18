@@ -40,7 +40,7 @@ describe("neoagent provider storage layout", function()
 
   it("places bundled and direct Agent state under provider/state", function()
     local bundled_root = state_root()
-    local configured = require("neoagent.config").resolve({
+    local configured = require("neoagent.config").snapshot({
       default_registry = false,
       providers = {},
       workspace_trust = false,
@@ -53,7 +53,7 @@ describe("neoagent provider storage layout", function()
     assert_provider_state(bundled_root)
 
     local direct_root = state_root()
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "Provider storage layout",
       default_registry = false,
       providers = {},

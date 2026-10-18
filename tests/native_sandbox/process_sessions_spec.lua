@@ -52,15 +52,14 @@ describe("native retained process authority", function()
   end)
 
   it("applies the shared sandbox composition to an Agent's default admission", function()
-    local _, _, _, runtime = require("neoagent.sandbox.composition").switchable({ tools = {} },
+    local toolset = require("neoagent.sandbox.composition").switchable({ tools = {} },
       { enabled = true, profile = function() return profile end },
       { platform = assert(platform), status = assert(status), nvim = vim.env.NEOAGENT_NVIM })
     agent = require("neoagent").new({
       default_registry = false, providers = {}, tools = {}, workspace_trust = false,
       persistence = { enabled = false }, recording = { enabled = false }, agent_instructions = false, skills = false,
-    }, { workspace = root, process_placement = function(context, spec)
-      return runtime:process_factory({ context = context, process = spec })
-    end })
+    }, { workspace = root })
+    assert(agent:set_toolset(toolset))
     owner = agent:get_process_sessions()
     local admission = helper.success(function()
       return helper.admit(owner, { argv = { jit.os == "Windows" and "python" or "python3", "-u", "-c",

@@ -270,7 +270,7 @@ describe("neoagent shared sandbox contract", function()
 
   ---@param selected_tools Neoagent.Tool<Neoagent.TestNativeEnvironment>[]
   ---@param profile_callback? fun(default: Neoagent.SandboxProfile, ctx: Neoagent.SandboxContext<Neoagent.TestNativeEnvironment>): Neoagent.SandboxProfile
-  ---@return Neoagent.SandboxComposition<Neoagent.TestNativeEnvironment>
+  ---@return Neoagent.AgentToolset<Neoagent.TestNativeEnvironment>
   local function sandboxed_config(selected_tools, profile_callback)
     local toolset = composition.compose({ tools = selected_tools }, {
       enabled = true,
@@ -280,7 +280,7 @@ describe("neoagent shared sandbox contract", function()
   end
 
   ---@async
-  ---@param options Neoagent.SandboxComposition<Neoagent.TestNativeEnvironment>
+  ---@param options Neoagent.AgentToolset<Neoagent.TestNativeEnvironment>
   ---@param tool Neoagent.Tool<Neoagent.TestNativeEnvironment>
   ---@param arguments Neoagent.JsonObject
   ---@return Neoagent.ToolResult
@@ -464,11 +464,7 @@ describe("neoagent shared sandbox contract", function()
         assert.is_nil(tool.input_schema.properties.options)
         local composed = assert(assert(options.tools)[index])
         local options_schema = assert(composed.input_schema.properties).options
-        if require("neoagent.tools.identities").is_parent(tool) then
-          assert.is_nil(options_schema)
-        else
-          assert.is_table(options_schema)
-        end
+        assert.is_nil(options_schema)
       end
     end)
 
@@ -985,7 +981,7 @@ describe("neoagent shared sandbox contract", function()
       return execute_tool(options, selected[1], { path = "private.txt" })
     end))
     assert.is_true(read.isError, text(read))
-    assert.matches("require_escalation", text(read), 1, true)
+    assert.matches("sandbox_permissions", text(read), 1, true)
     assert.is_not_matches("private contents", text(read))
 
     local shell = wait(async.run(function()
@@ -996,6 +992,30 @@ describe("neoagent shared sandbox contract", function()
     assert.is_true(shell.isError, text(shell))
     assert.matches("blocked by the sandbox", text(shell), 1, true)
     assert.is_not_matches("private contents", text(shell))
+  end)
+
+  sandbox_test("publishes native patches and rejects a denied destination before any file changes", function()
+    local patch = require("neoagent.tools.codex.apply_patch").new()
+    local options = sandboxed_config({ patch })
+    local written = wait(async.run(function()
+      return execute_tool(options, patch, { patch = [[*** Begin Patch
+*** Add File: patched.txt
++native publication
+*** End Patch]] })
+    end))
+    assert.is_nil(written.isError, text(written))
+    assert.are.equal("native publication\n", fs.read(workspace .. "/patched.txt"))
+    assert.are.same({ workspace .. "/patched.txt" }, assert(written.details).changed_paths)
+    local blocked = wait(async.run(function()
+      return execute_tool(options, patch, { patch = "*** Begin Patch\n*** Add File: earlier.txt\n+must remain absent\n*** Add File: "
+        .. outside .. "/denied.txt\n+denied\n*** End Patch" })
+    end))
+    assert.is_true(blocked.isError, text(blocked))
+    assert.is_true(assert(assert(blocked.execution).sandbox).preflight_denied)
+    assert.is_true(assert(assert(blocked.execution).sandbox).approval_unavailable)
+    assert.matches("Write access is denied", text(blocked), 1, true)
+    assert.is_nil(vim.uv.fs_stat(workspace .. "/earlier.txt"))
+    assert.is_nil(vim.uv.fs_stat(outside .. "/denied.txt"))
   end)
 
   sandbox_test("fails closed when the checkout is denied", function()
@@ -1048,7 +1068,7 @@ describe("neoagent shared sandbox contract", function()
       local sandbox = assert(assert(value.execution).sandbox)
       assert.is_true(sandbox.ran_restricted)
       assert.is_nil(sandbox.unavailable)
-      assert.matches("require_escalation", text(value), 1, true)
+      assert.matches("sandbox_permissions", text(value), 1, true)
       assert.is_not_matches("default-read", text(value))
     end)
 
@@ -1178,7 +1198,7 @@ describe("neoagent shared sandbox contract", function()
         "write-metadata", "write-link", "edit-outside", "edit-metadata",
         "grep-denied", "grep-link",
       }) do
-        assert.matches("require_escalation", text(results[id]), 1, true)
+        assert.matches("sandbox_permissions", text(results[id]), 1, true)
       end
       for _, id in ipairs({
         "grep-denied", "grep-link",
@@ -1189,7 +1209,7 @@ describe("neoagent shared sandbox contract", function()
       end
       for _, id in ipairs({ "find-denied", "find-link" }) do
         assert.is_truthy(
-          text(results[id]):find("require_escalation", 1, true),
+          text(results[id]):find("sandbox_permissions", 1, true),
           id .. ": " .. text(results[id]))
       end
       assert.is_false(results["shell-boundaries"].isError,
@@ -1223,7 +1243,7 @@ describe("neoagent shared sandbox contract", function()
       })
     end))
     assert.is_true(value.isError, text(value))
-    assert.matches("require_escalation", text(value), 1, true)
+    assert.matches("sandbox_permissions", text(value), 1, true)
     assert.is_nil(vim.uv.fs_stat(metadata))
     value = wait(async.run(function()
       return execute_tool(options, selected[2], {
@@ -1700,7 +1720,7 @@ describe("neoagent shared sandbox contract", function()
       assert.is_true(value.code == 0, vim.inspect(value))
     end)
 
-  sandbox_test("activates the built-in Neo composition from setup", function()
+  sandbox_test("activates the built-in Pi composition from setup", function()
     package.loaded["neoagent"] = nil
     local neoagent = require("neoagent")
     ---@param enabled boolean
@@ -1732,8 +1752,12 @@ describe("neoagent shared sandbox contract", function()
     local function setup_agent(enabled)
       local applet = neoagent.setup(configured(enabled))
       assert.are.same({}, applet:agents())
-      wait(assert(applet:send("activate sandbox composition")))
-      return applet, (assert(applet:default_agent()))
+      local run = applet:send("activate sandbox composition")
+      assert(type(run) == "table")
+      wait(run)
+      local agent = applet:default_agent()
+      assert(agent)
+      return applet, agent
     end
     local applet, agent = setup_agent(true)
     local options = agent:config()
@@ -1762,15 +1786,16 @@ describe("neoagent shared sandbox contract", function()
       assert.is_true(assert(sandbox_status.capabilities).seatbelt)
       assert.matches("capability.seatbelt: yes", rendered, 1, true)
     end
-    assert.is_table(assert(assert(assert(agent:get_toolset().tools[1])
-      .input_schema.properties).options.properties).require_escalation)
-    assert.are.equal("Neo", agent:config().name)
-    assert.is_false(assert(applet:profile("chat")).config.sandbox.enabled)
+    assert.is_nil(assert(assert(agent:get_toolset().tools[1])
+      .input_schema.properties).options)
+    assert.are.equal("Pi", agent:config().name)
+    -- Explicit execution settings also apply to Profiles without toggle controls.
+    assert.is_true(assert(applet:_resolve("chat")).config.sandbox.enabled)
     applet, agent = setup_agent(false)
     assert.is_false(assert(agent):config().sandbox.enabled)
     assert.is_false(neoagent.sandbox_info().enabled)
     local stable = assert(agent):get_toolset()
-    assert.is_table(assert(assert(stable.tools[1]).input_schema.properties).options)
+    assert.is_nil(assert(assert(stable.tools[1]).input_schema.properties).options)
     sandbox_status = assert(neoagent.toggle_sandbox())
     assert.is_true(sandbox_status.active)
     assert.is_false(assert(agent):config().sandbox.enabled)

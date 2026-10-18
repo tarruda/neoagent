@@ -94,17 +94,18 @@ function M.new(manager_for, policy)
             if not policy.accepts(image) then
               return inline(image)
             end
-            local key = manager:key(
-              {
-                source = assert(dependencies.files),
-                file_id = image.file_id,
-                bytes = image.bytes,
-                mime_type = image.mime_type,
-                filename = image.filename,
-              },
-              access
+            local key = manager:key({
+              source = assert(dependencies.files),
+              file_id = image.file_id,
+              bytes = image.bytes,
+              mime_type = image.mime_type,
+              filename = image.filename,
+            }, access)
+            return image_encoding.remote(
+              plan.api,
+              assert(prepared[key], "image was not prepared").object.locator,
+              image.detail
             )
-            return image_encoding.remote(plan.api, assert(prepared[key], "image was not prepared").object.locator)
           end
           local headers = util.copy(request.headers)
           if policy.headers then

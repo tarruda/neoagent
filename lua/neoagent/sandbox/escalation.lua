@@ -1,6 +1,7 @@
 local result = require("neoagent.sandbox.result")
 local summaries = require("neoagent.sandbox.approval_summary")
 local identities = require("neoagent.tools.identities")
+local invocations = require("neoagent.tools.invocation")
 local util = require("neoagent.util")
 
 local M = {}
@@ -16,24 +17,20 @@ local M = {}
 
 ---@class Neoagent.SandboxEscalationRequest
 ---@field justification string
+---@field prefix_rule? string[]
 
 ---@class Neoagent.SandboxDecisionMetadata
 ---@field presenter_unavailable? boolean
 ---@field input? string
 
 ---@class Neoagent.SandboxEscalationOptions<C>
----@field shell? string|(fun(): string)
 ---@field summarize? fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
----@field parent? fun(tool: Neoagent.Tool<C>): boolean
 
 ---@class Neoagent.SandboxEscalation<C>
----@field _shell fun(): string
 ---@field _summarize fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
 ---@field _rules Neoagent.SandboxPrefixRule[]
 ---@field _default_session table
 ---@field _session_key? unknown
----@field _parent fun(tool: Neoagent.Tool<C>): boolean
----@field _added_options table<string, boolean>
 local Escalation = {}
 Escalation.__index = Escalation
 
@@ -57,19 +54,20 @@ local function bounded(value, limit)
   return value
 end
 
----@param ctx Neoagent.SandboxApprovalContext
+---@generic C
+---@param ctx Neoagent.ToolContext<C>
 ---@return string?
 local function workspace_cwd(ctx)
   local context = ctx and ctx.context
-  local workspace = context and context.workspace or context
-  return type(workspace) == "table" and workspace.cwd or nil
+  local workspace = type(context) == "table" and rawget(context, "workspace") or context
+  return type(workspace) == "table" and type(workspace.cwd) == "string" and workspace.cwd or nil
 end
 
 ---@param shell string
 ---@return Neoagent.SandboxShellKind?
 local function shell_kind(shell)
   local name = shell:gsub("\\", "/"):match("([^/]+)$")
-  name = name and name:lower() or ""
+  name = name and name:lower():gsub("%.exe$", "") or ""
   if name == "cmd" or name == "cmd.exe" then
     return "cmd"
   end
@@ -84,7 +82,8 @@ end
 ---@param shell string
 ---@return string
 local function shell_key(shell)
-  return shell:gsub("\\", "/"):lower()
+  shell = shell:gsub("\\", "/")
+  return jit.os == "Windows" and shell:lower() or shell
 end
 
 ---@param buffer string[]
@@ -331,70 +330,6 @@ local function starts_with(tokens, prefix)
   return true
 end
 
----@return table<string, Neoagent.JsonObject>
-local function escalation_properties()
-  return {
-    require_escalation = {
-      type = "boolean",
-      enum = { true },
-      description = "Request one unrestricted retry after sandbox restrictions block this call.",
-    },
-    escalation_justification = {
-      type = "string",
-      description = "Explain why the task cannot be completed inside the sandbox.",
-    },
-  }
-end
-
----@param tool Neoagent.Tool<C>
----@return Neoagent.Tool<C>
-function Escalation:_transform(tool)
-  assert(type(tool) == "table", "tool must be a table")
-  assert(type(tool.name) == "string" and tool.name ~= "", "tool.name is required")
-  assert(type(tool.input_schema) == "table", "tool.input_schema is required for " .. tool.name)
-  assert(tool.input_schema.type == "object", "tool input_schema must be object-valued for " .. tool.name)
-  local copied = util.copy(tool)
-  copied.input_schema.properties = copied.input_schema.properties or {}
-  if not is_object(copied.input_schema.properties) then
-    error("tool input_schema.properties must be an object for " .. tool.name, 0)
-  end
-  local options = copied.input_schema.properties.options
-  local added = options == nil
-  if added then
-    options = {
-      type = "object",
-      properties = {},
-      additionalProperties = false,
-    }
-    copied.input_schema.properties.options = options
-  elseif type(options) ~= "table" or options.type ~= "object" then
-    error("tool options schema must be object-valued for " .. tool.name, 0)
-  end
-  options.properties = options.properties or {}
-  if not is_object(options.properties) then
-    error("tool options properties must be an object for " .. tool.name, 0)
-  end
-  for name, schema in pairs(escalation_properties()) do
-    if options.properties[name] ~= nil then
-      error("tool options schema reserves " .. name .. " for sandbox escalation in " .. tool.name, 0)
-    end
-    options.properties[name] = schema
-  end
-  self._added_options[tool.name] = added
-  return copied
-end
-
----@param tools Neoagent.Tool<C>[]
----@return Neoagent.Tool<C>[]
-function Escalation:tools(tools)
-  assert(type(tools) == "table" and util.is_list(tools), "sandbox tools must be a list")
-  local copied = {}
-  for index, tool in ipairs(tools) do
-    copied[index] = self._parent(tool) and util.copy(tool) or self:_transform(tool)
-  end
-  return copied
-end
-
 ---@param tool Neoagent.Tool<C>
 ---@param arguments unknown
 ---@return Neoagent.JsonObject?, string?, Neoagent.SandboxEscalationRequest?
@@ -403,70 +338,81 @@ function Escalation:_extract(tool, arguments)
     return nil, "tool arguments must be an object"
   end
   local copied = util.copy(arguments)
-  local options = copied.options
-  if options == nil then
+  local identity = identities.identity(tool)
+  if not identity or identity.token ~= identities.exec_command then
     return copied
   end
-  if not is_object(options) then
-    return nil, "options must be an object"
-  end
-  local requested = options.require_escalation
-  local justification = options.escalation_justification
-  options.require_escalation = nil
-  options.escalation_justification = nil
-  if self._added_options[tool.name] and next(options) == nil then
-    copied.options = nil
-  end
-  if requested == nil and justification == nil then
+  local requested, justification = copied.sandbox_permissions, copied.justification
+  local prefix = copied.prefix_rule
+  copied.sandbox_permissions, copied.justification, copied.prefix_rule = nil, nil, nil
+  if requested == nil or requested == "use_default" then
+    if justification ~= nil or prefix ~= nil then
+      return nil, "justification and prefix_rule require sandbox_permissions = require_escalated"
+    end
     return copied
   end
-  if requested ~= true then
-    return nil, "options.require_escalation must be exactly true"
+  if requested ~= "require_escalated" then
+    return nil, "unsupported sandbox_permissions"
   end
   if type(justification) ~= "string" or util.trim(justification) == "" or #justification > 1000 then
-    return nil, "options.escalation_justification must be a non-empty string of at most 1000 bytes"
+    return nil, "justification must be non-empty text of at most 1000 bytes"
   end
-  return copied, nil, { justification = justification }
-end
-
----@return string?, Neoagent.SandboxShellKind?
-function Escalation:_configured_shell()
-  local ok, value = pcall(self._shell)
-  if not ok or type(value) ~= "string" then
-    return
+  if prefix ~= nil then
+    if type(prefix) ~= "table" or not util.is_list(prefix) or #prefix == 0 then
+      return nil, "prefix_rule must be a nonempty list"
+    end
+    for _, word in ipairs(prefix) do
+      if type(word) ~= "string" or word == "" then
+        return nil, "prefix_rule must contain nonempty strings"
+      end
+    end
   end
-  return value, shell_kind(value)
-end
-
----@generic C
----@param tool Neoagent.Tool<C>
----@return boolean
-local function is_shell(tool)
-  local identity = identities.identity(tool)
-  return identity ~= nil and identity.token == identities.shell
+  local words
+  if prefix then
+    words = {}
+    for index = 1, #prefix do
+      local value = prefix[index]
+      assert(type(value) == "string", "prefix_rule must contain strings")
+      words[#words + 1] = value
+    end
+  end
+  return copied, nil, { justification = justification, prefix_rule = words }
 end
 
 ---@param tool Neoagent.Tool<C>
 ---@param arguments Neoagent.JsonObject
+---@param ctx Neoagent.ToolContext<C>
 ---@return Neoagent.SandboxPrefixCandidate?
-function Escalation:_candidate(tool, arguments)
-  if not is_shell(tool) or type(arguments.command) ~= "string" then
+function Escalation:_candidate(tool, arguments, ctx)
+  local identity = identities.identity(tool)
+  if not identity then
     return
   end
-  local shell, kind = self:_configured_shell()
-  if not kind then
+  ---@type string?, string?, Neoagent.SandboxShellKind?
+  local command, shell, kind
+  if identity.token == identities.exec_command or identity.token == identities.shell then
+    local call = require("neoagent.tools.common").call(ctx)
+    local prepared = invocations.current(tool.execute, ctx) or assert(invocations.prepare(tool, arguments, ctx))
+    local spec = invocations.request(prepared, call)
+    local argv = rawget(spec, "argv")
+    assert(type(argv) == "table", "Command argv must be a list")
+    shell = assert(argv[1])
+    assert(type(shell) == "string", "Command shell must be a string")
+    kind = shell_kind(shell)
+    local source = prepared.arguments
+    local value = identity.token == identities.exec_command and source.cmd or source.command
+    if type(value) == "string" then
+      command = value
+    end
+  end
+  if not kind or type(command) ~= "string" then
     return
   end
-  local tokens = parse_command(arguments.command, kind, true)
+  local tokens = parse_command(command, kind, true)
   if not tokens then
     return
   end
-  return {
-    command = arguments.command,
-    kind = kind,
-    shell = shell_key((assert(shell))),
-    tokens = tokens,
-  }
+  return { command = command, kind = kind, shell = shell_key(assert(shell)), tokens = tokens }
 end
 
 ---@param tool Neoagent.Tool<C>
@@ -488,7 +434,7 @@ function Escalation:_request(tool, arguments, escalation, ctx)
     "",
     "Tool: " .. bounded(tool.name, 128),
   }
-  local cwd = workspace_cwd(ctx --[[@as Neoagent.SandboxApprovalContext]])
+  local cwd = workspace_cwd(ctx)
   if cwd then
     body[#body + 1] = "Working directory: " .. bounded(cwd, 2000)
   end
@@ -503,7 +449,22 @@ function Escalation:_request(tool, arguments, escalation, ctx)
     body[#body + 1] =
       "The started process retains this authority until it exits or is terminated, including after sandbox toggles."
   end
-  local candidate = self:_candidate(tool, arguments)
+  local candidate = self:_candidate(tool, arguments, ctx)
+  if candidate and escalation.prefix_rule then
+    if starts_with(candidate.tokens, escalation.prefix_rule) then
+      local quoted = {}
+      for _, token in ipairs(escalation.prefix_rule) do
+        if candidate.kind == "posix" then
+          quoted[#quoted + 1] = "'" .. token:gsub("'", "'\\''") .. "'"
+        else
+          quoted[#quoted + 1] = '"' .. token:gsub('"', '\\"') .. '"'
+        end
+      end
+      candidate.command = table.concat(quoted, " ")
+    else
+      candidate = nil
+    end
+  end
   local actions = {
     { id = "approve", label = "approve", key = "y" },
     { id = "deny", label = "deny", key = "n" },
@@ -676,22 +637,19 @@ end
 
 ---@param tool Neoagent.Tool<C>
 ---@param arguments Neoagent.JsonObject
+---@param ctx Neoagent.ToolContext<C>
 ---@return boolean
-function Escalation:_matches(tool, arguments)
-  if not is_shell(tool) or type(arguments.command) ~= "string" then
+function Escalation:_matches(tool, arguments, ctx)
+  local candidate = self:_candidate(tool, arguments, ctx)
+  if not candidate then
     return false
   end
-  local shell, kind = self:_configured_shell()
-  if not kind then
-    return false
-  end
-  local tokens = parse_command(arguments.command, kind)
+  local tokens = parse_command(candidate.command, candidate.kind)
   if not tokens then
     return false
   end
-  local key = shell_key((assert(shell)))
   for _, rule in ipairs(self._rules) do
-    if rule.shell == key and starts_with(tokens, rule.tokens) then
+    if rule.shell == candidate.shell and starts_with(tokens, rule.tokens) then
       return true
     end
   end
@@ -718,15 +676,19 @@ function Escalation:wrap(executors)
       })
     end
     self:_sync_session(ctx)
+    ctx = invocations.context(ctx, invocations.prepare(tool, stripped, ctx))
+    ---@type Neoagent.ToolResult?
+    local preflight_result
     if not escalation then
-      return executors.restricted(tool, stripped, ctx)
-    end
-    local identity = identities.identity(tool)
-    if identity and identity.token == identities.exec_command then
-      tool = require("neoagent.tools.process").prepare_command(tool, stripped, ctx)
+      preflight_result = executors.restricted(tool, stripped, ctx)
+      local evidence = preflight_result.execution and preflight_result.execution.sandbox
+      if not evidence or type(evidence) ~= "table" or evidence.preflight_denied ~= true then
+        return assert(preflight_result)
+      end
+      escalation = { justification = "The workspace policy denied this operation before execution." }
     end
     local decision, approval_err, decision_metadata
-    if self:_matches(tool, stripped) then
+    if self:_matches(tool, stripped, ctx) then
       decision = "approve"
     else
       local resolved = false
@@ -757,6 +719,11 @@ function Escalation:wrap(executors)
     end
     if not decision or decision_metadata and decision_metadata.presenter_unavailable then
       local message = approval_err and approval_err.message or "Dialog presenter became unavailable"
+      if preflight_result then
+        return result.append(preflight_result, message .. "\nUnrestricted execution did not occur.", {
+          approval_unavailable = true,
+        })
+      end
       return result.sandbox(message .. "\nUnrestricted execution did not occur.", {
         approval_unavailable = true,
       })
@@ -813,29 +780,10 @@ end
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "sandbox escalation options must be a table")
-  assert(opts.parent == nil or type(opts.parent) == "function", "sandbox parent selector must be a function")
-  local shell = opts.shell
-  if shell == nil then
-    shell = function()
-      return vim.o.shell
-    end
-  end
-  if type(shell) == "string" then
-    local value = shell
-    shell = function()
-      return value
-    end
-  end
-  assert(type(shell) == "function", "sandbox escalation shell must be a string or function")
   return setmetatable({
-    _shell = shell,
     _summarize = opts.summarize or summaries.for_tool,
     _rules = {},
     _default_session = {},
-    _parent = opts.parent or function()
-      return false
-    end,
-    _added_options = {},
   }, Escalation)
 end
 

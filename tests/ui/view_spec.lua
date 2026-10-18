@@ -4078,6 +4078,8 @@ describe("neoagent.ui", function()
   end)
 
   it("scrolls the transcript after submit and when leaving it", function()
+    ---@param overrides? Neoagent.UIConfigInput
+    ---@return Neoagent.View, fun(): integer
     local function scrolling_view(overrides)
       local submissions = 0
       ---@type Neoagent.View?
@@ -4090,6 +4092,7 @@ describe("neoagent.ui", function()
           return true
         end,
       })
+      assert(result)
       views[#views + 1] = result
       local lines = {}
       for index = 1, 40 do lines[index] = "line " .. index end

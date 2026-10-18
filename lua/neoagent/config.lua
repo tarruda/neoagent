@@ -7,10 +7,14 @@ local model_config = require("neoagent.model_config")
 local provider_auth = require("neoagent.provider_auth")
 local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TIMEOUT_MS / 1000
 
----@class Neoagent.ConfiguredPromptContext: Neoagent.SystemPromptContext
+---@class Neoagent.ConfiguredPromptContext
 ---@field session Neoagent.Session
 ---@field workspace Neoagent.Workspace
 ---@field prompt string
+---@field model? Neoagent.Model
+---@field tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
+---@field agent_instructions Neoagent.InstructionFile[]
+---@field skills Neoagent.Skill[]
 
 ---@alias Neoagent.UIMapping string|string[]|false
 
@@ -79,7 +83,7 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field display? 'always'|'expanded'
 
 ---@class Neoagent.UIConfig: Neoagent.UIConfigInput
----@field style string
+---@field style? string
 ---@field renderer? Neoagent.Renderer<unknown>
 ---@field position Neoagent.UiPosition
 ---@field width? number
@@ -116,34 +120,41 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field border? Applet.WindowBorder
 ---@field mappings? table<string, Neoagent.UIMapping>
 
----@class Neoagent.Config<C = unknown>: Neoagent.ModelResolutionConfig, Neoagent.ProviderRuntimeConfig
+---@alias Neoagent.DefaultProfile string|(fun(selection: Neoagent.ModelSelection?): string?)
+
+---@class Neoagent.AgentSettings<C = unknown>
 ---@field name? string
----@field default_registry boolean
 ---@field shell_timeout number|false
 ---@field sandbox Neoagent.SandboxSettings<C>
 ---@field workspace_trust {path: string}|false
 ---@field default_thinking_level Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection
----@field providers table<string, Neoagent.ProviderDefinition>
----@field auth Neoagent.AuthConfig
----@field _apis table<string, Neoagent.ApiFactory>
 ---@field persistence Neoagent.PersistenceConfig
----@field recording Neoagent.RecordingConfig
 ---@field agent_instructions {global_files: string[], project_filenames: string[]}|false
 ---@field skills {global_dirs: string[], project_dirs: string[]}|false
 ---@field retry Neoagent.RetryConfig
 ---@field compaction Neoagent.CompactionConfig|false
 ---@field ui Neoagent.UIConfig
 ---@field tools? Neoagent.Tool<C>[]
----@field execute_tool? Neoagent.ToolExecutor<C>
+---@field web_search? Neoagent.WebSearchOptions|false
+---@field decorate_tool? fun(execute: Neoagent.ToolExecutor<C>): Neoagent.ToolExecutor<C>
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
----@field _tools_supplied boolean
----@field _sandbox_warning? string
+
+---@class Neoagent.Config<C = unknown>: Neoagent.AgentSettings<C>, Neoagent.ModelResolutionConfig, Neoagent.ProviderRuntimeConfig
+---@field default_registry boolean
+---@field default_profile Neoagent.DefaultProfile
+---@field profile? string
+---@field providers table<string, Neoagent.ProviderDefinition>
+---@field auth Neoagent.AuthConfig
+---@field _apis table<string, Neoagent.ApiFactory>
+---@field recording Neoagent.RecordingConfig
 
 ---@class Neoagent.ConfigInput<C = unknown>
 ---@field name? string
 ---@field default_registry? boolean
+---@field default_profile? Neoagent.DefaultProfile
+---@field profile? string
 ---@field shell_timeout? number|false
 ---@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.SandboxContext<C>>, parent_tools?: Neoagent.Tool<C>[]}
 ---@field workspace_trust? {path?: string}|false
@@ -160,7 +171,8 @@ local MAX_SHELL_TIMEOUT_SECONDS = require("neoagent.subprocess.validate").MAX_TI
 ---@field compaction? Neoagent.CompactionConfigInput|false
 ---@field ui? Neoagent.UIConfigInput
 ---@field tools? Neoagent.Tool<C>[]
----@field execute_tool? Neoagent.ToolExecutor<C>
+---@field web_search? Neoagent.WebSearchOptions|false
+---@field decorate_tool? fun(execute: Neoagent.ToolExecutor<C>): Neoagent.ToolExecutor<C>
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
 
@@ -168,12 +180,21 @@ local M = {}
 
 local renderer_styles = { codex = true, pi = true }
 
+---@param selection? Neoagent.ModelSelection
+---@return string
+local function default_profile(selection)
+  if selection and (selection.provider == "openai" or selection.provider == "openai-codex") then
+    return "codex"
+  end
+  return "pi"
+end
+
 local defaults = {
   default_registry = true,
-  shell_timeout = 300,
-  sandbox = {
-    enabled = false,
-  },
+  default_profile = default_profile,
+  shell_timeout = false,
+  web_search = false,
+  sandbox = {},
   workspace_trust = {
     path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
   },
@@ -237,13 +258,12 @@ local defaults = {
     base_delay_ms = 2000,
   },
   compaction = {
-    strategy = "summary",
+    strategy = "prefix",
     auto = true,
     reserve_tokens = 16384,
     keep_recent_tokens = 20000,
   },
   ui = {
-    style = "codex",
     position = "center",
     margin = 1,
     input_height = 7,
@@ -296,6 +316,8 @@ local defaults = {
 }
 
 local input_fields = {
+  profile = true,
+  default_profile = true,
   default_registry = true,
   shell_timeout = true,
   sandbox = true,
@@ -313,13 +335,18 @@ local input_fields = {
   ui = true,
   name = true,
   tools = true,
+  web_search = true,
   system_prompt = true,
-  execute_tool = true,
+  decorate_tool = true,
   _apis = true,
   _view = true,
 }
 
----@type Neoagent.Config<Neoagent.AgentToolEnvironment>?
+---@class Neoagent.ConfigSnapshot<C>
+---@field config Neoagent.Config<C>
+---@field overrides Neoagent.ConfigInput<C>
+
+---@type Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>?
 local current
 local built_in_apis = {
   ["openai-completions"] = true,
@@ -339,6 +366,7 @@ local provider_fields = {
   diagnostics = true,
   file_uploads = true,
   prompt_caching = true,
+  custom_tools = true,
   models = true,
   request_opts = true,
   service = true,
@@ -394,11 +422,89 @@ local function validate_dimension(value, name)
   end
 end
 
+---@param value string[]
+---@param name string
+local function string_list(value, name)
+  assert(util.is_list(value), name .. " must be a list")
+  for _, item in ipairs(value) do
+    assert(type(item) == "string" and item ~= "", name .. " must contain non-empty strings")
+  end
+end
+
+---@param ui Neoagent.UIConfig
+local function validate_ui(ui)
+  if ui.renderer ~= nil then
+    require("neoagent.ui.renderer").assert(ui.renderer, "ui.renderer")
+  elseif ui.style ~= nil then
+    assert(renderer_styles[ui.style], "ui.style must be pi or codex")
+  end
+  local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
+  assert(positions[ui.position], "invalid ui.position")
+  validate_dimension(ui.width, "ui.width")
+  validate_dimension(ui.height, "ui.height")
+  assert(
+    type(ui.margin) == "number" and ui.margin >= 0 and ui.margin % 1 == 0,
+    "ui.margin must be a non-negative integer"
+  )
+  assert(
+    type(ui.input_height) == "number" and ui.input_height >= 1 and ui.input_height % 1 == 0,
+    "ui.input_height must be a positive integer"
+  )
+  assert(type(ui.scroll_on_submit) == "boolean", "ui.scroll_on_submit must be boolean")
+  assert(type(ui.scroll_on_transcript_leave) == "boolean", "ui.scroll_on_transcript_leave must be boolean")
+  assert(type(ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
+  assert(type(ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
+  assert(type(ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
+  assert(
+    ui.images == false or type(ui.images) == "table" and not util.is_list(ui.images),
+    "ui.images must be false or a table"
+  )
+  if ui.images then
+    local images = ui.images
+    for key in pairs(images) do
+      assert(key == "backend" or key == "display", "unsupported ui.images setting: " .. tostring(key))
+    end
+    assert(images.backend == "kitty", "ui.images.backend must be kitty")
+    assert(images.display == "always" or images.display == "expanded", "ui.images.display must be always or expanded")
+  end
+  assert(
+    type(ui.provider_shell) == "table" and not util.is_list(ui.provider_shell),
+    "ui.provider_shell must be a table"
+  )
+  assert(
+    ({ left = true, right = true, top = true, bottom = true, center = true })[ui.provider_shell.position],
+    "ui.provider_shell.position must be left, right, top, bottom, or center"
+  )
+  validate_dimension(ui.provider_shell.width, "ui.provider_shell.width")
+  validate_dimension(ui.provider_shell.height, "ui.provider_shell.height")
+  assert(type(ui.completion) == "boolean", "ui.completion must be boolean")
+  for action, mapping in pairs(ui.mappings) do
+    assert(type(action) == "string", "UI mapping names must be strings")
+    if type(mapping) == "table" then
+      string_list(mapping, "ui.mappings." .. action)
+      assert(#mapping > 0, "ui.mappings." .. action .. " must not be empty")
+    else
+      assert(
+        mapping == false or type(mapping) == "string" and mapping ~= "",
+        "UI mappings must be non-empty strings, non-empty lists, or false"
+      )
+    end
+  end
+end
+
 ---@generic C
 ---@param opts Neoagent.Config<C>
 local function validate(opts)
   assert(opts.name == nil or (type(opts.name) == "string" and opts.name ~= ""), "name must be a non-empty string")
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
+  assert(
+    type(opts.default_profile) == "function" or type(opts.default_profile) == "string" and opts.default_profile ~= "",
+    "default_profile must be a Profile ID or selector"
+  )
+  assert(
+    opts.profile == nil or type(opts.profile) == "string" and opts.profile ~= "",
+    "profile must identify a Profile"
+  )
   assert(
     opts.shell_timeout == false
       or type(opts.shell_timeout) == "number"
@@ -619,6 +725,10 @@ local function validate(opts)
         "request_opts must be a table or function"
       )
     end
+    assert(
+      provider.custom_tools == nil or type(provider.custom_tools) == "boolean",
+      "provider custom_tools must be boolean"
+    )
     if
       provider_uses_api(provider, "openai-codex-responses")
       and provider.diagnostics ~= nil
@@ -732,14 +842,6 @@ local function validate(opts)
     type(opts.recording.directory) == "string" and opts.recording.directory ~= "",
     "recording.directory is required"
   )
-  ---@param value string[]
-  ---@param name string
-  local function string_list(value, name)
-    assert(util.is_list(value), name .. " must be a list")
-    for _, item in ipairs(value) do
-      assert(type(item) == "string" and item ~= "", name .. " must contain non-empty strings")
-    end
-  end
   assert(
     opts.agent_instructions == false or type(opts.agent_instructions) == "table",
     "agent_instructions must be a table or false"
@@ -753,64 +855,12 @@ local function validate(opts)
     string_list(opts.skills.global_dirs, "skills.global_dirs")
     string_list(opts.skills.project_dirs, "skills.project_dirs")
   end
-  if opts.ui.renderer ~= nil then
-    require("neoagent.ui.renderer").assert(opts.ui.renderer, "ui.renderer")
-  else
-    assert(renderer_styles[opts.ui.style], "ui.style must be pi or codex")
+  validate_ui(opts.ui)
+  if opts.web_search then
+    require("neoagent.web_search").validate_options(opts.web_search)
   end
-  local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
-  assert(positions[opts.ui.position], "invalid ui.position")
-  validate_dimension(opts.ui.width, "ui.width")
-  validate_dimension(opts.ui.height, "ui.height")
-  assert(
-    type(opts.ui.margin) == "number" and opts.ui.margin >= 0 and opts.ui.margin % 1 == 0,
-    "ui.margin must be a non-negative integer"
-  )
-  assert(
-    type(opts.ui.input_height) == "number" and opts.ui.input_height >= 1 and opts.ui.input_height % 1 == 0,
-    "ui.input_height must be a positive integer"
-  )
-  assert(type(opts.ui.scroll_on_submit) == "boolean", "ui.scroll_on_submit must be boolean")
-  assert(type(opts.ui.scroll_on_transcript_leave) == "boolean", "ui.scroll_on_transcript_leave must be boolean")
-  assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
-  assert(type(opts.ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
-  assert(type(opts.ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
-  assert(
-    opts.ui.images == false or type(opts.ui.images) == "table" and not util.is_list(opts.ui.images),
-    "ui.images must be false or a table"
-  )
-  if opts.ui.images then
-    local images = opts.ui.images
-    for key in pairs(images) do
-      assert(key == "backend" or key == "display", "unsupported ui.images setting: " .. tostring(key))
-    end
-    assert(images.backend == "kitty", "ui.images.backend must be kitty")
-    assert(images.display == "always" or images.display == "expanded", "ui.images.display must be always or expanded")
-  end
-  assert(
-    type(opts.ui.provider_shell) == "table" and not util.is_list(opts.ui.provider_shell),
-    "ui.provider_shell must be a table"
-  )
-  assert(
-    ({ left = true, right = true, top = true, bottom = true, center = true })[opts.ui.provider_shell.position],
-    "ui.provider_shell.position must be left, right, top, bottom, or center"
-  )
-  validate_dimension(opts.ui.provider_shell.width, "ui.provider_shell.width")
-  validate_dimension(opts.ui.provider_shell.height, "ui.provider_shell.height")
-  assert(type(opts.ui.completion) == "boolean", "ui.completion must be boolean")
-  for action, mapping in pairs(opts.ui.mappings) do
-    assert(type(action) == "string", "UI mapping names must be strings")
-    if type(mapping) == "table" then
-      string_list(mapping, "ui.mappings." .. action)
-      assert(#mapping > 0, "ui.mappings." .. action .. " must not be empty")
-    else
-      assert(
-        mapping == false or type(mapping) == "string" and mapping ~= "",
-        "UI mappings must be non-empty strings, non-empty lists, or false"
-      )
-    end
-  end
-  agent_loop.validate_toolset(opts.tools or {}, opts.execute_tool)
+  agent_loop.validate_toolset(opts.tools or {})
+  assert(opts.decorate_tool == nil or type(opts.decorate_tool) == "function", "decorate_tool must be a function")
   if opts.system_prompt ~= nil then
     assert(
       type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function",
@@ -822,46 +872,235 @@ local function validate(opts)
   end
 end
 
+-- These settings construct shared owners and cannot change with an Agent
+-- recipe or a draft. Profile defaults and draft patches contain Agent settings.
+local composition_fields = {
+  providers = true,
+  auth = true,
+  recording = true,
+  _apis = true,
+  default_registry = true,
+  default_profile = true,
+  profile = true,
+}
+
+-- Normalize public UI input into copied settings and one borrowed dependency.
+-- Accepted compositions and presentation owners retain these separately.
+---@generic T: Neoagent.UIConfigInput
+---@param value T
+---@return T, Neoagent.Renderer<unknown>?
+function M.ui_settings(value)
+  local renderer = value.renderer
+  local settings = util.shallow_copy(value)
+  settings.renderer = nil
+  return util.copy(settings), renderer
+end
+
+-- Public configuration input may still contain ui.renderer. Keep its identity
+-- at this boundary; data-only accepted settings use ordinary value copies.
+---@generic T: table
+---@param value T
+---@return T
+function M.copy(value)
+  local fields = util.shallow_copy(value)
+  fields.ui = nil
+  local copy = util.copy(fields)
+  if type(value.ui) == "table" then
+    local settings, renderer = M.ui_settings(value.ui)
+    settings.renderer = renderer
+    copy.ui = settings
+  else
+    copy.ui = value.ui
+  end
+  return copy
+end
+
+---@generic T: Neoagent.UIConfigInput
+---@param base T
+---@param overrides? Neoagent.UIConfigInput
+---@return T
+local function merge_ui(base, overrides)
+  local before, renderer = M.ui_settings(base)
+  local patch, replacement = M.ui_settings(overrides or {})
+  local selected = util.deep_merge(before, patch)
+  if replacement then
+    selected.renderer = replacement
+  elseif not (overrides and overrides.style) then
+    selected.renderer = renderer
+  end
+  return selected --[[@as T]]
+end
+
+---@param base table
+---@param overrides? table
+---@return table
+local function merge_values(base, overrides)
+  local before, patch = util.shallow_copy(base), util.shallow_copy(overrides or {})
+  before.ui, patch.ui = nil, nil
+  local selected = util.deep_merge(before, patch)
+  if base.ui or overrides and overrides.ui then
+    selected.ui = merge_ui(base.ui or {}, overrides and overrides.ui)
+  end
+  return selected
+end
+
 ---@generic C
+---@param options? Neoagent.ConfigInput<C>|Neoagent.Config<C>
+---@return Neoagent.ConfigInput<C>
+function M.agent_options(options)
+  if options == nil then
+    return {}
+  end
+  local result = {}
+  for key, value in pairs(options) do
+    if not composition_fields[key] then
+      result[key] = value
+    end
+  end
+  return M.copy(result)
+end
+
+---@generic C
+---@param configured Neoagent.Config<C>
+---@return Neoagent.AgentSettings<C>
+function M.agent_settings(configured)
+  return M.copy({
+    name = configured.name,
+    shell_timeout = configured.shell_timeout,
+    sandbox = configured.sandbox,
+    workspace_trust = configured.workspace_trust,
+    default_thinking_level = configured.default_thinking_level,
+    default_model = configured.default_model,
+    persistence = configured.persistence,
+    agent_instructions = configured.agent_instructions,
+    skills = configured.skills,
+    retry = configured.retry,
+    compaction = configured.compaction,
+    ui = configured.ui,
+    tools = configured.tools,
+    web_search = configured.web_search,
+    decorate_tool = configured.decorate_tool,
+    system_prompt = configured.system_prompt,
+    _view = configured._view,
+  })
+end
+
+---@param options table
+function M.validate_agent_options(options)
+  assert(
+    type(options) == "table" and (next(options) == nil or not util.is_list(options)),
+    "Agent options must be an object"
+  )
+  for key in pairs(options) do
+    assert(
+      not composition_fields[key],
+      key .. " belongs to top-level composition, not Profile defaults or draft options"
+    )
+    assert(input_fields[key], "unsupported setting: " .. tostring(key))
+  end
+end
+
+---@generic C
+---@param base Neoagent.ConfigInput<C>
+---@param patch Neoagent.ConfigInput<C>
+---@return Neoagent.ConfigInput<C>
+function M.merge_agent_options(base, patch)
+  M.validate_agent_options(patch)
+  return merge_values(base, patch) --[[@as Neoagent.ConfigInput<C>]]
+end
+
+---@param base Neoagent.UIConfig
+---@param overrides? Neoagent.UIConfigInput
+---@return Neoagent.UIConfig
+function M.extend_ui(base, overrides)
+  local selected = merge_ui(base, overrides)
+  validate_ui(selected)
+  return selected
+end
+
+---@generic C
+---@param base table
 ---@param opts? Neoagent.ConfigInput<C>
 ---@return Neoagent.Config<C>
-function M.resolve(opts)
+local function merge(base, opts)
   opts = opts or {}
   assert(type(opts) == "table" and (next(opts) == nil or not util.is_list(opts)), "configuration must be an object")
   for key in pairs(opts) do
     assert(input_fields[key], "unsupported setting: " .. tostring(key))
   end
-  local configured = util.deep_merge(defaults, opts)
-  ---@cast configured Neoagent.Config<C>
-  configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry) --[[@as table<string, Neoagent.ProviderDefinition>]]
-  configured._tools_supplied = opts.tools ~= nil
+  local configured = merge_values(base, opts)
+  return configured --[[@as Neoagent.Config<C>]]
+end
+
+---@generic C
+---@param base Neoagent.Config<C>
+---@param opts? Neoagent.ConfigInput<C>
+---@return Neoagent.Config<C>
+function M.extend(base, opts)
+  local configured = merge(base, opts)
+  assert(
+    not opts or opts.default_registry == nil or opts.default_registry == base.default_registry,
+    "default_registry cannot change after configuration resolution"
+  )
+  if opts and opts.providers then
+    configured.providers = require("neoagent.registry").extend(base.providers, opts.providers) --[[@as table<string, Neoagent.ProviderDefinition>]]
+  end
   validate(configured)
-  return util.copy(configured)
+  return configured
+end
+
+---@generic C
+---@param opts? Neoagent.ConfigInput<C>
+---@return Neoagent.Config<C>
+function M.resolve(opts)
+  local configured = merge(defaults, opts)
+  configured.providers = require("neoagent.registry").compose(configured.providers, configured.default_registry) --[[@as table<string, Neoagent.ProviderDefinition>]]
+  validate(configured)
+  return configured
+end
+
+-- Profile defaults are applied later. Retain the caller's precedence with the
+-- resolved shared configuration so every construction path has the same input.
+---@generic C
+---@param opts? Neoagent.ConfigInput<C>
+---@return Neoagent.ConfigSnapshot<C>
+function M.snapshot(opts)
+  if opts == nil then
+    opts = {}
+  end
+  local overrides = M.copy(opts)
+  return { config = M.resolve(overrides), overrides = overrides }
 end
 
 ---@param opts? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
 function M.setup(opts)
-  current = M.resolve(opts)
-  return util.copy(current)
+  current = M.snapshot(opts)
+  return M.copy(current.config)
+end
+
+---@return Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
+function M.get_snapshot()
+  if not current then
+    M.setup({})
+  end
+  local snapshot = assert(current)
+  return { config = M.copy(snapshot.config), overrides = M.copy(snapshot.overrides) }
 end
 
 ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
 function M.get()
-  if not current then
-    M.setup({})
-  end
-  return util.copy((assert(current)))
+  return M.get_snapshot().config
 end
 
 function M._reset()
   current = nil
 end
 
----@param value Neoagent.Config<Neoagent.AgentToolEnvironment>
-function M._set(value)
-  validate(value)
-  current = util.copy(value)
+---@param snapshot Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
+function M._set(snapshot)
+  validate(snapshot.config)
+  current = { config = M.copy(snapshot.config), overrides = M.copy(snapshot.overrides) }
 end
 
 return M

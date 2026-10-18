@@ -14,7 +14,7 @@ describe("Agent retained process placement", function()
   local resources
   ---@type Neoagent.ProcessSessions?
   local owner
-  ---@type Neoagent.SandboxRuntime<Neoagent.AgentToolEnvironment>
+  ---@type Neoagent.SandboxControls
   local runtime
   ---@type string
   local root
@@ -79,9 +79,11 @@ describe("Agent retained process placement", function()
   ---@param enabled boolean
   ---@param profile_id? string
   ---@param tools? Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
-  local function create(enabled, profile_id, tools)
-    local config = require("neoagent.config").resolve({
+  ---@param decorate? fun(execute: Neoagent.ToolExecutor<Neoagent.AgentToolEnvironment>): Neoagent.ToolExecutor<Neoagent.AgentToolEnvironment>
+  local function create(enabled, profile_id, tools, decorate)
+    local config = require("neoagent.config").snapshot({
       default_registry = false, providers = {}, tools = tools, workspace_trust = false,
+      decorate_tool = decorate,
       persistence = { enabled = false }, recording = { enabled = false }, agent_instructions = false, skills = false,
       sandbox = { enabled = enabled, profile = function(default, ctx)
         seen[#seen + 1] = ctx
@@ -89,17 +91,28 @@ describe("Agent retained process placement", function()
         return default
       end },
     })
+    ---@type Neoagent.Profile[]
     local profiles
     profiles, _, resources = require("neoagent.profiles").bundled(config, { startup = false })
-    local profile = assert(profiles[profile_id == "codex" and 3 or 1])
-    applet = profile.create_applet({ profile = profile, label = "placement", workspace = root })
+    local profile = profiles[profile_id == "codex" and 3 or 1]
+    assert(profile)
+    local resolved = require("neoagent.profiles.selection").resolve({
+      profiles = require("neoagent.profiles").index(profiles), snapshot = config, policy = profile.id,
+      profile_id = profile.id, runtimes = resources.runtimes, auth = resources.auth, workspace = root,
+    })
+    applet = require("neoagent.profiles").create_applet({ composition = resolved, label = "placement", workspace = root })
     local session = assert(require("neoagent.profile_sessions").new({
-      profile_id = profile_id or "neo", workspace = root, persistence = { enabled = false },
+      profile_id = profile_id or "pi",
+      workspace = root,
+      persistence = { enabled = false },
     }))
-    local owned
-    agent, owned = profile.create_agent({ id = "placement", label = "placement", profile = profile,
-      applet = assert(applet), session = session, workspace = root })
-    runtime = assert(owned and owned.sandbox).runtime
+    agent = require("neoagent.profiles").create_agent({
+      composition = resolved,
+      applet = assert(applet),
+      resources = resources,
+      runtime = { id = "placement", label = "placement", session = session, workspace = root },
+    })
+    runtime = assert(agent:get_toolset().sandbox)
     owner = agent:get_process_sessions()
   end
 
@@ -113,38 +126,49 @@ describe("Agent retained process placement", function()
       stdio = { kind = "pipes", stdin = retained and "open" or "closed" }, timeout_ms = 10000 }
   end
 
-  it("uses checked sandbox authority for Agent admissions and preserves it across toggles", function()
-    create(true)
-    local admission = helper.success(function() return helper.admit(assert(owner), spec(true), 0) end)
-    local id = assert(admission.commit())
-    assert.are.equal(1, starts, "Agent admission bypassed sandbox composition")
-    assert.are.equal(1, checks)
-    assert.are.equal(1, compilations)
-    local context = assert(seen[1])
-    assert.are.equal(vim.fs.normalize(root), vim.fs.normalize(assert(assert(context.context).workspace).root))
-    assert.are.equal(vim.fs.normalize(root), vim.fs.normalize(assert(context.process).cwd))
-    assert.is_nil(context.call)
-    assert(runtime:set_enabled(false))
-    local result = helper.success(function() return assert(owner):interact(id, 3000, { kind = "write", data = "go\n" }) end)
-    local output = admission.result.text .. result.text
-    assert(vim.wait(5000, function()
-      if result.done then return true end
-      result = helper.success(function() return assert(owner):interact(id, 100) end)
-      output = output .. result.text
-      return result.done
-    end, 5))
-    assert.matches("restricted/yes" .. eol .. "restricted" .. eol, output, 1, true)
-    admission = helper.success(function() return helper.admit(assert(owner), spec(false), 3000) end)
-    assert.are.equal("host/no" .. eol, admission.result.text)
-    admission.commit()
-    assert.are.equal(1, starts)
-    assert(runtime:set_enabled(true))
-    admission = helper.success(function() return helper.admit(assert(owner), spec(false), 3000) end)
-    assert.are.equal("restricted/yes" .. eol, admission.result.text)
-    admission.commit()
-    assert.are.equal(2, starts)
-    assert.are.equal(1, checks)
-  end)
+  for _, change in ipairs({ "sandbox toggles", "Toolset replacement" }) do
+    it("preserves admitted authority across " .. change, function()
+      create(true)
+      local admission = helper.success(function() return helper.admit(assert(owner), spec(true), 0) end)
+      local id = assert(admission.commit())
+      assert.are.equal(1, starts, "Agent admission bypassed sandbox composition")
+      assert.are.equal(1, checks)
+      assert.are.equal(1, compilations)
+      local context = assert(seen[1])
+      assert.are.equal(vim.fs.normalize(root), vim.fs.normalize(assert(assert(context.context).workspace).root))
+      assert.are.equal(vim.fs.normalize(root), vim.fs.normalize(assert(context.process).cwd))
+      assert.is_nil(context.call)
+      local previous
+      if change == "Toolset replacement" then
+        previous = assert(assert(agent):set_toolset({ tools = {} }))
+      else
+        assert(assert(runtime.set_enabled)(runtime, false))
+      end
+      local result = helper.success(function() return assert(owner):interact(id, 3000, { kind = "write", data = "go\n" }) end)
+      local output = admission.result.text .. result.text
+      assert(vim.wait(5000, function()
+        if result.done then return true end
+        result = helper.success(function() return assert(owner):interact(id, 100) end)
+        output = output .. result.text
+        return result.done
+      end, 5))
+      assert.matches("restricted/yes" .. eol .. "restricted" .. eol, output, 1, true)
+      admission = helper.success(function() return helper.admit(assert(owner), spec(false), 3000) end)
+      assert.are.equal("host/no" .. eol, admission.result.text)
+      admission.commit()
+      assert.are.equal(1, starts)
+      if previous then
+        assert(assert(agent):set_toolset(previous))
+      else
+        assert(assert(runtime.set_enabled)(runtime, true))
+      end
+      admission = helper.success(function() return helper.admit(assert(owner), spec(false), 3000) end)
+      assert.are.equal("restricted/yes" .. eol, admission.result.text)
+      admission.commit()
+      assert.are.equal(2, starts)
+      assert.are.equal(1, checks)
+    end)
+  end
 
   it("blocks admissions when activation fails and permits host placement only after disabling", function()
     available = false
@@ -153,7 +177,7 @@ describe("Agent retained process placement", function()
     assert.are.equal("sandbox_unavailable", assert(result.error, "unavailable sandbox allowed host execution").kind)
     assert.are.equal(0, starts)
     assert.are.equal(0, assert(owner):status().reserved)
-    assert(runtime:set_enabled(false))
+    assert(assert(runtime.set_enabled)(runtime, false))
     local admission = helper.success(function() return helper.admit(assert(owner), spec(false), 3000) end)
     assert.are.equal("host/no" .. eol, admission.result.text)
     admission.commit()
@@ -181,7 +205,8 @@ describe("Agent retained process placement", function()
       commit_message = function() return true end,
     }), 15000)
     assert.is_true(result.ok, vim.inspect(result))
-    local message = assert(assert(result.new_messages)[2])
+    local message = assert(result.new_messages)[2]
+    assert(message)
     assert.is_false(message.isError, vim.inspect(message))
     assert.matches("restricted/yes", require("neoagent.util").text_content(message.content), 1, true)
     assert.are.equal(1, starts)
@@ -193,7 +218,7 @@ describe("Agent retained process placement", function()
     assert.are.same({}, assert(agent):get_toolset().tools)
   end)
 
-  ---@param selected Neoagent.SandboxComposition<Neoagent.AgentToolEnvironment>
+  ---@param selected Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
   ---@param arguments Neoagent.JsonObject
   ---@param placement? fun(context: Neoagent.AgentToolEnvironment, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
   ---@return Neoagent.ToolResultMessage
@@ -209,17 +234,22 @@ describe("Agent retained process placement", function()
       providers = { fake = { api = "fake-api", models = { test = {} } } },
       _apis = { ["fake-api"] = function() return model end },
       persistence = { enabled = false }, recording = { enabled = false }, agent_instructions = false, skills = false,
-      tools = selected.tools, execute_tool = selected.execute_tool,
-    }, { workspace = root, process_placement = placement })
+      tools = selected.tools,
+    }, { workspace = root })
+    selected.process_placement = placement or selected.process_placement
+    assert(agent:set_toolset(selected))
     owner = agent:get_process_sessions()
     local finished = helper.wait(assert(agent:send("Run the command")), 15000)
     assert.is_true(finished.ok, vim.inspect(finished))
-    local message = assert(agent:get_session():messages()[3])
-    assert(message.role == "toolResult")
-    return message
+    local message = agent:get_session():messages()[3]
+    local normalized = require("neoagent.semantic_message").normalize(message)
+    if not normalized or normalized.role ~= "toolResult" then
+      error("Command did not publish a Tool result")
+    end
+    return normalized
   end
 
-  ---@param selected Neoagent.SandboxComposition<Neoagent.AgentToolEnvironment>
+  ---@param selected Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
   ---@param name string
   ---@param arguments Neoagent.JsonObject
   ---@return Neoagent.ToolResultMessage
@@ -249,10 +279,32 @@ describe("Agent retained process placement", function()
       15000
     )
     assert.is_true(observed.ok, vim.inspect(observed))
-    local message = assert(assert(observed.new_messages)[2])
+    local message = assert(observed.new_messages)[2]
+    assert(message)
     assert(message.role == "toolResult")
     return message
   end
+
+  it("preserves retained command admission through an executor decorator", function()
+    local calls = 0
+    create(true, "codex", nil, function(execute)
+      ---@async
+      return function(tool, arguments, ctx)
+        calls = calls + 1
+        return execute(tool, arguments, ctx)
+      end
+    end)
+    local command = jit.os == "Windows" and "echo %NEOAGENT_PLACEMENT%/%NEOAGENT_PLACEMENT_COMPILED%"
+      or 'printf "%s/%s" "$NEOAGENT_PLACEMENT" "$NEOAGENT_PLACEMENT_COMPILED"'
+    local result = invoke(assert(agent):get_toolset(), "exec_command", {
+      cmd = command, shell = jit.os == "Windows" and "cmd.exe" or "sh", login = false, yield_time_ms = 5000,
+    })
+    assert.is_false(result.isError)
+    assert.matches("restricted/yes", require("neoagent.util").text_content(result.content), 1, true)
+    assert.are.equal(1, calls)
+    assert.are.equal(1, starts)
+    assert.are.equal(1, compilations)
+  end)
 
   local function gate_command(output)
     if jit.os ~= "Windows" then
@@ -307,11 +359,12 @@ describe("Agent retained process placement", function()
         local message = headless(selected, {
           cmd = "echo approved-host", workdir = root, shell = executable,
           login = false, yield_time_ms = 5000,
-          options = { require_escalation = true, escalation_justification = "Synthetic approval regression" },
+          sandbox_permissions = "require_escalated", justification = "Synthetic approval regression",
         }, function() error("Independent manager placement must not override Tool authority") end)
         assert.matches("retains this authority until it exits", assert(prompted), 1, true)
         assert.matches("Shell argv:", assert(prompted), 1, true)
-        assert.matches(vim.json.encode(executable):sub(2, -2), assert(prompted), 1, true)
+        local normalized = vim.fs.normalize(executable, { expand_env = false })
+        assert.matches(vim.json.encode(normalized):sub(2, -2), assert(prompted), 1, true)
         assert.matches("Working directory:", assert(prompted), 1, true)
         assert.are.equal(0, starts, "approved host command used the restricted worker")
         assert.are.equal(decision == "deny", message.isError, vim.inspect(message))
@@ -359,7 +412,7 @@ describe("Agent retained process placement", function()
         local message = headless(selected, {
           cmd = changed == "workdir" and (jit.os == "Windows" and "cd" or "pwd") or "echo APPROVED",
           workdir = "$NEOAGENT_TEST_APPROVAL_CWD", login = false, yield_time_ms = 5000,
-          options = { require_escalation = true, escalation_justification = "Synthetic immutable approval regression" },
+          sandbox_permissions = "require_escalated", justification = "Synthetic immutable approval regression",
         })
         assert.matches("approved-cwd", assert(prompted), 1, true)
         assert.is_false(message.isError, vim.inspect(message))
@@ -393,7 +446,7 @@ describe("Agent retained process placement", function()
     end, 5), vim.inspect(message))
     assert.is_true(message.isError, vim.inspect(message))
     assert.are.equal(1, assert(message.details).exit_code, vim.inspect(message))
-    assert.matches("escalation", require("neoagent.util").text_content(message.content), 1, true)
+    assert.matches("sandbox_permissions", require("neoagent.util").text_content(message.content), 1, true)
     assert.is_true(assert(assert(message.execution).sandbox).denied)
   end)
 

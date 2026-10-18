@@ -29,6 +29,7 @@ local util = require("neoagent.util")
 local M = {}
 local display = Applet.Pane.text
 local EDIT_PREVIEW_LINES = 10
+local SEARCH_PREVIEW_RESULTS = 3
 local compact_activities = {
   command = true,
   read = true,
@@ -356,6 +357,77 @@ local function edit(value, opts)
   }
 end
 
+---@param value Neoagent.ToolPatchPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
+local function patch(value, opts)
+  if not util.is_list(value.files) or #value.files == 0 then
+    return nil
+  end
+  local added, removed, applied = 0, 0, 0
+  local lines = {}
+  for _, file in ipairs(value.files) do
+    if
+      type(file) ~= "table"
+      or type(file.path) ~= "string"
+      or file.kind ~= "add" and file.kind ~= "delete" and file.kind ~= "update"
+      or file.status ~= "pending" and file.status ~= "applied" and file.status ~= "failed" and file.status ~= "partial"
+      or file.destination ~= nil and (type(file.destination) ~= "string" or not one_line(file.destination))
+      or file.error ~= nil and type(file.error) ~= "string"
+    then
+      return nil
+    end
+    local path = file.path .. (file.destination and " → " .. file.destination or "")
+    local preview = edit({
+      kind = "edit",
+      path = path,
+      rows = file.rows,
+      added = file.added,
+      removed = file.removed,
+      truncated = file.truncated,
+    }, opts)
+    if not preview then
+      return nil
+    end
+    if file.status == "applied" then
+      applied = applied + 1
+    end
+    if file.status == "applied" or file.status == "partial" then
+      added, removed = added + file.added, removed + file.removed
+    end
+    local verb = file.destination and "Moved" or file.kind == "add" and "Added" or file.kind == "delete" and "Deleted"
+      or "Edited"
+    local action = file.destination and "move" or file.kind == "add" and "add" or file.kind == "delete" and "delete"
+      or "edit"
+    if file.status == "pending" then
+      verb = "Pending " .. action
+    elseif file.status == "failed" then
+      verb = "Failed to " .. action
+    elseif file.status == "partial" then
+      verb = "Partially " .. verb:lower()
+    end
+    if #lines > 0 then
+      lines[#lines + 1] = { { text = "" } }
+    end
+    local title = preview.title
+    assert(type(title) == "table")
+    assert(title[1]).text = "   " .. verb
+    lines[#lines + 1] = title
+    vim.list_extend(lines, assert(preview.lines))
+    if file.error then
+      local width = opts.presentation_surface == "transcript" and math.max(1, (opts.width or 80) - 3) or nil
+      for _, line in ipairs(width and compact_words(file.error, width) or display.lines(file.error)) do
+        lines[#lines + 1] = { { text = "   " .. line, style = "red" } }
+      end
+    end
+  end
+  return {
+    title = edit_summary(applied .. "/" .. #value.files .. " files", added, removed),
+    lines = lines,
+    status = true,
+  }
+end
+
 ---@param value Neoagent.ToolTextPresentation
 ---@return Neoagent.ToolViewPresentation?
 local function text(value)
@@ -391,6 +463,83 @@ local function text(value)
   }
 end
 
+---@param value Neoagent.ToolWebSearchPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
+local function web_search(value, opts)
+  if
+    type(value.backend) ~= "string"
+    or not one_line(value.backend)
+    or type(value.query) ~= "string"
+    or not one_line(value.query)
+    or value.sources ~= nil and not util.is_list(value.sources)
+    or value.truncated ~= nil and type(value.truncated) ~= "boolean"
+  then
+    return nil
+  end
+  for _, source in ipairs(value.sources or {}) do
+    if
+      type(source) ~= "table"
+      or type(source.title) ~= "string"
+      or not one_line(source.title)
+      or type(source.url) ~= "string"
+      or not one_line(source.url)
+    then
+      return nil
+    end
+  end
+  local failed = opts.state == "error"
+  local verb = failed and "Web search failed" or active(opts.state) and "Searching web" or "Searched web"
+  local title = {
+    { text = verb, style = "bold" },
+    { text = " · " .. value.backend, style = "muted" },
+  }
+  local sources = value.sources
+  if opts.state == "success" and sources then
+    title[#title + 1] = {
+      text = " · " .. #sources .. (#sources == 1 and " result" or " results"),
+      style = "muted",
+    }
+  end
+  if opts.presentation_surface == "details" or failed or opts.state == "success" and not sources then
+    title[#title + 1] = { text = ": " .. value.query, style = "accent" }
+    return { title = title, default = true, status = true }
+  end
+  local width = math.max(1, (opts.width or 80) - 2)
+  local lines = {}
+  for _, line in ipairs(compact_characters(value.query, math.max(1, width - 2))) do
+    lines[#lines + 1] = { { text = "  " .. line, style = "accent" } }
+  end
+  if opts.state == "success" and sources then
+    if #sources == 0 then
+      lines[#lines + 1] = { { text = "  No results found.", style = "muted" } }
+    end
+    for index = 1, math.min(#sources, SEARCH_PREVIEW_RESULTS) do
+      local source = assert(sources[index])
+      lines[#lines + 1] = {
+        { text = "  " .. index .. ". ", style = "muted" },
+        {
+          text = display.truncate(source.title ~= "" and source.title or "(untitled)", math.max(1, width - 5)),
+          style = "bold",
+        },
+      }
+      lines[#lines + 1] = {
+        { text = "     " .. display.truncate(source.url, math.max(1, width - 5)), style = "muted" },
+      }
+    end
+    local remaining = #sources - SEARCH_PREVIEW_RESULTS
+    if remaining > 0 then
+      lines[#lines + 1] = {
+        { text = "  … +" .. remaining .. (remaining == 1 and " more result" or " more results"), style = "muted" },
+      }
+    end
+    if value.truncated then
+      lines[#lines + 1] = { { text = "  Search output truncated", style = "muted" } }
+    end
+  end
+  return { title = title, lines = lines, status = true }
+end
+
 ---@param value unknown
 ---@param opts Neoagent.ToolViewOptions
 ---@param codex boolean
@@ -408,9 +557,15 @@ local function present(value, opts, codex)
   elseif value.kind == "edit" then
     ---@cast value Neoagent.ToolEditPresentation
     return codex and edit(value, opts) or nil
+  elseif value.kind == "patch" then
+    ---@cast value Neoagent.ToolPatchPresentation
+    return patch(value, opts)
   elseif value.kind == "text" then
     ---@cast value Neoagent.ToolTextPresentation
     return text(value)
+  elseif value.kind == "web_search" then
+    ---@cast value Neoagent.ToolWebSearchPresentation
+    return web_search(value, opts)
   end
 end
 

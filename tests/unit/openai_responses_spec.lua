@@ -595,7 +595,7 @@ describe("neoagent.api.openai_responses", function()
     end
 
     local invalid_history = {
-      { messages = { { role = "system", content = "bad" } },
+      { messages = { { role = "unsupported", content = "bad" } },
         message = "unsupported message role" },
       { messages = { { role = "assistant", api = "openai-responses", provider = "local", model = "test", content = { {
         type = "thinking", thinking = "x", thinkingSignature = "bad",
@@ -609,7 +609,7 @@ describe("neoagent.api.openai_responses", function()
       assert.are.equal(0, #fake.requests)
     end
 
-    local invalid_history = { { role = "system", content = "unexpected" } }
+    local invalid_history = { { role = "unsupported", content = "unexpected" } }
     local encoded, encode_err = pcall(responses._encode_messages,
       invalid_history --[[@as Neoagent.Message[] ]])
     assert.is_false(encoded)

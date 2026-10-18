@@ -1,6 +1,5 @@
 local assert = require("luassert")
 local config = require("neoagent.config")
-local Agent = require("neoagent.agent")
 local sandbox_composition = require("neoagent.sandbox.composition")
 local util = require("neoagent.util")
 local NeoagentApplet = require("neoagent.applet")
@@ -38,25 +37,31 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   ---@param name string
-  ---@return Neoagent.Config
+  ---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
   local function agent_options(name)
-    return config.resolve({
+    return {
       name = name,
+      profile = name:lower(),
+      default_registry = false,
+      workspace_trust = false,
+      agent_instructions = false,
+      skills = false,
       tools = {},
       persistence = {
         enabled = false,
         workspace_settings = false,
         directory = vim.fn.tempname(),
       },
-    })
+    }
   end
 
-  ---@param active "Neo"|"Chat"
+  ---@param active "Pi"|"Chat"
   ---@param status? Neoagent.SandboxStatus
   ---@return Neoagent.NeoagentApplet
   local function build(active, status)
-    local neo_options = agent_options("Neo")
-    neo_options.sandbox.enabled = true
+    local neo_input = agent_options("Pi")
+    neo_input.sandbox = { enabled = true }
+    local neo_options = config.resolve(neo_input)
     status = status or {
       ok = false,
       platform = "test",
@@ -72,13 +77,17 @@ describe("neoagent sandbox activation warning", function()
         },
         status = status,
       })
-    neo_options.tools = toolset.tools
-    neo_options.execute_tool = toolset.execute_tool
-    neo_options._sandbox_warning = not activation.active and sandbox_composition.warning("Neo", activation) or nil
+    neo_input.tools = toolset.tools
+    neo_input.sandbox = { enabled = false }
     local chat_options = agent_options("Chat")
-    chat_options.sandbox.enabled = false
-    local neo = Agent.from_config(neo_options, { dialogs = dialogs })
-    local chat = Agent.from_config(chat_options)
+    chat_options.sandbox = { enabled = false }
+    local neo = require("neoagent").new(neo_input, {
+      runtimes = {},
+      dialogs = dialogs,
+      initial_warning = not activation.active and sandbox_composition.warning("Pi", activation) or nil,
+    })
+    assert(neo:set_toolset(toolset))
+    local chat = require("neoagent").new(chat_options, { runtimes = {} })
     agents = { neo, chat }
     local window = NeoagentApplet._from_agents({
       agents = agents,
@@ -96,7 +105,7 @@ describe("neoagent sandbox activation warning", function()
     assert.are.equal(0, #notifications)
     assert.is_true((window:toggle()))
     assert.are.equal(0, #notifications)
-    assert.are.equal("Neo", assert(window:select(1)):config().name)
+    assert.are.equal("Pi", assert(window:select(1)):config().name)
     assert.are.equal(1, #notifications)
     assert.matches("tool execution is blocked",
       assert(notifications[1])[1])
@@ -107,7 +116,7 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   it("warns on the first toggle when Neo is active", function()
-    local window = build("Neo")
+    local window = build("Pi")
     assert.are.equal(0, #notifications)
     assert.is_true((window:toggle()))
     assert.are.equal(1, #notifications)
@@ -117,7 +126,7 @@ describe("neoagent sandbox activation warning", function()
   end)
 
   it("keeps degraded activation silent", function()
-    local window = build("Neo", {
+    local window = build("Pi", {
       ok = true,
       platform = "linux",
       degraded = true,

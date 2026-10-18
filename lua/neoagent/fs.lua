@@ -9,6 +9,10 @@ local M = {}
 ---  read_chunks?: (fun(path: string, on_chunk: fun(data: string, offset: integer), chunk_size?: integer): true?, unknown),
 ---  mkdirp: (fun(path?: string): true?, unknown),
 ---  write_all: (fun(path: string, data: string, flags?: string, mode?: integer): true?, string?),
+---  path_key?: (fun(path: string): string),
+---  check_write?: (fun(path: string, policy: Neoagent.AtomicPolicy): integer?, string?, boolean?, Neoagent.FileObservation?),
+---  preflight?: (fun(path: string, policy: Neoagent.AtomicPolicy, max_bytes?: integer): Neoagent.FilePreimage?, string?),
+---  remove_file?: (fun(path: string, policy: Neoagent.AtomicPolicy): true?, string?),
 ---  atomic_replace: (fun(path: string, data: string, policy: Neoagent.AtomicPolicy): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?),
 ---}
 
@@ -21,7 +25,9 @@ local M = {}
 
 ---@class Neoagent.AtomicRequirements
 ---@field require_existing? boolean
+---@field require_missing? boolean
 ---@field expected_content_fingerprint? string
+---@field expected_observation? Neoagent.FileObservation
 ---@field durable? boolean Verify written bytes and flush publication to stable storage.
 
 ---@class Neoagent.FixedModePolicy: Neoagent.AtomicRequirements
@@ -40,6 +46,12 @@ local M = {}
 ---@field device? integer
 ---@field inode? integer
 ---@field mode? integer
+
+---@class Neoagent.FilePreimage
+---@field content string
+---@field observation Neoagent.FileObservation
+---@field fingerprint? string
+---@field mode integer
 
 ---@param data string
 ---@return string
@@ -664,7 +676,9 @@ local function atomic_policy(value)
         or key == "preserve_mode"
         or key == "new_mode"
         or key == "require_existing"
+        or key == "require_missing"
         or key == "expected_content_fingerprint"
+        or key == "expected_observation"
         or key == "durable",
       "atomic replacement policy has unsupported field " .. tostring(key)
     )
@@ -677,7 +691,29 @@ local function atomic_policy(value)
     value.require_existing == nil or type(value.require_existing) == "boolean",
     "atomic replacement require_existing must be boolean"
   )
+  assert(
+    value.require_missing == nil or type(value.require_missing) == "boolean",
+    "atomic replacement require_missing must be boolean"
+  )
+  assert(
+    not (value.require_missing and (value.require_existing or value.expected_content_fingerprint)),
+    "atomic replacement target cannot be both missing and existing"
+  )
   assert(value.durable == nil or type(value.durable) == "boolean", "atomic replacement durable must be boolean")
+  if value.expected_observation ~= nil then
+    local observed = value.expected_observation
+    assert(type(observed) == "table" and type(observed.exists) == "boolean", "invalid expected file observation")
+    if observed.exists then
+      assert(
+        observed.type == "file"
+          and type(observed.device) == "number"
+          and type(observed.inode) == "number"
+          and type(observed.mode) == "number",
+        "expected file observation must identify a regular file"
+      )
+      mode(observed.mode, "expected file mode")
+    end
+  end
   assert(
     not (value.mode ~= nil and value.preserve_mode == true),
     "atomic replacement mode and preserve_mode are mutually exclusive"
@@ -733,9 +769,10 @@ end
 
 ---@param path string
 ---@param expected Neoagent.FileObservation
----@return string? fingerprint
+---@param max_bytes? integer
+---@return string? content
 ---@return string? error
-local function fingerprint_file(path, expected)
+local function read_observed(path, expected, max_bytes)
   local fd, open_err = vim.uv.fs_open(path, "r", 438)
   if not fd then
     return nil, open_err
@@ -759,6 +796,10 @@ local function fingerprint_file(path, expected)
     if chunk == "" then
       break
     end
+    if max_bytes and offset + #chunk > max_bytes then
+      vim.uv.fs_close(fd)
+      return nil, "file exceeds " .. max_bytes .. " bytes"
+    end
     chunks[#chunks + 1] = chunk
     offset = offset + #chunk
   end
@@ -780,13 +821,115 @@ local function fingerprint_file(path, expected)
   if not same_observation(expected, observation(current)) then
     return nil, "atomic replacement target changed during content verification"
   end
-  return M.content_fingerprint(table.concat(chunks))
+  return table.concat(chunks)
+end
+
+---@param path string
+---@param expected Neoagent.FileObservation
+---@return string?, string?
+local function fingerprint_file(path, expected)
+  local content, err = read_observed(path, expected)
+  if content == nil then
+    return nil, err
+  end
+  return M.content_fingerprint(content)
 end
 
 ---@param policy unknown
 ---@return Neoagent.AtomicPolicy
 function M._normalize_atomic_policy(policy)
   return atomic_policy(util.copy(policy or {}))
+end
+
+---@param path string
+---@param policy Neoagent.AtomicPolicy
+---@return integer? mode
+---@return string? error
+---@return boolean? exists
+---@return Neoagent.FileObservation?
+function M.check_write(path, policy)
+  policy = M._normalize_atomic_policy(policy)
+  local stat, err, code = vim.uv.fs_lstat(path)
+  local observed = observation(stat)
+  if policy.expected_observation and not same_observation(policy.expected_observation, observed) then
+    return nil, "file identity changed since preflight"
+  end
+  if not stat then
+    if not missing(err, code) then
+      return nil, err
+    end
+    if policy.require_existing or policy.expected_content_fingerprint then
+      return nil, "target must already exist"
+    end
+    return policy.mode or policy.new_mode, nil, false, observed
+  end
+  if stat.type ~= "file" then
+    return nil, "target is not a regular file"
+  end
+  if policy.require_missing then
+    return nil, "target was created concurrently"
+  end
+  if policy.expected_content_fingerprint then
+    local actual, read_err = fingerprint_file(path, observed)
+    if not actual then
+      return nil, read_err
+    end
+    if actual:lower() ~= policy.expected_content_fingerprint:lower() then
+      return nil, "target content changed concurrently"
+    end
+  end
+  return policy.mode or bit.band(stat.mode, 511), nil, true, observed
+end
+
+-- Capture bytes and directory-entry identity together. Publication must retain
+-- this observation rather than beginning identity checks after preparation.
+---@param path string
+---@param policy Neoagent.AtomicPolicy
+---@param max_bytes? integer
+---@return Neoagent.FilePreimage?, string?
+function M.preflight(path, policy, max_bytes)
+  assert(
+    max_bytes == nil or type(max_bytes) == "number" and max_bytes >= 0 and max_bytes % 1 == 0,
+    "maximum preflight size must be a non-negative integer"
+  )
+  local selected_mode, err, _, observed = M.check_write(path, policy)
+  if not selected_mode then
+    return nil, err
+  end
+  assert(observed)
+  local content = ""
+  if observed.exists then
+    local bytes, read_err = read_observed(path, observed, max_bytes)
+    if bytes == nil then
+      return nil, read_err
+    end
+    content = bytes
+  end
+  return {
+    content = content,
+    observation = observed,
+    fingerprint = observed.exists and M.content_fingerprint(content) or nil,
+    mode = selected_mode,
+  }
+end
+
+---@param path string
+---@param policy Neoagent.AtomicPolicy
+---@return true? ok
+---@return string? error
+function M.remove_file(path, policy)
+  policy = M._normalize_atomic_policy(policy)
+  local before = policy.expected_observation
+  assert(before and before.exists and policy.expected_content_fingerprint, "removal requires a verified preimage")
+  local checked, err = M.check_write(path, policy)
+  if not checked then
+    return nil, err
+  end
+  if not same_observation(before, observation(vim.uv.fs_lstat(path))) then
+    return nil, "removal target identity changed"
+  end
+  local removed, remove_err = vim.uv.fs_unlink(path)
+  return removed and true or nil, remove_err
 end
 
 ---@param actual? integer
@@ -921,6 +1064,9 @@ function M.atomic_replace(path, data, policy)
   if not stat and not missing(stat_err, stat_code) then
     return nil, stat_err, "inspect"
   end
+  if policy.expected_observation and not same_observation(policy.expected_observation, target) then
+    return nil, "file identity changed since preflight", "target_changed"
+  end
   if stat and stat.type == "link" then
     return nil, "atomic replacement target is a symbolic link", "target"
   end
@@ -929,6 +1075,9 @@ function M.atomic_replace(path, data, policy)
   end
   if not stat and policy.require_existing then
     return nil, "atomic replacement target must already exist", "target"
+  end
+  if stat and policy.require_missing then
+    return nil, "atomic replacement target was created concurrently", "target_changed"
   end
 
   local selected_mode = policy.mode or stat and bit.band(stat.mode, 511) or policy.new_mode
@@ -1027,10 +1176,9 @@ function M.sync_directory(path)
   return true
 end
 
----@param path string
+---@param normalized string
 ---@return string
-function M.canonical(path)
-  local normalized = M.normalize(path)
+local function canonical(normalized)
   local current = normalized
   local missing_parts = {}
   while true do
@@ -1039,7 +1187,7 @@ function M.canonical(path)
       for index = #missing_parts, 1, -1 do
         resolved = M.join(resolved, missing_parts[index])
       end
-      return M.normalize(resolved)
+      return vim.fs.normalize(resolved, { expand_env = false })
     end
     local parent = vim.fs.dirname(current)
     if not parent or parent == current then
@@ -1048,6 +1196,21 @@ function M.canonical(path)
     missing_parts[#missing_parts + 1] = assert(vim.fs.basename(current))
     current = parent
   end
+end
+
+---@param path string
+---@return string
+function M.canonical(path)
+  return canonical(M.normalize(path))
+end
+
+-- Tool paths are already expanded by the parent. Resolve aliases without
+-- interpreting literal environment-variable characters a second time.
+---@param path string
+---@return string
+function M.path_key(path)
+  local resolved = canonical(vim.fs.normalize(path, { expand_env = false }))
+  return jit.os == "Windows" and resolved:lower() or resolved
 end
 
 ---@param path string

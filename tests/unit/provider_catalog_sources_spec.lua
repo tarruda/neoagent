@@ -270,6 +270,7 @@ describe("bundled model catalog sources", function()
           input_modalities = { "text", "image" },
           context_window = 272000,
           use_responses_lite = true,
+          supports_image_detail_original = true,
           default_verbosity = "medium",
           supported_reasoning_levels = {
             { effort = "low" }, { effort = "high" }, { effort = "max" },
@@ -297,12 +298,14 @@ describe("bundled model catalog sources", function()
       input = { "text", "image" },
       context_window = 272000,
       responses_lite = true,
+      supports_image_detail_original = true,
       text_verbosity = "medium",
       reasoning_levels = { "low", "high", "max", "ultra" },
       service_tiers = { "default", "priority" },
     }, assert(assert(result.models)[1]))
     local transformed = require("neoagent.registry.openai")
       .transform_codex(assert(assert(result.models)[1]))
+    assert.is_true(transformed.supports_image_detail_original)
     assert.are.same({ "low", "high", "max", "ultra" },
       require("neoagent.thinking").levels(transformed))
     ctx.validator = result.validator
@@ -317,6 +320,9 @@ describe("bundled model catalog sources", function()
   it("rejects malformed account-scoped Codex inventories", function()
     local source = require("neoagent.providers.codex.catalog")
     assert.is_nil(source.parse(nil))
+    assert.is_nil(source.parse({ models = { {
+      slug = "invalid-image-detail", supports_image_detail_original = "yes", supported_reasoning_levels = {},
+    } } }))
     assert.is_nil(source.parse({ models = { 42 } }))
     assert.is_nil(source.parse({ models = { {
       slug = "invalid-visibility",

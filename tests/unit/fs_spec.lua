@@ -85,6 +85,56 @@ describe("neoagent.fs", function()
     paths = {}
   end)
 
+  it("refuses publication when metadata or content verification is unavailable", function()
+    local target = vim.fn.tempname()
+    paths[#paths + 1] = target
+    assert(fs.write_all(target, "original"))
+    vim.uv.fs_lstat = function()
+      return nil, "EACCES: metadata denied", "EACCES"
+    end
+    local checked, err = fs.check_write(target, { mode = 384 })
+    assert.is_nil(checked)
+    assert.matches("metadata denied", assert(err))
+    vim.uv.fs_lstat = original.lstat
+    vim.uv.fs_open = function()
+      return nil, "EACCES: content denied", "EACCES"
+    end
+    checked, err =
+      fs.check_write(target, { mode = 384, expected_content_fingerprint = fs.content_fingerprint("original") })
+    assert.is_nil(checked)
+    assert.matches("content denied", assert(err))
+    vim.uv.fs_open = original.open
+    assert.are.equal("original", fs.read(target))
+  end)
+
+  it("preserves a replacement that arrives after removal content verification", function()
+    local target, replacement = vim.fn.tempname(), vim.fn.tempname()
+    paths[#paths + 1] = target
+    paths[#paths + 1] = replacement
+    assert(fs.write_all(target, "original"))
+    assert(fs.write_all(replacement, "replacement"))
+    local preimage = assert(fs.preflight(target, { mode = 384 }))
+    local checks = 0
+    vim.uv.fs_lstat = function(path)
+      if path == target then
+        checks = checks + 1
+        if checks == 3 then
+          assert(original.unlink(target))
+          assert(original.rename(replacement, target))
+        end
+      end
+      return original.lstat(path)
+    end
+    local removed, err = fs.remove_file(target, {
+      mode = 384,
+      expected_observation = preimage.observation,
+      expected_content_fingerprint = preimage.fingerprint,
+    })
+    assert.is_nil(removed)
+    assert.matches("removal target identity changed", assert(err))
+    assert.are.equal("replacement", fs.read(target))
+  end)
+
   it("bounds buffered reads even when a file grows after inspection", function()
     local path = vim.fn.tempname()
     paths[#paths + 1] = path
@@ -803,6 +853,9 @@ describe("neoagent.fs", function()
       { preserve_mode = "yes", new_mode = 420 },
       { preserve_mode = true, new_mode = -1 },
       { mode = 384, require_existing = "yes" },
+      { mode = 384, require_missing = "yes" },
+      { mode = 384, require_missing = true, require_existing = true },
+      { mode = 384, require_missing = true, expected_content_fingerprint = fs.content_fingerprint("data") },
     }) do
       assert.has_error(function()
         fs.atomic_replace("file", "data", policy --[[@as Neoagent.AtomicPolicy]])
@@ -947,6 +1000,64 @@ describe("neoagent.fs", function()
     })
     assert.matches("content changed", tostring(err))
     assert.are.equal("concurrent", assert(fs.read(target)))
+  end)
+
+  it("creates a missing target and refuses to overwrite a concurrent creation", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+    local target = vim.fs.joinpath(directory, "created.txt")
+    local policy = { mode = 384, require_missing = true }
+    assert(fs.check_write(target, policy))
+    assert(fs.atomic_replace(target, "original", policy))
+    local checked, check_err = fs.check_write(target, policy)
+    assert.is_nil(checked)
+    assert.matches("created concurrently", assert(check_err))
+    local written, write_err = fs.atomic_replace(target, "replacement", policy)
+    assert.is_nil(written)
+    assert.matches("created concurrently", tostring(write_err))
+    assert.are.equal("original", assert(fs.read(target)))
+  end)
+
+  it("rejects a directory entry replaced while opening its preimage", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert(fs.mkdirp(directory))
+    local target, replacement = directory .. "/source", directory .. "/replacement"
+    assert(fs.write_all(target, "identical bytes"))
+    assert(fs.write_all(replacement, "identical bytes"))
+    assert.are_not.equal(assert(original.lstat(target)).ino, assert(original.lstat(replacement)).ino)
+    vim.uv.fs_open = function(path, flags, permissions)
+      if path == target and flags == "r" then
+        assert(original.rename(replacement, target))
+      end
+      return original.open(path, flags, permissions)
+    end
+    local captured, err = fs.preflight(target, { preserve_mode = true, new_mode = 420 }, 1024)
+    vim.uv.fs_open = original.open
+    assert.is_nil(captured)
+    assert.matches("changed during content verification", assert(err))
+    assert.are.equal("identical bytes", fs.read(target))
+  end)
+
+  it("closes a preimage read that exceeds its byte limit", function()
+    local target = vim.fn.tempname()
+    paths[#paths + 1] = target
+    assert(fs.write_all(target, "large input"))
+    local descriptor
+    vim.uv.fs_open = function(path, flags, permissions)
+      local opened, err = original.open(path, flags, permissions)
+      if path == target then
+        descriptor = opened
+      end
+      return opened, err
+    end
+    local captured, err = fs.preflight(target, { preserve_mode = true, new_mode = 420 }, 3)
+    vim.uv.fs_open = original.open
+    assert.is_nil(captured)
+    assert.matches("exceeds 3 bytes", assert(err))
+    assert.is_nil(original.fstat(assert(descriptor)))
+    assert.are.equal("large input", fs.read(target))
   end)
 
   it("detects every target change while fingerprinting replacement content", function()

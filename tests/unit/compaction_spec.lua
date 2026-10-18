@@ -764,7 +764,7 @@ describe("neoagent.compaction", function()
     }).preparation)
     assert.are.equal("native", prepared.kind)
     ---@cast prepared Neoagent.NativeCompactionPreparation
-    local reduced = assert(prepared.request_messages[1])
+    local reduced = assert(prepared.request.messages[1])
     assert.are.equal("user", reduced.role)
     assert(type(reduced.content) == "table")
     assert.are.same(image, reduced.content[2])

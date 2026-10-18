@@ -3,6 +3,7 @@ local async = require("neoagent.async")
 local renderer_protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")
 local util = require("neoagent.util")
+local config = require("neoagent.config")
 
 local M = {}
 ---@class Neoagent.AgentAppletCallbacks
@@ -16,9 +17,11 @@ local M = {}
 ---@field on_select_model? fun(applet: Neoagent.AgentApplet): unknown
 ---@field on_resume_session? fun(applet: Neoagent.AgentApplet): unknown
 ---@field on_provider_shell? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_configure_draft? fun(applet: Neoagent.AgentApplet, ui: Neoagent.UIConfigInput): true?, Neoagent.Error?
 
 ---@class Neoagent.AgentAppletOptions
 ---@field config Neoagent.UIConfig
+---@field renderer? Neoagent.Renderer<unknown>
 ---@field persistence? Neoagent.PersistenceConfig
 ---@field context? Neoagent.AgentContext
 ---@field presenter? Neoagent.Presenter
@@ -64,7 +67,7 @@ local M = {}
 ---@field owner_value? table
 ---@field owner_callbacks? Neoagent.AgentAppletCallbacks
 ---@field renderer Neoagent.Renderer<unknown>
----@field transcript_style 'codex'|'pi'
+---@field transcript_style string
 ---@field position Neoagent.UiPosition
 ---@field draft_context Neoagent.AgentContext
 ---@field agent_value? Neoagent.Agent
@@ -108,6 +111,7 @@ local owner_callback_names = {
   on_select_model = true,
   on_resume_session = true,
   on_provider_shell = true,
+  on_configure_draft = true,
 }
 
 ---@param callbacks Neoagent.AgentAppletCallbacks
@@ -228,14 +232,16 @@ function AgentApplet.new(opts)
   local dialogs = opts.dialogs or require("neoagent.dialog").new({
     report = report,
   })
-  local selected = opts.config.renderer or renderers.get(opts.config.style)
+  local settings, renderer = config.ui_settings(opts.config)
+  local style = settings.style or "codex"
+  local selected = opts.renderer or renderer or renderers.get(style)
   selected = renderer_protocol.assert(selected, "Agent Applet Renderer")
 
   local draft_context = util.copy(opts.context or {})
   ---@type Neoagent.AgentApplet
   local self = setmetatable({
     _neoagent_agent_applet = true,
-    config = util.copy(opts.config),
+    config = settings,
     persistence = util.copy(opts.persistence),
     profile = opts.profile_id,
     display_label = opts.label or "Agent",
@@ -248,7 +254,7 @@ function AgentApplet.new(opts)
     owner_value = nil,
     owner_callbacks = nil,
     renderer = selected,
-    transcript_style = opts.config.style,
+    transcript_style = style,
     position = opts.config.position,
     draft_context = draft_context,
     agent_value = nil,
@@ -588,13 +594,91 @@ function AgentApplet:set_draft_context(patch)
     return nil, util.error("agent", "A bound Agent owns the Applet context")
   end
   assert(patch.workspace == nil or patch.workspace == self.workspace_root, "Agent Applet Workspace is immutable")
-  self.draft_context = util.deep_merge(self.draft_context, patch) --[[@as Neoagent.AgentContext]]
-  local context = self:_context()
+  local candidate = util.deep_merge(self.draft_context, patch) --[[@as Neoagent.AgentContext]]
+  local context = self:_context(candidate)
   local view = self.view_value
   if view and not view.destroyed then
-    view:set_context(context)
+    local published, err = call_view(view, "set_context", context)
+    if not published then
+      pcall(view.set_context, view, self:_context())
+      return nil, err
+    end
   end
+  self.draft_context = candidate
   return util.copy(context)
+end
+
+---@class Neoagent.DraftPresentation
+---@field profile string
+---@field label string
+---@field context Neoagent.AgentContext
+---@field callbacks Neoagent.AgentAppletCallbacks
+---@field config Neoagent.UIConfig
+---@field renderer Neoagent.Renderer<unknown>
+---@field persistence Neoagent.PersistenceConfig
+
+-- Presentation and owner callbacks are published together. The composition
+-- supplies the candidate; only the Applet touches its View and presentation.
+---@param owner table
+---@param candidate Neoagent.DraftPresentation
+---@return true?, Neoagent.Error?
+function AgentApplet:publish_draft(owner, candidate)
+  assert(self.owner_value == owner and not self.agent_value, "Draft publication requires its owner")
+  validate_owner_callbacks(candidate.callbacks)
+  local renderer, err = renderer_protocol.validate(candidate.renderer)
+  if not renderer then
+    return nil, util.normalize_error(err, "ui")
+  end
+  local configured = util.copy(candidate.config)
+  local context = self:_context_for(candidate.context, false, candidate.label)
+  local view = self.view_value
+  if view and not view.destroyed then
+    local was_open = view:is_open()
+    self:_capture_input(view)
+    local shown, show_err = call_view(view, "configure", configured, context, renderer)
+    if not shown then
+      if show_err and rawget(show_err, "restoration_error") then
+        -- Owner configuration is still the accepted value. Rebuild from it,
+        -- retaining input and presentation requests independently of the View.
+        self.view_value = nil
+        local recovered, recovery_err = pcall(function()
+          view:destroy()
+          local replacement = self:_ensure_view()
+          if was_open then
+            local opened, open_err = replacement:open(nil, { preserve_scroll = true })
+            if not opened then
+              error(open_err, 0)
+            end
+          end
+        end)
+        if not recovered then
+          local replacement = self.view_value
+          self.view_value = nil
+          local failure = util.normalize_error(recovery_err, "ui")
+          if replacement then
+            local disposed, dispose_err = pcall(replacement.destroy, replacement)
+            if not disposed then
+              failure = util.with_cause(failure, util.normalize_error(dispose_err, "ui"))
+            end
+          end
+          return nil, util.with_cause(show_err, failure)
+        end
+      end
+      return nil, show_err
+    end
+  end
+  self.renderer = renderer
+  self.transcript_style = configured.style
+  self.config = configured
+  self.position = configured.position
+  if not vim.deep_equal(self.persistence, candidate.persistence) then
+    self.persistence = util.copy(candidate.persistence)
+    self.history_stores = {}
+  end
+  self.profile, self.display_label = candidate.profile, candidate.label
+  self.draft_context = util.deep_merge(self.draft_context, candidate.context) --[[@as Neoagent.AgentContext]]
+  self.owner_callbacks = util.copy(candidate.callbacks)
+  return true
 end
 
 ---@param context Neoagent.AgentContext?
@@ -954,7 +1038,7 @@ function AgentApplet:retry_submission()
   return self:_submit(text)
 end
 
----@param result Neoagent.ActivityOutcome
+---@param result Neoagent.ActivityOutcome|Neoagent.WorkspaceTrustResult
 ---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:trust_submission_result(result)
   local text = self.pending_submission
@@ -1007,11 +1091,11 @@ function AgentApplet:_ensure_view()
   local factory = self.view_factory or require("neoagent.ui").new
   local view_config = util.copy(self.config)
   view_config.style = self.transcript_style
-  view_config.renderer = self.renderer
   local candidate
   local built, staged = pcall(function()
     candidate = factory({
       config = view_config,
+      renderer = self.renderer,
       host = self.host,
       on_submit = function(prompt)
         return (self:_submit(prompt))
@@ -1051,12 +1135,12 @@ function AgentApplet:_ensure_view()
       end,
       resolve_tool = function(name)
         local agent = self:_agent_or_nil()
-        if not agent then
+        if not agent or not name then
           return
         end
         for _, tool in ipairs(agent:get_toolset().tools) do
           if tool.name == name then
-            return tool
+            return { name = name, render = tool.render }
           end
         end
       end,
@@ -1479,6 +1563,13 @@ end
 ---@param position Neoagent.UiPosition
 ---@return Neoagent.UiPosition?, Neoagent.Error?
 function AgentApplet:set_position(position)
+  local configure = (not self.agent_value or self.binding_restore)
+    and self.owner_callbacks
+    and self.owner_callbacks.on_configure_draft
+  if configure then
+    local updated, err = configure(self, { position = position })
+    return updated and position or nil, err
+  end
   if not positions[position] then
     return nil, util.error("ui", "invalid window position")
   end
@@ -1509,6 +1600,13 @@ function AgentApplet:set_renderer(renderer)
   if not selected then
     return nil, err
   end
+  local configure = (not self.agent_value or self.binding_restore)
+    and self.owner_callbacks
+    and self.owner_callbacks.on_configure_draft
+  if configure then
+    local updated, update_err = configure(self, { renderer = selected })
+    return updated and selected or nil, update_err
+  end
   local view = self.view_value
   if view and not view.destroyed then
     local installed, install_err = view:set_renderer(selected)
@@ -1523,6 +1621,13 @@ end
 ---@param style 'codex'|'pi'
 ---@return ('codex'|'pi')?, Neoagent.Error|Applet.Error?
 function AgentApplet:set_transcript_style(style)
+  local configure = (not self.agent_value or self.binding_restore)
+    and self.owner_callbacks
+    and self.owner_callbacks.on_configure_draft
+  if configure then
+    local updated, err = configure(self, { style = style })
+    return updated and style or nil, err
+  end
   local renderer = renderers.get(style)
   if not renderer then
     return nil, util.error("ui", "invalid transcript style")

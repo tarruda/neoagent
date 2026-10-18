@@ -131,15 +131,16 @@ end
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell UI config is required")
+  local settings, supplied_renderer = require("neoagent.config").ui_settings(opts.config)
   local renderer = renderer_protocol.assert(
-    opts.renderer or opts.config.renderer or require("neoagent.ui.renderers").get(opts.config.style),
+    opts.renderer or supplied_renderer or require("neoagent.ui.renderers").get(settings.style or "codex"),
     "Provider Shell Renderer"
   )
   local defined, err = renderer_protocol.define_highlights(renderer)
   assert(defined, err and err.message or "Provider Shell highlights failed")
 
   local self = setmetatable({
-    config = util.copy(opts.config),
+    config = settings,
     renderer = renderer,
     callbacks = {
       action = opts.on_action or function() end,

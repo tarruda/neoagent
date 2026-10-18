@@ -4,6 +4,48 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.WorkspacePreferenceSource
+---@field root string
+---@field directory? string
+---@field settings Neoagent.JsonObject
+---@field warnings string[]
+
+-- Retain the storage identity and raw scopes, independently of effective values.
+-- Recomposition can reuse a snapshot only while its storage identity matches.
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param root string
+---@param previous? Neoagent.WorkspacePreferenceSource
+---@return Neoagent.WorkspacePreferenceSource
+function M.load(configured, root, previous)
+  local persistence = configured.persistence
+  local fs = require("neoagent.fs")
+  root = fs.canonical(root)
+  local directory = persistence.enabled and persistence.workspace_settings and fs.canonical(persistence.directory)
+    or nil
+  if previous and previous.root == root and previous.directory == directory then
+    return util.copy(previous)
+  end
+  ---@type Neoagent.WorkspacePreferenceSource
+  local source = { root = root, directory = directory, settings = {}, warnings = {} }
+  if not directory then
+    return source
+  end
+  local store = require("neoagent.workspace_settings").new({ directory = directory, root = root })
+  local settings, err = store:load()
+  if settings then
+    source.settings = settings
+    return source
+  end
+  assert(err)
+  source.warnings = {
+    err.message
+      .. (err.detail and ": " .. err.detail or "")
+      .. "; the file may be outdated, update or delete "
+      .. store:metadata().settings_path,
+  }
+  return source
+end
+
 ---@alias Neoagent.UiPosition "auto"|"left"|"right"|"top"|"bottom"|"center"
 
 ---@class Neoagent.WorkspacePreferencesInput
@@ -39,8 +81,9 @@ end
 ---@param settings Neoagent.JsonObject
 ---@param defaults Neoagent.WorkspacePreferenceDefaults
 ---@param name string
+---@param automatic? boolean
 ---@return Neoagent.WorkspacePreferences, string[]
-function M.scope(settings, defaults, name)
+function M.scope(settings, defaults, name, automatic)
   assert(is_object(settings), "workspace settings must be an object")
   assert(is_object(defaults), "workspace preference defaults must be an object")
   assert(type(name) == "string" and name ~= "", "workspace preference name must be a non-empty string")
@@ -48,7 +91,7 @@ function M.scope(settings, defaults, name)
   ---@type string[]
   local issues = {}
   for key in pairs(settings) do
-    if key ~= "ui_position" and key ~= "agents" then
+    if key ~= "ui_position" and key ~= "agents" and key ~= "default_model" then
       issues[#issues + 1] = "unsupported workspace setting: " .. tostring(key)
     end
   end
@@ -70,7 +113,7 @@ function M.scope(settings, defaults, name)
       issues[#issues + 1] = "unsupported workspace setting for " .. name .. ": " .. tostring(key)
     end
   end
-  accepted.default_model = rawget(scoped, "default_model")
+  accepted.default_model = not automatic and rawget(scoped, "default_model") or rawget(settings, "default_model")
   accepted.default_thinking_level = rawget(scoped, "default_thinking_level")
 
   local merged = util.deep_merge(defaults, accepted)
@@ -110,15 +153,20 @@ end
 
 ---@param name string
 ---@param patch Neoagent.WorkspacePreferences
+---@param automatic? boolean
 ---@return Neoagent.JsonObject
-function M.patch(name, patch)
+function M.patch(name, patch, automatic)
   local result = {}
   if patch.ui_position ~= nil then
     result.ui_position = patch.ui_position
   end
   local scoped = {}
   if patch.default_model ~= nil then
-    scoped.default_model = patch.default_model
+    if automatic then
+      result.default_model = patch.default_model
+    else
+      scoped.default_model = patch.default_model
+    end
   end
   if patch.default_thinking_level ~= nil then
     scoped.default_thinking_level = patch.default_thinking_level

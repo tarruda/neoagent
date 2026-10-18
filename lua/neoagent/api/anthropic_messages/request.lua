@@ -132,7 +132,7 @@ local function encode_messages(messages, image)
       tool_results[#tool_results + 1] = tool_result(message, image)
     else
       tool_results = nil
-      if message.role == "user" then
+      if message.role == "user" or message.role == "userContext" then
         result[#result + 1] = {
           role = "user",
           content = content_blocks(message.content, nil, image),
@@ -142,7 +142,7 @@ local function encode_messages(messages, image)
         if #blocks > 0 then
           result[#result + 1] = { role = "assistant", content = blocks }
         end
-      else
+      elseif message.role ~= "system" and message.role ~= "developer" then
         error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
       end
     end
@@ -203,6 +203,38 @@ local function cache_prompt(body)
   cache_last(last.content)
 end
 
+-- Shaping owns semantic context until the final candidate is selected. Move
+-- that context into Anthropic's system field once, then budget only the
+-- remaining conversation alongside the completed body.
+---@param body Neoagent.JsonObject
+---@param selected Neoagent.RequestMessage[]
+---@return Neoagent.RequestMessage[]
+local function compose_context(body, selected)
+  local context, conversation = {}, {}
+  for _, message in ipairs(selected) do
+    if message.role == "system" or message.role == "developer" then
+      context[#context + 1] = message.content
+    else
+      conversation[#conversation + 1] = message
+    end
+  end
+  if #context > 0 then
+    local system = body.system
+    if system == nil or system == vim.NIL or type(system) == "string" then
+      if type(system) == "string" and system ~= "" then
+        table.insert(context, 1, system)
+      end
+      body.system = table.concat(context, "\n\n")
+    else
+      assert(type(system) == "table" and util.is_list(system), "Anthropic system must be text or content blocks")
+      for _, text in ipairs(context) do
+        system[#system + 1] = { type = "text", text = text }
+      end
+    end
+  end
+  return conversation
+end
+
 ---@param model Neoagent.AnthropicModel
 ---@param call_opts Neoagent.RequestOptions
 ---@param api_key? string
@@ -256,15 +288,17 @@ function M.build(model, call_opts, api_key)
     request = output_budget.apply(request, context, call_opts.max_output_tokens, call_opts.max_thinking_tokens)
   end
   local selected = messages.for_model(assert(request.messages), model)
+  request.body = util.copy(request.body or {})
+  local conversation = compose_context(request.body, selected)
   return {
     api = model.api,
     request = request,
     messages = selected,
-    input_tokens = request_estimate.shaped(request, selected),
+    input_tokens = request_estimate.shaped(request, conversation),
     ---@async
     encode = function(image)
       local encoded = util.copy(request.body or {})
-      encoded.messages = encode_messages(selected, image)
+      encoded.messages = encode_messages(conversation, image)
       if model._prompt_caching then
         cache_prompt(encoded)
       end

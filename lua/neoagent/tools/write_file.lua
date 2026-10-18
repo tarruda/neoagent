@@ -92,17 +92,15 @@ local function new()
       required = { "path", "content" },
       additionalProperties = false,
     },
-    ---@async
-    execute = function(arguments, ctx)
-      local call = common.call(ctx)
-      return run(prepare(arguments, {}, call), call, deps)
-    end,
     render = presentation.write,
   }
   return identities.bind(tool, {
     token = identities.write_file,
     settings = {},
-    prepare = prepare,
+    prepare = identities.workspace_prepare(prepare),
+    run = function(request, _, ctx)
+      return run(request, common.call(ctx), deps)
+    end,
   })
 end
 

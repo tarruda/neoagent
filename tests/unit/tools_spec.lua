@@ -87,10 +87,12 @@ end
 ---@async
 local function execute_with(tool, arguments, context, overrides)
   local common = require("neoagent.tools.common")
-  local identity = assert(require("neoagent.tools.identities").identity(tool))
+  local invocation = require("neoagent.tools.invocation")
+  local prepared = assert(invocation.prepare(tool, arguments, context))
   local implementation = require("neoagent.tools." .. tool.name)
   local dependencies = implementation._dependencies(overrides)
-  local result = implementation.run(identity.prepare(arguments, identity.settings, common.call(context)), common.call(context), dependencies)
+  local call = common.call(context)
+  local result = implementation.run(invocation.request(prepared, call), call, dependencies)
   return result
 end
 
@@ -141,7 +143,7 @@ describe("neoagent bundled tools", function()
     local coding = tools.coding()
     local read_only = tools.read_only()
     assert.are.same({
-      "read_file", "write_file", "edit_file", "shell", "read_agent_documentation",
+      "read", jit.os == "Windows" and "powershell" or "bash", "edit", "write",
     }, vim.tbl_map(function(t) return t.name end, coding))
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
     assert.are.same({
@@ -701,6 +703,16 @@ describe("neoagent bundled tools", function()
     local long = execute(read.new(), { path = "long.txt" }, ctx(workspace))
     assert.matches("Showing lines 1%-2000 of 2001", (assert(assert(long.content[1]).text)))
     assert.matches("offset=2001", (assert(assert(long.content[1]).text)))
+  end)
+
+  it("gives Pi an oversized-line recovery hint independent of command Tool names", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert(fs.write_all(root .. "/wide.txt", string.rep("x", 60 * 1024)))
+    local tool = require("neoagent.tools.pi.read").new()
+    local result = execute(tool, { path = "wide.txt" }, ctx(workspace))
+    assert.are.equal("read", tool.name)
+    assert.matches("Use a command Tool to inspect it in chunks", assert(assert(result.content[1]).text), 1, true)
   end)
 
   it("streams text reads without loading the complete file", function()
@@ -1498,7 +1510,7 @@ describe("neoagent bundled tools", function()
   end)
 
 
-  it("defaults shell commands to five minutes and accepts an override", function()
+  it("defaults shell commands to no lifetime timeout and accepts an override", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local timeouts = {}
@@ -1524,7 +1536,7 @@ describe("neoagent bundled tools", function()
         end,
       }))
 
-    assert.are.same({ 300000, 2500, 1 }, timeouts)
+    assert.are.same({ 2500, 1 }, timeouts)
     assert.is_nil(unbounded)
   end)
 

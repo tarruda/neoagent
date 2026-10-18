@@ -563,7 +563,7 @@ local function partial_number(raw, key)
   return colon and tonumber(raw:sub(colon + 1):match("^%s*(-?[%d.]+)")) or nil
 end
 
-local partial_keys = { "path", "file_path", "command", "pattern", "glob", "offset", "limit", "content" }
+local partial_keys = { "path", "file_path", "command", "pattern", "glob", "offset", "limit", "content", "query" }
 
 ---@param raw? string
 ---@return Neoagent.JsonObject

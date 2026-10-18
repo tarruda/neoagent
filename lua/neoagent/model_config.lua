@@ -17,6 +17,8 @@ local M = {}
 ---@field request_opts? unknown
 ---@field reasoning? unknown
 ---@field responses_lite? unknown
+---@field custom_tools? unknown
+---@field supports_image_detail_original? unknown
 ---@field reasoning_effort? unknown
 ---@field reasoning_summary? unknown
 ---@field reasoning_context? unknown
@@ -38,6 +40,8 @@ local M = {}
 ---@field request_opts? Neoagent.RequestLayer
 ---@field reasoning? boolean
 ---@field responses_lite? boolean
+---@field custom_tools? boolean
+---@field supports_image_detail_original? boolean
 ---@field reasoning_effort? string
 ---@field reasoning_summary? string
 ---@field reasoning_context? string
@@ -155,6 +159,8 @@ function M.validate(provider_id, model_id, value)
   for _, field in ipairs({
     "reasoning",
     "responses_lite",
+    "custom_tools",
+    "supports_image_detail_original",
   }) do
     if model[field] ~= nil and type(model[field]) ~= "boolean" then
       return failure(provider_id, model_id, field .. " must be boolean")

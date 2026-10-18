@@ -158,7 +158,8 @@ describe("neoagent generic dialog UI", function()
     assert.is_nil(view:pane("dialog"))
     assert.are.equal("neoagent-dialog",
       vim.bo[view_handles.buffer(view, "transcript")].filetype)
-    local transcript = assert(view:pane("transcript"))
+    local transcript = view:pane("transcript")
+    assert(transcript)
     local first = "dialog:first:widget:actions:item:run"
     assert.are.equal(first, assert(transcript:focused_target()).key)
     assert.is_true(target_is_highlighted(transcript, first))
@@ -170,7 +171,8 @@ describe("neoagent generic dialog UI", function()
     assert.are.equal(view_handles.window(view, "dialog"),
       vim.api.nvim_get_current_win())
     assert.is_not_nil(view_handles.window(view, "dialog"))
-    local dialog = assert(view:pane("dialog"))
+    local dialog = view:pane("dialog")
+    assert(dialog)
     local allow = "dialog:second:actions:item:allow"
     assert.are.equal(allow, assert(dialog:focused_target()).key)
     assert.is_true(target_is_highlighted(dialog, allow))
@@ -197,7 +199,8 @@ describe("neoagent generic dialog UI", function()
     assert.is_true((view:open()))
     view:set_dialog(snapshot(transcript_dialog(), "native"))
 
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     local first = "dialog:native:widget:actions:item:run"
     local target = assert(assert(pane.layout).targets[first])
     local rectangle = assert(target.rectangles[1])
@@ -240,12 +243,10 @@ describe("neoagent generic dialog UI", function()
     end)
 
     local escalation = require("neoagent.sandbox.escalation").new()
-    local shell = escalation:tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
+    local shell = require("neoagent.tools.shell").new()
     local elevated = false
     local execute = escalation:wrap({
-      restricted = function() error("restricted executor ran") end,
+      restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
       elevated = function()
         elevated = true
         return { content = { { type = "text", text = "elevated" } } }
@@ -258,13 +259,6 @@ describe("neoagent generic dialog UI", function()
         type = "toolCall", id = "escalate", name = "shell",
         arguments = {
           command = "touch ~/random && ls -la ~/random",
-          options = {
-            require_escalation = true,
-            escalation_justification = table.concat({
-              "User requested testing the escalation path for creating a file",
-              "in the home directory, which is read-only inside the sandbox.",
-            }, " "),
-          },
         },
       } }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
@@ -284,7 +278,8 @@ describe("neoagent generic dialog UI", function()
     end, 5))
 
     local request = assert(dialogs:snapshot().active)
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     local deny = "dialog:" .. request.id .. ":widget:actions:item:deny"
     assert(vim.wait(1000, function()
       local target = pane:focused_target()
@@ -351,7 +346,8 @@ describe("neoagent generic dialog UI", function()
       "Choose one of the following options.",
     }, "\n")
     view:set_dialog(snapshot(request, "sandbox"))
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     assert(vim.wait(1000, function()
       return pane.layout
         and pane.layout.targets[
@@ -402,8 +398,10 @@ describe("neoagent generic dialog UI", function()
     view:set_input("retained draft")
     view:set_dialog(snapshot(transcript_dialog(), "first"))
 
-    local input = assert(view:pane("input"))
-    local transcript = assert(view:pane("transcript"))
+    local input = view:pane("input")
+    assert(input)
+    local transcript = view:pane("transcript")
+    assert(transcript)
     local pane_input = require("applet.pane.input")
     view:focus_input()
     assert.is_true(pane_input.dispatch(input, "n", "J"))
@@ -648,8 +646,9 @@ describe("neoagent generic dialog UI", function()
 
   it("routes queued responses through one Agent Applet",
     function()
-      local first = require("neoagent.agent").new({
+      local first = require("neoagent").new({
         name = "first",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -659,8 +658,9 @@ describe("neoagent generic dialog UI", function()
         },
         tools = {},
       })
-      local second = require("neoagent.agent").new({
+      local second = require("neoagent").new({
         name = "second",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -721,8 +721,9 @@ describe("neoagent generic dialog UI", function()
 
   it("keeps each dialog source with its owning Agent Applet",
     function()
-      local first = require("neoagent.agent").new({
+      local first = require("neoagent").new({
         name = "first",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -732,8 +733,9 @@ describe("neoagent generic dialog UI", function()
         },
         tools = {},
       })
-      local second = require("neoagent.agent").new({
+      local second = require("neoagent").new({
         name = "second",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -782,7 +784,7 @@ describe("neoagent generic dialog UI", function()
     end)
 
   it("fails a dialog when a custom View cannot present it", function()
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "headless",
       default_registry = false,
       providers = {},

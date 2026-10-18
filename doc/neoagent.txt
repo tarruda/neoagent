@@ -20,6 +20,7 @@ CONTENTS                                                   *neoagent-contents*
    Local subprocesses                                    |neoagent-subprocess|
    Retained processes                              |neoagent-process-sessions|
 6. Tools and sessions                                   |neoagent-composition|
+   Web search                                           |neoagent-web-search|
    Context compaction                                    |neoagent-compaction|
 
 ===============================================================================
@@ -29,8 +30,8 @@ Neoagent provides streamed Models, cancellable Runs, and a plain Agent Loop.
 The plugin adds optional tools, persistence, provider management, and a
 floating UI.
 
-Requires Neovim 0.10+, curl 7.76+, `rg`, and `fd`. ImageMagick's `magick` is
-optional for image conversion. Check the installation with: >
+Requires Neovim 0.10+, curl 7.76+, `rg`, and `fd`. Codex's `view_image`
+requires ImageMagick's `magick`. Check the active Profile's dependencies with: >
 
   :checkhealth neoagent
 
@@ -71,19 +72,21 @@ Common defaults are: >lua
 
   {
     default_thinking_level = "medium",
-    shell_timeout = 300,
+    shell_timeout = false,
+    web_search = false,
     retry = { enabled = true, max_retries = 3, base_delay_ms = 2000 },
     compaction = {
-      strategy = "summary", auto = true,
+      strategy = "prefix", auto = true,
       reserve_tokens = 16384, keep_recent_tokens = 20000,
     },
-    sandbox = { enabled = false },
+    -- sandbox.enabled defaults to true for Pi and Codex.
     persistence = {
       enabled = true, workspace_settings = true,
       directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
-      style = "codex", position = "center", margin = 1, input_height = 7,
+      -- style defaults to "pi" for Pi, "codex" for Codex and Chat.
+      position = "center", margin = 1, input_height = 7,
       scroll_on_submit = true, scroll_on_transcript_leave = true,
       scroll_on_reopen = true, wrap_cards = false, show_thinking = true,
       images = { backend = "kitty", display = "always" },
@@ -92,7 +95,7 @@ Common defaults are: >lua
     },
   }
 <
-Set `tools`, `execute_tool`, and `system_prompt` to customize coding behavior;
+Set `tools`, `decorate_tool`, and `system_prompt` to customize coding behavior;
 see |neoagent-composition|. Sandbox, project resources, recording, and UI
 options are described in their sections below.
 
@@ -217,11 +220,9 @@ references reduce request bytes, not image token, count, or input-size limits.
 The Anthropic provider enables ephemeral prompt caching by default. Set its
 `prompt_caching = false` to disable automatically added cache controls.
 
-The built-in system prompt follows the active tools and includes the working
-directory. Set `system_prompt` to a string or callback to replace it. The
-callback receives the Session, Model, Workspace, submitted prompt, tools, and
-discovered resources. Configured AGENTS.md and skill context is appended to
-the result.
+Set `system_prompt` to a string or callback to replace the Profile's base
+instructions. The callback receives the Session, Model, Workspace, submitted
+prompt, tools, and discovered resources. Trusted resource context is retained.
 
 BUILT-IN PROVIDERS                               *neoagent-built-in-providers*
 
@@ -272,22 +273,35 @@ conversation content. Configure or disable the sink under the provider: >lua
 
 AGENTS AND APPLETS                                           *neoagent-agents*
 
-`setup(opts)` creates the command-facing Neoagent Applet and registers the
-Neo, Chat, and Codex Profiles. Neo and Codex are configured for coding; Chat
-has an empty system prompt and no tools. Codex offers Models using the
-`openai-codex-responses` API. A global default using another API is ignored
-for Codex; its draft has no selected Model when none is compatible. Agents and
-Sessions are created when work begins. Codex uses `exec_command` and
-`write_stdin`; Neo uses `shell`. An explicit `tools` list overrides the preset.
+`setup(opts)` registers Pi, Chat, and Codex Profiles. Pi and Codex supply their
+respective prompts and coding Tools; see |neoagent-composition|. An explicit
+`tools` list replaces a coding preset. Chat rejects nonempty Tool lists and
+loads project instructions only when explicitly enabled.
 
-`:Neoagent` opens the Neo draft for the current Workspace. Drafts retain
-model, thinking, sandbox, and input choices per Profile and Workspace until
-the first accepted message creates an Agent. `:NeoagentCycle` lists drafts and
-live Agents. Closing the UI leaves the Agent running.
+Pi is the default; exact provider IDs `openai` and `openai-codex` select Codex.
+Set `profile = "pi"` (or another bundled ID) to pin the composition. Configure
+`default_profile` as an ID or a callback receiving a copied
+`{ provider, model }` selection; nil input means no selected Model, and a nil
+result selects Pi. For example: >lua
 
-A draft selects its model from the Workspace/Profile preference, configured
-`default_model`, or first available provider/model. See
-|neoagent-workspace-settings| for saved preferences.
+  default_profile = function(selection)
+    return selection and selection.provider == "openai" and "codex" or "pi"
+  end
+<
+Codex accepts `openai-responses` and `openai-codex-responses` Models. Automatic
+drafts follow Model changes; explicit drafts, Agents, resumed Sessions, and
+same-Profile forks retain their Profile. Use a copy to change a bound Session's
+Profile.
+
+`:Neoagent` opens the default draft for the current Workspace. Drafts retain
+Model, thinking, sandbox, and input choices until the first accepted message
+creates an Agent. `:NeoagentCycle` lists drafts and live Agents. Closing the UI
+leaves the Agent running.
+
+A draft selects its Model from Workspace preferences, configured
+`default_model`, or the first eligible Model. Explicit drafts prefer
+Profile-specific settings; see |neoagent-workspace-settings|. Unavailable saved
+Models are skipped with a diagnostic; API construction failures are reported.
 
 The top-level Applet supports: >lua
 
@@ -298,6 +312,8 @@ The top-level Applet supports: >lua
   applet:new(profile_id)
   applet:draft(profile_id[, workspace])
   applet:retained_draft(profile_id[, workspace])
+  applet:get_draft_options([draft])
+  applet:update_draft_options(patch[, draft])
   applet:resume([path])
   applet:fork([entry_id[, position]])
   applet:select_fork()
@@ -315,6 +331,11 @@ The top-level Applet supports: >lua
   applet:destroy()
 <
 
+`get_draft_options()` returns explicit draft overrides. Inherited preferences
+and defaults are not included. `update_draft_options()` accepts a configuration
+patch and returns the accepted overrides; failed changes preserve the draft.
+Both methods use the selected draft when the argument is omitted.
+
 `require("neoagent").default()` returns the active or last foreground Agent
 and may return nil before work begins. `require("neoagent").applet()` returns
 the command-facing Applet. `applet:fork()` returns a cancellable Run whose
@@ -325,6 +346,9 @@ their caller. Destroying the Applet cancels pending derivations. Calling
 work blocks replacement.
 
 `new(opts[, runtime])` constructs an independent Agent immediately.
+An explicitly supplied `opts.default_model` takes precedence over Workspace
+preferences and must be compatible with the selected Profile. In `setup()`,
+`default_model` remains a fallback hint for drafts.
 `runtime.session` and `runtime.workspace` bind caller-supplied values;
 `runtime.runtimes` can supply shared provider runtimes: >lua
 
@@ -383,7 +407,13 @@ Agent methods include: >lua
 
 Each Agent has fixed Profile, Session, and Workspace identity. `send()` starts
 a turn while idle and queues steering while busy. `set_toolset()` replaces the
-`{ tools, execute_tool }` pair between Runs and returns its previous value.
+Toolset between Runs and returns its previous value. Toolsets contain `tools`
+and optional `execute_tool`, `system_prompt` guidance,
+`execution_policy({ root, cwd })` facts, `process_placement(context, spec)`
+controller selection, and `sandbox` controls (`status`, optional `set_enabled`).
+Replacement changes these dependencies together; retained processes keep their
+authority. Without execution facts, prompts describe a supplied executor as
+external and direct execution as host.
 
 `destroy()` cancels work and releases owned resources. A destroyed Agent
 rejects new work; caller-owned provider runtimes remain available. Retained
@@ -406,9 +436,10 @@ claim for each Session ID.
 
 WORKSPACE TRUST                                     *neoagent-workspace-trust*
 
-The built-in Neo Profile asks for trust before loading project resources or
-starting a tool-capable Run. Chat and direct Lua compositions use only
-policies their caller supplies.
+Pi and Codex ask for trust before loading project resources or starting a
+tool-capable Run, including headless Agents. Chat also asks for trust when
+project instructions are explicitly enabled. An explicit runtime trust policy
+replaces the bundled policy.
 
 The target is the canonical Git worktree root, or the canonical working
 directory outside Git. The prompt offers persistent trust, trust until Neovim
@@ -423,8 +454,8 @@ disable the built-in policy with: >lua
   -- workspace_trust = false
 <
 
-Trust allows repository content to influence Neo. Executor and sandbox policy
-control tool effects.
+Trust allows repository content to influence the coding Agent. Executor and
+sandbox policy control tool effects.
 
 Custom compositions can construct `neoagent.workspace_trust.new(opts)` and
 inject it through `neoagent.new(opts, { workspace_trust = policy })`.
@@ -433,11 +464,11 @@ inject it through `neoagent.new(opts, { workspace_trust = policy })`.
 
 SANDBOXING                                                  *neoagent-sandbox*
 
-Native sandboxing is experimental and disabled by default. Enable it for the
-bundled coding Profiles with: >lua
+Native sandboxing is experimental and enabled by default for Pi and Codex.
+Disable it with: >lua
 
   require("neoagent").setup({
-    sandbox = { enabled = true },
+    sandbox = { enabled = false },
   })
 <
 
@@ -543,21 +574,22 @@ The grant matches the configured Tool's name and implementation function and
 gives it full host authority. Other custom Tools are blocked in restricted
 mode.
 
-A denied call can request one host execution with: >json
+Codex `exec_command` accepts native approval fields: >json
 
   {
-    "options": {
-      "require_escalation": true,
-      "escalation_justification": "why host execution is required"
-    }
+    "cmd": "git status",
+    "sandbox_permissions": "require_escalated",
+    "justification": "Inspect repository status",
+    "prefix_rule": ["git", "status"]
   }
 <
+`use_default` is the default. `prefix_rule` suggests an editable literal prefix
+for the current Session; compound or dynamic syntax always prompts. Custom
+Tools cannot inherit approvals by sharing a command Tool's name.
 
-Approval selects the original host Tool before that call begins. The bundled
-shell implementation may remember a literal argument-token prefix for the
-current Session, including when that Tool is renamed. Custom Tools cannot
-inherit these approvals by sharing its name. Compound or dynamic shell syntax
-always prompts.
+A proven filesystem preflight denial can prompt for host execution. Calls that
+may have started or published partial effects are never automatically replayed
+on the host. Inspect partial effects before adjusting policy and retrying.
 
 Custom compositions can use
 `require("neoagent.sandbox.composition").compose(toolset, settings, opts)`. It
@@ -568,7 +600,7 @@ sandbox state.
 
 AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
-Neo loads the global `stdpath("config") .. "/AGENTS.md"` and each project
+Instruction discovery loads `stdpath("config") .. "/AGENTS.md"` and each project
 `AGENTS.md` from the Git root to the Workspace. Outside Git, discovery starts
 at the Workspace. Linked project resources are ignored. Files enter the prompt
 from broadest to most specific. Explicitly configured global resources are not
@@ -810,14 +842,17 @@ temporary files beside it.
 WORKSPACE SETTINGS                               *neoagent-workspace-settings*
 
 With persistence enabled, the first accepted message saves model and thinking
-preferences per Workspace and Profile. A model without thinking clears that
-preference. Resuming a Session uses its active branch's choices. Direct Agents
-use their configured name as the preference key. UI position and the latest
-100 accepted inputs are shared by the Workspace.
+preferences. Automatic drafts save the Model at Workspace scope so its provider
+can select the next Profile; explicit choices save a Profile-specific Model.
+Thinking remains Profile-specific. A Model without thinking clears that
+preference. Resuming a Session uses its active branch's choices. UI position
+and the latest 100 accepted inputs are shared by the Workspace.
 
 Settings, Sessions, and input history live under
-`<persistence.directory>/<workspace-basename>-<workspace-sha256>/`. Invalid or
-unreadable settings leave defaults active and report the file to correct.
+`<persistence.directory>/<workspace-basename>-<workspace-sha256>/`. Relative
+persistence directories resolve against the conversation's Workspace and remain
+stable when the editor's cwd changes. Invalid or unreadable settings leave
+defaults active and report the file to correct.
 `persistence.workspace_settings = false` keeps configured choices
 authoritative while preserving Sessions and input history.
 
@@ -843,7 +878,7 @@ deletes `vim.NIL` keys.
   :NeoagentCompact [instructions] Compact the active branch.
   :NeoagentBranch [entry-id]      Move to an entry or select a branch point.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
-  :NeoagentToggleSandbox          Toggle sandbox execution for Neo or Codex.
+  :NeoagentToggleSandbox          Toggle sandbox execution for Pi or Codex.
   :NeoagentSandboxInfo            Show sandbox status and capabilities.
 
 Use the `<Plug>` targets to assign global mappings: >lua
@@ -858,8 +893,9 @@ Enter to select. Normal-mode `q`, `<Esc>`, or `<C-c>`, Insert-mode `<C-c>`,
 and `:q` close the picker. Fork selection restores the chosen user message to
 the input.
 
-The resume picker reads Profile identity from each Session header. A live
-Session selects its existing Agent. A dormant Session constructs an Agent from
+The resume picker searches configured and active Workspace storage locations
+and reads Profile identity from each Session header. A live Session selects its
+existing Agent. A dormant Session constructs an Agent from
 its recorded Profile and Workspace. Profile-free and unavailable-Profile
 Sessions are rejected. `:NeoagentCopySession` copies the visible Session's
 complete tree after Profile selection. Fork and copy retain the source Agent
@@ -950,8 +986,8 @@ later model requests.
 
 RENDERERS                                                 *neoagent-renderers*
 
-A Renderer turns copied semantic values into Pane content Tree nodes. Codex is
-the default; Pi is also bundled: >lua
+A Renderer turns copied semantic values into Pane content Tree nodes. Profiles
+select a default from the bundled Pi and Codex Renderers: >lua
 
   local renderers = require("neoagent.ui.renderers")
   renderers.codex
@@ -960,8 +996,9 @@ the default; Pi is also bundled: >lua
   renderers.names()
 <
 Select one with `ui.style` or provide `ui.renderer`. The explicit Renderer
-takes precedence. `applet:set_renderer(renderer)` replaces one Agent Applet's
-live Renderer and redraws its transcript.
+takes precedence and is borrowed by identity. `applet:set_renderer(renderer)`
+replaces one Agent Applet's Renderer and redraws its transcript. Draft
+presentation overrides survive Model and Profile changes.
 
 A native Renderer has a non-empty `name`, an Applet `theme`, and these
 required methods:
@@ -1103,8 +1140,8 @@ The reusable Agent Loop is: >lua
 
 The loop copies messages and uses the supplied dependencies. Optional fields
 are `system_prompt`, `execute_tool`, `context`, `model_options`,
-`get_steering_messages`, `prepare_request_messages`, `on_event`, `on_done`,
-and `report`.
+`get_steering_messages`, `prepare_request_messages`, `prepare_request`,
+`on_event`, `on_done`, and `report`.
 
 The async `prepare_request_messages(messages, options)` callback receives
 copied messages and Model request options after commits, before each Model
@@ -1114,6 +1151,15 @@ for a compatible Model. To budget the request, estimate the final replacement
 using the supplied options before returning it. Built-in adapters require a
 fresh estimate if credentials or later changes alter request content;
 credential-only header changes remain valid.
+
+The optional async `prepare_request({ messages, system_prompt, tools })`
+callback adds ephemeral request context after the owner-managed projection.
+It receives copies and returns `{ messages, system_prompt }` or nil to preserve
+the input. Request-only `system` and `developer` messages contain string
+content. They are accepted by Model requests and rejected by durable Sessions.
+`userContext` contains string content, encodes as a user message, and is
+protected from conversation reduction. Estimation and inference use the same
+projection.
 
 An optional third result, `acknowledge()`, runs immediately before the Model
 call. Steering may trigger another preparation pass; only the final validated
@@ -1326,12 +1372,12 @@ observers receive failures on the editor loop despite caller cancellation;
 target and later worker failures can be reported separately. Agents forward
 them to diagnostics after destruction.
 
-Neo and Codex use their current sandbox toggle for new admissions. Failed
-activation blocks restricted admission; existing targets keep their authority.
-Headless Agents use local placement unless
-`runtime.process_placement(context, spec)` returns a controller factory. The
-selector receives the execution context and a copied spec. Both placements
-support Linux, macOS, and Windows.
+Pi and Codex use their current sandbox toggle for new admissions, including
+headless Agents. Failed activation blocks restricted admission. Direct manager
+admissions use the current Toolset's `process_placement(context, spec)`; Tool
+calls use their executor's admission authority. The selector receives the
+execution context and a copied spec. Both placements support Linux, macOS,
+and Windows.
 
 Set Agent limits in `runtime.process_sessions`, or pass them to the standalone
 constructor:
@@ -1447,9 +1493,9 @@ bundled Tools with, for example, `require("neoagent.tools.read_file").new()`.
 `{ content = { ... }, isError?, details? }`. Content blocks contain UTF-8 text
 or local image references:
 `{ type = "image", file_id = sha256, mime_type = "image/png", bytes = byte_count, filename = "sample.png" }`.
-`filename` is optional metadata. Transient image updates sent through
-`ctx.on_update` require stable `id` and changing `revision` values; these
-fields are removed from persisted image blocks.
+`filename` and `detail` (`high` or `original`) are optional metadata.
+Transient image updates sent through `ctx.on_update` require stable `id` and
+changing `revision` values; these fields are removed from persisted image blocks.
 
 Tools that retain resources through result publication register
 `ctx.on_result({ finish = finish, recover = recover })`:
@@ -1475,9 +1521,22 @@ impose lower limits. Custom producers call the same writer's asynchronous
 `put(bytes)` and use the returned `{ file_id, bytes }` in their image blocks.
 Failed publication must fail the tool result rather than return a reference.
 
-`execute_tool(tool, arguments, ctx)` is the policy boundary for approval,
-logging, sandboxing, and other decorators. Model-produced arguments satisfy
-the supported `input_schema` vocabulary before this function runs.
+Agent configuration accepts `decorate_tool(execute)`, which returns an executor
+wrapping the selected sandbox and approval policy. Delegate to the supplied
+function to retain that authority, including retained process admission: >lua
+
+  decorate_tool = function(execute)
+    return function(tool, arguments, ctx)
+      vim.notify("Running " .. tool.name)
+      return execute(tool, arguments, ctx)
+    end
+  end
+<
+
+Toolsets and the reusable Loop accept `execute_tool(tool, arguments, ctx)`;
+Agent configuration rejects it in favor of `decorate_tool`. Replace authority
+with `agent:set_toolset()`. Model-produced arguments are schema-validated before
+execution.
 
 `details` is Tool-owned JSON data. Executors may add an `execution` JSON
 object; both are retained in Session messages. Sandbox policy owns
@@ -1495,6 +1554,12 @@ Optional Tool fields are:
   on_messages(messages, ctx)
                             Derive state from the active conversation.
   render(opts)              Return semantic presentation data.
+  prompt_snippet            Short description for the Pi system prompt.
+  prompt_guidelines         Instruction strings for the Pi system prompt.
+  text_input                `{ parameter, grammar }` freeform representation.
+  input_schema_for_model(model)
+                            Return a schema from copied Model identity,
+                            input modalities, and image-detail capability.
 
 Bundled presets are: >lua
 
@@ -1505,17 +1570,62 @@ Bundled presets are: >lua
   require("neoagent.tools").all()
 <
 
-The coding preset provides file read, write, edit, shell, and Neoagent
-documentation tools. The optional plan tool derives its state from successful
-calls on the active Session path.
+`coding()` provides Pi's `read`, a command Tool, `edit`, and `write`;
+`codex()` provides `exec_command`, `write_stdin`, `apply_patch`, and `view_image`.
+The optional `update_plan` derives state from successful calls on the active
+Session path.
+Filesystem search and Neoagent documentation Tools remain available through
+individual constructors and `all()`.
 
-The Codex preset replaces `shell` with `exec_command` and `write_stdin` for
-commands that can outlive a Tool call.
+                                                        *neoagent-web-search*
 
-Restricted workers recognize the shipped `read_file`, `write_file`,
-`edit_file`, `shell`, `grep`, and `find` implementations. The executor
-receives a copy with restricted `execute`; its other fields are unchanged.
-Custom Tool grants are described in |neoagent-sandbox|.
+Web search is opt-in. Enable it alongside your existing setup options: >lua
+
+  require("neoagent").setup({
+    web_search = { backend = "deepseek" },
+  })
+<
+
+This adds `web_search` to the selected Profile's Tools without pinning a Profile
+or replacing its Tool list. Automatic provider-aware Profile selection still
+applies when changing Models. Profiles that prohibit Tools, including Chat,
+remain tool-free. Set `web_search = false` to disable the addition.
+
+For an explicit Tool list, `require("neoagent.tools").web_search(options)`
+constructs the same Tool. An explicit `web_search` Tool takes precedence over
+the additive setting. No preset, including `all()`, includes `web_search` by
+default.
+
+`backend` defaults to `"deepseek"`, currently the only available backend.
+Search works with any inference provider. The DeepSeek provider must remain
+configured and have credentials in `DEEPSEEK_API_KEY` or its Authentication
+entry in `auth.json`; see |neoagent-built-in-providers|. Stored credentials
+take precedence and are resolved for each call, so login and credential changes
+apply without recreating the Agent. Missing credentials fail before sending a
+request.
+
+The Model calls `web_search` with `query`, optional `count` (default 10), and
+optional `include_content` (default false). DeepSeek accepts queries of 1–128
+Unicode characters and counts of 1–50. Results include titles, source URLs,
+summaries, available publication dates, and requested page content. Output is
+bounded; narrow the query or request fewer results if it is truncated.
+Compact cards preview the top sources. Expand a card to read the returned
+summaries and page content.
+
+Authentication is backend-specific and optional. Search requests run in the
+parent process, including when the Agent's filesystem and command Tools are
+sandboxed. Backend credentials are never sent to sandbox workers. The DeepSeek
+backend uses its metered Search API: https://api-docs.deepseek.com/guides/search/
+
+Responses advertises a Tool's `text_input` as a custom Tool with its grammar;
+local execution and Session storage use the canonical single-string argument
+object. Set `custom_tools = false` on a provider, Model, or Responses constructor
+for a JSON-only endpoint.
+
+Restricted workers recognize the shipped file, shell, search, `apply_patch`,
+and `view_image` implementations, including Pi's renamed file Tools. The
+executor receives a copy with restricted `execute`; its other fields are
+unchanged. Custom Tool grants are described in |neoagent-sandbox|.
 
 These Tools limit prepared input strings to 16 MiB and paths to 32 KiB in both
 local and restricted execution. File arguments use the editor's environment
@@ -1524,33 +1634,38 @@ have a 30-second execution deadline after worker startup, including
 parent-side image import. A timed-out write or edit can have incomplete
 effects; inspect the file before retrying.
 
-The bundled shell Tool uses the parent Neovim's shell settings and the
-Workspace cwd. It accepts a command and optional timeout, which defaults to
-300 seconds; `shell_timeout = false` disables that default. Explicit timeouts
-and numeric defaults must be positive and at most 2147483.647 seconds.
-Restricted shell calls also enforce finite timeouts in the parent, with a
-short allowance for command termination and response delivery if the worker
-becomes unresponsive.
+Pi selects PowerShell on Windows (`pwsh`, then `powershell` on `PATH`) and
+Bash on Unix (`bash`, then `sh` on `PATH`). The command Tool is named `bash`,
+`powershell`, or `shell` and describes the selected interpreter to the Model.
+Set the preset's `shell` option to select an interpreter explicitly; it will
+not fall back to another shell. The opt-in generic
+`require("neoagent.tools.shell").new()` Tool uses Neovim's `shell` and
+`shellcmdflag`. Pi and the generic `shell` Tool execute in the Workspace cwd
+and accept a command and optional timeout in seconds; the default is no
+lifetime limit (`shell_timeout = false`).
+Explicit timeouts must be positive and at most 2147483.647 seconds. Restricted
+calls enforce them in the parent even if the worker becomes unresponsive.
 
 Command-backed Tools set `NVIM` to the executing editor's server address and
 omit `NVIM_LISTEN_ADDRESS`. A restricted worker with no server supplies an
 empty address. The local subprocess API itself inherits the OS environment.
 
 `exec_command` accepts `cmd`, optional `workdir`, `shell`, `login` (default true),
-`tty` (default false), and optional lifetime `timeout_ms`. It uses Neovim's
-`shell` arguments and `shellcmdflag` unless an explicit shell is selected. `login`
-overrides POSIX login flags or PowerShell `NoProfile`; other arguments remain.
+`tty` (default false). It uses Neovim's `shell` arguments and `shellcmdflag`
+unless an explicit shell is selected. `login` overrides POSIX login flags or
+PowerShell `NoProfile`; other arguments remain.
 Commands without a PTY receive closed stdin. A running command returns a
 `session_id` for later calls; see |neoagent-process-sessions| for its lifetime
 and capacity limits.
 
 `write_stdin` accepts that ID and optional `chars` (at most 65536 bytes).
 Empty input polls; nonempty input requires a PTY, except a single Ctrl-C
-(`"\u0003"` in JSON) interrupts either mode. `terminate=true`, incompatible with
-nonempty `chars`, requests termination even if the target ignores Ctrl-C.
+(`"\u0003"` in JSON) interrupts either mode. Lifetime limits and forced
+termination remain available through |neoagent-process-sessions|.
 Platform interruption behavior is described in |neoagent-subprocess|.
 
-`yield_time_ms` accepts zero through the maxima below and limits observation:
+`yield_time_ms` limits observation; initial command waits clamp to at least
+250 ms. Poll/input waits accept zero through the maxima below:
 
   Operation             Default (ms)    Maximum (ms)
   exec_command          10000           30000
@@ -1564,20 +1679,38 @@ Details separate `request_error`, target `error`, and `cleanup_error`;
 `outcome_uncertain` warns that effects may have completed without a known result.
 A cleanup failure does not invalidate a confirmed command outcome.
 
-Sandbox compositions expose escalation options on `exec_command`. Approval
-applies for the process's lifetime; polling does not change its authority.
+`exec_command` exposes `sandbox_permissions`, `justification`, and optional
+`prefix_rule`; see |neoagent-sandbox|. Approval applies for the process's
+lifetime; polling does not change its authority.
 
-`write_file` and `edit_file` replace regular files, preserve existing modes,
-reject symbolic links, and request mode `0644` for new files.
-`details.changed_paths` tells the interactive Neo Agent which unmodified
-buffers may be refreshed after success. These are literal filesystem paths;
+Pi `write` and `edit` and the opt-in `write_file` and `edit_file` replace
+regular files, preserve existing modes, reject symbolic links, and request
+mode `0644` for new files.
+`details.changed_paths` reports completed filesystem effects, including partial
+success when a Tool also returns an error. The interactive Agent refreshes
+unmodified buffers for those paths. These are literal filesystem paths;
 relative paths use the Workspace cwd without environment expansion. Bundled
 file Tools report their prepared absolute targets.
 
-`edit_file` accepts files up to 64 MiB and requires unique, non-overlapping
-matches in the original content. Exact matches take precedence over a
-punctuation- and whitespace-tolerant fallback. Edits preserve surrounding
+`edit` and `edit_file` take `path` and a nonempty `edits` list of
+`{ oldText, newText }` values. They accept files up to 64 MiB and require
+unique, non-overlapping matches in the original content. Exact matches precede
+a punctuation- and whitespace-tolerant fallback. Edits preserve surrounding
 text, the BOM, and line-ending convention.
+
+`apply_patch({ patch = text })` uses Codex's Begin/End Patch language: add,
+update, delete, move, contextual hunks, and EOF markers. Preparation is limited
+to 128 MiB of source and replacement content; result paths, diffs, and failure
+details share a 768 KiB budget. Split oversized patches into smaller requests.
+Publication is atomic per file; failures report completed and pending changes.
+Completed effects refresh unmodified buffers even if result observation is
+cancelled.
+
+`view_image({ path, detail })` requires an image-capable Model and ImageMagick.
+`detail` defaults to `high`; `original` requires the Model capability
+`supports_image_detail_original = true`, supplied by Codex catalogs or explicit
+configuration. Both preserve attachment bytes and detail in Session storage.
+Replay on a Model without original-detail support sends `high`.
 
 `require("neoagent.session").new()` creates an in-memory Session. It accepts
 an optional store, initial messages, or validated tree snapshot. Its `files`
@@ -1673,10 +1806,11 @@ blobs and provider mappings; cross-workspace copies import blobs only.
 `require("neoagent.profile_sessions")` associates Session headers with stable
 Profile IDs. It provides `new`, `open`, `derive`, and `list` operations for
 new, resumed, forked, and copied Profile Sessions. Generic Session and storage
-constructors remain Profile-free. For `derive`, pass `target_native_api` when
-the target Profile supports encrypted checkpoints. An active encrypted
-checkpoint requires a matching target API, and the derived Agent must use the
-original provider and Model.
+constructors remain Profile-free. For `derive`, pass `target_native_apis` as a
+list of APIs whose encrypted checkpoints the target can preserve. The selected
+fork path determines compatibility. Its encrypted checkpoint requires a
+matching target API, and the derived Agent must use the original provider and
+Model.
 
 Session documents are authoritative. Workspace indexes are rebuilt when
 missing or invalid. Cross-process mutation uses `neoagent.file_lock`: >lua
@@ -1699,12 +1833,12 @@ Automatic compaction runs before inference when estimated context reaches
 `compaction.auto = false` to keep only manual and overflow recovery.
 Successful final answers do not trigger compaction.
 
-Neo and Chat retain a local summary and recent suffix, shortening the suffix
-or consuming the whole active context when necessary. Codex retains recent
-user messages before an encrypted checkpoint and requires the original API,
-provider, and Model to resume. Local summaries cannot replace encrypted
-context. Compaction changes request context; the complete Session tree remains
-available.
+Pi and Chat summarize the original prefix with their prompt, Tool schemas,
+and message order. Codex uses native compaction when its Model provides it,
+otherwise a prefix summary with Codex handoff instructions. Native checkpoints
+retain recent user messages and require the original API, provider, and Model
+to resume. Local summaries cannot replace encrypted context. Compaction
+changes request context; the complete Session tree remains available.
 
 Request budgets include shaping, the system prompt, Tool schemas, images, and
 reserved output. `keep_recent_tokens` is an upper target, not guaranteed
@@ -1719,11 +1853,11 @@ reasoning remains in effect. Output and thinking budgets must leave room for
 summary text. Request copies may shorten large text and Tool results with
 omission markers; reductions and overflow recovery are bounded.
 
-`compaction.strategy` applies to Neo, Chat, and direct Agents:
+`compaction.strategy` applies to Pi and Chat, including headless Agents:
 
-  summary   Default. Serialize conversation for a dedicated summary prompt.
-  prefix    Summarize the original prefix with its system prompt, Tool schemas,
-            and message order, allowing servers to reuse cached prompt prefixes.
+  prefix    Default. Summarize the original prefix with its system prompt,
+            Tool schemas, and message order, preserving cached prompt prefixes.
+  summary   Opt-in dedicated local summary prompt.
 
 Prefix mode adds a temporary instruction outside the Session and rejects Tool
 calls in summary output. If the request still cannot fit after reduction,

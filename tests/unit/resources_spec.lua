@@ -419,12 +419,13 @@ describe("neoagent contextual resources", function()
   it("adds interaction guidance for Codex response models", function()
     local model = require("tests.helpers.fake_model").new()
     model.api = "openai-codex-responses"
-    local prompt = require("neoagent.system_prompt").default({
-      model = model,
-      workspace = { cwd = "/workspace" },
+    local prompt = require("neoagent.profiles.codex.prompt").prepare({
+      model = { api = model.api, provider = model.provider, id = model.id, input = model.input, native_compaction = false },
+      workspace = { root = "/workspace", cwd = "/workspace" },
       tools = {},
-    })
-    assert.matches("Share concise progress updates", prompt)
+      prompt = "work", skills = {}, agent_instructions = {},
+    }).system_prompt
+    assert.matches("progress updates", prompt)
     assert.matches("commentary", prompt)
     assert.matches("final", prompt)
   end)

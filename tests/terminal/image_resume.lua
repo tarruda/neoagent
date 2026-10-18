@@ -58,7 +58,7 @@ local function assistant(content, stop_reason)
 end
 
 local session = assert(require("neoagent.profile_sessions").new({
-  profile_id = "neo",
+  profile_id = "pi",
   workspace = workspace,
   persistence = { enabled = true, directory = persistence },
 }))
@@ -199,9 +199,12 @@ local applet = neoagent.setup({
 assert(applet:open())
 assert(applet:is_open())
 
-local view = assert(applet:view())
-local pane = assert(view.transcript.pane)
-local images = assert(view.image_system)
+local view = applet:view()
+assert(view)
+local pane = view.transcript.pane
+assert(pane)
+local images = view.image_system
+assert(images)
 local backend = images.backend --[[@as Applet.Kitty]]
 local navigated = false
 ---@type number?

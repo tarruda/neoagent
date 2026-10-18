@@ -38,8 +38,10 @@ describe("neoagent runtime Models", function()
 
   it("validates and owns the complete capability projection", function()
     local source = model()
+    rawset(source, "supports_image_detail_original", true)
     local capabilities = assert(model_contract.capabilities(source))
     assert.are.equal(500, capabilities.max_output_tokens)
+    assert.is_true(capabilities.supports_image_detail_original)
     capabilities.input[1] = "image"
     assert(assert(assert(capabilities.thinking).high).body).effort = "changed"
     assert.are.same({ "text" }, rawget(source, "input"))
@@ -65,6 +67,7 @@ describe("neoagent runtime Models", function()
       model({ input = { "text", "text" } }),
       model({ context_window = math.huge }),
       model({ timeout_ms = 0 }),
+      model({ supports_image_detail_original = "yes" }),
       model({ max_output_tokens = 0 }),
       model({ max_output_tokens = 1.5 }),
       model({ thinking = { {} } }),

@@ -6,6 +6,7 @@ local M = {}
 
 M.events = {
   update = "tool_update",
+  file_changed = "tool_file_changed",
   policy = "tool_policy",
   artifact_begin = "tool_artifact_begin",
   artifact_chunk = "tool_artifact_chunk",

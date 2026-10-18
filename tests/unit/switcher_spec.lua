@@ -34,7 +34,7 @@ describe("neoagent Agent switcher", function()
     }
   end
   it("keeps one spinner frame pending while scheduled work is delayed", function()
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       workspace_trust = false, default_registry = false, providers = {},
       persistence = { enabled = false }, tools = {},
       agent_instructions = false, skills = false,

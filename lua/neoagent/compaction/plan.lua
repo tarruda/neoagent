@@ -26,6 +26,7 @@ local M = {}
 ---@field tools? Neoagent.ToolDefinition[]
 ---@field force? boolean
 ---@field model_options? Neoagent.StreamOverrides
+---@field prepare_request? Neoagent.PrepareRequest
 
 ---@class Neoagent.CompactionEvaluation
 ---@field needed boolean
@@ -54,8 +55,8 @@ local M = {}
 
 ---@class Neoagent.NativeCompactionPreparation
 ---@field kind "native"
----@field source_messages Neoagent.RequestMessage[] Original request copy for bounded provider-overflow retries.
----@field request_messages Neoagent.RequestMessage[] Bounded request copy; Session context remains unchanged.
+---@field source_messages Neoagent.RequestMessage[] Complete projected context for bounded provider-overflow retries.
+---@field request Neoagent.NativeCompactionOptions Compiled request; reduction never changes its trusted environment.
 ---@field retained_users Neoagent.RetainedUser[]
 ---@field tokens_before integer
 ---@field settings Neoagent.CompactionSettings
@@ -441,10 +442,17 @@ function M.prepare_local(options, assemble)
     if not projected then
       return nil, projection_err
     end
-    local fixed = M.request_tokens(
-      options.model,
+    local request = require("neoagent.api.request_preparation").project(
+      options.prepare_request,
       projected,
       options.system_prompt,
+      options.tools or {},
+      options.model_options and options.model_options.files
+    )
+    local fixed = M.request_tokens(
+      options.model,
+      request.messages,
+      request.system_prompt,
       options.tools,
       options.model_options
     ) + 32

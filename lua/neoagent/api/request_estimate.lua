@@ -45,13 +45,18 @@ end
 ---@param operation? "compact"
 ---@return integer
 function M.request(model, options, operation)
+  local tokens
   if model.estimate_request then
-    local tokens = model:estimate_request(options, operation)
-    assert(type(tokens) == "number" and tokens >= 0 and tokens < math.huge and tokens % 1 == 0,
-      "Model request estimate must be a finite non-negative integer")
-    return tokens
+    tokens = model:estimate_request(options, operation)
+    assert(
+      type(tokens) == "number" and tokens >= 0 and tokens < math.huge and tokens % 1 == 0,
+      "Model request estimate must be a finite non-negative integer"
+    )
+  else
+    tokens = M.messages(options.messages) + M.overhead(options.system_prompt, options.tools)
   end
-  return M.messages(options.messages) + M.overhead(options.system_prompt, options.tools)
+  require("neoagent.api.request_preparation").record_budget(model, options, operation)
+  return tokens
 end
 
 return M

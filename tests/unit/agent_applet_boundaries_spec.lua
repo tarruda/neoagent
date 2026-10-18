@@ -63,6 +63,7 @@ describe("Agent Applet boundaries", function()
       ---@field result? Neoagent.ActivityOutcome
       local view = {
         callbacks = opts,
+        config = util.copy(opts.config),
         input = "",
         messages = {},
         context = {},
@@ -173,6 +174,7 @@ describe("Agent Applet boundaries", function()
       name = "boundary",
       workspace_trust = false,
       default_registry = false,
+      sandbox = { enabled = false },
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = {
@@ -321,7 +323,8 @@ describe("Agent Applet boundaries", function()
     store.load = function() return { "first", "second" } end
     assert(value:open())
     assert(value:select_input_history())
-    local request = assert(value:presenter():snapshot().active)
+    local request = value:presenter():snapshot().active
+    assert(request)
     assert(value:presenter():resolve(request.id, "history-2"))
     assert(vim.wait(1000, function()
       return assert(record.view):get_input() == "second"
@@ -374,7 +377,8 @@ describe("Agent Applet boundaries", function()
     assert.is_false((selection:is_done()))
     rejected.view_factory = view_factory(rejected_record)
     assert(rejected:open())
-    local active = assert(rejected:presenter():snapshot().active)
+    local active = rejected:presenter():snapshot().active
+    assert(active)
     assert(rejected:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
 
@@ -452,7 +456,8 @@ describe("Agent Applet boundaries", function()
     local level = assert(callbacks.on_cycle_thinking)()
     assert.is_nil(level)
     assert.is_true((assert(callbacks.on_select_model)()))
-    local active = assert(owned_agent:presenter():snapshot().active)
+    local active = owned_agent:presenter():snapshot().active
+    assert(active)
     assert(owned_agent:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function()
       return owned_agent:presenter():snapshot().active == nil
@@ -680,7 +685,8 @@ describe("Agent Applet boundaries", function()
           if method == "set_dialog" then
             value:dialogs():cancel_pending("test complete")
           else
-            local active = assert(value:presenter():snapshot().active)
+            local active = value:presenter():snapshot().active
+            assert(active)
             value:presenter():cancel(active.id, "test complete")
           end
           assert(vim.wait(1000, function() return pending:is_done() end))
@@ -738,6 +744,8 @@ describe("Agent Applet boundaries", function()
       error("unexpected trust request")
     end
     local unavailable = agent({ workspace_trust = trust })
+    assert(unavailable:set_toolset({ tools = {} }))
+    assert.are.same({ enabled = false, active = false }, trust.sandbox_status)
 
     local prepared, prepare_err = unavailable:prepare()
     assert.is_nil(prepared)
@@ -1354,6 +1362,25 @@ describe("Agent Applet boundaries", function()
     })
     assert(value:open())
     local view = assert(record.view)
+    assert.are.equal("first", assert(value:set_draft_context({ model = "first" })).model)
+    assert.are.equal("first", view.context.model)
+    local set_context = view.set_context
+    function view:set_context(candidate)
+      if candidate.model == "rejected" then
+        return nil, util.error("ui", "context publication rejected")
+      end
+      return set_context(self, candidate)
+    end
+    local context, context_err = value:set_draft_context({ model = "rejected" })
+    assert.is_nil(context)
+    assert.matches("context publication rejected", assert(context_err).message)
+    assert.are.equal("first", value.draft_context.model)
+    assert.are.equal("first", view.context.model)
+    local invalid_style, invalid_style_err = value:set_transcript_style(vim.json.decode('"unknown"'))
+    assert.is_nil(invalid_style)
+    assert.matches("invalid transcript style", assert(invalid_style_err).message)
+    assert.are.equal("codex", value:set_transcript_style("codex"))
+    assert.are.equal("codex", view.config.style)
     function view:set_input()
       return nil, util.error("ui", "input publication rejected")
     end
@@ -1377,6 +1404,25 @@ describe("Agent Applet boundaries", function()
     assert.is_nil(styled)
     assert.matches("renderer installation rejected", assert(style_err).message)
     assert.are.equal(style, value.transcript_style)
+  end)
+
+  it("rejects an invalid draft Renderer before changing its presentation", function()
+    local value, owner = applet({ context = { model = "original" } }), {}
+    value:claim(owner, {})
+    local renderer = value.renderer
+    local published, err = value:publish_draft(owner, {
+      profile = "pi",
+      label = "Rejected",
+      context = { model = "rejected" },
+      callbacks = {},
+      config = value.config,
+      persistence = assert(value.persistence),
+      renderer = vim.json.decode("{}"),
+    })
+    assert.is_nil(published)
+    assert.matches("Renderer", assert(err).message)
+    assert.are.equal(renderer, value.renderer)
+    assert.are.equal("original", value.draft_context.model)
   end)
 
   it("destroys an invalidated View and reports Agent detach failure", function()
@@ -1421,7 +1467,8 @@ describe("Agent Applet boundaries", function()
     assert.is_true((selected:select_model(function(model)
       callback_model = model
     end)))
-    local request = assert(presenter:snapshot().active)
+    local request = presenter:snapshot().active
+    assert(request)
     assert(presenter:resolve(request.id, assert(assert(request.items)[1]).id))
     assert(vim.wait(1000, function() return callback_model ~= nil end, 5))
     assert.are.equal(callback_model, selected:get_model())
@@ -1537,7 +1584,8 @@ describe("Agent Applet boundaries", function()
     assert.is_true((value:select_model()))
     assert(original:snapshot().active)
 
-    local presentation = assert(original:snapshot().active)
+    local presentation = original:snapshot().active
+    assert(presentation)
     assert(original:cancel(
       presentation.id, "test cancellation"))
     assert(vim.wait(1000, function()

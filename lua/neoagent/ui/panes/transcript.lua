@@ -345,11 +345,12 @@ local function status_region(state)
   end
   local lines = {}
   for _, message in ipairs(steering) do
-    lines[#lines + 1] =
-      { {
+    lines[#lines + 1] = {
+      {
         text = " Steering: " .. util.trim(tostring(message):gsub("%s+", " ")),
         style = "muted",
-      } }
+      },
+    }
   end
   lines[#lines + 1] = {
     {
@@ -740,6 +741,18 @@ function Transcript:set_image_source(source, reader)
   end
   self.image_source = source
   self.image_reader = reader
+  self.render_cache = { blocks = {} }
+  self.document_revision = self.document_revision + 1
+  self:_publish()
+end
+
+---@param images? Applet.ImageSystem
+function Transcript:set_image_system(images)
+  if images == self.image_system then
+    return
+  end
+  self.pane:set_image_system(images)
+  self.image_system = images
   self.render_cache = { blocks = {} }
   self.document_revision = self.document_revision + 1
   self:_publish()

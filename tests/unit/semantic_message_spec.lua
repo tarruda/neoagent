@@ -2,6 +2,45 @@ local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
 
 describe("neoagent semantic messages", function()
+  it("rejects malformed request instructions and freeform argument declarations", function()
+    for _, instruction in ipairs({
+      { role = "developer", content = "instructions", extra = true },
+      { role = "userContext", content = "invalid\255text" },
+    }) do
+      local normalized, err = semantic_message.normalize_request_list({ instruction })
+      assert.is_nil(normalized)
+      assert.matches("request context", assert(err))
+    end
+    for _, case in ipairs({
+      { arguments = {}, text_input = "patch", pattern = "declared text parameter" },
+      { arguments = { patch = "text", extra = true }, text_input = "patch", pattern = "additional fields" },
+      { arguments = { patch = "text" }, text_input = false, pattern = "text_input" },
+    }) do
+      local normalized, err = semantic_message.normalize({
+        role = "assistant",
+        content = {
+          {
+            type = "toolCall",
+            id = "call",
+            name = "apply_patch",
+            arguments = case.arguments,
+            text_input = case.text_input,
+          },
+        },
+      })
+      assert.is_nil(normalized)
+      assert.matches(case.pattern, assert(err))
+    end
+    local image, err = semantic_message.normalize_image({
+      type = "image",
+      file_id = string.rep("a", 64),
+      bytes = 1,
+      mime_type = "image/png",
+      detail = "low",
+    })
+    assert.is_nil(image)
+    assert.matches("detail must be high or original", assert(err))
+  end)
   it("rejects malformed native identities and validates both sides of the encrypted boundary", function()
     local native = { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
       model = "gpt-test", encrypted_content = "synthetic-ciphertext" }

@@ -208,7 +208,8 @@ describe("neoagent Applet View composition", function()
       { role = "assistant", content = { { type = "text", text = "second" } } },
     })
     value.transcript.pane:flush()
-    local transcript = assert(value:pane("transcript"))
+    local transcript = value:pane("transcript")
+    assert(transcript)
     local focus, scroll = transcript.focus, transcript.scroll
     transcript.focus = function() return false end
     assert.is_false(value:_focus_previous_card())
@@ -467,13 +468,19 @@ describe("neoagent Applet View composition", function()
       image_options = options and vim.deepcopy(options) or nil
       return image_new(options)
     end
-    local ok, value = pcall(view)
+    ---@type Neoagent.View?
+    local created
+    local ok, err = pcall(function()
+      created = view()
+    end)
     Applet.ImageSystem.new = image_new
-    assert(ok, value)
+    assert(ok, err)
+    local value = created
+    assert(value)
     assert.are.same({ backend = "kitty" }, image_options)
     local images = value.image_system
 
-    assert.is_table(images)
+    assert(type(images) == "table")
     assert.are.equal("unavailable", assert(images).status)
     assert.are.equal(images, value.transcript.image_system)
     assert.are.equal(images, value.transcript.pane.image_system)

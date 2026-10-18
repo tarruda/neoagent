@@ -18,6 +18,7 @@ local M = {}
 ---@field type "toolCall"
 ---@field block Neoagent.ToolCallBlock
 ---@field raw string
+---@field text_parameter? string
 
 ---@alias Neoagent.ResponsesSlot Neoagent.ResponsesTextSlot|Neoagent.ResponsesThinkingSlot|Neoagent.ResponsesToolSlot
 
@@ -111,8 +112,15 @@ M.usage_from = usage_from
 
 ---@param model Neoagent.Model
 ---@param emit fun(event: Neoagent.ModelEvent)
+---@param tools? Neoagent.ToolDefinition[]
 ---@return Neoagent.ResponsesDecoder
-function M.new(model, emit)
+function M.new(model, emit, tools)
+  local text_parameters = {}
+  for _, tool in ipairs(tools or {}) do
+    if tool.text_input then
+      text_parameters[tool.name] = tool.text_input.parameter
+    end
+  end
   ---@type Neoagent.AssistantMessage
   local message = {
     role = "assistant",
@@ -185,10 +193,13 @@ function M.new(model, emit)
       message.content[#message.content + 1] = block
       block_indexes[block] = index
       slots[index] = { type = "text", block = block }
-    elseif item.type == "function_call" then
+    elseif item.type == "function_call" or item.type == "custom_tool_call" then
       local call_id = optional_string(item.call_id, "call id") or ""
       local item_id = optional_string(item.id, "item id") or ""
-      local arguments = optional_string(item.arguments, "tool arguments") or ""
+      local arguments = optional_string(
+        item.type == "custom_tool_call" and item.input or item.arguments,
+        "tool arguments"
+      ) or ""
       ---@type Neoagent.ToolCallBlock
       local block = {
         type = "toolCall",
@@ -198,7 +209,12 @@ function M.new(model, emit)
       }
       message.content[#message.content + 1] = block
       block_indexes[block] = index
-      slots[index] = { type = "toolCall", block = block, raw = arguments }
+      slots[index] = {
+        type = "toolCall",
+        block = block,
+        raw = arguments,
+        text_parameter = item.type == "custom_tool_call" and (text_parameters[block.name] or "input") or nil,
+      }
       emit({
         type = "tool_call_delta",
         index = index,
@@ -263,7 +279,7 @@ function M.new(model, emit)
   ---@param index integer
   ---@param item Neoagent.JsonObject|Neoagent.JsonArray
   local function finalize_tool(slot, index, item)
-    local raw = optional_string(item.arguments, "tool arguments") or slot.raw or "{}"
+    local raw = optional_string(slot.text_parameter and item.input or item.arguments, "tool arguments") or slot.raw
     local delta = raw:sub(1, #slot.raw) == slot.raw and raw:sub(#slot.raw + 1) or ""
     if delta ~= "" then
       emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
@@ -274,7 +290,16 @@ function M.new(model, emit)
     if slot.block.name == "" then
       error(util.error("protocol", "Tool call is missing a name"), 0)
     end
-    slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
+    if slot.text_parameter then
+      slot.block.arguments = { [slot.text_parameter] = raw }
+      slot.block.text_input = slot.text_parameter
+      if not util.is_valid_utf8(raw) then
+        slot.block.arguments = { [slot.text_parameter] = util.text_from_bytes(raw) }
+        slot.block.argumentsError = "Text tool input must contain UTF-8 text"
+      end
+    else
+      slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
+    end
   end
 
   ---@param index integer
@@ -289,7 +314,7 @@ function M.new(model, emit)
       finalize_thinking(slot, index, item, item_id)
     elseif item.type == "message" and slot and slot.type == "text" then
       finalize_text(slot, index, item, item_id)
-    elseif item.type == "function_call" and slot and slot.type == "toolCall" then
+    elseif (item.type == "function_call" or item.type == "custom_tool_call") and slot and slot.type == "toolCall" then
       finalize_tool(slot, index, item)
     end
     slots[index] = nil
@@ -407,19 +432,24 @@ function M.new(model, emit)
         slot.block.text = slot.block.text .. event.delta
         emit({ type = "text_delta", text = event.delta, index = index, phase = slot.block.phase })
       end
-    elseif event.type == "response.function_call_arguments.delta" then
+    elseif
+      event.type == "response.function_call_arguments.delta" or event.type == "response.custom_tool_call_input.delta"
+    then
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "toolCall" and type(event.delta) == "string" then
         slot.raw = slot.raw .. event.delta
         emit({ type = "tool_call_delta", index = index, arguments_delta = event.delta })
       end
-    elseif event.type == "response.function_call_arguments.done" then
+    elseif
+      event.type == "response.function_call_arguments.done" or event.type == "response.custom_tool_call_input.done"
+    then
       index = register_index(index, item_id)
       local slot = slots[index]
-      if slot and slot.type == "toolCall" and type(event.arguments) == "string" then
-        local delta = event.arguments:sub(1, #slot.raw) == slot.raw and event.arguments:sub(#slot.raw + 1) or ""
-        slot.raw = event.arguments
+      local arguments = event.type == "response.custom_tool_call_input.done" and event.input or event.arguments
+      if slot and slot.type == "toolCall" and type(arguments) == "string" then
+        local delta = arguments:sub(1, #slot.raw) == slot.raw and arguments:sub(#slot.raw + 1) or ""
+        slot.raw = arguments
         if delta ~= "" then
           emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
         end

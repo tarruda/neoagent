@@ -99,8 +99,8 @@ local function merge_patch(current, patch)
   for key, value in pairs(patch or {}) do
     if value == vim.NIL then
       result[key] = nil
-    elseif object(value) and object(result[key]) then
-      result[key] = merge_patch(result[key], value)
+    elseif object(value) then
+      result[key] = merge_patch(object(result[key]) and result[key] or nil, value)
     else
       result[key] = util.copy(value)
     end

@@ -12,6 +12,29 @@ local function finish(run)
 end
 
 describe("neoagent.request_preparation", function()
+  it("retains budget ownership across copied requests and requires estimation for a different Model", function()
+    local preparation = require("neoagent.api.request_preparation")
+    local estimate = require("neoagent.api.request_estimate")
+    local model = require("tests.helpers.fake_model").new({})
+    local other = require("tests.helpers.fake_model").new({})
+    local estimates = 0
+    model.estimate_request = function()
+      estimates = estimates + 1
+      return 10
+    end
+    ---@type Neoagent.RequestOptions
+    local call = { messages = { { role = "user", content = "Budgeted" } }, _preparation = preparation.new() }
+    estimate.request(model, call)
+    local copied = preparation.copy(call)
+    preparation.finalize(model, copied)
+    assert.are.equal(1, estimates)
+    local valid, err = pcall(preparation.finalize, other, copied)
+    assert.is_false(valid)
+    assert.are.equal("stale_request_preparation", require("neoagent.util").normalize_error(err, "model").code)
+    estimate.request(other, copied)
+    preparation.finalize(other, copied)
+  end)
+
   it("revalidates callable API keys after estimation without repeating unchanged shaping", function()
     for _, api in ipairs({ "openai_completions", "openai_responses", "anthropic_messages" }) do
       ---@type string?
@@ -209,7 +232,7 @@ describe("neoagent.request_preparation", function()
     end))
     assert.is_false(assert(run:result()).ok)
     assert.are.equal("stale_request_preparation", assert(assert(run:result()).error).code)
-    assert.are.equal(2, shaped)
+    assert.are.equal(1, shaped)
     assert.are.equal(0, #transport.requests)
   end)
 

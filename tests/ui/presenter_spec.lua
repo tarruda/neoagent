@@ -1,7 +1,7 @@
 local assert = require("luassert")
 local Applet = require("applet")
 local async = require("neoagent.async")
-local Agent = require("neoagent.agent")
+local neoagent = require("neoagent")
 local NeoagentApplet = require("neoagent.applet")
 local fake_model = require("tests.helpers.fake_model")
 local renderers = require("neoagent.ui.renderers")
@@ -15,6 +15,7 @@ local function options(name)
     name = name,
     default_registry = false,
     workspace_trust = false,
+    sandbox = { enabled = false },
     persistence = { enabled = false },
     default_model = { provider = "fake", model = "test" },
     providers = { fake = { api = "fake", models = { test = {} } } },
@@ -48,7 +49,7 @@ describe("neoagent Applet Presenter", function()
   ---@param name string
   ---@param host Neoagent.ViewHostFactory?
   local function composition(name, host)
-    local agent = Agent.new(options(name))
+    local agent = neoagent.new(options(name))
     agents[#agents + 1] = agent
     ---@type (fun(opts: Neoagent.ViewOptions): Neoagent.View)?
     local view_factory
@@ -546,7 +547,7 @@ describe("neoagent Applet Presenter", function()
   end)
 
   it("fails a semantic request when a custom View cannot present it", function()
-    local agent = Agent.new(options("Unsupported presenter"))
+    local agent = neoagent.new(options("Unsupported presenter"))
     agents[#agents + 1] = agent
     local view = {
       destroyed = false,
@@ -595,7 +596,7 @@ describe("neoagent Applet Presenter", function()
   it("validates the complete Agent host-effects boundary", function()
     local invalid_effects = {}
     assert.has_error(function()
-      Agent.new(options("Invalid host effects"), {
+      neoagent.new(options("Invalid host effects"), {
         host_effects = invalid_effects --[[@as Applet.HostEffectsModule]],
       })
     end, "agent host effects are invalid")
@@ -614,7 +615,7 @@ describe("neoagent Applet Presenter", function()
     end
     local opts = options("Immediate presenter")
     assert(assert(opts.providers).fake.models).alternate = {}
-    local agent = Agent.new(opts, {
+    local agent = neoagent.new(opts, {
       presenter = presenter,
       host_effects = {
         refresh_file = function()
@@ -665,7 +666,7 @@ describe("neoagent Applet Presenter", function()
     local opts = options("Refresh boundary")
     opts.tools = { tool }
     assert(opts._apis).fake = function() return model end
-    local agent = Agent.new(opts, {
+    local agent = neoagent.new(opts, {
       presenter = presenter,
       host_effects = {
         refresh_file = function(path)

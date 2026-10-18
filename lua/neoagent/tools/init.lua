@@ -2,6 +2,7 @@ local M = {}
 
 ---@class Neoagent.ToolPresetOptions
 ---@field shell_timeout? number|false
+---@field shell? string Explicit command interpreter for the Pi preset.
 
 ---@alias Neoagent.BundledToolName "read_file"|"write_file"|"edit_file"|"shell"|"grep"|"find"|"read_agent_documentation"|"update_plan"|"exec_command"|"write_stdin"
 
@@ -56,18 +57,12 @@ end
 ---@param options? Neoagent.ToolPresetOptions
 ---@return Neoagent.Tool<unknown>[]
 function M.coding(options)
-  return tools({
-    "read_file",
-    "write_file",
-    "edit_file",
-    "shell",
-    "read_agent_documentation",
-  }, options)
+  return require("neoagent.tools.pi").coding(options)
 end
 
 ---@return Neoagent.Tool<unknown>[]
 function M.codex()
-  return tools({ "read_file", "write_file", "edit_file", "exec_command", "write_stdin", "read_agent_documentation" })
+  return require("neoagent.tools.codex").coding()
 end
 
 ---@return Neoagent.Tool<unknown>[]
@@ -78,6 +73,12 @@ end
 ---@return Neoagent.Tool<unknown>
 function M.update_plan()
   return constructors.update_plan({})
+end
+
+---@param options? Neoagent.WebSearchOptions
+---@return Neoagent.Tool<Neoagent.WebSearchToolEnvironment>
+function M.web_search(options)
+  return require("neoagent.tools.web_search").new(options)
 end
 
 ---@param options? Neoagent.ToolPresetOptions

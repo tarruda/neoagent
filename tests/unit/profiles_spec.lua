@@ -1,9 +1,10 @@
 local assert = require("luassert")
 local profiles = require("neoagent.profiles")
+local selection = require("neoagent.profiles.selection")
 local util = require("neoagent.util")
 
 ---@param overrides? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
----@return Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@return Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
 local function config(overrides)
   local input = {
     default_registry = false,
@@ -16,28 +17,54 @@ local function config(overrides)
     skills = false,
   }
   for name, value in pairs(overrides or {}) do input[name] = value end
-  return require("neoagent.config").resolve(input)
+  return require("neoagent.config").snapshot(input)
 end
 
 describe("bundled Profile resources", function()
-  it("selects local and native compaction directly in the bundled Profiles", function()
-    local selected, default_profile, resources = profiles.bundled(config(), { startup = false })
-    assert.are.equal("neo", default_profile)
-    assert.are.same({ "neo", "chat", "codex" }, vim.tbl_map(function(profile)
+  it("releases provider resources when the configured Profile is invalid", function()
+    local destroyed = 0
+    local valid = pcall(require("neoagent").setup, {
+      default_registry = false, default_profile = "missing",
+      providers = { example = {
+        api = "openai-responses", base_url = "https://example.test", api_key = "synthetic",
+        models = { test = {} },
+        service = function()
+          return { id = "example", name = "Example", operations = {}, state = function() return {} end,
+            destroy = function() destroyed = destroyed + 1 end }
+        end,
+      } },
+    })
+    assert.is_false(valid)
+    assert.are.equal(1, destroyed)
+  end)
+
+  it("resolves local and native compaction from the bundled Profiles", function()
+    local snapshot = config()
+    local selected, default_profile, resources = profiles.bundled(snapshot, { startup = false })
+    assert.are.equal("pi", require("neoagent.profiles.selection").choose(default_profile))
+    assert.are.same({ "pi", "chat", "codex" }, vim.tbl_map(function(profile)
       return profile.id
     end, selected))
-    assert.are.equal(require("neoagent.compaction").local_component, assert(selected[1]).compaction)
-    assert.are.equal(require("neoagent.compaction").local_component, assert(selected[2]).compaction)
-    assert.are.equal(require("neoagent.compaction.codex").component, assert(selected[3]).compaction)
-    assert.is_true(assert(selected[3]).compaction.require_native)
+    assert.is_false(assert(selected[2]).create_tools)
+    for _, profile in ipairs(selected) do
+      local configured = selection.configuration(snapshot, profile)
+      assert.are.equal(profile.id ~= "chat", configured.sandbox.enabled)
+      local host = selection.configuration(snapshot, profile, { sandbox = { enabled = false } })
+      assert.is_false(host.sandbox.enabled)
+    end
+    assert.are.equal(require("neoagent.compaction.prefix").component, selection.resolve({ profiles = profiles.index(selected), snapshot = snapshot, policy = assert(selected[1]).id, runtimes = resources.runtimes, auth = resources.auth }).compaction)
+    assert.are.equal(require("neoagent.compaction.prefix").component, selection.resolve({ profiles = profiles.index(selected), snapshot = snapshot, policy = assert(selected[2]).id, runtimes = resources.runtimes, auth = resources.auth }).compaction)
+    assert.are.equal(require("neoagent.compaction.codex").profile_component, assert(selected[3]).compaction)
+    assert.are.same({ "openai-responses", "openai-codex-responses" }, assert(selected[3]).supported_apis)
     resources:destroy()
   end)
 
-  it("selects prefix compaction for Neo and Chat while Codex keeps native compaction", function()
-    local selected, _, resources = profiles.bundled(config({ compaction = { strategy = "prefix" } }), { startup = false })
-    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[1]).compaction)
-    assert.are.equal(require("neoagent.compaction.prefix").component, assert(selected[2]).compaction)
-    assert.are.equal(require("neoagent.compaction.codex").component, assert(selected[3]).compaction)
+  it("selects summary compaction for Pi and Chat while Codex keeps native compaction", function()
+    local snapshot = config({ compaction = { strategy = "summary" } })
+    local selected, _, resources = profiles.bundled(snapshot, { startup = false })
+    assert.are.equal(require("neoagent.compaction").local_component, selection.resolve({ profiles = profiles.index(selected), snapshot = snapshot, policy = assert(selected[1]).id, runtimes = resources.runtimes, auth = resources.auth }).compaction)
+    assert.are.equal(require("neoagent.compaction").local_component, selection.resolve({ profiles = profiles.index(selected), snapshot = snapshot, policy = assert(selected[2]).id, runtimes = resources.runtimes, auth = resources.auth }).compaction)
+    assert.are.equal(require("neoagent.compaction.codex").profile_component, assert(selected[3]).compaction)
     resources:destroy()
   end)
 
@@ -49,10 +76,11 @@ describe("bundled Profile resources", function()
     })
     local selected, _, resources = profiles.bundled(configured, { startup = false })
     local codex = assert(selected[3])
-    local applet = codex.create_applet({ profile = codex, label = "Codex", workspace = vim.fn.getcwd() })
+    local owner =
+      require("neoagent.applet").new({ profiles = selected, default_profile = "codex", resources = resources, snapshot = configured })
+    local applet = assert(owner:draft("codex"))
     assert.are.equal("dynamic/discovered", applet:_context().model)
-    applet:destroy()
-    resources:destroy()
+    owner:destroy()
   end)
 
   it("clears incompatible configured and persisted defaults from a Codex draft", function()
@@ -65,11 +93,12 @@ describe("bundled Profile resources", function()
         models = { test = {} } } } })
     local selected, _, resources = profiles.bundled(configured, { startup = false })
     local codex = assert(selected[3])
-    assert.is_nil(codex.config.default_model)
-    local applet = codex.create_applet({ profile = codex, label = "Codex", workspace = vim.fn.getcwd() })
+    assert.is_nil(rawget(codex, "config"))
+    local owner =
+      require("neoagent.applet").new({ profiles = selected, default_profile = "codex", resources = resources, snapshot = configured })
+    local applet = assert(owner:draft("codex"))
     assert.are.equal("no model", applet:_context().model)
-    applet:destroy()
-    resources:destroy()
+    owner:destroy()
     vim.fn.delete(directory, "rf")
   end)
 
@@ -156,6 +185,17 @@ describe("bundled Profile resources", function()
 
       recording.new = function()
         return {
+          transport = function() error("recording transport failed") end,
+          destroy = function() recorder_destroys = recorder_destroys + 1 end,
+        } --[[@as Neoagent.Recorder]]
+      end
+      ok, err = pcall(profiles.bundled, configured)
+      assert.is_false(ok)
+      assert.matches("recording transport failed", util.normalize_error(err, "recording").message)
+      assert.are.equal(1, recorder_destroys)
+
+      recording.new = function()
+        return {
           transport = function(_, transport) return transport or {} end,
           destroy = function() recorder_destroys = recorder_destroys + 1 end,
         } --[[@as Neoagent.Recorder]]
@@ -166,7 +206,7 @@ describe("bundled Profile resources", function()
       ok, err = pcall(profiles.bundled, configured)
       assert.is_false(ok)
       assert.matches("runtime construction failed", util.normalize_error(err, "provider").message)
-      assert.are.equal(1, recorder_destroys)
+      assert.are.equal(2, recorder_destroys)
 
       runtimes.compose = function() return {} end
       runtimes.destroy = function()
@@ -177,7 +217,7 @@ describe("bundled Profile resources", function()
       ok, err = pcall(profiles.bundled, configured)
       assert.is_false(ok)
       assert.matches("shell construction failed", tostring(err))
-      assert.are.equal(2, recorder_destroys)
+      assert.are.equal(3, recorder_destroys)
       assert.are.equal(1, runtime_destroys)
     end)
     recording.new = recording_new
@@ -194,13 +234,8 @@ describe("bundled Profile resources", function()
     local messages = {}
     local root = vim.fn.tempname()
     assert.are.equal(1, vim.fn.mkdir(root, "p"))
-    local profile_list, _, resources = profiles.bundled(config({
-      persistence = {
-        enabled = true,
-        workspace_settings = true,
-        directory = root,
-      },
-    }), { startup = false })
+    local configured = config({ persistence = { enabled = true, workspace_settings = true, directory = root } })
+    local profile_list, _, resources = profiles.bundled(configured, { startup = false })
     local applet
     local patched, patch_err = pcall(function()
       workspace_settings.new = function()
@@ -213,12 +248,11 @@ describe("bundled Profile resources", function()
           end,
         } --[[@as Neoagent.WorkspaceSettings]]
       end
-      vim.notify = function(message) messages[#messages + 1] = message end
-      applet = assert(profile_list[1]).create_applet({
-        profile = assert(profile_list[1]),
-        label = "Neo",
-        workspace = root,
-      })
+      vim.notify = function(message)
+        messages[#messages + 1] = message
+      end
+      applet = require("neoagent.applet").new({ profiles = profile_list, default_profile = "pi", resources = resources, snapshot = configured })
+      assert(applet:draft("pi", root))
     end)
     workspace_settings.new = settings_new
     vim.notify = notify

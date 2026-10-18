@@ -130,7 +130,9 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
       vim.list_extend(result, attachments)
       attachments = {}
     end
-    if message.role == "user" then
+    if message.role == "system" or message.role == "developer" then
+      result[#result + 1] = { role = message.role, content = message.content }
+    elseif message.role == "user" or message.role == "userContext" then
       result[#result + 1] = { role = "user", content = encode_content(message.content, image) }
     elseif message.role == "assistant" then
       local encoded = encode_assistant(message, requires_reasoning_content)

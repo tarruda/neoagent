@@ -174,6 +174,17 @@ local Mode = require("applet.mode")
 local Pane = {}
 Pane.__index = Pane
 
+---@param images? Applet.ImageSystem
+local function validate_images(images)
+  if images == nil then
+    return
+  end
+  applet_expect(type(images) == "table", "Pane.image_system", "must be a table", 3)
+  for _, method in ipairs({ "subscribe", "snapshot", "request", "set_references", "present", "clear" }) do
+    applet_expect(type(images[method]) == "function", "Pane.image_system." .. method, "must be a function", 3)
+  end
+end
+
 ---@generic S
 ---@param self Applet.Pane<S>
 ---@return Applet.HostRecord?, Applet.Applet?
@@ -542,24 +553,7 @@ function Pane.new(opts)
     "must be a function",
     3
   )
-  if opts.image_system ~= nil then
-    applet_expect(type(opts.image_system) == "table", "Pane.image_system", "must be a table", 3)
-    for _, method in ipairs({
-      "subscribe",
-      "snapshot",
-      "request",
-      "set_references",
-      "present",
-      "clear",
-    }) do
-      applet_expect(
-        type(opts.image_system[method]) == "function",
-        "Pane.image_system." .. method,
-        "must be a function",
-        3
-      )
-    end
-  end
+  validate_images(opts.image_system)
   sequence = sequence + 1
   local key = opts.key
   local frame_interval_ns
@@ -575,7 +569,6 @@ function Pane.new(opts)
     render = opts.render,
     handlers = handlers,
     theme = normalize_theme(opts.theme),
-    image_system = opts.image_system,
     read_image_resource = opts.read_image_resource,
     on_error = opts.on_error,
     frame_interval_ns = frame_interval_ns,
@@ -628,14 +621,7 @@ function Pane.new(opts)
       return self.theme:group(style)
     end,
   }
-  if self.image_system then
-    self.unsubscribe_images = self.image_system:subscribe(function()
-      if self.surface and not self.destroyed then
-        self.force_images = true
-        self:_request_flush()
-      end
-    end)
-  end
+  self:set_image_system(opts.image_system)
   return self
 end
 
@@ -1189,6 +1175,39 @@ function Pane:set_theme(theme)
     self:_request_flush()
   end
   return self.theme
+end
+
+---@param images? Applet.ImageSystem
+function Pane:set_image_system(images)
+  assert(not self.destroyed, "Pane is destroyed")
+  validate_images(images)
+  if images == self.image_system then
+    return
+  end
+  if self.unsubscribe_images then
+    self.unsubscribe_images()
+    self.unsubscribe_images = nil
+  end
+  if self.image_system then
+    self.image_system:clear(self)
+  end
+  self.image_system = images
+  if images then
+    self.unsubscribe_images = images:subscribe(function()
+      if self.surface and not self.destroyed then
+        self.force_images = true
+        self:_request_flush()
+      end
+    end)
+  end
+  self.compile_cache = {}
+  self.pending_scene = nil
+  self.reconcile_state.unknown = true
+  self.requested_image_references = nil
+  self.force_images = true
+  if self.has_submission then
+    self:_request_flush()
+  end
 end
 
 ---@param tree Applet.Tree|Applet.Node

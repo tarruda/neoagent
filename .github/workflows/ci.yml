@@ -55,6 +55,18 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install pinned ImageMagick
+        run: |
+          curl --fail --location --show-error --silent \
+            https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-34/ImageMagick-7.1.2-34-gcc-x86_64.AppImage \
+            --output "$RUNNER_TEMP/imagemagick.AppImage"
+          echo "6e9edfd35d5f30b57c27533afe003d6085faaf8607b207426f398d11751acf93  $RUNNER_TEMP/imagemagick.AppImage" \
+            | sha256sum --check
+          chmod +x "$RUNNER_TEMP/imagemagick.AppImage"
+          mkdir -p .deps/imagemagick
+          cd .deps/imagemagick
+          "$RUNNER_TEMP/imagemagick.AppImage" --appimage-extract > /dev/null
+          ln -s "$PWD/squashfs-root/AppRun" "$HOME/.local/bin/magick"
       - name: Install pinned test dependencies
         run: make deps
       - name: Collect native Linux coverage
@@ -208,7 +220,7 @@ jobs:
             "openai_codex_responses", "api_timeouts", "model_rules", "thinking",
             "attachment_storage", "health_process",
             "files_http", "codex_files", "anthropic_files", "sandbox_failed_host",
-            "process_tools", "process_placement"
+            "process_tools", "process_placement", "pi_shell"
           ) | ForEach-Object { "tests/unit/${_}_spec.lua" }
           $specs += "tests/integration/session_validation_spec.lua"
           $specs += "tests/integration/file_lock_lifecycle_spec.lua"

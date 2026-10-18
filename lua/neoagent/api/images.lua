@@ -5,10 +5,11 @@ local M = {}
 
 ---@param api string
 ---@param file_id string
+---@param detail? 'high'|'original'
 ---@return Neoagent.JsonObject
-function M.remote(api, file_id)
+function M.remote(api, file_id, detail)
   if api == "openai-responses" or api == "openai-codex-responses" then
-    return { type = "input_image", file_id = file_id, detail = "auto" }
+    return { type = "input_image", file_id = file_id, detail = detail or "auto" }
   elseif api == "openai-completions" then
     return { type = "file", file_id = file_id }
   elseif api == "anthropic-messages" then
@@ -44,9 +45,9 @@ function M.inline(api, storage)
     end
     local url = "data:" .. image.mime_type .. ";base64," .. encoded
     if api == "openai-completions" then
-      return { type = "image_url", image_url = { url = url } }
+      return { type = "image_url", image_url = { url = url, detail = image.detail } }
     end
-    return { type = "input_image", image_url = url, detail = "auto" }
+    return { type = "input_image", image_url = url, detail = image.detail or "auto" }
   end
 end
 

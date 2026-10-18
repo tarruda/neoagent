@@ -130,6 +130,26 @@ describe("neoagent workspace settings", function()
     assert.is_nil((encoded:find("null", 1, true)))
   end)
 
+  it("removes tombstones when creating a new Profile preference scope", function()
+    local directory = vim.fn.tempname()
+    paths = { directory }
+    local settings = settings_module.new({ directory = directory, root = vim.fn.getcwd() })
+    for _, current in ipairs({ {}, { agents = { chat = { default_thinking_level = "high" } } } }) do
+      assert(settings:write(current))
+      local updated = assert(settings:update({
+        agents = {
+          pi = {
+            default_model = { provider = "fake", model = "no-thinking" },
+            default_thinking_level = vim.NIL,
+          },
+        },
+      }))
+      assert.are.same({ default_model = { provider = "fake", model = "no-thinking" } }, updated.agents.pi)
+      assert.are.same(current.agents and current.agents.chat, updated.agents.chat)
+      assert.are.same(updated, settings:load())
+    end
+  end)
+
   it("reports malformed and non-object settings", function()
     local root = vim.fn.tempname()
     local directory = vim.fn.tempname()

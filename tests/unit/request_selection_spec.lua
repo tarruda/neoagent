@@ -1,5 +1,6 @@
 local assert = require("luassert")
 local ProfileDraft = require("neoagent.profile_draft")
+local composition = require("neoagent.profiles.selection")
 local RequestSelection = require("neoagent.request_selection")
 local runtime_api = require("neoagent.provider_runtimes")
 local fake_model = require("tests.helpers.fake_model")
@@ -43,6 +44,7 @@ describe("neoagent upper-layer request selection", function()
   end
 
   it("reports unsupported Profile-scoped workspace preferences", function()
+    assert.is_nil(require("neoagent.workspace_preferences").warning({}, "/settings.yaml"))
     local accepted, issues = require("neoagent.workspace_preferences").scope({
       agents = { Neo = { unsupported = true } },
     }, {
@@ -55,13 +57,25 @@ describe("neoagent upper-layer request selection", function()
     }, issues)
   end)
 
+  it("clears an unresolved selection when its API becomes incompatible", function()
+    local configured = configuration()
+    local selection = RequestSelection.new({ config = configured, runtimes = runtimes(configured) })
+    assert(selection:stage({ provider = "fake", model = "one" }))
+    selection.supported_apis = { "openai-codex-responses" }
+    local model, err = selection:resolve()
+    assert.is_nil(model)
+    assert.matches("Profile requires", assert(err).message)
+    assert.is_nil(selection:model())
+    assert.are.equal("no model", selection:label())
+  end)
+
   it("rejects incompatible staged defaults and unavailable checkpoint identities", function()
     local configured = configuration()
     local providers = runtimes(configured)
     local selection = RequestSelection.new({ config = configured, runtimes = providers })
     local selected = { provider = "fake", model = "one" }
     assert(selection:stage(selected))
-    selection.required_api = "openai-codex-responses"
+    selection.supported_apis = { "openai-codex-responses" }
     local accepted, err = selection:stage(selected)
     assert.is_nil(accepted)
     assert.matches("Profile requires", assert(err).message)
@@ -199,32 +213,38 @@ describe("neoagent upper-layer request selection", function()
     configured.default_model = { provider = "fake", model = "discovered" }
     local providers = runtimes(configured)
     local profile = {
-      id = "codex", label = "Codex", config = configured,
+      id = "codex", label = "Codex",
       compaction = require("neoagent.compaction.codex").component,
-      create_applet = function() error("unused") end,
-      create_agent = function() error("unused") end,
+      supported_apis = { "openai-codex-responses" },
     }
     local applet = require("neoagent.agent_applet").new({ config = configured.ui })
     local draft = ProfileDraft.new({
-      key = "codex\0/workspace", profile = profile, workspace = "/workspace", applet = applet,
+      key = "codex\0/workspace", workspace = "/workspace",
+      profiles = { codex = profile }, policy = "codex", snapshot = { config = configured, overrides = {} },
+      composition = composition.resolve({ profiles = { codex = profile }, policy = "codex",
+        snapshot = { config = configured, overrides = {} }, runtimes = providers, model = configured.default_model }),
+      applet = applet,
       runtimes = providers,
     })
-    assert(assert(providers.fake).catalog:publish_discoveries({ {
+    assert(assert(providers.fake).catalog:publish_discoveries({
+      {
       id = "discovered", api = "fake", thinking = { off = {}, high = {} },
     } }))
     for _, operation in ipairs({
-      function() return draft:thinking_levels() end,
-      function() return draft:set_thinking_level("high") end,
-      function() return draft:cycle_thinking_level() end,
-      function() return draft:set_model("fake", "one") end,
-      function() return draft:update({ default_model = { provider = "fake", model = "one" } }) end,
+      function() return draft:prepare_update({ default_thinking_level = "high" }) end,
+      function() return draft:prepare_cycle() end,
+      function() return draft:prepare_model("fake", "one") end,
+      function() return draft:prepare_update({ default_model = { provider = "fake", model = "one" } }) end,
     }) do
       local result, err = operation()
       assert.is_nil(result)
       assert.matches("Profile requires a Model using openai%-codex%-responses", assert(err).message)
-      assert.is_nil(draft.selection:model())
-      assert.is_nil(draft:model_selection())
+      assert.are.same(configured.default_model, draft:model_selection())
     end
+    local levels, err = draft:thinking_levels()
+    assert.is_nil(levels)
+    assert.matches("Profile requires a Model using openai%-codex%-responses", assert(err).message)
+    assert.are.same(configured.default_model, draft:model_selection())
     draft:destroy()
     applet:destroy()
   end)
@@ -232,7 +252,7 @@ describe("neoagent upper-layer request selection", function()
   it("validates the resolved Model before replacing a compatible selection", function()
     local configured = configuration()
     local providers = runtimes(configured)
-    local selection = RequestSelection.new({ config = configured, runtimes = providers, required_api = "fake" })
+    local selection = RequestSelection.new({ config = configured, runtimes = providers, supported_apis = { "fake" } })
     local original = assert(selection:resolve())
     assert(providers.fake).service.wrap_model = function(_, model)
       model.api = "incompatible"
@@ -249,7 +269,7 @@ describe("neoagent upper-layer request selection", function()
     local configured = configuration()
     configured.default_model = { provider = "fake", model = "discovered" }
     local providers = runtimes(configured)
-    local selection = RequestSelection.new({ config = configured, runtimes = providers, required_api = "fake" })
+    local selection = RequestSelection.new({ config = configured, runtimes = providers, supported_apis = { "fake" } })
     assert.are.same(configured.default_model, selection:stage(assert(selection:candidate())))
     assert.are.same(configured.default_model, selection:model_selection())
     assert(assert(providers.fake).catalog:publish_discoveries({ { id = "discovered", api = "fake" } }))
@@ -262,7 +282,7 @@ describe("neoagent upper-layer request selection", function()
     local providers = runtimes(configured)
     local checkpoint = { api = "fake", provider = "fake", model = "one" }
     local selection = RequestSelection.new({
-      config = configured, runtimes = providers, required_api = "fake",
+      config = configured, runtimes = providers, supported_apis = { "fake" },
       checkpoint_identity = function() return checkpoint end,
     })
     local original = assert(selection:resolve())
@@ -327,66 +347,73 @@ describe("neoagent upper-layer request selection", function()
   end)
 
   it("moves one ProfileDraft transactionally through its typestates", function()
+    local configured = configuration()
+    local providers = runtimes(configured)
     local profile = {
       id = "neo",
       label = "Neo",
-      config = configuration(),
       compaction = require("neoagent.compaction").local_component,
-      create_applet = function() error("unexpected Applet construction") end,
-      create_agent = function() error("unexpected Agent construction") end,
     }
-    local applet = require("neoagent.agent_applet").new({ config = profile.config.ui })
+    local applet = require("neoagent.agent_applet").new({ config = configured.ui })
     local draft = ProfileDraft.new({
       key = "neo\0/workspace",
-      profile = profile,
+      profiles = { neo = profile }, policy = "neo", snapshot = { config = configured, overrides = {} },
+      composition = composition.resolve({ profiles = { neo = profile }, policy = "neo", runtimes = providers,
+        snapshot = { config = configured, overrides = {} }, model = { provider = "fake", model = "two" },
+        thinking_level = "low", overrides = { sandbox = { enabled = false } } }),
       workspace = "/workspace",
       applet = applet,
-      runtimes = runtimes(profile.config),
-      options = {
-        default_model = { provider = "fake", model = "two" },
-        default_thinking_level = "low",
-        sandbox = { enabled = false },
-      },
+      runtimes = providers,
     })
     assert.are.equal("draft", draft:state())
     assert.is_true(draft:is_active())
     assert.are.equal("low", draft:thinking_level())
     assert.are.same({ "low", "max" }, draft:thinking_levels())
-    assert.are.same({
-      options = { sandbox = { enabled = false } },
-      initial_selection = {
-        model = { provider = "fake", model = "two" },
-        thinking_level = "low",
-      },
-    }, draft:snapshot())
+    local snapshot = draft:snapshot()
+    assert.are.same({ sandbox = { enabled = false } }, snapshot.options)
+    assert.are.same({ provider = "fake", model = "two" }, snapshot.config.default_model)
+    assert.are.equal("low", snapshot.config.default_thinking_level)
+    assert.is_false(snapshot.config.sandbox.enabled)
 
-    local rejected, rejected_err = draft:update({
+    local rejected, rejected_err = draft:prepare_update({
       default_thinking_level = "off",
     })
     assert.is_nil(rejected)
     assert.matches("not supported", assert(rejected_err).message)
-    assert.are.equal("low", draft:options().default_thinking_level)
+    assert.are.equal("low", draft:thinking_level())
+    assert.is_nil(draft:options().default_thinking_level)
 
-    assert.are.same({ provider = "fake", model = "one" },
-      draft:set_model("fake", "one"))
+    local candidate = assert(draft:prepare_model("fake", "one"))
+    assert.are.same({ provider = "fake", model = "two" }, draft:model_selection())
+    draft:accept(candidate)
+    assert.are.same({ provider = "fake", model = "one" }, draft:model_selection())
     assert.are.equal("high", draft:thinking_level())
-    assert.are.equal("off", draft:set_thinking_level("off"))
-    assert.are.equal("high", draft:cycle_thinking_level())
-    assert.are.same({ provider = "fake", model = "two" },
-      assert(draft:update({
-        default_model = { provider = "fake", model = "two" },
-        default_thinking_level = "max",
-      })).default_model)
+    candidate = assert(draft:prepare_update({ default_thinking_level = "off" }))
+    draft:accept(candidate)
+    assert.are.equal("off", draft:thinking_level())
+    candidate = assert(draft:prepare_cycle())
+    assert.are.equal("off", draft:thinking_level())
+    draft:accept(candidate)
+    assert.are.equal("high", draft:thinking_level())
+    candidate = assert(draft:prepare_update({
+      default_model = { provider = "fake", model = "two" }, default_thinking_level = "max",
+    }))
+    draft:accept(candidate)
+    assert.are.same({ provider = "fake", model = "two" }, draft:model_selection())
     assert.are.equal("max", draft:thinking_level())
-    assert.is_table((draft:update({ sandbox = { enabled = true } })))
+    candidate = assert(draft:prepare_update({ sandbox = { enabled = true } }))
+    assert.is_false(assert(draft:options().sandbox).enabled)
+    draft:accept(candidate)
     assert.is_true(assert(draft:options().sandbox).enabled)
+    snapshot = draft:snapshot()
     assert.are.same({
-      options = { sandbox = { enabled = true } },
-      initial_selection = {
-        model = { provider = "fake", model = "two" },
-        thinking_level = "max",
-      },
-    }, draft:snapshot())
+      sandbox = { enabled = true },
+      default_model = { provider = "fake", model = "two" },
+      default_thinking_level = "max",
+    }, snapshot.options)
+    assert.are.same({ provider = "fake", model = "two" }, snapshot.config.default_model)
+    assert.are.equal("max", snapshot.config.default_thinking_level)
+    assert.is_true(snapshot.config.sandbox.enabled)
 
     assert.are.equal(draft, draft:stage())
     assert.are.equal("provisional", draft:state())
@@ -401,29 +428,32 @@ describe("neoagent upper-layer request selection", function()
   it("preserves ProfileDraft options when model selection cannot resolve", function()
     local configured = configuration()
     configured.default_model = nil
+    configured.providers.fake.models = {}
+    local providers = runtimes(configured)
     local profile = {
-      id = "neo", label = "Neo", config = configured,
+      id = "neo", label = "Neo",
       compaction = require("neoagent.compaction").local_component,
-      create_applet = function() error("unused") end,
-      create_agent = function() error("unused") end,
     }
     local applet = require("neoagent.agent_applet").new({ config = configured.ui })
     local draft = ProfileDraft.new({
-      key = "neo\0/workspace", profile = profile, workspace = "/workspace",
-      applet = applet, runtimes = runtimes(configured), options = { sandbox = { enabled = false } },
+      key = "neo\0/workspace", workspace = "/workspace",
+      profiles = { neo = profile }, policy = "neo", snapshot = { config = configured, overrides = {} },
+      composition = composition.resolve({ profiles = { neo = profile }, policy = "neo", runtimes = providers,
+        snapshot = { config = configured, overrides = {} }, overrides = { sandbox = { enabled = false } } }),
+      applet = applet, runtimes = providers,
     })
     local before = draft:options()
-    local updated, update_err = draft:update({
+    local updated, update_err = draft:prepare_update({
       default_model = { provider = "fake", model = "missing" },
     })
     assert.is_nil(updated)
     assert.matches("Unknown model", assert(update_err).message)
     assert.are.same(before, draft:options())
 
-    local selected, select_err = draft:set_model("fake", "missing")
+    local selected, select_err = draft:prepare_model("fake", "missing")
     assert.is_nil(selected)
     assert.matches("Unknown model", assert(select_err).message)
-    local cycled, cycle_err = draft:cycle_thinking_level()
+    local cycled, cycle_err = draft:prepare_cycle()
     assert.is_nil(cycled)
     assert.matches("No default_model", assert(cycle_err).message)
     draft:destroy()

@@ -10,6 +10,27 @@ local M = {}
 -- Each fixed adapter keeps the concrete request and dependency types together.
 ---@type table<string, Neoagent.ToolRpcMethod>
 M.by_name = {
+  apply_patch = {
+    name = "apply_patch",
+    token = identities.apply_patch,
+    execute = function(payload, call, options)
+      local tool = require("neoagent.tools.codex.apply_patch")
+      local request, operations = tool.validate_request(payload)
+      return tool.run(request, call, tool._dependencies(options), operations)
+    end,
+  },
+  view_image = {
+    name = "view_image",
+    token = identities.view_image,
+    execute = function(payload, call, options)
+      local tool = require("neoagent.tools.codex.view_image")
+      return tool.run(
+        tool.validate_request(payload),
+        call,
+        require("neoagent.tools.common.images").dependencies(options)
+      )
+    end,
+  },
   read_file = {
     name = "read_file",
     token = identities.read_file,

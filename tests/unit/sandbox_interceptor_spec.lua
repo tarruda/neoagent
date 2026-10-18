@@ -22,7 +22,7 @@ local function wait(run)
 end
 
 ---@param root string
----@return Neoagent.ToolContext<{workspace: Neoagent.Workspace, files: Neoagent.Files}>
+---@return Neoagent.ToolContext<{workspace: Neoagent.Workspace, files: Neoagent.Files, file_changed?: fun(path: string)}>
 local function context(root)
   local noop = function() end
   ---@async
@@ -282,7 +282,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       status = { ok = true, platform = "test", capabilities = {} },
     })
     assert(selected)
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     for index, tool in ipairs(selected.tools) do
       assert.is_nil(rawget(tool, "sandbox"))
       assert.is_nil(assert(tool.input_schema.properties).options, tostring(index))
@@ -318,7 +319,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local selected = composition.compose({ tools = { documentation, custom } }, { enabled = true }, {
       status = { ok = false, platform = "test", message = "isolation unavailable" },
     })
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     local ctx = context(root)
     local values = wait(async.run(function()
       return {
@@ -357,6 +359,7 @@ describe("neoagent sandbox Tool RPC selection", function()
           message = "synthetic unavailable sandbox",
         },
       }
+      ---@type Neoagent.AgentToolset<unknown>, Neoagent.SandboxActivation
       local selected, status
       if constructor == "compose" then
         selected, status = composition.compose({ tools = tools }, { enabled = true, parent_tools = { parent } }, options)
@@ -365,12 +368,9 @@ describe("neoagent sandbox Tool RPC selection", function()
       end
       assert.is_true(status.enabled)
       assert.is_false(status.active)
-      if constructor == "compose" then
-        assert.is_nil(selected.system_prompt, "inactive isolation must not advertise sandboxed execution")
-      else
-        assert.matches("Sandbox controls", assert(selected.system_prompt))
-      end
-      local execute = assert(selected.execute_tool)
+      assert.are.equal("blocked", assert(selected.execution_policy)({ root = root, cwd = root }).mode)
+      local execute = selected.execute_tool
+      assert(execute)
       local ctx = context(root)
       local values = wait(async.run(function()
         return {
@@ -581,7 +581,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       nvim = vim.env.NEOAGENT_NVIM,
     })
     assert(selected)
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     local value = wait(async.run(function()
       return execute(assert(selected.tools[1]), {
         path = "remote.txt",
@@ -878,7 +879,7 @@ describe("neoagent sandbox Tool RPC selection", function()
 
     assert.is_true(value.isError)
     assert.matches("Write access is denied", value.content[1].text, 1, true)
-    assert.matches("require_escalation", value.content[1].text, 1, true)
+    assert.matches("sandbox_permissions", value.content[1].text, 1, true)
     local failure = assert(assert(value.execution).sandbox)
     assert.is_true(failure.denied)
     assert.is_nil(failure.ran_restricted)
@@ -1833,17 +1834,22 @@ describe("neoagent sandbox Tool RPC selection", function()
       end,
     }
     local execute = interceptor(root, platform):wrap()
+    local ctx = context(root)
+    local changed = {}
+    assert(ctx.context).file_changed = function(path)
+      changed[#changed + 1] = path
+    end
     local value = wait(async.run(function()
-      return execute(require("neoagent.tools.write_file").new(), {
-        path = "completed.txt",
-        content = "write completed\n",
-      }, context(root))
+      return execute(require("neoagent.tools.codex.apply_patch").new(), {
+        patch = "*** Begin Patch\n*** Add File: completed.txt\n+write completed\n*** End Patch",
+      }, ctx)
     end))
 
     assert.is_nil(value.isError)
-    assert.matches("Successfully wrote", assert(value.content[1]).text)
+    assert.matches("Success. Updated", assert(value.content[1]).text, 1, true)
     assert.matches("cleanup failed", assert(value.content[2]).text:lower(), 1, true)
     assert.are.same({ root .. "/completed.txt" }, assert(value.details).changed_paths)
+    assert.are.same({ root .. "/completed.txt" }, changed)
     assert.is_true(assert(assert(value.execution).sandbox).cleanup_failed)
     assert.are.equal("write completed\n", assert(fs.read(root .. "/completed.txt")))
   end)

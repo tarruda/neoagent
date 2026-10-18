@@ -31,6 +31,102 @@ local function result_message(result, index)
 end
 
 describe("neoagent.agent_loop", function()
+  it("stops projection on cancellation and bounds continuously changing request input", function()
+    for _, cancel in ipairs({ true, false }) do
+      local model = fake_model.new()
+      local projections, pending = 0, false
+      local result = wait(agent_loop.run({
+        model = model,
+        messages = {},
+        prepare_request = function(request)
+          projections = projections + 1
+          if cancel then
+            assert(require("neoagent.async").current()):cancel()
+          end
+          pending = true
+          return { messages = request.messages, system_prompt = request.system_prompt }
+        end,
+        get_steering_messages = function()
+          if not pending then
+            return {}
+          end
+          pending = false
+          return { { role = "user", content = "steer again" } }
+        end,
+      }))
+      assert.is_false(result.ok)
+      assert.are.equal(0, #model.requests)
+      if cancel then
+        assert.are.equal("cancelled", assert(result.error).kind)
+        assert.are.equal(1, projections)
+      else
+        assert.matches("Request input kept changing", assert(result.error).message)
+        assert.is_true(projections > 1 and projections <= 100)
+      end
+    end
+  end)
+  for _, projection in ipairs({ false, true }) do
+    it("commits steering during final estimation before inference, projection=" .. tostring(projection), function()
+      ---@type Neoagent.UserMessage[]
+      local queued = {}
+      local committed, executed, estimates = false, false, 0
+      local model = fake_model.new({
+        {
+          result = fake_model.assistant(
+            { { type = "toolCall", id = "probe", name = "probe", arguments = {} } },
+            "toolUse"
+          ),
+        },
+        { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+      })
+      ---@async
+      function model:estimate_request()
+        estimates = estimates + 1
+        if estimates == 1 then
+          require("neoagent.async").await(function(done)
+            vim.schedule(function()
+              queued[#queued + 1] = { role = "user", content = "arrived during estimation" }
+              done.resolve(true)
+            end)
+          end)
+        end
+        return 1
+      end
+      local result = wait(agent_loop.run({
+        model = model,
+        messages = { { role = "user", content = "start" } },
+        tools = {
+          {
+            name = "probe",
+            description = "Synthetic action",
+            input_schema = { type = "object" },
+            execute = function()
+              executed = committed
+              return { content = {} }
+            end,
+          },
+        },
+        get_steering_messages = function()
+          local messages = queued
+          queued = {}
+          return messages
+        end,
+        commit_message = function(message)
+          if message.role == "user" and message.content == "arrived during estimation" then
+            committed = true
+          end
+          return true
+        end,
+        prepare_request = projection and function(request)
+          return { messages = request.messages, system_prompt = request.system_prompt }
+        end or nil,
+      }))
+      assert.is_true(result.ok)
+      assert.are.equal("arrived during estimation", assert(assert(model.requests[1]).messages[2]).content)
+      assert.is_true(executed)
+    end)
+  end
+
   it("requires an authoritative message command", function()
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "unused" } }),
@@ -379,7 +475,6 @@ describe("neoagent.agent_loop", function()
 
   it("prepares again when steering commits during request preparation", function()
     local model = fake_model.new({
-      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
     })
     ---@type Neoagent.UserMessage[]
@@ -422,12 +517,12 @@ describe("neoagent.agent_loop", function()
     }))
     assert(result.ok)
     assert.are.equal(3, passes)
-    assert.are.same({ 2, 3 }, dispatched)
+    assert.are.same({ 3 }, dispatched)
     assert.is_true(acknowledged)
     assert.are.equal("arrived while compacting", assert(assert(model.requests[1]).messages[2]).content)
-    assert.are.equal(2, #model.requests)
-    assert.are.equal(2, #assert(model.requests[1]).messages)
-    assert.are.equal("arrived after second pass", assert(assert(model.requests[2]).messages[4]).content)
+    assert.are.equal(1, #model.requests)
+    assert.are.equal(3, #assert(model.requests[1]).messages)
+    assert.are.equal("arrived after second pass", assert(assert(model.requests[1]).messages[3]).content)
   end)
 
   it("stops preparation when either steering commit fails", function()
@@ -761,6 +856,9 @@ describe("neoagent.agent_loop", function()
       model = model,
       messages = {},
       get_steering_messages = function()
+        if #model.requests == 0 then
+          return {}
+        end
         local messages = steering
         steering = {}
         return messages, function(committed)
@@ -865,6 +963,9 @@ describe("neoagent.agent_loop", function()
       model = model,
       messages = { { role = "user", content = "begin", timestamp = 1 } },
       get_steering_messages = function()
+        if #model.requests == 0 then
+          return {}
+        end
         local messages = queued
         queued = {}
         return messages
@@ -887,6 +988,9 @@ describe("neoagent.agent_loop", function()
       model = model,
       messages = { { role = "user", content = "begin", timestamp = 1 } },
       get_steering_messages = function()
+        if #model.requests == 0 then
+          return {}
+        end
         if acknowledgement ~= nil then return {} end
         return { {
           role = "user", content = "redirect", timestamp = 2,
@@ -927,6 +1031,9 @@ describe("neoagent.agent_loop", function()
       model = model,
       messages = { { role = "user", content = "begin", timestamp = 1 } },
       get_steering_messages = function()
+        if #model.requests == 0 then
+          return {}
+        end
         if offered then return {} end
         offered = true
         return { {
@@ -1041,6 +1148,9 @@ describe("neoagent.agent_loop", function()
         return true
       end,
       get_steering_messages = function()
+        if #stored == 0 then
+          return {}
+        end
         if offered then return {} end
         offered = true
         return { { role = "user", content = "redirect" } }, function()

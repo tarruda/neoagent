@@ -2324,8 +2324,9 @@ else:
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "Recorded",
+      workspace_trust = false,
       default_registry = false,
       default_model = { provider = "local", model = "recorded" },
       providers = { ["local"] = {
@@ -2435,7 +2436,8 @@ else:
         body = "server response",
       }),
     })
-    local draft = assert(owner:draft("neo", workspace))
+    local draft = owner:draft("pi", workspace)
+    assert(draft)
     local result = wait(assert(draft:send("record from setup")))
     assert(result.ok)
     local expected = assert(owner:target_agent()):summary()

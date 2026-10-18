@@ -59,10 +59,15 @@ function M.is_context_overflow(err)
   return false
 end
 
+---@class Neoagent.ToolTextInput
+---@field parameter string
+---@field grammar? string
+
 ---@class Neoagent.ToolDefinition
 ---@field name string
 ---@field description string
 ---@field input_schema Neoagent.ToolSchema
+---@field text_input? Neoagent.ToolTextInput
 
 ---@class Neoagent.ModelTextDelta
 ---@field type 'text_delta'
@@ -163,6 +168,7 @@ end
 
 ---@class Neoagent.MessageTarget
 ---@field input ("text"|"image")[]
+---@field supports_image_detail_original? boolean
 ---@field api? string
 ---@field provider? string
 ---@field id? string
@@ -316,6 +322,12 @@ function M.capabilities(value)
   }
   if value.context_window ~= nil then
     result.context_window = value.context_window
+  end
+  if value.supports_image_detail_original ~= nil then
+    if type(value.supports_image_detail_original) ~= "boolean" then
+      return failure("Model supports_image_detail_original must be boolean")
+    end
+    result.supports_image_detail_original = value.supports_image_detail_original
   end
   if value.max_output_tokens ~= nil then
     result.max_output_tokens = value.max_output_tokens

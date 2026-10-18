@@ -1,6 +1,5 @@
 local async = require("neoagent.async")
 local config = require("neoagent.config")
-local Agent = require("neoagent.agent")
 local util = require("neoagent.util")
 
 local M = {}
@@ -13,23 +12,29 @@ local function applet_type()
   return require("neoagent.applet")
 end
 
----@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param snapshot Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
 ---@param runtime Neoagent.ProfileRuntimeOptions?
 ---@return Neoagent.NeoagentApplet
-local function build_applet(configured, runtime)
-  local profiles, default_profile, resources = require("neoagent.profiles").bundled(configured, runtime)
-  return applet_type().new({
+local function build_applet(snapshot, runtime)
+  local profiles, default_profile, resources = require("neoagent.profiles").bundled(snapshot, runtime)
+  local ok, result = pcall(applet_type().new, {
     profiles = profiles,
     default_profile = default_profile,
     resources = resources,
+    snapshot = snapshot,
   })
+  if not ok then
+    resources:destroy()
+    error(result, 0)
+  end
+  return result
 end
 
 ---@param opts Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
 ---@param runtime Neoagent.AgentRuntimeOptions?
 ---@return Neoagent.Agent
 function M.new(opts, runtime)
-  return Agent.new(opts, runtime)
+  return require("neoagent.profiles").new(opts, runtime)
 end
 
 ---@param opts Neoagent.AppletFromAgentsOptions
@@ -41,7 +46,7 @@ end
 ---@return Neoagent.NeoagentApplet
 function M.applet()
   if not default_applet or default_applet:is_destroyed() then
-    default_applet = build_applet(config.get())
+    default_applet = build_applet(config.get_snapshot())
   end
   return default_applet
 end
@@ -58,11 +63,11 @@ local function setup(opts, runtime)
   if default_applet and default_applet:any_running() then
     error("Cannot reconfigure neoagent while a run is active")
   end
-  local configured = config.resolve(opts or {})
-  local replacement = build_applet(configured, runtime)
+  local snapshot = config.snapshot(opts)
+  local replacement = build_applet(snapshot, runtime)
   local previous = default_applet
   default_applet = replacement
-  config._set(configured)
+  config._set(snapshot)
   if previous then
     previous:destroy()
   end
@@ -98,7 +103,8 @@ function M._set_default(agent)
     default_applet:destroy()
   end
   default_applet = replacement
-  config._set(agent:config())
+  local configured = agent:config()
+  config._set({ config = configured, overrides = config.agent_options(configured) })
   return previous
 end
 
@@ -110,7 +116,8 @@ function M._set_default_applet(applet)
   default_applet = applet
   local agent = applet:default_agent()
   if agent then
-    config._set(agent:config())
+    local configured = agent:config()
+    config._set({ config = configured, overrides = config.agent_options(configured) })
   end
   return previous
 end
@@ -380,6 +387,7 @@ end
 
 ---@class Neoagent.SandboxTarget
 ---@field runtime? Neoagent.ProfileSandboxState
+---@field trust? Neoagent.WorkspaceTrust
 ---@field agent? Neoagent.Agent
 ---@field applet? Neoagent.NeoagentApplet
 ---@field draft? Neoagent.AgentApplet
@@ -392,32 +400,26 @@ local function sandbox_target(create_draft)
   local applet = M.applet()
   local agent = applet:target_agent()
   if agent then
-    local record = applet:record(agent)
+    local runtime = agent:get_toolset().sandbox
     return {
-      runtime = record and record.metadata.sandbox,
+      runtime = runtime and { runtime = runtime, status = runtime:status() },
+      trust = agent:workspace_trust(),
       agent = agent,
     }
   end
-  local selected = applet:selected_applet()
-  local profile_id = selected and selected.profile or applet.default_profile
-  local profile = profile_id and applet:profile(profile_id) or nil
-  if not profile or not profile.sandbox_controls then
+  local selected = applet:selected_applet() or applet:retained_draft()
+  if not selected and create_draft then
+    selected = applet:draft()
+  end
+  local resolved = selected and applet:_owned_draft(selected):snapshot() or applet:_resolve()
+  if not resolved then
     return {}
   end
-  if not selected then
-    selected = applet:retained_draft(profile.id)
-  end
-  if not selected and create_draft then
-    selected = assert(applet:draft(profile.id))
-  end
-  local options = selected and applet:get_draft_options(selected) or {}
-  local configured = util.copy(profile.config)
-  local sandbox_options = (assert(options).sandbox or {}) --[[@as table]]
-  configured.sandbox = util.deep_merge(configured.sandbox --[[@as table]], sandbox_options) --[[@as Neoagent.SandboxSettings<Neoagent.AgentToolEnvironment>]]
+  local profile = resolved.profile
   return {
     applet = applet,
-    draft = selected,
-    config = configured,
+    draft = profile.sandbox_controls and selected or nil,
+    config = resolved.config,
     label = profile.label,
   }
 end
@@ -448,19 +450,25 @@ function M.set_sandbox_enabled(enabled)
     M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
-  local status, err = state.runtime:set_enabled(enabled)
+  local toggle = state.runtime.set_enabled
+  if not toggle then
+    local err = util.error("sandbox", "Sandbox toggling is unavailable for the selected Agent")
+    M.notify(err.message, vim.log.levels.ERROR)
+    return nil, err
+  end
+  local status, err = toggle(state.runtime, enabled)
   if not status then
     assert(err)
     state.status = state.runtime:status()
-    if state.trust then
-      state.trust:set_sandbox_status(state.status)
+    if target.trust then
+      target.trust:set_sandbox_status(state.status)
     end
     M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   state.status = util.copy(status)
-  if state.trust then
-    state.trust:set_sandbox_status(status)
+  if target.trust then
+    target.trust:set_sandbox_status(status)
   end
   if enabled and not status.active then
     report(require("neoagent.sandbox.composition").warning(assert(target.agent):label(), status), vim.log.levels.WARN)
@@ -481,6 +489,9 @@ function M.sandbox_info()
   local target = sandbox_target()
   if target.runtime then
     return util.copy(target.runtime.status)
+  end
+  if target.agent then
+    return { enabled = false, active = false }
   end
   return require("neoagent.sandbox").info(target.config)
 end

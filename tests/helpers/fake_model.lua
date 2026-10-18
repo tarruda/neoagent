@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local request_preparation = require("neoagent.api.request_preparation")
 local util = require("neoagent.util")
 
 ---@class Neoagent.TestModelResponse
@@ -24,7 +25,7 @@ function M.new(responses)
   ---@param opts Neoagent.StreamOptions
   ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function model:stream(opts)
-    self.requests[#self.requests + 1] = util.copy(opts)
+    self.requests[#self.requests + 1] = request_preparation.copy(opts)
     local response = table.remove(self.responses, 1)
     assert(response, "fake model has no scripted response")
     return async.run(function(run)

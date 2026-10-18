@@ -5,7 +5,7 @@ local util = require("neoagent.util")
 
 local M = {}
 
----@alias Neoagent.CompactionRequest {system_prompt?: string, tools: Neoagent.ToolDefinition[], model_options: Neoagent.StreamOverrides}
+---@alias Neoagent.CompactionRequest {system_prompt?: string, tools: Neoagent.ToolDefinition[], model_options: Neoagent.StreamOverrides, prepare_request?: Neoagent.PrepareRequest}
 
 ---@class Neoagent.AgentCheckpointContext
 ---@field session Neoagent.Session
@@ -57,17 +57,36 @@ function M.evaluate(options, force, messages)
   if not path then
     return nil, path_err
   end
+  local projection = require("neoagent.api.request_preparation").project(
+    request.prepare_request,
+    assert(messages),
+    request.system_prompt,
+    request.tools,
+    request.model_options.files,
+    request.model_options._preparation
+  )
   local inputs = {
     configured = options.configured,
     model = model,
-    messages = assert(messages),
+    messages = messages,
     path = path,
     system_prompt = request.system_prompt,
     tools = request.tools,
     force = force,
     model_options = request.model_options,
+    prepare_request = request.prepare_request,
   }
-  local evaluated, evaluation = pcall(options.component.evaluate, inputs)
+  local candidate = {
+    configured = inputs.configured,
+    model = inputs.model,
+    messages = projection.messages,
+    path = inputs.path,
+    system_prompt = projection.system_prompt,
+    tools = inputs.tools,
+    force = inputs.force,
+    model_options = inputs.model_options,
+  }
+  local evaluated, evaluation = pcall(options.component.evaluate, candidate)
   if not evaluated then
     return nil, util.normalize_error(evaluation, "model")
   end
@@ -89,6 +108,7 @@ local function prepare(options)
     if not evaluation then
       return nil, err
     end
+    options.inputs = inputs
   end
   return options.component.prepare(assert(inputs))
 end
@@ -123,10 +143,11 @@ function M.run(options)
         preparation = preparation,
         model = assert(options.model),
         model_options = request_preparation.copy(request.model_options),
-        system_prompt = request.system_prompt,
+        system_prompt = options.inputs and options.inputs.system_prompt or request.system_prompt,
         tools = request.tools,
         instructions = options.instructions,
         reason = options.reason,
+        prepare_request = request.prepare_request,
         report = options.report,
       }
       local generated = options.execute(call)
@@ -140,6 +161,8 @@ function M.run(options)
           system_prompt = call.system_prompt,
           tools = call.tools,
           model_options = call.model_options,
+          prepare_request = request.prepare_request,
+          ---@async
           project = function(payload)
             return options.session:preview_compaction(payload)
           end,

@@ -69,7 +69,7 @@ describe("neoagent Tool RPC connection", function()
   end)
 
   local function temp()
-    local root = vim.fn.tempname()
+    local root = fs.canonical(vim.fn.tempname())
     roots[#roots + 1] = root
     assert(vim.fn.mkdir(root, "p") == 1)
     return root
@@ -239,7 +239,7 @@ describe("neoagent Tool RPC connection", function()
     local image_block = assert(value.image.content[2])
     assert.are.equal("image", image_block.type)
     local retained = require("tests.helpers.attachments").new(files).read(image_block)
-    assert.is_truthy(require("neoagent.tools.read_file").detect_mime(retained))
+    assert.is_truthy(require("neoagent.tools.common.images").detect_mime(retained))
     assert(vim.wait(3000, function()
       return exited() ~= nil
     end))
