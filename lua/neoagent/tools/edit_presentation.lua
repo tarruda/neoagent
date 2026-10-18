@@ -108,4 +108,6 @@ function M.render(opts)
   }
 end
 
+M.patch_rows = patch_rows
+
 return M

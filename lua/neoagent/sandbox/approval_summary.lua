@@ -2,6 +2,7 @@ local identities = require("neoagent.tools.identities")
 local invocations = require("neoagent.tools.invocation")
 local util = require("neoagent.util")
 local M = {}
+local patch_actions = { add = "Add ", delete = "Delete ", update = "Update " }
 
 ---@alias Neoagent.SandboxApprovalContext {context?: {cwd?: string}|{workspace?: {cwd?: string}}}
 
@@ -9,6 +10,9 @@ local M = {}
 local summaries = {
   [identities.read_file] = function(request)
     return "Read " .. request.resolved_path
+  end,
+  [identities.view_image] = function(request)
+    return "View image " .. request.resolved_path .. " (" .. request.detail .. ")"
   end,
   [identities.write_file] = function(request)
     return string.format("Write %s (%d bytes)", request.resolved_path, #request.content)
@@ -22,6 +26,20 @@ local summaries = {
   end,
   [identities.find] = function(request)
     return "Find " .. request.pattern .. " in " .. request.resolved_path
+  end,
+  [identities.apply_patch] = function(request)
+    local lines, index = {}, 1
+    for _, operation in ipairs(require("neoagent.tools.codex.patch").parse(request.patch)) do
+      local path = request.paths[index]
+      index = index + 1
+      if operation.destination then
+        lines[#lines + 1] = "Move and update " .. path .. " to " .. request.paths[index]
+        index = index + 1
+      else
+        lines[#lines + 1] = patch_actions[operation.kind] .. path
+      end
+    end
+    return table.concat(lines, "\n")
   end,
 }
 

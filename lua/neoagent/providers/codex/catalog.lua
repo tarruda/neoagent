@@ -88,6 +88,12 @@ local function model_entry(value)
     end
     result.responses_lite = value.use_responses_lite
   end
+  if value.supports_image_detail_original ~= nil then
+    if type(value.supports_image_detail_original) ~= "boolean" then
+      return nil
+    end
+    result.supports_image_detail_original = value.supports_image_detail_original
+  end
   if safe_text(value.default_verbosity, 128) then
     result.text_verbosity = value.default_verbosity
   end

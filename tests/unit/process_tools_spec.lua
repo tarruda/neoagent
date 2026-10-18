@@ -804,6 +804,27 @@ describe("Codex process Tools", function()
     }, presentation)
   end)
 
+  it("presents process polling, input, and interruption as distinct activities", function()
+    local render = tools.write_stdin().render
+    assert(render)
+    assert.is_nil(render())
+    for _, case in ipairs({
+      { chars = "", ongoing = "Waiting for", complete = "Read from", command = "process job-1" },
+      { chars = "yes\n", ongoing = "Sending input to", complete = "Sent input to",
+        command = 'process job-1\n"yes\\n"' },
+      { chars = "\3", ongoing = "Interrupting", complete = "Interrupted", command = "process job-1" },
+    }) do
+      local value = assert(render({
+        arguments = { session_id = "job-1", chars = case.chars }, state = "running",
+      }))
+      assert.are.equal("activity", value.kind)
+      assert.are.equal("command", value.operation)
+      assert.are.equal(case.ongoing, value.ongoing)
+      assert.are.equal(case.complete, value.complete)
+      assert.are.equal(case.command, value.command)
+    end
+  end)
+
   it("uses Agent ownership and the Session journal across separate activities", function()
     local model = fake_model.new({
       {

@@ -10,6 +10,7 @@
 ---@field submission_id? integer
 ---@field base? Neoagent.AgentInteractionOptions
 ---@field observed_leaf? string
+---@field observed_files? table<string, table<string, boolean>> Completed file observations by Tool call.
 ---@field compaction_epoch? integer
 ---@field last_length_epoch? integer
 ---@field length_continuation? boolean
@@ -30,6 +31,7 @@ local util = require("neoagent.util")
 ---@field agent? string
 ---@field session_id table
 ---@field processes? Neoagent.ProcessSessions
+---@field file_changed? fun(path: string)
 
 ---@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>: Neoagent.SandboxToolset<C>
 ---@field system_prompt? string
@@ -638,17 +640,29 @@ function M.new(opts)
     return true
   end
 
-  ---@param message Neoagent.ToolResultMessage
-  local function refresh_result(message)
-    if message.isError then
-      return
+  ---@param activity Neoagent.AgentActivity
+  ---@param call_id string
+  ---@param path string
+  local function refresh_path(activity, call_id, path)
+    local calls = activity.observed_files or {}
+    activity.observed_files = calls
+    local observed = calls[call_id] or {}
+    calls[call_id] = observed
+    if not observed[path] then
+      opts.refresh_buffer(path)
+      observed[path] = true
     end
+  end
+
+  ---@param activity Neoagent.AgentActivity
+  ---@param message Neoagent.ToolResultMessage
+  local function refresh_result(activity, message)
     local details = type(message.details) == "table" and message.details or {}
     local changed_paths = details.changed_paths
     if type(changed_paths) == "table" and util.is_list(changed_paths) then
       for _, path in ipairs(changed_paths) do
         if type(path) == "string" and path ~= "" then
-          opts.refresh_buffer(path)
+          refresh_path(activity, message.toolCallId, path)
         end
       end
     end
@@ -687,7 +701,7 @@ function M.new(opts)
     opts.publish({ type = "event", event = event })
     if event.type == "tool_end" then
       ---@cast event Neoagent.ToolEndEvent
-      refresh_result(event.message)
+      refresh_result(activity, event.message)
       activity.observed_leaf = event.message._neoagent_entry_id or activity.observed_leaf
     elseif event.type == "message_end" then
       ---@cast event Neoagent.MessageEndEvent
@@ -1128,7 +1142,7 @@ function M.new(opts)
         local message = entry.message
         if message.role == "toolResult" then
           ---@cast message Neoagent.ToolResultMessage
-          refresh_result(message)
+          refresh_result(activity, message)
         end
       end
     end
@@ -1274,7 +1288,6 @@ function M.new(opts)
           session_id = state.session_id,
           processes = state.process_sessions,
         },
-        execute_tool = toolset.execute_tool,
         thinking_level = thinking_level,
         session_state = selection:snapshot({ persisted = true }),
         report = opts.notify,
@@ -1284,6 +1297,23 @@ function M.new(opts)
           file_cache = state.session:file_cache(),
         },
       }
+      local execute = require("neoagent.agent_loop").validate_toolset(tools, toolset.execute_tool).execute_tool
+      ---@async
+      base.execute_tool = function(tool, arguments, ctx)
+        local activity = assert(base.activity)
+        local call_id = assert(ctx.call).id
+        activity.observed_files = activity.observed_files or {}
+        -- Call IDs may be reused by a later inference. Each invocation starts
+        -- a fresh observation set, shared by publication events and its result.
+        activity.observed_files[call_id] = {}
+        local context = util.shallow_copy(ctx)
+        local environment = util.shallow_copy(assert(ctx.context))
+        environment.file_changed = function(path)
+          refresh_path(activity, call_id, path)
+        end
+        context.context = environment
+        return execute(tool, arguments, context)
+      end
       base.get_steering_messages = function()
         local message, settle = state.steering:offer()
         if not message then

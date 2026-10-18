@@ -104,4 +104,21 @@ function M.exec_command(opts)
   return activity(opts, "command", "Running", "Ran", string_argument(values, "cmd", "…"), true)
 end
 
+---@param opts? Neoagent.ToolPresentationOptions
+---@return Neoagent.ToolActivityPresentation?
+function M.write_stdin(opts)
+  local values = arguments(opts)
+  local subject = "process " .. string_argument(values, "session_id", "…")
+  local chars = string_argument(values, "chars", "")
+  if chars == "\3" then
+    return activity(opts, "command", "Interrupting", "Interrupted", subject, true)
+  elseif chars ~= "" then
+    local input = require("neoagent.util").text_from_bytes(chars)
+    return activity(
+      opts, "command", "Sending input to", "Sent input to", subject .. "\n" .. vim.json.encode(input), true
+    )
+  end
+  return activity(opts, "command", "Waiting for", "Read from", subject, true)
+end
+
 return M

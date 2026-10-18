@@ -872,12 +872,102 @@ describe("neoagent native Renderer protocol", function()
       } },
       { kind = "edit", path = "bad.lua", added = -1, rows = {} },
       { kind = "edit", path = "bad\npath.lua", rows = {} },
+      { kind = "patch", files = false },
+      { kind = "patch", files = {} },
+      { kind = "patch", files = { false } },
+      { kind = "patch", files = { { kind = "update", path = "bad.lua", status = "unknown" } } },
+      { kind = "patch", files = { { kind = "update", path = "bad.lua", status = "applied",
+        added = -1, removed = 0, rows = {} } } },
       { kind = "text", title = "bad\ntitle" },
       { kind = "text" },
       false,
     }) do
       assert.matches("ordinary fallback", tool(renderers.codex, malformed))
     end
+  end)
+
+  it("renders process interactions with their input and collected output", function()
+    local tool = require("neoagent.tools.process").write_stdin()
+    for _, case in ipairs({
+      { chars = "", state = "running", verb = "Waiting for" },
+      { chars = "", state = "success", verb = "Read from" },
+      { chars = "yes\n", state = "success", verb = "Sent input to", input = '"yes\\n"' },
+      { chars = "\3", state = "error", verb = "Interrupted" },
+    }) do
+      local content = rendered(renderers.codex, {
+        key = "process-interaction", kind = "tool", state = case.state,
+        call = { id = "poll", name = "write_stdin", arguments = { session_id = "job-1", chars = case.chars } },
+        message = { role = "toolResult", toolCallId = "poll", toolName = "write_stdin",
+          isError = case.state == "error", content = { { type = "text", text = "collected output" } } },
+      }, { width = 60, spinner = "*", tool = tool })
+      assert.matches(case.verb .. " process job-1", content, 1, true)
+      assert.matches("└ collected output", content, 1, true)
+      assert.is_nil((content:find("write_stdin", 1, true)))
+      if case.input then
+        assert.matches(case.input, content, 1, true)
+      end
+    end
+  end)
+
+  it("repeats Edit previews for patch files and retains complete details", function()
+    local tool = require("neoagent.tools.codex.apply_patch").new()
+    local lines = { "@@ -1 +1,14 @@", "-old" }
+    for index = 1, 14 do
+      lines[#lines + 1] = "+replacement " .. index
+    end
+    ---@type Neoagent.RenderBlock
+    local block = {
+      key = "multi-file-patch", kind = "tool", state = "success",
+      call = { id = "patch", name = "apply_patch", arguments = { patch = "synthetic patch" } },
+      message = { role = "toolResult", toolCallId = "patch", toolName = "apply_patch",
+        content = { { type = "text", text = "raw patch summary" } }, details = { changes = {
+          { kind = "update", path = "existing.lua", status = "applied", added = 14, removed = 1,
+            patch = table.concat(lines, "\n"), truncated = false },
+          { kind = "add", path = "new.lua", status = "applied", added = 1, removed = 0,
+            patch = "@@ -0,0 +1 @@\n+new file", truncated = true },
+        } } },
+    }
+    for _, selected in ipairs({ renderers.codex, renderers.pi }) do
+      local options = { width = 60, tool = tool }
+      local content = rendered(selected, block, options)
+      assert.matches("Edited existing.lua (+14 -1)", content, 1, true)
+      assert.matches("Added new.lua (+1 -0)", content, 1, true)
+      assert.matches("1 -old", content, 1, true)
+      assert.matches("1 +replacement 1", content, 1, true)
+      assert.matches("more lines", content, 1, true)
+      assert.matches("patch truncated", content, 1, true)
+      assert.is_nil((content:find("replacement 14", 1, true)))
+      assert.is_nil((content:find("raw patch summary", 1, true)))
+      local details = layout(assert(protocol.render_details(selected, block, options)), selected.theme)
+      assert.matches("replacement 14", table.concat(details.lines, "\n"), 1, true)
+    end
+  end)
+
+  it("distinguishes partial, failed, and pending file changes in a patch", function()
+    local tool = require("neoagent.tools.codex.apply_patch").new()
+    local content = rendered(renderers.codex, {
+      key = "partial-patch", kind = "tool", state = "error",
+      call = { id = "patch", name = "apply_patch", arguments = {} },
+      message = { role = "toolResult", toolCallId = "patch", toolName = "apply_patch", isError = true,
+        content = {}, details = { changes = {
+          { kind = "delete", path = "gone.lua", status = "applied", added = 0, removed = 1,
+            patch = "@@ -1 +0,0 @@\n-old", truncated = false },
+          { kind = "update", path = "source.lua", destination = "target.lua", status = "partial",
+            added = 1, removed = 0, patch = "@@ -0,0 +1 @@\n+new", truncated = false,
+            error = "source changed concurrently" },
+          { kind = "update", path = "blocked.lua", status = "failed", added = 1, removed = 1,
+            patch = "@@ -1 +1 @@\n-old\n+new", truncated = false, error = "permission denied" },
+          { kind = "add", path = "later.lua", status = "pending", added = 1, removed = 0,
+            patch = "@@ -0,0 +1 @@\n+later", truncated = false },
+        } } },
+    }, { width = 60, tool = tool })
+    assert.matches("Deleted gone.lua (+0 -1)", content, 1, true)
+    assert.matches("Partially moved source.lua → target.lua (+1 -0)", content, 1, true)
+    assert.matches("Failed to edit blocked.lua (+1 -1)", content, 1, true)
+    assert.matches("Pending add later.lua (+1 -0)", content, 1, true)
+    assert.matches("source changed concurrently", content, 1, true)
+    assert.matches("permission denied", content, 1, true)
+    assert.matches("Edited 1/4 files (+1 -1)", content, 1, true)
   end)
 
   it("renders partial write content and complete details", function()

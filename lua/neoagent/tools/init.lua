@@ -68,7 +68,7 @@ end
 
 ---@return Neoagent.Tool<unknown>[]
 function M.codex()
-  return tools({ "read_file", "write_file", "edit_file", "exec_command", "write_stdin", "read_agent_documentation" })
+  return require("neoagent.tools.codex").coding()
 end
 
 ---@return Neoagent.Tool<unknown>[]

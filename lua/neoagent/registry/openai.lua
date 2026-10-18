@@ -252,6 +252,7 @@ local function transform_codex(model)
     context_window = model.context_window,
     max_output_tokens = model.max_output_tokens,
     responses_lite = model.responses_lite,
+    supports_image_detail_original = model.supports_image_detail_original,
     service_tiers = util.copy(model.service_tiers),
     text_verbosity = model.text_verbosity,
   }

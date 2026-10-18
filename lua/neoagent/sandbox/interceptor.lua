@@ -20,13 +20,13 @@ local function resolve_profile(self, ctx)
 end
 
 ---@async
----@generic R, E
 ---@param self Neoagent.SandboxInterceptor<unknown>
 ---@param profile Neoagent.SandboxProfile
 ---@param call Neoagent.ToolOperationCall
----@param owner Neoagent.Run<R, E>
+---@param owner Neoagent.Run<unknown, unknown>
+---@param paths? string[]
 ---@return Neoagent.SandboxInvocation
-local function create_worker(self, profile, call, owner)
+local function create_worker(self, profile, call, owner, paths)
   ---@type Neoagent.SandboxInvocation?
   local invocation
   local worker = require("neoagent.sandbox.worker")
@@ -46,6 +46,7 @@ local function create_worker(self, profile, call, owner)
     release()
   end
   local started, failure = pcall(function()
+    local published = {}
     invocation = worker.new({
       profile = profile,
       platform = self._placement.platform,
@@ -55,6 +56,21 @@ local function create_worker(self, profile, call, owner)
       cwd = call.workspace.cwd,
       environment = environment,
       mode = "tools",
+      on_event = function(message)
+        assert(
+          message.name == require("neoagent.rpc.codec").events.file_changed,
+          "Tool worker sent an unknown connection event"
+        )
+        assert(common.object(message.value), "invalid file publication event")
+        common.fields(message.value, { path = true }, "file publication event")
+        local path = common.absolute_path(message.value.path, "published path")
+        assert(paths and vim.tbl_contains(paths, path), "worker publication is outside the prepared patch")
+        assert(not published[path], "worker sent duplicate file publication")
+        published[path] = true
+        if call.on_file_changed then
+          call.on_file_changed(path)
+        end
+      end,
       on_failure = function()
         if invocation then
           invocation:dispose("restricted Tool worker channel failed")
@@ -117,31 +133,41 @@ function Interceptor:wrap(next_execute)
     ---@type Neoagent.ToolRpcPolicyEvidence?
     local policy_evidence
     ---@async
+    ---@param method string
+    ---@param request_value table
+    ---@param operation_call Neoagent.ToolOperationCall
+    ---@return Neoagent.ToolResult
     local function invoke(method, request_value, operation_call)
       intercepted = true
       local read_only, timeout_ms
       request_value, read_only, timeout_ms = policy:authorize(method, request_value, operation_call)
       if not invocation then
-        invocation = create_worker(self, profile, call, async.current() or ctx.run)
-        invocation:open(
-          require("neoagent.rpc.codec").encode_context(call, { denial_keywords = failure.DENIAL_KEYWORDS })
+        local started = create_worker(
+          self,
+          profile,
+          call,
+          async.current() or ctx.run,
+          method == "apply_patch" and request_value.paths or nil
         )
+        invocation = started
+        started:open(require("neoagent.rpc.codec").encode_context(call, { denial_keywords = failure.DENIAL_KEYWORDS }))
       end
+      local owned = assert(invocation)
       ran_restricted = true
       local timed_out = false
       local owner = async.current()
       if timeout_ms then
-        invocation:deadline(timeout_ms, "restricted Tool execution timed out", function()
+        owned:deadline(timeout_ms, "restricted Tool execution timed out", function()
           timed_out = true
           -- A channel failure preserves validation of received responses.
           -- A deadline must also revoke a pending parent artifact import.
-          invocation.connection:cancel()
-          invocation.connection:abort()
+          owned.connection:cancel()
+          owned.connection:abort()
         end)
       end
       local completed, value = pcall(
         require("neoagent.rpc.tool_client").invoke,
-        invocation.connection,
+        owned.connection,
         method,
         request_value,
         operation_call,
@@ -149,7 +175,7 @@ function Interceptor:wrap(next_execute)
           policy_evidence = value
         end
       )
-      invocation:stop_timer()
+      owned:stop_timer()
       if not completed then
         local err = util.normalize_error(value, "tool")
         if timed_out and (not owner or not owner:is_cancelled()) then

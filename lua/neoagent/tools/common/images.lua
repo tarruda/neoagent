@@ -233,4 +233,20 @@ function M.process(data, mime, request, deps)
   return result
 end
 
+---@async
+---@param data string
+---@param mime Neoagent.FileImageMime
+---@param request Neoagent.ImageFileSettings
+---@param deps Neoagent.ImageFileDependencies
+function M.inspect(data, mime, request, deps)
+  local dimensions = process_magick(data, request, deps, "identify", {
+    "-format",
+    "%w %h",
+    assert(MAGICK_FORMAT[mime]) .. ":-[0]",
+  }, IDENTIFY_CAPTURE_BYTES)
+  local width, height = dimensions:match("(%d+)%s+(%d+)")
+  local w, h = tonumber(width), tonumber(height)
+  assert(w and h and w * h <= request.max_image_pixels, "invalid or oversized image dimensions")
+end
+
 return M

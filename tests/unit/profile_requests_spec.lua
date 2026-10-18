@@ -82,6 +82,53 @@ describe("Profile request context and freeform Tools", function()
     assert.are.equal("latest direction", assert(request.messages[2]).content)
   end)
 
+  it("advertises and projects image detail using the selected Model capability", function()
+    local fake = require("tests.helpers.fake_model")
+    local target = fake.new({ { result = fake.assistant({ { type = "text", text = "done" } }) } })
+    target.input = { "text", "image" }
+    local tool = require("neoagent.tools.codex.view_image").new()
+    assert(require("neoagent.agent_loop")
+      .run({
+        model = target,
+        messages = { { role = "user", content = "work" } },
+        tools = { tool },
+        commit_message = function()
+          return true
+        end,
+      })
+      :await().ok)
+    local definition = assert(assert(assert(target.requests[1]).tools)[1])
+    assert.are.same({ "high" }, assert(assert(definition.input_schema.properties).detail).enum)
+    local history = {
+      {
+        role = "user",
+        content = {
+          {
+            type = "image",
+            file_id = string.rep("a", 64),
+            bytes = 4,
+            mime_type = "image/png",
+            detail = "original",
+          },
+        },
+      },
+    }
+    local projected = require("neoagent.api.messages").for_model(history, target)
+    local message = assert(projected[1])
+    assert(message.role == "user" and type(message.content) == "table")
+    local image = assert(message.content[1])
+    assert(image.type == "image")
+    assert.are.equal("high", image.detail)
+    target.supports_image_detail_original = true
+    projected = require("neoagent.api.messages").for_model(history, target)
+    message = assert(projected[1])
+    assert(message.role == "user" and type(message.content) == "table")
+    image = assert(message.content[1])
+    assert(image.type == "image")
+    assert.are.equal("original", image.detail)
+    assert.are.equal("original", history[1].content[1].detail)
+  end)
+
   it("reuses the projected candidate validated by the request owner", function()
     local transport = fake_transport.new({
       {
@@ -161,6 +208,93 @@ describe("Profile request context and freeform Tools", function()
       },
     })
     assert.is_true(projected >= baseline + 2000)
+  end)
+
+  it("replays a rejected freeform call as valid wire history", function()
+    local tool = require("neoagent.tools.codex.apply_patch").new()
+    local decoder = require("neoagent.api.openai_responses.decoder").new(
+      require("tests.helpers.fake_model").new(),
+      function() end,
+      { tool }
+    )
+    decoder.process({
+      type = "response.completed",
+      response = {
+        status = "completed",
+        output = {
+          { type = "custom_tool_call", id = "ct1", call_id = "call1", name = "apply_patch", input = "bad\255input" },
+        },
+      },
+    })
+    local transport = fake_transport.new({
+      {
+        chunks = {
+          event({ type = "response.completed", response = { status = "completed", output = { answer } } }),
+        },
+      },
+    })
+    assert(model(transport)
+      :stream({
+        messages = {
+          decoder.message,
+          {
+            role = "toolResult",
+            toolCallId = "call1|ct1",
+            toolName = "apply_patch",
+            isError = true,
+            content = { { type = "text", text = "Invalid input" } },
+          },
+        },
+        tools = { tool },
+      })
+      :await().ok)
+    local body = vim.json.decode((assert(assert(transport.requests[1]).body)))
+    assert.are.equal("string", type(body.input[1].input))
+    assert.are.equal("custom_tool_call_output", body.input[2].type)
+  end)
+
+  it("turns malformed text input into a Tool error before execution", function()
+    local tool = require("neoagent.tools.codex.apply_patch").new()
+    local decoder = require("neoagent.api.openai_responses.decoder").new(
+      require("tests.helpers.fake_model").new(),
+      function() end,
+      { tool }
+    )
+    decoder.process({
+      type = "response.completed",
+      response = {
+        status = "completed",
+        output = {
+          { type = "custom_tool_call", id = "ct1", call_id = "call1", name = "apply_patch", input = "bad\255input" },
+        },
+      },
+    })
+    local called = false
+    tool.execute = function()
+      called = true
+      error("invalid patch executed")
+    end
+    local fake = require("tests.helpers.fake_model")
+    local result = require("neoagent.agent_loop")
+      .run({
+        model = fake.new({
+          { result = { ok = true, message = decoder.message, text = "" } },
+          { result = fake.assistant({ { type = "text", text = "done" } }) },
+        }),
+        messages = {},
+        tools = { tool },
+        commit_message = function()
+          return true
+        end,
+      })
+      :await()
+    assert(result.ok)
+    assert.is_false(called)
+    local error_message = result.new_messages[2]
+    assert(error_message and error_message.role == "toolResult")
+    assert.are.equal("toolResult", error_message.role)
+    assert.is_true(error_message.isError)
+    assert.matches("UTF%-8", util.text_content(error_message.content))
   end)
 
   it("encodes ephemeral instruction roles through each API", function()

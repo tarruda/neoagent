@@ -28,8 +28,9 @@ function M.new()
   end
   return {
     error_kind = "process",
+    -- Admission/collection must be acknowledged before completion is observed.
     -- One completion and, if native resources remain, one later release.
-    max_pending_events = 2,
+    max_deferred_events = 2,
     events = function(send)
       send_complete = send
     end,

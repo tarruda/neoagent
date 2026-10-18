@@ -22,7 +22,7 @@ local function wait(run)
 end
 
 ---@param root string
----@return Neoagent.ToolContext<{workspace: Neoagent.Workspace, files: Neoagent.Files}>
+---@return Neoagent.ToolContext<{workspace: Neoagent.Workspace, files: Neoagent.Files, file_changed?: fun(path: string)}>
 local function context(root)
   local noop = function() end
   ---@async
@@ -1838,17 +1838,22 @@ describe("neoagent sandbox Tool RPC selection", function()
       end,
     }
     local execute = interceptor(root, platform):wrap()
+    local ctx = context(root)
+    local changed = {}
+    assert(ctx.context).file_changed = function(path)
+      changed[#changed + 1] = path
+    end
     local value = wait(async.run(function()
-      return execute(require("neoagent.tools.write_file").new(), {
-        path = "completed.txt",
-        content = "write completed\n",
-      }, context(root))
+      return execute(require("neoagent.tools.codex.apply_patch").new(), {
+        patch = "*** Begin Patch\n*** Add File: completed.txt\n+write completed\n*** End Patch",
+      }, ctx)
     end))
 
     assert.is_nil(value.isError)
-    assert.matches("Successfully wrote", assert(value.content[1]).text)
+    assert.matches("Success. Updated", assert(value.content[1]).text, 1, true)
     assert.matches("cleanup failed", assert(value.content[2]).text:lower(), 1, true)
     assert.are.same({ root .. "/completed.txt" }, assert(value.details).changed_paths)
+    assert.are.same({ root .. "/completed.txt" }, changed)
     assert.is_true(assert(assert(value.execution).sandbox).cleanup_failed)
     assert.are.equal("write completed\n", assert(fs.read(root .. "/completed.txt")))
   end)

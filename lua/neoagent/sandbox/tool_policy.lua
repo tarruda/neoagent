@@ -16,6 +16,7 @@ local SHELL_COMPLETION_GRACE_MS = 2000
 
 ---@type table<string, Neoagent.SandboxOperationPolicy>
 local operations = {
+  view_image = { access = "read", target = "resolved_path", read_only = true, timeout_ms = 30000 },
   read_file = { access = "read", target = "resolved_path", read_only = true, timeout_ms = 30000 },
   write_file = { access = "write", target = "resolved_path", read_only = false, timeout_ms = 30000 },
   edit_file = { access = "write", target = "resolved_path", read_only = false, timeout_ms = 30000 },
@@ -55,6 +56,7 @@ local function authorize_path(self, path, required)
     err.sandbox = {
       denied = true,
       can_escalate = true,
+      preflight_denied = true,
       operation = "filesystem." .. required,
       path = lexical,
       profile = self._profile.id,
@@ -74,6 +76,13 @@ end
 ---@return integer? timeout_ms
 function ToolPolicy:authorize(method, request, call)
   call = common.validate_call(call)
+  if method == "apply_patch" then
+    local patch = require("neoagent.tools.codex.apply_patch").validate_request(request)
+    for _, path in ipairs(patch.paths) do
+      authorize_path(self, path, "write")
+    end
+    return patch, false, 30000
+  end
   local operation = operations[method]
   if not operation then
     error(util.error("sandbox", "Unsupported Tool RPC method"), 0)

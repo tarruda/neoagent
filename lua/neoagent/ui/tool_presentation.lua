@@ -356,6 +356,77 @@ local function edit(value, opts)
   }
 end
 
+---@param value Neoagent.ToolPatchPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
+local function patch(value, opts)
+  if not util.is_list(value.files) or #value.files == 0 then
+    return nil
+  end
+  local added, removed, applied = 0, 0, 0
+  local lines = {}
+  for _, file in ipairs(value.files) do
+    if
+      type(file) ~= "table"
+      or type(file.path) ~= "string"
+      or file.kind ~= "add" and file.kind ~= "delete" and file.kind ~= "update"
+      or file.status ~= "pending" and file.status ~= "applied" and file.status ~= "failed" and file.status ~= "partial"
+      or file.destination ~= nil and (type(file.destination) ~= "string" or not one_line(file.destination))
+      or file.error ~= nil and type(file.error) ~= "string"
+    then
+      return nil
+    end
+    local path = file.path .. (file.destination and " → " .. file.destination or "")
+    local preview = edit({
+      kind = "edit",
+      path = path,
+      rows = file.rows,
+      added = file.added,
+      removed = file.removed,
+      truncated = file.truncated,
+    }, opts)
+    if not preview then
+      return nil
+    end
+    if file.status == "applied" then
+      applied = applied + 1
+    end
+    if file.status == "applied" or file.status == "partial" then
+      added, removed = added + file.added, removed + file.removed
+    end
+    local verb = file.destination and "Moved" or file.kind == "add" and "Added" or file.kind == "delete" and "Deleted"
+      or "Edited"
+    local action = file.destination and "move" or file.kind == "add" and "add" or file.kind == "delete" and "delete"
+      or "edit"
+    if file.status == "pending" then
+      verb = "Pending " .. action
+    elseif file.status == "failed" then
+      verb = "Failed to " .. action
+    elseif file.status == "partial" then
+      verb = "Partially " .. verb:lower()
+    end
+    if #lines > 0 then
+      lines[#lines + 1] = { { text = "" } }
+    end
+    local title = preview.title
+    assert(type(title) == "table")
+    assert(title[1]).text = "   " .. verb
+    lines[#lines + 1] = title
+    vim.list_extend(lines, assert(preview.lines))
+    if file.error then
+      local width = opts.presentation_surface == "transcript" and math.max(1, (opts.width or 80) - 3) or nil
+      for _, line in ipairs(width and compact_words(file.error, width) or display.lines(file.error)) do
+        lines[#lines + 1] = { { text = "   " .. line, style = "red" } }
+      end
+    end
+  end
+  return {
+    title = edit_summary(applied .. "/" .. #value.files .. " files", added, removed),
+    lines = lines,
+    status = true,
+  }
+end
+
 ---@param value Neoagent.ToolTextPresentation
 ---@return Neoagent.ToolViewPresentation?
 local function text(value)
@@ -408,6 +479,9 @@ local function present(value, opts, codex)
   elseif value.kind == "edit" then
     ---@cast value Neoagent.ToolEditPresentation
     return codex and edit(value, opts) or nil
+  elseif value.kind == "patch" then
+    ---@cast value Neoagent.ToolPatchPresentation
+    return patch(value, opts)
   elseif value.kind == "text" then
     ---@cast value Neoagent.ToolTextPresentation
     return text(value)

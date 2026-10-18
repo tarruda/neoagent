@@ -25,10 +25,13 @@ function M.new(dependencies, dispatch)
     return descriptor.execute(payload, call, options)
   end
   local execute = dispatch or dispatch_default
+  ---@type (fun(name: string, value: table))?
+  local notify
   return {
     error_kind = "tool",
-    max_pending_events = 0,
-    events = function() end,
+    events = function(send)
+      notify = send
+    end,
     open = function(value)
       context = codec.decode_context(value)
     end,
@@ -48,6 +51,9 @@ function M.new(dependencies, dispatch)
       ---@type Neoagent.ToolOperationCall
       local call = {
         workspace = util.copy(selected_context.workspace),
+        on_file_changed = function(path)
+          assert(notify)(codec.events.file_changed, { path = path })
+        end,
         on_update = function(value)
           if cancelled() then
             return
