@@ -615,6 +615,9 @@ describe("neoagent.chat", function()
     local result = wait(chat.run(session, "begin", {
       model = model,
       get_steering_messages = function()
+        if #model.requests == 0 then
+          return {}
+        end
         local messages = pending
         pending = {}
         return messages

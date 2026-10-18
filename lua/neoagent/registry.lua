@@ -20,6 +20,7 @@ local M = {}
 ---@field diagnostics? {path: string}|false
 ---@field file_uploads? boolean
 ---@field prompt_caching? boolean
+---@field custom_tools? boolean
 
 ---@class Neoagent.ProviderDefinition: Neoagent.ProviderOptions
 ---@field api string

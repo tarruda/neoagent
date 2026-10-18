@@ -2,16 +2,41 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@generic C
+---@param tool Neoagent.Tool<C>
+---@param model? Neoagent.MessageTarget
+---@return Neoagent.Tool<C>
+function M.for_model(tool, model)
+  local result = util.copy(tool)
+  if model and tool.input_schema_for_model then
+    local schema = tool.input_schema_for_model({
+      api = model.api,
+      provider = model.provider,
+      id = model.id,
+      input = util.copy(model.input),
+      supports_image_detail_original = model.supports_image_detail_original,
+    })
+    local validated, err = M.validate_definition(schema)
+    assert(validated, err)
+    result.input_schema = validated
+  end
+  return result
+end
+
 -- Model-facing definitions never retain executable or presentation state.
----@param tools Neoagent.ToolDefinition[]
+---@generic C
+---@param tools Neoagent.Tool<C>[]
+---@param model? Neoagent.MessageTarget
 ---@return Neoagent.ToolDefinition[]
-function M.definitions(tools)
+function M.definitions(tools, model)
   local result = {}
   for _, tool in ipairs(tools) do
+    tool = M.for_model(tool, model)
     result[#result + 1] = {
       name = tool.name,
       description = tool.description,
       input_schema = util.copy(tool.input_schema),
+      text_input = util.copy(tool.text_input),
     }
   end
   return result

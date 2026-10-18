@@ -55,7 +55,7 @@ end
 ---@param result Neoagent.JsonObject[]
 ---@param message Neoagent.AssistantMessage
 ---@param message_index integer
-local function encode_assistant(result, message, message_index)
+local function encode_assistant(result, message, message_index, custom_tools)
   local text_index = 0
   for _, block in ipairs(message.content or {}) do
     if block.type == "thinking" and type(block.thinkingSignature) == "string" then
@@ -91,6 +91,11 @@ local function encode_assistant(result, message, message_index)
         name = block.name,
         arguments = util.json_encode(block.arguments or vim.empty_dict()),
       }
+      if custom_tools and block.text_input then
+        item.type = "custom_tool_call"
+        item.input = block.arguments[block.text_input]
+        item.arguments = nil
+      end
       if item_id then
         item.id = item_id
       end
@@ -131,25 +136,39 @@ end
 ---@param include_system? boolean
 ---@param image? Neoagent.ImageEncoder
 ---@return Neoagent.JsonObject[]
-local function encode_messages(messages, system_prompt, include_system, image)
+local function encode_messages(messages, system_prompt, include_system, image, custom_tools)
   image = image or require("neoagent.api.images").inline("openai-responses")
   ---@type Neoagent.JsonObject[]
   local result = util.list()
   if include_system ~= false and system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
   end
+  local output_types = {}
+  for _, message in ipairs(messages) do
+    if message.role == "assistant" then
+      for _, block in ipairs(message.content) do
+        if block.type == "toolCall" then
+          output_types[block.id] = custom_tools and block.text_input and "custom_tool_call_output"
+            or "function_call_output"
+        end
+      end
+    end
+  end
   for message_index, message in ipairs(messages) do
-    if message.role == "user" then
+    if message.role == "system" or message.role == "developer" then
+      result[#result + 1] = { role = message.role, content = message.content }
+    elseif message.role == "user" or message.role == "userContext" then
       local content = input_content(message.content, image)
       if #content > 0 then
         result[#result + 1] = { role = "user", content = content }
       end
     elseif message.role == "assistant" then
-      encode_assistant(result, message, message_index)
+      encode_assistant(result, message, message_index, custom_tools)
     elseif message.role == "toolResult" then
       local call_id = split_call_id(message.toolCallId)
       local output = tool_output(message.content, image)
-      result[#result + 1] = { type = "function_call_output", call_id = call_id, output = output }
+      local wire = output_types[message.toolCallId] or "function_call_output"
+      result[#result + 1] = { type = wire, call_id = call_id, output = output }
     elseif message.role == "nativeCompaction" then
       result[#result + 1] = {
         type = "compaction",
@@ -166,17 +185,28 @@ end
 ---@param tools? Neoagent.ToolDefinition[]
 ---@param strict boolean|vim.NIL
 ---@return Neoagent.JsonObject[]
-local function encode_tools(tools, strict)
+local function encode_tools(tools, strict, custom_tools)
   ---@type Neoagent.JsonObject[]
   local result = util.list()
   for _, tool in ipairs(tools or {}) do
-    result[#result + 1] = {
-      type = "function",
-      name = tool.name,
-      description = tool.description,
-      parameters = tool_schema.normalize(tool.input_schema),
-      strict = strict,
-    }
+    require("neoagent.api.tool_input").validate(tool)
+    if custom_tools and tool.text_input then
+      local grammar = tool.text_input.grammar
+      result[#result + 1] = {
+        type = "custom",
+        name = tool.name,
+        description = tool.description,
+        format = grammar and { type = "grammar", syntax = "lark", definition = grammar } or { type = "text" },
+      }
+    else
+      result[#result + 1] = {
+        type = "function",
+        name = tool.name,
+        description = tool.description,
+        parameters = tool_schema.normalize(tool.input_schema),
+        strict = strict,
+      }
+    end
   end
   return result
 end
@@ -225,7 +255,7 @@ function M.build(self, call_opts, compact, api_key)
     stream = true,
     store = false,
   }
-  local tools = encode_tools(call_opts.tools, codex and vim.NIL or false)
+  local tools = encode_tools(call_opts.tools, codex and vim.NIL or false, self._custom_tools)
   ---@type Neoagent.JsonObject[]?
   local prefix
   if codex then
@@ -333,7 +363,7 @@ function M.build(self, call_opts, compact, api_key)
     ---@async
     encode = function(image)
       local encoded = util.copy(request.body or {})
-      local input = encode_messages(selected, call_opts.system_prompt, not codex, image)
+      local input = encode_messages(selected, call_opts.system_prompt, not codex, image, self._custom_tools)
       encoded.input = prefix and prepend_input(prefix, input) or input
       if compact then
         encoded.input[#encoded.input + 1] = { type = "compaction_trigger" }

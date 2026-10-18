@@ -689,7 +689,7 @@ describe("neoagent.api.openai_completions", function()
       { opts = { request_opts = { headers = "bad" } }, message = "headers" },
       { opts = { request_opts = { body = "bad" } }, message = "body" },
       { opts = { request_opts = function() return nil end }, message = "table" },
-      { opts = { messages = { { role = "system", content = "unexpected" } } }, message = "unsupported message role" },
+      { opts = { messages = { { role = "unsupported", content = "unexpected" } } }, message = "unsupported message role" },
     }
     for _, case in ipairs(cases) do
       local fake = fake_transport.new()
@@ -793,7 +793,7 @@ describe("neoagent.api.openai_completions", function()
   end)
 
   it("contains unsupported history and retains partial thinking failures", function()
-    local invalid_history = { { role = "system", content = "unexpected" } }
+    local invalid_history = { { role = "unsupported", content = "unexpected" } }
     local encoded, encode_err = pcall(openai._encode_messages,
       invalid_history --[[@as Neoagent.Message[] ]])
     assert.is_false(encoded)

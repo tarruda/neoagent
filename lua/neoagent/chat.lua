@@ -27,6 +27,7 @@ local M = {}
 ---@field execute_tool? Neoagent.ToolExecutor<C>
 ---@field get_steering_messages? Neoagent.SteeringMessages
 ---@field prepare_request_messages? Neoagent.PrepareRequestMessages
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field on_event? fun(event: Neoagent.AgentLoopEvent)
 ---@field on_done? fun(result: Neoagent.ChatResult)
 ---@field on_accept? fun(entry?: Neoagent.JournalEntry)
@@ -43,6 +44,7 @@ local M = {}
 ---@field execute_tool Neoagent.ToolExecutor<C>
 ---@field get_steering_messages Neoagent.SteeringMessages
 ---@field prepare_request_messages? Neoagent.PrepareRequestMessages
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field commit_message Neoagent.MessageCommit
 ---@field on_event? fun(event: Neoagent.AgentLoopEvent)
 ---@field on_done? fun(result: Neoagent.ChatResult)
@@ -134,6 +136,7 @@ local function preflight(session, opts, tools, commit_message)
     execute_tool = opts.execute_tool,
     get_steering_messages = opts.get_steering_messages,
     prepare_request_messages = opts.prepare_request_messages,
+    prepare_request = opts.prepare_request,
     commit_message = commit_message,
     on_event = opts.on_event,
     report = diagnostic_report(opts.report),
@@ -148,6 +151,7 @@ local function preflight(session, opts, tools, commit_message)
     execute_tool = prepared.execute_tool,
     get_steering_messages = prepared.get_steering_messages,
     prepare_request_messages = prepared.prepare_request_messages,
+    prepare_request = prepared.prepare_request,
     commit_message = prepared.commit_message,
     on_event = prepared.on_event,
     on_done = opts.on_done,
@@ -349,7 +353,17 @@ function M.send(session, prompt, opts)
         if not normalized then
           return finish_result({ ok = false, error = assert(validation_err) }, session)
         end
-        model_opts.messages = normalized
+        local projection = require("neoagent.api.request_preparation").project(
+          prepared.prepare_request,
+          normalized,
+          model_opts.system_prompt,
+          {},
+          model_opts.files,
+          model_opts._preparation
+        )
+        model_opts.messages = projection.messages
+        model_opts.system_prompt = projection.system_prompt
+        request_preparation.finalize(prepared.model, model_opts)
         if run:is_cancelled() then
           return finish_result({ ok = false, error = async.cancelled_error }, session)
         end
@@ -419,6 +433,7 @@ local function run_agent(session, opts)
         execute_tool = opts.execute_tool,
         get_steering_messages = opts.get_steering_messages,
         prepare_request_messages = opts.prepare_request_messages,
+        prepare_request = opts.prepare_request,
         commit_message = opts.commit_message,
         on_event = function(event)
           run:emit(event)

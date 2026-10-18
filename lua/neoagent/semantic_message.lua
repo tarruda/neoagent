@@ -25,6 +25,7 @@ local M = {}
 ---@field name? string
 ---@field arguments table<string, Neoagent.JsonValue>
 ---@field argumentsError? string
+---@field text_input? string
 ---@field index? integer
 
 ---@class Neoagent.ToolCallBlock: Neoagent.ToolCallData
@@ -33,6 +34,7 @@ local M = {}
 ---@field name string
 ---@field arguments table<string, Neoagent.JsonValue>
 ---@field argumentsError? string
+---@field text_input? string
 ---@field index? integer
 
 ---@class Neoagent.ImageBlock
@@ -41,6 +43,7 @@ local M = {}
 ---@field mime_type string
 ---@field bytes integer
 ---@field filename? string
+---@field detail? 'high'|'original'
 ---@field id? string
 ---@field revision? string|number
 
@@ -107,7 +110,21 @@ local M = {}
 ---@field provider string
 ---@field model string
 
----@alias Neoagent.RequestMessage Neoagent.Message|Neoagent.NativeCompactionMessage
+---@class Neoagent.SystemMessage
+---@field role 'system'
+---@field content string
+
+---@class Neoagent.DeveloperMessage
+---@field role 'developer'
+---@field content string
+
+---@class Neoagent.UserContextMessage
+---@field role 'userContext'
+---@field content string
+
+---@alias Neoagent.ContextMessage Neoagent.SystemMessage|Neoagent.DeveloperMessage|Neoagent.UserContextMessage
+
+---@alias Neoagent.RequestMessage Neoagent.Message|Neoagent.NativeCompactionMessage|Neoagent.ContextMessage
 
 ---@class Neoagent.ToolResult
 ---@field content Neoagent.InputBlock[]
@@ -136,45 +153,58 @@ local MAX_OPAQUE_BYTES = 16 * 1024 * 1024
 ---@param item unknown
 ---@return Neoagent.NativeCompactionMessage?, string?
 function M.normalize_native_compaction(item)
-  if type(item) ~= "table" or (next(item) ~= nil and util.is_list(item))
-    or item.role ~= "nativeCompaction"
-  then
+  if type(item) ~= "table" or (next(item) ~= nil and util.is_list(item)) or item.role ~= "nativeCompaction" then
     return nil, "native compaction item is required"
   end
   for key in pairs(item) do
-    if key ~= "role" and key ~= "api" and key ~= "provider" and key ~= "model"
-      and key ~= "encrypted_content" and key ~= "id"
+    if
+      key ~= "role"
+      and key ~= "api"
+      and key ~= "provider"
+      and key ~= "model"
+      and key ~= "encrypted_content"
+      and key ~= "id"
     then
       return nil, "native compaction has unsupported field: " .. tostring(key)
     end
   end
   for _, key in ipairs({ "api", "provider", "model" }) do
     local value = item[key]
-    if type(value) ~= "string" or value == "" or #value > MAX_ID_BYTES
-      or not util.is_valid_utf8(value) or value:find("[%z\1-\31\127]")
+    if
+      type(value) ~= "string"
+      or value == ""
+      or #value > MAX_ID_BYTES
+      or not util.is_valid_utf8(value)
+      or value:find("[%z\1-\31\127]")
     then
       return nil, "native compaction " .. key .. " must be safe non-empty text"
     end
   end
-  if type(item.encrypted_content) ~= "string" or item.encrypted_content == ""
+  if
+    type(item.encrypted_content) ~= "string"
+    or item.encrypted_content == ""
     or #item.encrypted_content > MAX_OPAQUE_BYTES
   then
     return nil, "native compaction encrypted content is invalid"
   end
-  if item.id ~= nil and (type(item.id) ~= "string" or item.id == "" or #item.id > MAX_ID_BYTES
-    or not util.is_valid_utf8(item.id) or item.id:find("[%z\1-\31\127]"))
+  if
+    item.id ~= nil
+    and (
+      type(item.id) ~= "string"
+      or item.id == ""
+      or #item.id > MAX_ID_BYTES
+      or not util.is_valid_utf8(item.id)
+      or item.id:find("[%z\1-\31\127]")
+    )
   then
     return nil, "native compaction id is invalid"
   end
   return util.copy(item) --[[@as Neoagent.NativeCompactionMessage]]
 end
 
----@param messages unknown
+---@param messages unknown[]
 ---@return Neoagent.RequestMessage[]?, string?
-function M.normalize_request_list(messages)
-  if type(messages) ~= "table" or not util.is_list(messages) then
-    return nil, "messages must be a list"
-  end
+local function normalize_request_history(messages)
   local native_index
   for index, message in ipairs(messages) do
     if type(message) == "table" and message.role == "nativeCompaction" then
@@ -215,6 +245,45 @@ function M.normalize_request_list(messages)
     return nil, err
   end
   vim.list_extend(result, normalized)
+  return result
+end
+
+-- Request-only instructions are validated separately from durable history.
+-- Removing them for checkpoint validation preserves the retained-user rules.
+---@param messages unknown
+---@return Neoagent.RequestMessage[]?, string?
+function M.normalize_request_list(messages)
+  if type(messages) ~= "table" or not util.is_list(messages) then
+    return nil, "messages must be a list"
+  end
+  local history, positions = {}, {}
+  for _, message in ipairs(messages) do
+    if
+      type(message) == "table"
+      and (message.role == "system" or message.role == "developer" or message.role == "userContext")
+    then
+      for key in pairs(message) do
+        if key ~= "role" and key ~= "content" then
+          return nil, "request context has unsupported field: " .. tostring(key)
+        end
+      end
+      if type(message.content) ~= "string" or not util.is_valid_utf8(message.content) then
+        return nil, "request context must contain UTF-8 text"
+      end
+      positions[#positions + 1] = { context = { role = message.role, content = message.content } }
+    else
+      history[#history + 1] = message
+      positions[#positions + 1] = { index = #history }
+    end
+  end
+  local normalized, err = normalize_request_history(history)
+  if not normalized then
+    return nil, err
+  end
+  local result = {}
+  for _, position in ipairs(positions) do
+    result[#result + 1] = position.context or normalized[assert(position.index)]
+  end
   return result
 end
 
@@ -270,6 +339,7 @@ local block_fields = {
     name = true,
     arguments = true,
     argumentsError = true,
+    text_input = true,
     index = true,
   },
   image = {
@@ -278,6 +348,7 @@ local block_fields = {
     mime_type = true,
     bytes = true,
     filename = true,
+    detail = true,
     id = true,
     revision = true,
   },
@@ -588,6 +659,20 @@ local function normalize_block(value, role, transient)
     if not valid then
       return nil, err
     end
+    valid, err = check_optional_string(result.text_input, "toolCall text_input", MAX_ID_BYTES)
+    if not valid then
+      return nil, err
+    end
+    if result.text_input and not result.argumentsError then
+      if type(result.arguments[result.text_input]) ~= "string" then
+        return failure("freeform toolCall arguments must contain the declared text parameter")
+      end
+      for key in pairs(result.arguments) do
+        if key ~= result.text_input then
+          return failure("freeform toolCall arguments have additional fields")
+        end
+      end
+    end
     valid, err = index(result.index, "toolCall index")
     if not valid then
       return nil, err
@@ -602,6 +687,9 @@ local function normalize_block(value, role, transient)
     result.mime_type, err = mime_type(result.mime_type)
     if not result.mime_type then
       return nil, err
+    end
+    if result.detail ~= nil and result.detail ~= "high" and result.detail ~= "original" then
+      return nil, "image detail must be high or original"
     end
     valid, err = check_optional_string(result.filename, "image filename", MAX_ID_BYTES)
     if not valid then
@@ -715,8 +803,7 @@ function M.normalize(message)
     return nil, err
   end
   if
-    result.timestamp ~= nil
-    and (not finite(result.timestamp) or result.timestamp < 0 or result.timestamp % 1 ~= 0)
+    result.timestamp ~= nil and (not finite(result.timestamp) or result.timestamp < 0 or result.timestamp % 1 ~= 0)
   then
     return failure("message timestamp must be a non-negative integer")
   end

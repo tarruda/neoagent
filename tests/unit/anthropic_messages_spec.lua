@@ -38,6 +38,54 @@ local function message_start(usage)
 end
 
 describe("neoagent.api.anthropic_messages", function()
+  it("encodes only the final shaped system and developer context", function()
+    local model = anthropic.new({ provider = "anthropic", model = "test", base_url = "https://example.test" })
+    ---@type Neoagent.UserMessage
+    local user = { role = "user", content = "task" }
+    ---@type {original: Neoagent.RequestMessage, replacement: Neoagent.RequestMessage}[]
+    local contexts = {
+      { original = { role = "system", content = "OLD" }, replacement = { role = "system", content = "NEW" } },
+      { original = { role = "developer", content = "OLD" }, replacement = { role = "developer", content = "NEW" } },
+    }
+    for _, context in ipairs(contexts) do
+      local original, replacement = context.original, context.replacement
+      ---@type {original: Neoagent.RequestMessage[], shaped: Neoagent.RequestMessage[], expected: string}[]
+      local cases = {
+        { original = { original, user }, shaped = { replacement, user }, expected = "BASE\n\nNEW" },
+        { original = { original, user }, shaped = { user }, expected = "BASE" },
+        { original = { user }, shaped = { replacement, user }, expected = "BASE\n\nNEW" },
+      }
+      for _, case in ipairs(cases) do
+        local plan = model:_request({ system_prompt = "BASE", messages = case.original, request_opts = function()
+          return { messages = case.shaped }
+        end })
+        assert.are.equal(case.expected, plan.encode(images.inline(plan.api)).system)
+        assert.are.same({ { role = "user", content = "task" } }, plan.encode(images.inline(plan.api)).messages)
+      end
+    end
+  end)
+
+  it("counts context once regardless of its semantic entry point", function()
+    local model = anthropic.new({ provider = "anthropic", model = "test", base_url = "https://example.test" })
+    local context = string.rep("x", 4000)
+    local user = { role = "user", content = "task" }
+    local prompt = model:_request({ system_prompt = context, messages = { user } })
+    local semantic = model:_request({ messages = { { role = "developer", content = context }, user } })
+    assert.are.same(prompt.encode(images.inline(prompt.api)), semantic.encode(images.inline(semantic.api)))
+    assert.are.equal(prompt.input_tokens, semantic.input_tokens)
+  end)
+
+  it("appends shaped context to provider system blocks without discarding their metadata", function()
+    local model = anthropic.new({ provider = "anthropic", model = "test", base_url = "https://example.test",
+      request_opts = { body = { system = { { type = "text", text = "provider", cache_control = { type = "ephemeral" } } } } },
+    })
+    local plan = model:_request({ messages = { { role = "developer", content = "context" } } })
+    assert.are.same({
+      { type = "text", text = "provider", cache_control = { type = "ephemeral" } },
+      { type = "text", text = "context" },
+    }, plan.encode(images.inline(plan.api)).system)
+  end)
+
   it("keeps a per-call output cap and fits manual thinking below it", function()
     local model = anthropic.new({
       provider = "anthropic", model = "claude-sonnet-4-5", base_url = "https://example.test",
@@ -957,7 +1005,7 @@ describe("neoagent.api.anthropic_messages", function()
       { opts = { request_opts = { body = "bad" } }, message = "body" },
       { opts = { request_opts = function() return nil end }, message = "table" },
       {
-        opts = { messages = { { role = "system", content = "unexpected" } } },
+        opts = { messages = { { role = "unsupported", content = "unexpected" } } },
         message = "unsupported message role",
       },
       {
@@ -985,7 +1033,7 @@ describe("neoagent.api.anthropic_messages", function()
     end
 
     for _, messages in ipairs({
-      { { role = "system", content = "unexpected" } },
+      { { role = "unsupported", content = "unexpected" } },
       { { role = "assistant", content = { {
         type = "toolCall",
         id = "call",

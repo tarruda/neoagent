@@ -339,6 +339,7 @@ local provider_fields = {
   diagnostics = true,
   file_uploads = true,
   prompt_caching = true,
+  custom_tools = true,
   models = true,
   request_opts = true,
   service = true,
@@ -619,6 +620,10 @@ local function validate(opts)
         "request_opts must be a table or function"
       )
     end
+    assert(
+      provider.custom_tools == nil or type(provider.custom_tools) == "boolean",
+      "provider custom_tools must be boolean"
+    )
     if
       provider_uses_api(provider, "openai-codex-responses")
       and provider.diagnostics ~= nil

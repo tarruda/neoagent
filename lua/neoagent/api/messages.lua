@@ -108,6 +108,16 @@ function M.for_model(messages, model)
     else
       result[index] = message
     end
+    if images and not model.supports_image_detail_original then
+      local projected = result[index]
+      if projected.role == "toolResult" or projected.role == "user" and type(projected.content) == "table" then
+        for _, block in ipairs(projected.content) do
+          if block.type == "image" and block.detail == "original" then
+            block.detail = "high"
+          end
+        end
+      end
+    end
   end
   return result
 end

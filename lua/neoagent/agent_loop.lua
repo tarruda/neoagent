@@ -31,6 +31,7 @@ end
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
 ---@field prompt_snippet? string
 ---@field prompt_guidelines? string[]
+---@field input_schema_for_model? fun(model: Neoagent.MessageTarget): Neoagent.ToolSchema
 
 ---@class Neoagent.Tool<C>: Neoagent.ToolFacets<C>
 ---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
@@ -118,6 +119,7 @@ end
 ---@field model_options? Neoagent.StreamOverrides
 ---@field get_steering_messages? Neoagent.SteeringMessages
 ---@field prepare_request_messages? Neoagent.PrepareRequestMessages
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field commit_message Neoagent.MessageCommit
 
 ---@class Neoagent.PreparedAgentLoop<C>: Neoagent.RunOptions<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
@@ -133,6 +135,7 @@ end
 ---@field model_options Neoagent.StreamOverrides
 ---@field get_steering_messages Neoagent.SteeringMessages
 ---@field prepare_request_messages? Neoagent.PrepareRequestMessages
+---@field prepare_request? Neoagent.PrepareRequest
 
 ---@generic C
 ---@param tool Neoagent.Tool<C>
@@ -162,7 +165,9 @@ end
 
 ---@type table<string, boolean>
 local tool_fields = {
+  text_input = true,
   prompt_snippet = true,
+  input_schema_for_model = true,
   prompt_guidelines = true,
   name = true,
   description = true,
@@ -201,6 +206,11 @@ function M.validate_toolset(tools, execute_tool)
       error(label .. "." .. schema_err, 0)
     end
     tool.input_schema = schema
+    require("neoagent.api.tool_input").validate(tool)
+    assert(
+      tool.input_schema_for_model == nil or type(tool.input_schema_for_model) == "function",
+      label .. ".input_schema_for_model must be a function"
+    )
     assert(
       tool.prompt_snippet == nil or type(tool.prompt_snippet) == "string" and util.is_valid_utf8(tool.prompt_snippet),
       label .. ".prompt_snippet must be UTF-8 text"
@@ -261,7 +271,11 @@ function M.prepare(opts)
     opts.prepare_request_messages == nil or type(opts.prepare_request_messages) == "function",
     "prepare_request_messages must be a function"
   )
+  assert(opts.prepare_request == nil or type(opts.prepare_request) == "function", "prepare_request must be a function")
   local toolset = M.validate_toolset(opts.tools or {}, opts.execute_tool)
+  for _, tool in ipairs(toolset.tools) do
+    tool.input_schema = tool_schema.for_model(tool, opts.model).input_schema
+  end
   return {
     model = opts.model,
     messages = messages,
@@ -274,6 +288,7 @@ function M.prepare(opts)
     model_options = util.copy(opts.model_options or {}),
     get_steering_messages = steering,
     prepare_request_messages = opts.prepare_request_messages,
+    prepare_request = opts.prepare_request,
     commit_message = opts.commit_message,
     on_event = opts.on_event,
     on_done = opts.on_done,
@@ -598,43 +613,73 @@ function M.run(opts)
         return nil, acknowledge
       end
 
-      while true do
-        local model_opts = request_preparation.copy(prepared.model_options)
-        ---@cast model_opts Neoagent.StreamOptions
-        model_opts._preparation = request_preparation.new()
-        model_opts.system_prompt = prepared.system_prompt
-        model_opts.tools = util.copy(prepared.tool_schemas)
-        local acknowledge
-        if prepared.prepare_request_messages then
-          local _, steering_err = commit_steering()
-          if steering_err then
-            return steering_err
+      ---@async
+      ---@return Neoagent.StreamOptions?, Neoagent.AgentLoopFailure?, Neoagent.RequestAcknowledgement?
+      local function inference_request()
+        -- Steering can arrive during any asynchronous preparation boundary.
+        -- Publish and budget only a candidate whose committed input is stable.
+        for pass = 1, 16 do
+          if prepared.prepare_request_messages and pass == 1 then
+            local _, steering_err = commit_steering()
+            if steering_err then
+              return nil, steering_err
+            end
           end
           if run:is_cancelled() then
-            return commit_failure(nil, async.cancelled_error)
+            return nil, commit_failure(nil, async.cancelled_error)
           end
-          local prepare_err
-          prepare_err, acknowledge = prepare_request(model_opts)
-          if prepare_err then
-            return prepare_err
+          local model_opts = request_preparation.copy(prepared.model_options)
+          ---@cast model_opts Neoagent.StreamOptions
+          model_opts._preparation = request_preparation.new()
+          model_opts.system_prompt = prepared.system_prompt
+          model_opts.tools = util.copy(prepared.tool_schemas)
+          local acknowledge
+          if prepared.prepare_request_messages then
+            local prepare_err
+            prepare_err, acknowledge = prepare_request(model_opts)
+            if prepare_err then
+              return nil, prepare_err
+            end
+          end
+          local prepared_ok, err = pcall(function()
+            local projection = request_preparation.project(
+              prepared.prepare_request,
+              working,
+              model_opts.system_prompt,
+              model_opts.tools or {},
+              model_opts.files,
+              model_opts._preparation
+            )
+            model_opts.messages, model_opts.system_prompt = projection.messages, projection.system_prompt
+            request_preparation.finalize(prepared.model, model_opts)
+          end)
+          if not prepared_ok then
+            return nil, commit_failure(nil, util.normalize_error(err, "context"))
+          end
+          if run:is_cancelled() then
+            return nil, commit_failure(nil, async.cancelled_error)
           end
           local additional, additional_err = commit_steering()
           if additional_err then
-            return additional_err
+            return nil, additional_err
           end
-          if additional > 0 then
-            prepare_err, acknowledge = prepare_request(model_opts)
-            if prepare_err then
-              return prepare_err
+          if run:is_cancelled() then
+            return nil, commit_failure(nil, async.cancelled_error)
+          end
+          if additional == 0 then
+            model_opts.on_event = function(event)
+              run:emit(event)
             end
+            return model_opts, nil, acknowledge
           end
         end
-        if run:is_cancelled() then
-          return commit_failure(nil, async.cancelled_error)
-        end
-        model_opts.messages = util.copy(working)
-        model_opts.on_event = function(event)
-          run:emit(event)
+        return nil, commit_failure(nil, util.error("context", "Request input kept changing during preparation"))
+      end
+
+      while true do
+        local model_opts, prepare_err, acknowledge = inference_request()
+        if not model_opts then
+          return assert(prepare_err)
         end
         if acknowledge then
           acknowledge()

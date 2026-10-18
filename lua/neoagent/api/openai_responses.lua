@@ -26,6 +26,8 @@ local M = {}
 ---@field text_verbosity? string
 ---@field response_status? Neoagent.ResponseStatus
 ---@field native_compaction? boolean
+---@field custom_tools? boolean
+---@field supports_image_detail_original? boolean
 
 ---@class Neoagent.ResponsesModel: Neoagent.Model
 ---@field _base_url string
@@ -37,6 +39,7 @@ local M = {}
 ---@field _reasoning_context? string
 ---@field _profile? "codex"
 ---@field _responses_lite boolean
+---@field _custom_tools boolean
 ---@field _text_verbosity? string
 ---@field _response_status? Neoagent.ResponseStatus
 ---@field _request_opts Neoagent.RequestLayer[]
@@ -82,7 +85,7 @@ function Model:stream(opts)
         local transport = request_context.bind_transport(self._transport, identity)
         stream = decoder.new(self, function(event)
           run:emit(event)
-        end)
+        end, opts.tools)
         local child = request_stream.send(transport, request, opts, {
           on_event = stream.process,
         }, self._images)
@@ -173,6 +176,11 @@ function M.new(opts)
   assert(type(opts.model) == "string" and opts.model ~= "", "model is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
   local timeout_ms = request_opts.timeout(opts.timeout_ms)
+  assert(opts.custom_tools == nil or type(opts.custom_tools) == "boolean", "custom_tools must be boolean")
+  assert(
+    opts.supports_image_detail_original == nil or type(opts.supports_image_detail_original) == "boolean",
+    "supports_image_detail_original must be boolean"
+  )
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do
     layers[#layers + 1] = layer
@@ -186,12 +194,14 @@ function M.new(opts)
       provider = opts.provider,
       id = opts.model,
       input = util.copy(opts.input or { "text", "image" }),
+      supports_image_detail_original = opts.supports_image_detail_original == true,
       compact = opts.native_compaction == true and compact or nil,
       context_window = opts.context_window,
       max_output_tokens = opts.max_output_tokens,
       timeout_ms = timeout_ms,
       _timeout_ms = timeout_ms,
       _base_url = opts.base_url:gsub("/+$", ""),
+      _custom_tools = opts.custom_tools ~= false,
       _api_key = opts.api_key,
       _reasoning = opts.reasoning == true,
       _reasoning_effort = opts.reasoning_effort,

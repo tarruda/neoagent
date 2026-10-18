@@ -179,6 +179,10 @@ local function api_factory(resolved)
     local path = type(selected) == "table" and selected.path or logger.codex_path()
     on_diagnostic = logger.callback(path, { report = resolved.report })
   end
+  local custom_tools = resolved.model.custom_tools
+  if custom_tools == nil then
+    custom_tools = resolved.provider.custom_tools
+  end
   local options = {
     provider = resolved.provider_id,
     model = resolved.model_id,
@@ -193,6 +197,8 @@ local function api_factory(resolved)
     reasoning_summary = resolved.model.reasoning_summary,
     reasoning_context = resolved.model.reasoning_context,
     responses_lite = resolved.model.responses_lite,
+    custom_tools = custom_tools,
+    supports_image_detail_original = resolved.model.supports_image_detail_original,
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
     prompt_caching = resolved.provider.prompt_caching,
