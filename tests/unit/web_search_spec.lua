@@ -346,6 +346,36 @@ describe("opt-in web search", function()
     assert.matches("No results found", util.text_content(empty.content))
   end)
 
+  it("formats results with absent or null publication dates and no page content", function()
+    local owned, transport = compose()
+    vim.env.DEEPSEEK_API_KEY = "key"
+    local capability = capability_for(owned)
+    for _, metadata in ipairs({ {}, { date = vim.NIL } }) do
+      transport.fetches = {
+        {
+          body = vim.json.encode({
+            results = {
+              {
+                title = "Undated result",
+                url = "https://example.test/undated",
+                summary = "A useful summary",
+                snippet = "Short preview",
+                content = "",
+                date = metadata.date,
+              },
+            },
+          }),
+        },
+      }
+      local result = invoke(capability, { query = "undated", include_content = true })
+      assert.is_not_true(result.isError)
+      assert.are.equal(
+        "Search results for: undated\n\n1. Undated result\nhttps://example.test/undated\nA useful summary",
+        util.text_content(result.content)
+      )
+    end
+  end)
+
   it("validates query characters and counts before starting a request", function()
     local owned, transport = compose()
     vim.env.DEEPSEEK_API_KEY = "key"
