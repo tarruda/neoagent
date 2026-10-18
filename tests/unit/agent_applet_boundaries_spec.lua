@@ -63,6 +63,7 @@ describe("Agent Applet boundaries", function()
       ---@field result? Neoagent.ActivityOutcome
       local view = {
         callbacks = opts,
+        config = util.copy(opts.config),
         input = "",
         messages = {},
         context = {},
@@ -742,6 +743,8 @@ describe("Agent Applet boundaries", function()
       error("unexpected trust request")
     end
     local unavailable = agent({ workspace_trust = trust })
+    assert(unavailable:set_toolset({ tools = {} }))
+    assert.are.same({ enabled = false, active = false }, trust.sandbox_status)
 
     local prepared, prepare_err = unavailable:prepare()
     assert.is_nil(prepared)
@@ -1358,6 +1361,25 @@ describe("Agent Applet boundaries", function()
     })
     assert(value:open())
     local view = assert(record.view)
+    assert.are.equal("first", assert(value:set_draft_context({ model = "first" })).model)
+    assert.are.equal("first", view.context.model)
+    local set_context = view.set_context
+    function view:set_context(candidate)
+      if candidate.model == "rejected" then
+        return nil, util.error("ui", "context publication rejected")
+      end
+      return set_context(self, candidate)
+    end
+    local context, context_err = value:set_draft_context({ model = "rejected" })
+    assert.is_nil(context)
+    assert.matches("context publication rejected", assert(context_err).message)
+    assert.are.equal("first", value.draft_context.model)
+    assert.are.equal("first", view.context.model)
+    local invalid_style, invalid_style_err = value:set_transcript_style(vim.json.decode('"unknown"'))
+    assert.is_nil(invalid_style)
+    assert.matches("invalid transcript style", assert(invalid_style_err).message)
+    assert.are.equal("codex", value:set_transcript_style("codex"))
+    assert.are.equal("codex", view.config.style)
     function view:set_input()
       return nil, util.error("ui", "input publication rejected")
     end
@@ -1381,6 +1403,25 @@ describe("Agent Applet boundaries", function()
     assert.is_nil(styled)
     assert.matches("renderer installation rejected", assert(style_err).message)
     assert.are.equal(style, value.transcript_style)
+  end)
+
+  it("rejects an invalid draft Renderer before changing its presentation", function()
+    local value, owner = applet({ context = { model = "original" } }), {}
+    value:claim(owner, {})
+    local renderer = value.renderer
+    local published, err = value:publish_draft(owner, {
+      profile = "pi",
+      label = "Rejected",
+      context = { model = "rejected" },
+      callbacks = {},
+      config = value.config,
+      persistence = assert(value.persistence),
+      renderer = vim.json.decode("{}"),
+    })
+    assert.is_nil(published)
+    assert.matches("Renderer", assert(err).message)
+    assert.are.equal(renderer, value.renderer)
+    assert.are.equal("original", value.draft_context.model)
   end)
 
   it("destroys an invalidated View and reports Agent detach failure", function()

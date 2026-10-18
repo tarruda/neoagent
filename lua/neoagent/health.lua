@@ -51,24 +51,37 @@ local function check_processes()
 end
 
 local function check_configuration()
-  local configured = require("neoagent.config").get()
-  ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
-  local tools = configured._tools_supplied and configured.tools
-    or require("neoagent.tools").coding({
-      shell_timeout = configured.shell_timeout,
-    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
-  require("neoagent.agent_loop").validate_toolset(tools, configured.execute_tool)
+  local snapshot = require("neoagent.config").get_snapshot()
+  local configured = snapshot.config
   local applet, resources
   local ok, err = pcall(function()
     local profiles, default_profile
     local profile_recipes = require("neoagent.profiles")
-    profiles, default_profile, resources = profile_recipes.bundled(configured, { startup = false })
+    profiles, default_profile, resources = profile_recipes.bundled(snapshot, { startup = false })
     applet = require("neoagent.applet").new({
       profiles = profiles,
       default_profile = default_profile,
       resources = resources,
+      snapshot = snapshot,
     })
     assert(#applet:agents() == 0, "Profile composition must not construct Agents")
+    local resolved = assert(applet:_resolve())
+    local tools = require("neoagent.profiles.composition").tools(resolved)
+    require("neoagent.agent_loop").validate_toolset(tools)
+    local identities = require("neoagent.tools.identities")
+    local dependencies = {}
+    for _, tool in ipairs(tools) do
+      local identity = identities.identity(tool)
+      if identity and identity.token == identities.view_image then
+        dependencies.magick = true
+      elseif identity and identity.token == identities.shell then
+        local argv = identity.settings.argv or require("neoagent.tools.command").shell_argv()
+        dependencies[assert(argv[1])] = true
+      end
+    end
+    for _, name in ipairs(vim.tbl_keys(dependencies)) do
+      executable(name)
+    end
     local ids = vim.tbl_keys(resources.runtimes)
     table.sort(ids)
     for _, provider_id in ipairs(ids) do

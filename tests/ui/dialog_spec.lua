@@ -646,8 +646,9 @@ describe("neoagent generic dialog UI", function()
 
   it("routes queued responses through one Agent Applet",
     function()
-      local first = require("neoagent.agent").new({
+      local first = require("neoagent").new({
         name = "first",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -657,8 +658,9 @@ describe("neoagent generic dialog UI", function()
         },
         tools = {},
       })
-      local second = require("neoagent.agent").new({
+      local second = require("neoagent").new({
         name = "second",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -719,8 +721,9 @@ describe("neoagent generic dialog UI", function()
 
   it("keeps each dialog source with its owning Agent Applet",
     function()
-      local first = require("neoagent.agent").new({
+      local first = require("neoagent").new({
         name = "first",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -730,8 +733,9 @@ describe("neoagent generic dialog UI", function()
         },
         tools = {},
       })
-      local second = require("neoagent.agent").new({
+      local second = require("neoagent").new({
         name = "second",
+        workspace_trust = false,
         default_registry = false,
         providers = {},
         persistence = {
@@ -780,7 +784,7 @@ describe("neoagent generic dialog UI", function()
     end)
 
   it("fails a dialog when a custom View cannot present it", function()
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "headless",
       default_registry = false,
       providers = {},

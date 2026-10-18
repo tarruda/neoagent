@@ -175,9 +175,11 @@ describe("captured managed-file conversations", function()
       if agent then agent:destroy() end
       if runtimes then runtimes_module.destroy(runtimes) end
       runtimes = assert(runtimes_module.compose(configured, {auth = auth, transport = scenario, startup = false}))
-      local created = require("neoagent.agent").from_config(configured, { auth = auth, runtimes = runtimes, session = session })
-      agent = created
-      return created
+      agent = require("neoagent").new(config.get_snapshot().overrides, {
+        auth = auth, runtimes = runtimes, session = session,
+        profiles = { { id = "image-replay", label = "Image Replay" } }, profile_id = "image-replay",
+      })
+      return agent
     end
     local current = start()
     for index, prompt in ipairs({

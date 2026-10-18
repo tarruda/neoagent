@@ -82,7 +82,7 @@ local util = require("neoagent.util")
 ---@field ensure_model fun(): unknown
 ---@field commit_model_preference fun(): boolean?, Neoagent.Error?
 ---@field copy_toolset fun(value: Neoagent.AgentToolset): Neoagent.AgentToolset
----@field system_prompt fun(prompt: string, tools: Neoagent.Tool<Neoagent.AgentToolEnvironment>[]): string
+---@field request_environment fun(prompt: string, toolset: Neoagent.AgentToolset): Neoagent.PreparedProfilePrompt
 ---@field refresh_buffer fun(path: string)
 ---@field provider_event? fun(event: Neoagent.AgentEvent)
 ---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
@@ -449,6 +449,7 @@ local function default_interaction(options)
     execute_tool = options.execute_tool,
     get_steering_messages = options.get_steering_messages,
     prepare_request_messages = options.prepare_request_messages,
+    prepare_request = options.prepare_request,
     session_state = options.session_state,
     on_accept = options.on_accept,
     report = options.report,
@@ -471,6 +472,7 @@ local function default_continuation(options)
     execute_tool = options.execute_tool,
     get_steering_messages = options.get_steering_messages,
     prepare_request_messages = options.prepare_request_messages,
+    prepare_request = options.prepare_request,
     model_options = options.model_options,
     report = options.report,
     on_event = options.on_event,
@@ -596,11 +598,11 @@ function M.new(opts)
 
   -- Recovery and manual operations construct the same semantic request inputs
   -- that Chat and the Loop provide at the inference gate.
-  ---@param system_prompt? string
+  ---@param environment {system_prompt?: string, prepare_request?: Neoagent.PrepareRequest}
   ---@param tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
   ---@param model_options? Neoagent.StreamOverrides
   ---@return Neoagent.CompactionRequest
-  local function compaction_request(system_prompt, tools, model_options)
+  local function compaction_request(environment, tools, model_options)
     local call = request_preparation.copy(model_options or {})
     call._preparation = request_preparation.new()
     call.files = state.session:files()
@@ -608,7 +610,12 @@ function M.new(opts)
     call.thinking_level = selection:thinking_level()
     call.request_context =
       require("neoagent.api.request_context").resolve({ session_id = state.session:id() }, call.request_context)
-    return { system_prompt = system_prompt, tools = tool_schema.definitions(tools), model_options = call }
+    return {
+      system_prompt = environment.system_prompt,
+      tools = tool_schema.definitions(tools, selection:model()),
+      model_options = call,
+      prepare_request = environment.prepare_request,
+    }
   end
 
   ---@param request Neoagent.CompactionRequest
@@ -1043,7 +1050,7 @@ function M.new(opts)
         if not abandoned then
           return completion_failure(abandon_err)
         end
-        local request = compaction_request(base.system_prompt, base.tools or {}, base.model_options)
+        local request = compaction_request(base, base.tools or {}, base.model_options)
         local compacted, compaction_err, started = run_compaction(outer, activity, request, "overflow")
         if not started then
           if compaction_err and compaction_err.kind == "cancelled" then
@@ -1060,7 +1067,7 @@ function M.new(opts)
         done = run_interaction(outer, activity, base, true, stream_retries)
       elseif is_length_limited(done) then
         if activity.last_length_epoch == (activity.compaction_epoch or 0) then
-          local request = compaction_request(base.system_prompt, base.tools or {}, base.model_options)
+          local request = compaction_request(base, base.tools or {}, base.model_options)
           local evaluation, budget_err = evaluate_compaction(request, false)
           if budget_err then
             return failed_result(budget_err, "compaction")
@@ -1278,12 +1285,14 @@ function M.new(opts)
       ---@type Neoagent.Model
       local model = assert(selection:model())
       local thinking_level = selection:thinking_level()
+      local environment = opts.request_environment(prompt, toolset)
       ---@type Neoagent.AgentInteractionOptions
       local base = {
         session = state.session,
         prompt = prompt,
         model = model,
-        system_prompt = opts.system_prompt(prompt, tools),
+        system_prompt = environment.system_prompt,
+        prepare_request = environment.prepare_request,
         tools = tools,
         workspace = state.workspace,
         context = {
@@ -1349,6 +1358,7 @@ function M.new(opts)
           system_prompt = model_options.system_prompt,
           tools = model_options.tools or {},
           model_options = model_options,
+          prepare_request = base.prepare_request,
         })
         if not prepared_context or not messages then
           local err = util.normalize_error(prepared_context and prepare_err or messages, "model")
@@ -1512,7 +1522,9 @@ function M.new(opts)
       return nil, err
     end
     local outer = install_activity("manual_compaction", release, function(run, activity)
-      local request = compaction_request(opts.system_prompt("", state.toolset.tools), state.toolset.tools)
+      local toolset = opts.copy_toolset(state.toolset)
+      local environment = opts.request_environment("", toolset)
+      local request = compaction_request(environment, toolset.tools)
       local result, err = run_compaction(run, activity, request, "manual", instructions)
       return result or failed_result(err or util.error("compaction", "Nothing to compact"), "compaction")
     end)

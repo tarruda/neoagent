@@ -4,7 +4,7 @@ local M = {}
 
 ---@class Neoagent.SystemPromptContext
 ---@field workspace {cwd: string}
----@field model? Neoagent.Model
+---@field model? Neoagent.MessageTarget
 ---@field tools? Neoagent.ToolDefinition[]
 ---@field agent_instructions? Neoagent.InstructionFile[]
 ---@field skills? Neoagent.Skill[]

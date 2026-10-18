@@ -1,4 +1,10 @@
+local fs = require("neoagent.fs")
 local assert = require("luassert")
+local compositions = require("neoagent.profiles")
+---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+local original_agent = compositions.create_agent
+---@type fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet
+local original_applet = compositions.create_applet
 local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local presentation = require("tests.helpers.presentation")
@@ -19,6 +25,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   after_each(function()
+    compositions.create_agent, compositions.create_applet = original_agent, original_applet
     if applet and not applet:is_destroyed() then
       applet:destroy()
     end
@@ -132,9 +139,12 @@ describe("neoagent Agent-owned Applets", function()
     assert(draft)
     local profile = applet:profile("neo")
     assert(profile)
-    local create_agent = profile.create_agent
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    local create_agent = compositions.create_agent
+    assert(create_agent)
     local constructions = 0
-    profile.create_agent = function(context)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function(context)
       constructions = constructions + 1
       if constructions == 1 then
         assert(draft:view()):_submit(draft:get_input())
@@ -194,7 +204,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("publishes and clears the first prompt before saving input history", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "created" } }),
@@ -311,15 +321,20 @@ describe("neoagent Agent-owned Applets", function()
     assert(draft)
     local profile = applet:profile("neo")
     assert(profile)
-    local create_agent = profile.create_agent
-    profile.create_agent = function() error("construction failed") end
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    local create_agent = compositions.create_agent
+    assert(create_agent)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function()
+      error("construction failed")
+    end
 
     submit("preserved draft")
     assert.are.same({}, applet:agents())
     assert.are.equal("preserved draft", draft:get_input())
     assert.is_nil(draft:agent())
 
-    profile.create_agent = create_agent
+    compositions.create_agent = create_agent
     submit("preserved draft")
     assert(vim.wait(1000, function()
       return #applet:agents() == 1
@@ -357,10 +372,13 @@ describe("neoagent Agent-owned Applets", function()
     local dialogs = draft:dialogs()
     local profile = applet:profile("neo")
     assert(profile)
-    local create_agent = profile.create_agent
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    local create_agent = compositions.create_agent
+    assert(create_agent)
     ---@type Neoagent.Agent?
     local rejected
-    profile.create_agent = function(context)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function(context)
       rejected = create_agent(context)
       rejected.snapshot = function() error("snapshot failed") end
       return rejected
@@ -380,7 +398,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.equal("retained through bind", draft:get_input())
     assert.are.same({}, applet:agents())
 
-    profile.create_agent = create_agent
+    compositions.create_agent = create_agent
     submit("retained through bind")
     assert(vim.wait(1000, function()
       local accepted = applet:agents()[1]
@@ -406,10 +424,13 @@ describe("neoagent Agent-owned Applets", function()
     local dialogs = draft:dialogs()
     local profile = applet:profile("neo")
     assert(profile)
-    local create_agent = profile.create_agent
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    local create_agent = compositions.create_agent
+    assert(create_agent)
     ---@type Neoagent.Agent?
     local rejected
-    profile.create_agent = function(context)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function(context)
       rejected = create_agent(context)
       rejected.subscribe_activity = function()
         error("activity registration failed")
@@ -435,13 +456,11 @@ describe("neoagent Agent-owned Applets", function()
   it("restores the exact draft when initial Agent preparation fails", function()
     local model = fake_model.new({})
     function model:stream() error("model construction failed") end
-    setup(model)
-    local profile = applet:profile("neo")
-    assert(profile)
-    local factory = profile.config._apis["fake-api"]
-    profile.config._apis["fake-api"] = function()
-      error("model construction failed")
-    end
+    local failing = true
+    setup(model, { _apis = { ["fake-api"] = function()
+      if failing then error("model construction failed") end
+      return model
+    end } })
     assert(applet:toggle())
     local draft = applet:foreground_applet()
     assert(draft)
@@ -454,7 +473,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.is_nil(draft:agent())
     assert.are.equal("retry me", draft:get_input())
 
-    profile.config._apis["fake-api"] = factory
+    failing = false
     submit("retry me")
     assert(vim.wait(1000, function()
       return #applet:agents() == 1
@@ -485,7 +504,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("presents Profile context and Workspace history before construction", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local root = require("neoagent.fs").canonical(vim.fn.getcwd())
     local history = require("neoagent.input_history").new({
@@ -535,15 +554,15 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("persists a draft model only when its first message is accepted", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
     })
     assert(settings:write({
+      default_model = { provider = "fake", model = "test" },
       agents = { neo = {
-        default_model = { provider = "fake", model = "test" },
       } },
     }))
     local response = fake_model.assistant({ { type = "text", text = "saved" } })
@@ -563,7 +582,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same({ provider = "fake", model = "other" },
       applet:set_model("fake", "other"))
     assert.are.same({ provider = "fake", model = "test" },
-      assert(assert(settings:load()).agents.neo).default_model)
+      assert(settings:load()).default_model)
     assert.are.same({}, applet:agents())
 
     submit("remember this model")
@@ -575,21 +594,21 @@ describe("neoagent Agent-owned Applets", function()
     local agent = applet:active_agent()
     assert(agent)
     assert.are.same({ provider = "fake", model = "other" },
-      assert(assert(settings:load()).agents.neo).default_model)
+      assert(settings:load()).default_model)
     assert.are.same({ provider = "fake", model = "other" },
       assert(agent:get_session():state()).model)
   end)
 
   it("persists an explicit draft thinking level on first acceptance", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
     })
     assert(settings:write({
+      default_model = { provider = "fake", model = "test" },
       agents = { neo = {
-        default_model = { provider = "fake", model = "test" },
         default_thinking_level = "medium",
       } },
     }))
@@ -630,15 +649,15 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("restores workspace preferences into the first lazy Profile draft", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
     })
     assert(settings:write({
+      default_model = { provider = "fake", model = "remembered" },
       agents = { neo = {
-        default_model = { provider = "fake", model = "remembered" },
         default_thinking_level = "high",
       } },
       ui_position = "left",
@@ -667,11 +686,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.equal("fake/remembered", assert(applet:view()).context.model)
     assert.are.equal("high", assert(applet:view()).context.thinking)
     assert.are.equal("left", assert(applet:view()).position)
-    assert.are.same({
-      default_model = { provider = "fake", model = "remembered" },
-      default_thinking_level = "high",
-      ui = { position = "left" },
-    }, assert(applet:get_draft_options(draft)))
+    assert.are.same({}, assert(applet:get_draft_options(draft)))
 
     submit("bind remembered preferences")
     assert(vim.wait(1000, function()
@@ -686,15 +701,15 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("warns and falls back from unsafe Workspace model preferences", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
     })
     assert(settings:write({
+      default_model = { provider = "", model = "bad\nmodel" },
       agents = { neo = {
-        default_model = { provider = "", model = "bad\nmodel" },
       } },
     }))
     ---@type [string, integer?][]
@@ -724,7 +739,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("rejects an unsupported workspace setting without applying it", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
@@ -763,7 +778,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("reports malformed workspace settings without blocking the first toggle", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
@@ -835,7 +850,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same({
       default_model = { provider = "fake", model = "other" },
       default_thinking_level = "high",
-      ui = { position = "left" },
+      ui = { position = "left", style = "pi", renderer = require("neoagent.ui.renderers").codex },
     }, assert(applet:get_draft_options(draft)))
     assert.are.equal("fake/other", assert(draft:view()).context.model)
     assert.are.equal("high", assert(draft:view()).context.thinking)
@@ -888,7 +903,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("selects history and resumes a stored session from an unbound draft", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local session = assert(require("neoagent.profile_sessions").new({
       profile_id = "neo",
@@ -934,7 +949,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("resumes through the stored Profile and reuses one live Session owner", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local session = assert(require("neoagent.profile_sessions").new({
       profile_id = "neo",
@@ -976,7 +991,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("rejects Profile-free and unavailable Sessions", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local unassigned = require("neoagent.storage").new({
       directory = directory,
@@ -1048,13 +1063,13 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
     local source = applet:active_agent()
     assert(source)
-    local source_snapshot = assert(source):get_session():snapshot()
+    local source_snapshot = source:get_session():snapshot()
     assert(source_snapshot)
 
     assert(applet:copy_session())
     local _, request = presentation.active(applet)
-    assert.are.equal("profile:neo", assert(assert(request.items)[1]).id)
-    presentation.choose(applet, "profile:neo")
+    assert.are.equal("profile:pi", assert(assert(request.items)[1]).id)
+    presentation.choose(applet, "profile:pi")
     assert(vim.wait(1000, function() return #applet:agents() == 2 end, 5))
     local duplicate = applet:active_agent()
     assert(duplicate)
@@ -1082,7 +1097,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   require("tests.helpers.async_test")("enforces copy visibility, content, activity, and cancellation boundaries", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local empty_source = assert(require("neoagent.profile_sessions").new({
       profile_id = "neo",
@@ -1188,7 +1203,7 @@ describe("neoagent Agent-owned Applets", function()
     local forked, fork_err = applet:select_fork()
     assert.is_nil(forked)
     assert.matches("running", assert(fork_err).message)
-    presentation.choose(applet, "profile:neo")
+    presentation.choose(applet, "profile:pi")
     assert(vim.wait(1000, function()
       return source:presenter():snapshot().active == nil
         and vim.tbl_contains(notices, "neoagent: Cannot copy while the Agent is running")
@@ -1206,7 +1221,7 @@ describe("neoagent Agent-owned Applets", function()
     source_session.snapshot = function()
       return nil, require("neoagent.util").error("session", "current copy snapshot is unavailable")
     end
-    presentation.choose(applet, "profile:neo")
+    presentation.choose(applet, "profile:pi")
     assert(vim.wait(1000, function()
       return source:presenter():snapshot().active == nil
         and vim.tbl_contains(notices, "neoagent: current copy snapshot is unavailable")
@@ -1238,7 +1253,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(source:get_session():append({
       role = "user", content = "changed during Profile selection",
     }))
-    presentation.choose(applet, "profile:neo")
+    presentation.choose(applet, "profile:pi")
     assert(vim.wait(1000, function()
       return source:presenter():snapshot().active == nil
         and vim.tbl_contains(notices, "neoagent: Source Session changed while selecting a Profile")
@@ -1252,7 +1267,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("uses target Profile defaults on the next turn of a cross-Profile copy", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
@@ -1347,11 +1362,12 @@ describe("neoagent Agent-owned Applets", function()
     local snapshot = assert(session:snapshot())
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
-    local profile = applet:profile("neo")
-    assert(profile)
-    profile.config.persistence = { enabled = true, directory = directory, workspace_settings = false }
-    local created, create_agent = 0, profile.create_agent
-    profile.create_agent = function(...)
+    local target = assert(applet:draft("neo"))
+    assert(applet:update_draft_options({ persistence = { enabled = true, directory = directory, workspace_settings = false } }, target))
+    local created, create_agent = 0, compositions.create_agent
+    assert(create_agent)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function(...)
       created = created + 1
       return create_agent(...)
     end
@@ -1378,7 +1394,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("reports a durable Session when its derived Agent cannot be built", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local response = fake_model.assistant({ { type = "text", text = "source" } })
     response.message.provider = "fake"
@@ -1395,34 +1411,33 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
     local source = applet:active_agent()
     assert(source)
-    local source_snapshot = assert(source):get_session():snapshot()
+    local source_snapshot = source:get_session():snapshot()
     assert(source_snapshot)
     local profile = applet:profile("neo")
     assert(profile)
-    local create_applet = profile.create_applet
-    profile.create_applet = function()
+    ---@type fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet
+    local create_applet = compositions.create_applet
+    assert(create_applet)
+    ---@type fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet
+    compositions.create_applet = function()
       error("derived draft construction failed")
     end
 
-    local missing_draft = applet:fork()
-    assert(missing_draft)
-    assert(vim.wait(1000, function() return missing_draft:is_done() end))
-    local draft_result = missing_draft:result()
-    assert(draft_result)
-    assert(draft_result.ok == false)
-    local draft_err = draft_result.error
-    ---@cast draft_err Neoagent.PublishedSessionError
-
-    profile.create_applet = create_applet
-    assert.is_true(assert(draft_err).session_created)
-    assert.is_string(assert(draft_err).session_path)
-    assert.matches("derived draft construction failed", tostring(assert(draft_err).detail))
-    assert(vim.uv.fs_stat(assert(draft_err).session_path))
-    assert(applet:resume(assert(draft_err).session_path))
+    local missing_draft, draft_err = applet:fork()
+    compositions.create_applet = create_applet
+    assert.is_nil(missing_draft)
+    assert.matches("derived draft construction failed", assert(draft_err).message)
+    assert.are.equal(1, #require("neoagent.profile_sessions").list({
+      enabled = true,
+      directory = directory,
+    }, vim.fn.getcwd()))
     assert.are.equal(source, applet:select(source))
 
-    local create_agent = profile.create_agent
-    profile.create_agent = function()
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    local create_agent = compositions.create_agent
+    assert(create_agent)
+    ---@type fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent
+    compositions.create_agent = function()
       error(require("neoagent.util").error("agent", "derived construction failed", "synthetic host unavailable"), 0)
     end
 
@@ -1435,7 +1450,7 @@ describe("neoagent Agent-owned Applets", function()
     local err = result.error
     ---@cast err Neoagent.PublishedSessionError
 
-    profile.create_agent = create_agent
+    compositions.create_agent = create_agent
     assert.is_string(assert(err).session_path)
     assert.is_true(assert(err).session_created)
     assert.matches("derived construction failed: synthetic host unavailable", tostring(err.detail))
@@ -1456,7 +1471,7 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("reports and reuses a derived Agent after activation failure", function()
-    local directory = vim.fn.tempname()
+    local directory = fs.canonical(vim.fn.tempname())
     paths[#paths + 1] = directory
     local response = fake_model.assistant({ {
       type = "text", text = "source",
@@ -1541,8 +1556,8 @@ describe("neoagent Agent-owned Applets", function()
 
     assert.is_nil(status)
     assert.are.equal("sandbox", assert(err).kind)
-    assert.is_false(assert(applet:profile("chat")).config.sandbox.enabled)
-    assert.is_false(assert(applet:profile("neo")).config.sandbox.enabled)
+    assert.is_false(assert(applet:_resolve("chat")).config.sandbox.enabled)
+    assert.is_false(assert(assert(assert(applet:profile("neo")).defaults).sandbox).enabled)
     assert.are.same({}, applet:agents())
   end)
 
@@ -1574,7 +1589,7 @@ describe("neoagent Agent-owned Applets", function()
     local agent = applet:agents()[1]
     assert(agent)
     assert.are.equal("codex", agent:profile_id())
-    assert.is_true(assert(assert(applet:record(agent)).metadata.sandbox).status.enabled)
+    assert.is_true(assert(agent:get_toolset().sandbox):status().enabled)
   end)
 
   it("does not commit one Neo draft's sandbox choice into its Profile", function()
@@ -1591,20 +1606,23 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
     local first = applet:agents()[1]
     assert(first)
-    assert.is_true(assert(assert(applet:record(first)).metadata.sandbox).status.enabled)
+    assert.is_true(assert(first:get_toolset().sandbox):status().enabled)
 
     assert(applet:new("neo"))
     assert.is_false(neoagent.sandbox_info().enabled)
-    assert.is_false(assert(applet:profile("neo")).config.sandbox.enabled)
+    assert.is_false(assert(assert(assert(applet:profile("neo")).defaults).sandbox).enabled)
   end)
 
   it("inspects static sandbox state without allocating a draft", function()
     setup(fake_model.new({}))
     local profile = applet:profile("neo")
     assert(profile)
-    local create_applet = profile.create_applet
+    ---@type fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet
+    local create_applet = compositions.create_applet
+    assert(create_applet)
     local created = 0
-    profile.create_applet = function(context)
+    ---@type fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet
+    compositions.create_applet = function(context)
       created = created + 1
       return create_applet(context)
     end

@@ -58,6 +58,32 @@ describe("neoagent provider model catalogs", function()
     provider_runtimes.destroy(runtimes)
   end)
 
+  it("inherits provider custom Tool encoding while honoring each Model override", function()
+    local value, runtimes = runtime({
+      api = "openai-responses", base_url = "https://example.test", custom_tools = false,
+      models = { seed = {}, custom = { custom_tools = true }, json = { custom_tools = false } },
+    })
+    local ok, err = pcall(function()
+      for _, id in ipairs({ "seed", "custom", "json" }) do
+        local target = models.resolve("dynamic", id, value, nil, runtimes)
+        local call = require("neoagent.api.request_preparation").new()
+        local run = require("neoagent.async").run(function()
+          assert(target.estimate_request)(target, {
+            messages = { { role = "user", content = "work" } },
+            tools = { require("neoagent.tools.codex.apply_patch").new() }, _preparation = call,
+          })
+          return true
+        end)
+        assert(vim.wait(1000, function() return run:is_done() end))
+        assert.is_true(run:result())
+        local tools = assert(assert(call.request).plan.request.body).tools
+        assert.are.equal(id == "custom" and "custom" or "function", tools[1].type)
+      end
+    end)
+    provider_runtimes.destroy(runtimes)
+    assert(ok, err)
+  end)
+
   it("forwards native compaction status through Authentication and Service leases", function()
     local transport = require("tests.helpers.fake_transport").new({ { chunks = {
       'data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"synthetic"}}\n\n',
@@ -406,13 +432,13 @@ describe("neoagent provider model catalogs", function()
       catalog = { seed = { { id = "seed" } } },
       models = {},
     })
-    assert.are.same({ "dynamic/seed" }, models.available(value, nil, runtimes, "fake"))
-    assert.are.same({}, models.available(value, nil, runtimes, "openai-codex-responses"))
-    assert.is_nil((models.first_available(value, nil, runtimes, "openai-codex-responses")))
+    assert.are.same({ "dynamic/seed" }, models.available(value, nil, runtimes, { "fake" }))
+    assert.are.same({}, models.available(value, nil, runtimes, { "openai-codex-responses" }))
+    assert.is_nil((models.first_available(value, nil, runtimes, { "openai-codex-responses" })))
     local publications = {}
     local unsubscribe = models.subscribe_available(value, nil, runtimes, function(choices)
       publications[#publications + 1] = choices
-    end, "openai-codex-responses")
+    end, { "openai-codex-responses" })
     assert.are.same({ {} }, publications)
     assert(assert(runtimes.dynamic).catalog:publish_discoveries({ { id = "seed" }, { id = "new" } }))
     assert.are.same({ {} }, publications)

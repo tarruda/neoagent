@@ -50,7 +50,6 @@ local M = {
 ---@field fit? async fun(candidate: Neoagent.CompactionSuccess, options: Neoagent.CheckpointAcceptanceOptions): Neoagent.CompactionSuccess?, Neoagent.Error?
 ---@field run fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 ---@field require_native? boolean
----@field required_api? string
 
 ---@param options Neoagent.CompactionEvaluationOptions
 ---@return Neoagent.CompactionEvaluation

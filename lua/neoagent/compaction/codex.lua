@@ -252,7 +252,6 @@ M.component = {
   end,
   run = run,
   require_native = true,
-  required_api = "openai-codex-responses",
 }
 
 return M

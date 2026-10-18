@@ -103,17 +103,17 @@ describe("neoagent.profile_sessions", function()
     }))
     for _, target_api in ipairs({ "", "other-api" }) do
       local copied, err = profile_sessions.derive(source, { kind = "copy", source_profile_id = "codex",
-        target_profile_id = "chat", target_native_api = target_api, workspace = root,
+        target_profile_id = "chat", target_native_apis = { target_api }, workspace = root,
         persistence = { enabled = false } })
       assert.is_nil(copied)
       assert.matches("cannot preserve encrypted context", assert(err).message)
     end
     local compatible = assert(profile_sessions.derive(source, { kind = "copy", source_profile_id = "codex",
-      target_profile_id = "codex", target_native_api = "openai-codex-responses", workspace = root,
+      target_profile_id = "codex", target_native_apis = { "openai-codex-responses" }, workspace = root,
       persistence = { enabled = false } }))
     assert.are.same(assert(source:context_messages()), assert(compatible:context_messages()))
     local forked = assert(profile_sessions.derive(source, { kind = "fork", source_profile_id = "codex",
-      target_profile_id = "chat", target_native_api = "", entry_id = assert(first).id,
+      target_profile_id = "chat", target_native_apis = {}, entry_id = assert(first).id,
       position = "at", workspace = root, persistence = { enabled = false } }))
     assert.are.same({ "user" }, vim.tbl_map(function(message) return message.role end,
       assert(forked:context_messages())))
@@ -187,6 +187,10 @@ describe("neoagent.profile_sessions", function()
     local invalid = {
       { value = false, message = "metadata must be an object" },
       { value = { neoagent = {} }, message = "no assigned Profile" },
+      {
+        value = { neoagent = { derivation = { kind = "copy", sourceSessionId = "source" } } },
+        message = "derivation requires an assigned Profile",
+      },
       { value = { neoagent = false },
         message = "metadata.neoagent must be an object" },
       { value = { neoagent = { profileId = "neo", derivation = false } },

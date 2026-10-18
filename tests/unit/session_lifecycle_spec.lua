@@ -134,7 +134,7 @@ describe("neoagent Agent session lifecycle", function()
     local runtimes = assert(require("neoagent.provider_runtimes").compose(configured, { startup = false }))
     owned_runtimes[#owned_runtimes + 1] = runtimes
     local selection = require("neoagent.request_selection").new({
-      config = configured, runtimes = runtimes, required_api = "openai-codex-responses",
+      config = configured, runtimes = runtimes, supported_apis = { "openai-codex-responses" },
       checkpoint_identity = function() return session:checkpoint_identity() end,
     })
     local warnings = {}

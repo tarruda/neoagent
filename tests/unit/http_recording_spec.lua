@@ -2324,8 +2324,9 @@ else:
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "Recorded",
+      workspace_trust = false,
       default_registry = false,
       default_model = { provider = "local", model = "recorded" },
       providers = { ["local"] = {

@@ -18,7 +18,7 @@ local M = {}
 ---@field thinking_level? Neoagent.ThinkingLevel|vim.NIL
 
 ---@class Neoagent.RequestSelectionOptions
----@field required_api? string
+---@field supported_apis? string[]
 ---@field config Neoagent.SelectionConfig
 ---@field auth? Neoagent.AuthManager
 ---@field runtimes? Neoagent.ProviderRuntimes
@@ -28,7 +28,7 @@ local M = {}
 ---@field initial_selection? Neoagent.InitialSelection
 
 ---@class Neoagent.RequestSelection
----@field required_api? string
+---@field supported_apis? string[]
 ---@field config Neoagent.SelectionConfig
 ---@field auth? Neoagent.AuthManager
 ---@field runtimes Neoagent.ProviderRuntimes
@@ -80,10 +80,10 @@ end
 
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@param selected Neoagent.ModelSelection
----@param required_api? string
+---@param supported_apis? string[]
 ---@return boolean?
-function M.api_compatible(runtimes, selected, required_api)
-  if not required_api then
+function M.api_compatible(runtimes, selected, supported_apis)
+  if not supported_apis then
     return true
   end
   local runtime = runtimes[selected.provider]
@@ -91,7 +91,7 @@ function M.api_compatible(runtimes, selected, required_api)
   if not model then
     return nil
   end
-  return (model.api or runtime.definition.api) == required_api
+  return vim.tbl_contains(supported_apis, model.api or runtime.definition.api)
 end
 
 ---@param opts Neoagent.RequestSelectionOptions
@@ -99,6 +99,17 @@ end
 function RequestSelection.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "RequestSelection configuration is required")
+  if opts.supported_apis ~= nil then
+    assert(
+      type(opts.supported_apis) == "table" and util.is_list(opts.supported_apis) and #opts.supported_apis > 0,
+      "Profile supported_apis must be a nonempty list"
+    )
+    local seen = {}
+    for _, api in ipairs(opts.supported_apis) do
+      assert(type(api) == "string" and api ~= "" and not seen[api], "Profile APIs must be distinct nonempty strings")
+      seen[api] = true
+    end
+  end
   assert(
     opts.initial_selection == nil or valid_selection(opts.initial_selection),
     "RequestSelection initial_selection must contain a model and optional thinking level"
@@ -113,7 +124,7 @@ function RequestSelection.new(opts)
   )
   local self = setmetatable({
     config = opts.config,
-    required_api = opts.required_api,
+    supported_apis = util.copy(opts.supported_apis),
     auth = opts.auth,
     runtimes = opts.runtimes or {},
     request_context = type(opts.request_context) == "function" and opts.request_context
@@ -199,8 +210,8 @@ end
 function RequestSelection:bind(selected, model, preferred)
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
   model = model_contract.assert(model, "RequestSelection resolved Model")
-  if self.required_api and model.api ~= self.required_api then
-    error(util.error("model", "Profile requires a Model using " .. self.required_api), 0)
+  if self.supported_apis and not vim.tbl_contains(self.supported_apis, model.api) then
+    error(util.error("model", "Profile requires a Model using " .. table.concat(self.supported_apis, " or ")), 0)
   end
   if self.checkpoint_identity then
     local identity, identity_err = self.checkpoint_identity()
@@ -227,11 +238,12 @@ end
 ---@return Neoagent.ModelSelection?, Neoagent.Error?
 function RequestSelection:stage(selected, preferred)
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
-  if M.api_compatible(self.runtimes, selected, self.required_api) == false then
+  if M.api_compatible(self.runtimes, selected, self.supported_apis) == false then
     if self.model_value == nil and same_model(self.selected, selected) then
       self:clear(true)
     end
-    return nil, util.error("model", "Profile requires a Model using " .. assert(self.required_api))
+    return nil,
+      util.error("model", "Profile requires a Model using " .. table.concat(assert(self.supported_apis), " or "))
   end
   if preferred == nil then
     preferred = initial_thinking(self, selected)
@@ -258,11 +270,12 @@ function RequestSelection:resolve(selected, preferred)
   if not selected then
     return nil, util.error("model", "No default_model is configured")
   end
-  if M.api_compatible(self.runtimes, selected, self.required_api) == false then
+  if M.api_compatible(self.runtimes, selected, self.supported_apis) == false then
     if self.model_value == nil and same_model(self.selected, selected) then
       self:clear(true)
     end
-    return nil, util.error("model", "Profile requires a Model using " .. assert(self.required_api))
+    return nil,
+      util.error("model", "Profile requires a Model using " .. table.concat(assert(self.supported_apis), " or "))
   end
   if preferred == nil then
     preferred = initial_thinking(self, selected)

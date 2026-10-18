@@ -130,29 +130,52 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field events Neoagent.AgentEvent[]
 ---@field result? Neoagent.AgentCompletion
 
----@class Neoagent.AgentRuntimeOptions
+---@class Neoagent.AgentRuntime
+---@field initial_warning? string
 ---@field process_sessions? Neoagent.ProcessSessionsOptions
----@field process_placement? fun(context: Neoagent.AgentToolEnvironment, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
 ---@field workspace_trust? Neoagent.WorkspaceTrust
----@field runtimes? Neoagent.ProviderRuntimes
 ---@field destroy_runtimes? fun()
----@field presenter? Neoagent.Presenter
----@field dialogs? Neoagent.Dialogs
+---@field _owns_dialogs? boolean
+---@field _owns_presenter? boolean
 ---@field applet? Neoagent.AgentApplet
----@field auth? Neoagent.AuthManager
 ---@field id? string
 ---@field profile_id? string
+---@field automatic_profile? boolean
 ---@field label? string
 ---@field initial_selection? Neoagent.InitialSelection
----@field host_effects? Applet.HostEffectsModule
+---@field workspace_warnings? string[]
 ---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
 ---@field compaction_run? fun(options: Neoagent.CompactionRunOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
----@field compaction_component? Neoagent.CompactionComponent
----@field session? Neoagent.Session
+---@field supported_apis? string[]
+---@field prepare_prompt? fun(context: Neoagent.ProfilePromptContext): Neoagent.PreparedProfilePrompt
 ---@field workspace? string
 ---@field restore_session_selection? boolean
 ---@field commit_workspace_preference? boolean
+
+---@class Neoagent.AgentRuntimeOptions: Neoagent.AgentRuntime
+---@field session? Neoagent.Session
+---@field auth? Neoagent.AuthManager
+---@field runtimes? Neoagent.ProviderRuntimes
+---@field presenter? Neoagent.Presenter
+---@field dialogs? Neoagent.Dialogs
+---@field host_effects? Applet.HostEffectsModule
+---@field presentation? fun(overrides?: Neoagent.UIConfigInput): Neoagent.UIPresentation
+---@field compaction_component? Neoagent.CompactionComponent
+---@field profiles? Neoagent.Profile[]
 ---@field transport? Neoagent.ByteBackend
+
+-- Internal construction receives completed dependencies. Optional caller inputs
+-- are resolved by composition before ownership transfers to the Agent.
+---@class Neoagent.AgentDependencies: Neoagent.AgentRuntime
+---@field session Neoagent.Session
+---@field auth Neoagent.AuthManager
+---@field runtimes Neoagent.ProviderRuntimes
+---@field presenter Neoagent.Presenter
+---@field dialogs Neoagent.Dialogs
+---@field host_effects Applet.HostEffectsModule
+---@field presentation fun(overrides?: Neoagent.UIConfigInput): Neoagent.UIPresentation
+---@field compaction_component Neoagent.CompactionComponent
+---@field toolset Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
 
 local M = {}
 local next_id = 0
@@ -165,13 +188,46 @@ local ui_positions = {
   center = true,
 }
 
+---@param value Neoagent.AgentToolset
+---@return Neoagent.AgentToolset
+local function copy_toolset(value)
+  assert(type(value) == "table" and not util.is_list(value), "toolset must be an object")
+  assert(type(value.tools) == "table" and util.is_list(value.tools), "toolset.tools must be a list")
+  assert(value.execute_tool == nil or type(value.execute_tool) == "function", "toolset.execute_tool must be a function")
+  agent_loop.validate_toolset(value.tools, value.execute_tool)
+  assert(value.system_prompt == nil or type(value.system_prompt) == "string", "toolset.system_prompt must be a string")
+  assert(
+    value.execution_policy == nil or type(value.execution_policy) == "function",
+    "toolset.execution_policy must be a function"
+  )
+  assert(
+    value.process_placement == nil or type(value.process_placement) == "function",
+    "toolset.process_placement must be a function"
+  )
+  assert(
+    value.sandbox == nil
+      or type(value.sandbox) == "table"
+        and type(value.sandbox.status) == "function"
+        and (value.sandbox.set_enabled == nil or type(value.sandbox.set_enabled) == "function"),
+    "toolset.sandbox must provide execution controls"
+  )
+  return {
+    tools = util.copy(value.tools),
+    execute_tool = value.execute_tool,
+    system_prompt = value.system_prompt,
+    execution_policy = value.execution_policy,
+    process_placement = value.process_placement,
+    sandbox = value.sandbox,
+  }
+end
+
 ---@param options Neoagent.Config<Neoagent.AgentToolEnvironment>
----@param runtime Neoagent.AgentRuntimeOptions?
+---@param runtime Neoagent.AgentDependencies
 ---@return Neoagent.Agent
 function M.from_config(options, runtime)
   assert(type(options) == "table", "agent configuration is required")
-  runtime = runtime or {}
   assert(type(runtime) == "table", "agent runtime must be an object")
+  local toolset = copy_toolset(runtime.toolset)
   if runtime.workspace_trust ~= nil then
     assert(
       type(runtime.workspace_trust) == "table"
@@ -180,48 +236,40 @@ function M.from_config(options, runtime)
       "agent workspace trust policy is invalid"
     )
   end
-  if runtime.runtimes ~= nil then
-    assert(
-      type(runtime.runtimes) == "table" and (next(runtime.runtimes) == nil or not util.is_list(runtime.runtimes)),
-      "agent provider runtimes must be a keyed table"
-    )
-  end
+  assert(
+    type(runtime.runtimes) == "table" and (next(runtime.runtimes) == nil or not util.is_list(runtime.runtimes)),
+    "agent provider runtimes must be a keyed table"
+  )
   if runtime.destroy_runtimes ~= nil then
     assert(type(runtime.destroy_runtimes) == "function", "agent provider runtime cleanup must be a function")
   end
-  if runtime.presenter ~= nil then
-    assert(
-      type(runtime.presenter) == "table"
-        and type(runtime.presenter.select) == "function"
-        and type(runtime.presenter.input) == "function"
-        and type(runtime.presenter.confirm) == "function"
-        and type(runtime.presenter.notify) == "function"
-        and type(runtime.presenter.open_uri) == "function",
-      "agent Presenter is invalid"
-    )
-  end
-  if runtime.dialogs ~= nil then
-    assert(
-      type(runtime.dialogs) == "table"
-        and type(runtime.dialogs.snapshot) == "function"
-        and type(runtime.dialogs.choose) == "function"
-        and type(runtime.dialogs.cancel) == "function"
-        and type(runtime.dialogs.cancel_pending) == "function",
-      "agent Dialog source is invalid"
-    )
-  end
+  assert(
+    type(runtime.presenter) == "table"
+      and type(runtime.presenter.select) == "function"
+      and type(runtime.presenter.input) == "function"
+      and type(runtime.presenter.confirm) == "function"
+      and type(runtime.presenter.notify) == "function"
+      and type(runtime.presenter.open_uri) == "function",
+    "agent Presenter is invalid"
+  )
+  assert(
+    type(runtime.dialogs) == "table"
+      and type(runtime.dialogs.snapshot) == "function"
+      and type(runtime.dialogs.choose) == "function"
+      and type(runtime.dialogs.cancel) == "function"
+      and type(runtime.dialogs.cancel_pending) == "function",
+    "agent Dialog source is invalid"
+  )
   if runtime.applet ~= nil then
     assert(type(runtime.applet) == "table" and type(runtime.applet.destroy) == "function", "agent Applet is invalid")
   end
-  if runtime.auth ~= nil then
-    assert(
-      type(runtime.auth) == "table"
-        and type(runtime.auth.resolve) == "function"
-        and type(runtime.auth.login) == "function"
-        and type(runtime.auth.logout) == "function",
-      "agent authentication manager is invalid"
-    )
-  end
+  assert(
+    type(runtime.auth) == "table"
+      and type(runtime.auth.resolve) == "function"
+      and type(runtime.auth.login) == "function"
+      and type(runtime.auth.logout) == "function",
+    "agent authentication manager is invalid"
+  )
   for _, field in ipairs({ "id", "profile_id", "label" }) do
     assert(
       runtime[field] == nil or type(runtime[field]) == "string" and runtime[field] ~= "",
@@ -241,54 +289,45 @@ function M.from_config(options, runtime)
       "agent initial_selection must contain a model and optional thinking level"
     )
   end
-  if runtime.host_effects ~= nil then
-    assert(
-      type(runtime.host_effects) == "table"
-        and type(runtime.host_effects.refresh_file) == "function"
-        and type(runtime.host_effects.on_exit) == "function",
-      "agent host effects are invalid"
-    )
-  end
-  for _, field in ipairs({ "interaction", "compaction_run", "process_placement" }) do
+  assert(
+    type(runtime.host_effects) == "table"
+      and type(runtime.host_effects.refresh_file) == "function"
+      and type(runtime.host_effects.on_exit) == "function",
+    "agent host effects are invalid"
+  )
+  assert(type(runtime.presentation) == "function", "agent presentation must be a function")
+  for _, field in ipairs({ "interaction", "compaction_run" }) do
     assert(runtime[field] == nil or type(runtime[field]) == "function", "agent " .. field .. " must be a function")
   end
-  if runtime.compaction_component ~= nil then
-    local component = runtime.compaction_component
-    assert(
-      type(component) == "table"
-        and type(component.evaluate) == "function"
-        and type(component.prepare) == "function"
-        and (component.fit == nil or type(component.fit) == "function")
-        and type(component.run) == "function",
-      "agent compaction component is invalid"
-    )
-    assert(
-      component.required_api == nil or type(component.required_api) == "string" and component.required_api ~= "",
-      "agent compaction component API is invalid"
-    )
-  end
-  if runtime.session ~= nil then
-    assert(type(runtime.session) == "table", "agent Session is invalid")
-    for _, method in ipairs({
-      "id",
-      "identity",
-      "append",
-      "append_compaction",
-      "preview_compaction",
-      "messages",
-      "context_messages",
-      "checkpoint_identity",
-      "entries",
-      "entry",
-      "leaf_id",
-      "path",
-      "state",
-      "move_to",
-      "snapshot",
-      "metadata",
-    }) do
-      assert(type(runtime.session[method]) == "function", "agent Session must implement " .. method)
-    end
+  local component = runtime.compaction_component
+  assert(
+    type(component) == "table"
+      and type(component.evaluate) == "function"
+      and type(component.prepare) == "function"
+      and (component.fit == nil or type(component.fit) == "function")
+      and type(component.run) == "function",
+    "agent compaction component is invalid"
+  )
+  assert(type(runtime.session) == "table", "agent Session is invalid")
+  for _, method in ipairs({
+    "id",
+    "identity",
+    "append",
+    "append_compaction",
+    "preview_compaction",
+    "messages",
+    "context_messages",
+    "checkpoint_identity",
+    "entries",
+    "entry",
+    "leaf_id",
+    "path",
+    "state",
+    "move_to",
+    "snapshot",
+    "metadata",
+  }) do
+    assert(type(runtime.session[method]) == "function", "agent Session must implement " .. method)
   end
   assert(
     runtime.workspace == nil or type(runtime.workspace) == "string" and runtime.workspace ~= "",
@@ -302,14 +341,14 @@ function M.from_config(options, runtime)
     runtime.commit_workspace_preference == nil or type(runtime.commit_workspace_preference) == "boolean",
     "agent commit_workspace_preference must be boolean"
   )
-  local owns_presenter = runtime.presenter == nil
-  local owns_dialogs = runtime.dialogs == nil
+  local owns_presenter = runtime._owns_presenter == true
+  local owns_dialogs = runtime._owns_dialogs == true
   local workspace_trust = runtime.workspace_trust
-  local presenter = runtime.presenter or require("neoagent.presenter").new()
-  local host_effects = runtime.host_effects or require("applet").host_effects
-  options = util.copy(options)
+  local presenter = runtime.presenter
+  local host_effects = runtime.host_effects
+  options = config.copy(options)
   local settings_name = runtime.profile_id or options.name or "default"
-  local session_metadata = runtime.session and runtime.session:metadata() or nil
+  local session_metadata = runtime.session:metadata()
   assert(
     session_metadata == nil
       or type(session_metadata) == "table" and (next(session_metadata) == nil or not util.is_list(session_metadata)),
@@ -330,37 +369,22 @@ function M.from_config(options, runtime)
     "agent Workspace must match the Session Workspace"
   )
   local initial_session = runtime.session
-  if not initial_session then
-    local Session = require("neoagent.session")
-    if options.persistence.enabled then
-      local store = require("neoagent.storage").new({
-        directory = options.persistence.directory,
-        cwd = workspace_root,
-      })
-      initial_session = assert(Session.new({ store = store }))
-    else
-      initial_session = assert(Session.new())
-    end
-  end
   next_id = next_id + 1
   local agent_id = runtime.id or "agent-" .. next_id
   local profile_id = runtime.profile_id
-  local required_api = runtime.compaction_component and runtime.compaction_component.required_api
+  local supported_apis = runtime.supported_apis
   local agent_label = runtime.label or options.name or agent_id
   ---@class Neoagent.Agent
   ---@field _neoagent_agent true
   local agent = { _neoagent_agent = true }
-  local runtimes = runtime.runtimes or {}
+  local runtimes = runtime.runtimes
   local auth_manager = runtime.auth
-  if not auth_manager then
-    auth_manager = require("neoagent.auth").configured({ auth = options.auth })
-  end
   local request_selection = RequestSelection.new({
     config = options,
     auth = auth_manager,
     runtimes = runtimes,
     initial_selection = runtime.initial_selection,
-    required_api = required_api,
+    supported_apis = supported_apis,
     checkpoint_identity = function()
       return initial_session:checkpoint_identity()
     end,
@@ -389,37 +413,28 @@ function M.from_config(options, runtime)
   end
 
   local dialogs = runtime.dialogs
-    or require("neoagent.dialog").new({
-      report = function(message, level)
-        report(message, level)
-      end,
-    })
-
-  ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
-  local tools
-  if options._tools_supplied then
-    tools = util.copy(assert(options.tools))
-  else
-    tools = require("neoagent.tools").coding({
-      shell_timeout = options.shell_timeout,
-    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
-  end
   local workspace = require("neoagent.workspace").new({ root = workspace_root, cwd = workspace_root })
-  ---@type Neoagent.ProcessControllerFactory?
-  local process_factory = require("neoagent.sandbox.placement").host_process
-  if runtime.process_placement then
-    process_factory = function(spec, maximum, on_cleanup, on_released)
-      local factory = runtime.process_placement({
+  ---@type Neoagent.AgentState
+  local state
+  ---@param spec Neoagent.SubprocessSpec
+  ---@param maximum integer
+  ---@param on_cleanup fun(error: Neoagent.Error)
+  ---@param on_released? fun()
+  ---@return Neoagent.ProcessController
+  local function process_factory(spec, maximum, on_cleanup, on_released)
+    local placement = state.toolset.process_placement
+    local factory = require("neoagent.sandbox.placement").host_process
+    if placement then
+      factory = placement({
         files = initial_session:files(),
         workspace = workspace,
         agent = options.name,
         session_id = initial_session:identity(),
       }, util.copy(spec))
-      return factory(spec, maximum, on_cleanup, on_released)
     end
+    return factory(spec, maximum, on_cleanup, on_released)
   end
-  ---@type Neoagent.AgentState
-  local state = {
+  state = {
     applet = runtime.applet,
     dialogs = dialogs,
     session = initial_session,
@@ -427,8 +442,8 @@ function M.from_config(options, runtime)
     request_selection = request_selection,
     workspace = workspace,
     workspace_settings = nil,
-    workspace_model_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
-    session_selection_pending = runtime.commit_workspace_preference == true or runtime.session == nil,
+    workspace_model_pending = runtime.commit_workspace_preference == true,
+    session_selection_pending = runtime.commit_workspace_preference == true,
     activity = nil,
     live_usage = nil,
     context_usage_cache = nil,
@@ -455,11 +470,8 @@ function M.from_config(options, runtime)
     process_sessions = require("neoagent.process_sessions").new(runtime.process_sessions, function(err)
       notify("Retained process cleanup failed: " .. util.safe_message(err.message), vim.log.levels.ERROR)
     end, process_factory),
-    pending_warning = options._sandbox_warning,
-    toolset = {
-      tools = tools,
-      execute_tool = options.execute_tool,
-    },
+    pending_warning = runtime.initial_warning,
+    toolset = toolset,
   }
   ---@return string
   local function trust_cwd()
@@ -569,7 +581,7 @@ function M.from_config(options, runtime)
             vim.log.levels.ERROR
           )
         end
-      end, required_api)
+      end, supported_apis)
     end
     return tracked
   end
@@ -691,24 +703,17 @@ function M.from_config(options, runtime)
   end
 
   ---@param settings Neoagent.JsonObject
-  ---@param warn boolean
   ---@return Neoagent.WorkspacePreferences
-  local function scoped_workspace_settings(settings, warn)
-    local accepted, issues = workspace_preferences.scope(settings, preference_defaults(), settings_name)
-    if warn then
-      local path = assert(state.workspace_settings):metadata().settings_path
-      local warning = workspace_preferences.warning(issues, path)
-      if warning then
-        notify(warning, vim.log.levels.WARN)
-      end
-    end
+  local function scoped_workspace_settings(settings)
+    local accepted =
+      workspace_preferences.scope(settings, preference_defaults(), settings_name, runtime.automatic_profile)
     return accepted
   end
 
   ---@param patch Neoagent.WorkspacePreferencesInput
   ---@return Neoagent.JsonObject
   local function workspace_patch(patch)
-    return workspace_preferences.patch(settings_name, patch)
+    return workspace_preferences.patch(settings_name, patch, runtime.automatic_profile)
   end
 
   ---@param patch Neoagent.WorkspacePreferencesInput
@@ -721,7 +726,7 @@ function M.from_config(options, runtime)
     if not saved then
       return nil, err
     end
-    state.request_selection:set_workspace_preferences(scoped_workspace_settings(saved, false))
+    state.request_selection:set_workspace_preferences(scoped_workspace_settings(saved))
     return true
   end
 
@@ -734,19 +739,9 @@ function M.from_config(options, runtime)
       directory = options.directory,
       root = state.workspace.root,
     })
-    local settings, settings_err = state.workspace_settings:load()
-    if not settings then
-      assert(settings_err)
-      local path = assert(state.workspace_settings):metadata().settings_path
-      local message = settings_err.message
-      if settings_err.detail then
-        message = message .. ": " .. settings_err.detail
-      end
-      message = message .. "; the file may be outdated, update or delete " .. path
-      notify(message, vim.log.levels.WARN)
-      return
+    for _, warning in ipairs(runtime.workspace_warnings or {}) do
+      notify(warning, vim.log.levels.WARN)
     end
-    state.request_selection:set_workspace_preferences(scoped_workspace_settings(settings, true))
   end
 
   ---@return Neoagent.Session
@@ -790,13 +785,9 @@ function M.from_config(options, runtime)
     end
     local selected = state.request_selection:model_selection()
     assert(selected, "accepted Agent submission has no Model selection")
-    local overrides = state.request_selection:workspace_preferences()
     local level = state.request_selection:thinking_level()
-    local same_thinking = overrides.default_thinking_level == level
-    if RequestSelection.same_model(overrides.default_model, selected) and same_thinking then
-      state.workspace_model_pending = false
-      return true
-    end
+    -- Acceptance commits to this Agent's destination and Profile scope. An
+    -- inherited value is not evidence that the destination already contains it.
     local patch = { default_model = selected }
     patch.default_thinking_level = level == nil and vim.NIL or level
     local saved, err = save_workspace_settings(patch)
@@ -810,7 +801,7 @@ function M.from_config(options, runtime)
   ---@return Neoagent.ModelSelection?
   local function first_available_model()
     local selected, err =
-      require("neoagent.models").first_available(options, auth_manager, state.provider_runtimes, required_api)
+      require("neoagent.models").first_available(options, auth_manager, state.provider_runtimes, supported_apis)
     if err then
       error(err, 0)
     end
@@ -846,49 +837,18 @@ function M.from_config(options, runtime)
     end
     local model, resolve_err = state.request_selection:resolve(selected)
     if not model then
-      local overrides = state.request_selection:workspace_preferences()
-      local workspace_default = overrides.default_model
-      local configured_default = preference_defaults().default_model
-      local uses_workspace_default = workspace_default ~= nil
-        and RequestSelection.same_model(selected, workspace_default)
-      if uses_workspace_default then
-        assert(workspace_default)
-        overrides.default_model = nil
-        state.request_selection:set_workspace_preferences(overrides)
-        local fallback_selection = configured_default
-        if not fallback_selection or RequestSelection.same_model(workspace_default, fallback_selection) then
-          fallback_selection = first_available_model()
-        end
-        local fallback_available = fallback_selection ~= nil
-          and not RequestSelection.same_model(workspace_default, fallback_selection)
-        if fallback_available then
-          local fallback_model = state.request_selection:resolve(fallback_selection)
-          assert(fallback_model)
-          assert(fallback_selection)
-          selected, model = fallback_selection, fallback_model
-        else
-          notify(
-            "ignoring unavailable workspace model " .. selected.provider .. "/" .. selected.model,
-            vim.log.levels.WARN
-          )
-          error("No models are configured")
-        end
-        notify(
-          "ignoring unavailable workspace model " .. workspace_default.provider .. "/" .. workspace_default.model,
-          vim.log.levels.WARN
-        )
-      else
-        error(resolve_err, 0)
-      end
+      error(resolve_err, 0)
     end
     bind_provider(selected.provider)
+    assert(model, "Resolved Model is required")
     return model
   end
 
   ---@param value string
-  ---@param tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
-  ---@return string
-  local function system_prompt(value, tools)
+  ---@param toolset Neoagent.AgentToolset
+  ---@return Neoagent.PreparedProfilePrompt
+  local function request_environment(value, toolset)
+    local tools = toolset.tools
     require_workspace_trust()
     local options = configured()
     local workspace = assert(state.workspace)
@@ -930,36 +890,57 @@ function M.from_config(options, runtime)
     local prompt = options.system_prompt
     if type(prompt) == "function" then
       prompt = prompt(context)
-    elseif prompt == nil then
-      prompt = require("neoagent.system_prompt").default(context)
     end
-    local composed = require("neoagent.system_prompt").compose(prompt, context)
-    local guidance = state.toolset.system_prompt
-    if type(guidance) == "string" and guidance ~= "" then
-      composed = composed .. "\n\n" .. guidance
+    if runtime.prepare_prompt then
+      local model = context.model
+      local definitions = {}
+      for _, tool in ipairs(tools) do
+        tool = require("neoagent.api.tool_schema").for_model(tool, model)
+        definitions[#definitions + 1] = {
+          name = tool.name,
+          description = tool.description,
+          input_schema = util.copy(tool.input_schema),
+          text_input = util.copy(tool.text_input),
+          capabilities = util.copy(tool.capabilities),
+          prompt_snippet = tool.prompt_snippet,
+          prompt_guidelines = util.copy(tool.prompt_guidelines),
+        }
+      end
+      local prepared = runtime.prepare_prompt(util.copy({
+        workspace = { cwd = workspace.cwd, root = workspace.root },
+        model = model and {
+          api = model.api,
+          provider = model.provider,
+          id = model.id,
+          input = util.copy(model.input),
+          supports_image_detail_original = model.supports_image_detail_original,
+          context_window = model.context_window,
+          thinking_levels = state.request_selection:levels(),
+          native_compaction = type(model.compact) == "function",
+        } or nil,
+        tools = definitions,
+        prompt = value,
+        base_prompt = prompt,
+        agent_instructions = instructions_result.files,
+        skills = skills_result.skills,
+        execution_guidance = toolset.system_prompt,
+        execution_policy = toolset.execution_policy
+            and toolset.execution_policy({ cwd = workspace.cwd, root = workspace.root })
+          or { mode = toolset.execute_tool and "external" or "host", parent_tools = {} },
+      }))
+      assert(
+        type(prepared) == "table"
+          and type(prepared.system_prompt) == "string"
+          and util.is_valid_utf8(prepared.system_prompt),
+        "Profile returned an invalid prompt"
+      )
+      assert(
+        prepared.prepare_request == nil or type(prepared.prepare_request) == "function",
+        "Profile returned an invalid request preparer"
+      )
+      return prepared
     end
-    return composed
-  end
-
-  ---@param value Neoagent.AgentToolset
-  ---@return Neoagent.AgentToolset
-  local function copy_toolset(value)
-    assert(type(value) == "table" and not util.is_list(value), "toolset must be an object")
-    assert(type(value.tools) == "table" and util.is_list(value.tools), "toolset.tools must be a list")
-    assert(
-      value.execute_tool == nil or type(value.execute_tool) == "function",
-      "toolset.execute_tool must be a function"
-    )
-    agent_loop.validate_toolset(value.tools, value.execute_tool)
-    assert(
-      value.system_prompt == nil or type(value.system_prompt) == "string",
-      "toolset.system_prompt must be a string"
-    )
-    return {
-      tools = util.copy(value.tools),
-      execute_tool = value.execute_tool,
-      system_prompt = value.system_prompt,
-    }
+    return { system_prompt = prompt or "" }
   end
 
   ---@param path string
@@ -1083,7 +1064,6 @@ function M.from_config(options, runtime)
     end
   end
 
-  initialize_workspace_settings()
   local sessions = session_lifecycle.new({
     state = state,
     restore_selection = runtime.restore_session_selection == true,
@@ -1094,7 +1074,6 @@ function M.from_config(options, runtime)
     request_selection = state.request_selection,
     bind_provider = bind_provider,
   })
-  assert(sessions.initialize())
 
   local runs = require("neoagent.agent.run_lifecycle").new({
     state = state,
@@ -1110,7 +1089,7 @@ function M.from_config(options, runtime)
     ensure_model = ensure_model,
     commit_model_preference = commit_model_preference,
     copy_toolset = copy_toolset,
-    system_prompt = system_prompt,
+    request_environment = request_environment,
     refresh_buffer = refresh_buffer,
     provider_event = provider_event,
     interaction = runtime.interaction,
@@ -1243,7 +1222,7 @@ function M.from_config(options, runtime)
       return nil
     end
     local choices, err =
-      require("neoagent.models").available(options, auth_manager, state.provider_runtimes, required_api)
+      require("neoagent.models").available(options, auth_manager, state.provider_runtimes, supported_apis)
     if not choices then
       assert(err)
       notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR)
@@ -1524,13 +1503,29 @@ function M.from_config(options, runtime)
     local selected = copy_toolset(value)
     local previous = copy_toolset(state.toolset)
     state.toolset = selected
+    if workspace_trust then
+      workspace_trust:set_sandbox_status(
+        selected.sandbox and selected.sandbox:status() or { enabled = false, active = false }
+      )
+    end
     publish_messages(transcript_messages(state.session))
     return previous
   end
 
   ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
   function agent:config()
-    return util.copy(options)
+    return config.copy(options)
+  end
+
+  ---@param overrides? Neoagent.UIConfigInput
+  ---@return Neoagent.UIPresentation
+  function agent:presentation(overrides)
+    return runtime.presentation(overrides)
+  end
+
+  ---@return Neoagent.WorkspaceTrust?
+  function agent:workspace_trust()
+    return workspace_trust
   end
   ---@return Neoagent.Presenter
   function agent:presenter()
@@ -1586,81 +1581,26 @@ function M.from_config(options, runtime)
     end
   end
 
-  state.release_exit = host_effects.on_exit(function()
-    agent:destroy()
+  local initialized, failure = pcall(function()
+    initialize_workspace_settings()
+    assert(sessions.initialize())
+    if workspace_trust then
+      workspace_trust:set_sandbox_status(
+        toolset.sandbox and toolset.sandbox:status() or { enabled = false, active = false }
+      )
+    end
+    publish_messages(transcript_messages(state.session))
+    state.release_exit = host_effects.on_exit(function()
+      agent:destroy()
+    end)
   end)
+  if not initialized then
+    -- Composition still owns the supplied dependencies until this returns.
+    state.process_sessions:close("Agent construction failed")
+    unbind_provider()
+    error(failure, 0)
+  end
 
-  return agent
-end
-
----@param opts Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
----@param runtime Neoagent.AgentRuntimeOptions?
----@return Neoagent.Agent
-function M.new(opts, runtime)
-  local options = config.resolve(opts)
-  ---@type Neoagent.AgentRuntimeOptions
-  local selected = {}
-  for key, value in pairs(runtime or {}) do
-    selected[key] = value
-  end
-  local destroy_runtimes
-  if selected.runtimes == nil then
-    ---@param message string
-    ---@param level integer
-    ---@return unknown
-    local function report(message, level)
-      if selected.presenter then
-        return selected.presenter:notify({ message = message, level = level })
-      end
-      return require("applet").Presenter.notify(message, level)
-    end
-    local recorder
-    local transport = selected.transport
-    if options.recording.enabled then
-      recorder = assert(require("neoagent.http_recording").new({
-        config = options.recording,
-        report = report,
-      }))
-      transport = recorder:transport(transport or require("neoagent.transport.curl"))
-    end
-    local auth = selected.auth
-      or require("neoagent.auth").configured({ auth = options.auth }, { transport = transport })
-    selected.auth = auth
-    local runtimes, err = require("neoagent.provider_runtimes").compose(options, {
-      auth = auth,
-      store = require("neoagent.state_store").new({
-        directory = vim.fn.stdpath("state") .. "/neoagent/provider/state",
-      }),
-      report = report,
-      transport = transport,
-    })
-    if not runtimes then
-      if recorder then
-        recorder:destroy()
-      end
-      error(err, 0)
-    end
-    selected.runtimes = runtimes
-    ---@type Neoagent.ProviderRuntimes?
-    local owned = runtimes
-    destroy_runtimes = function()
-      local current = owned
-      owned = nil
-      require("neoagent.provider_runtimes").destroy(current)
-      if recorder then
-        recorder:destroy()
-        recorder = nil
-      end
-    end
-    selected.destroy_runtimes = destroy_runtimes
-  end
-  local ok, agent = pcall(M.from_config, options, selected)
-  if not ok then
-    if destroy_runtimes then
-      destroy_runtimes()
-    end
-    error(agent, 0)
-  end
   return agent
 end
 

@@ -169,12 +169,11 @@ function M.defaults()
 end
 
 ---@param user table<string, Neoagent.ProviderOptions|false>
----@param include_defaults? boolean
+---@param base table<string, Neoagent.ProviderOptions>
 ---@return table<string, Neoagent.ProviderOptions>
-function M.compose(user, include_defaults)
+function M.extend(base, user)
   assert(type(user) == "table", "providers must be a table")
-  ---@type table<string, Neoagent.ProviderOptions>
-  local result = include_defaults == false and {} or M.defaults()
+  local result = util.copy(base)
   for id, provider in pairs(user) do
     assert(type(id) == "string", "providers must use string ids")
     if provider == false then
@@ -193,6 +192,13 @@ function M.compose(user, include_defaults)
     end
   end
   return result
+end
+
+---@param user table<string, Neoagent.ProviderOptions|false>
+---@param include_defaults? boolean
+---@return table<string, Neoagent.ProviderOptions>
+function M.compose(user, include_defaults)
+  return M.extend(include_defaults == false and {} or M.defaults(), user)
 end
 
 return M

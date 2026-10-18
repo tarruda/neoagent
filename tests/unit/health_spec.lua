@@ -52,6 +52,75 @@ describe("neoagent health", function()
     assert.is_true(contains(messages.ok, "^configuration is valid$"))
   end)
 
+  it("checks dependencies of the effective Tools including renamed implementations", function()
+    local executable = vim.fn.executable
+    vim.fn.executable = function(name)
+      if name == "bash" or name == "magick" then
+        return 0
+      end
+      return executable(name)
+    end
+    local ok, err = pcall(function()
+      ---@type Neoagent.Tool<unknown>[]
+      local tools = { require("neoagent.tools.pi.command").new({ shell = "bash" }), require("neoagent.tools.codex.view_image").new() }
+      assert(tools[1]).name, assert(tools[2]).name = "terminal", "image"
+      require("neoagent.config").setup({
+        default_registry = false,
+        providers = {},
+        tools = tools,
+        persistence = { enabled = false },
+        ui = { images = false },
+      })
+      require("neoagent.health").check()
+      assert.is_true(contains(messages.error, "bash is required"))
+      assert.is_true(contains(messages.error, "magick is required"))
+      messages.error = {}
+      require("neoagent.config").setup({
+        default_registry = false,
+        providers = {},
+        tools = {},
+        persistence = { enabled = false },
+        ui = { images = false },
+      })
+      require("neoagent.health").check()
+      assert.is_false(contains(messages.error, "bash is required"))
+      assert.is_false(contains(messages.error, "magick is required"))
+    end)
+    vim.fn.executable = executable
+    assert(ok, err)
+  end)
+
+  it("reports Tools conflicting with Chat's tool-free policy", function()
+    local executable = vim.fn.executable
+    vim.fn.executable = function(name)
+      if name == "magick" then return 0 end
+      return executable(name)
+    end
+    local ok, err = pcall(function()
+      for _, tools in ipairs({ false, { require("neoagent.tools.codex.view_image").new() } }) do
+        messages.error = {}
+        require("neoagent.config").setup({
+          profile = "chat",
+          default_registry = false,
+          providers = {},
+          tools = tools or nil,
+          persistence = { enabled = false },
+          recording = { enabled = false },
+          ui = { images = false },
+        })
+        require("neoagent.health").check()
+        assert.are.equal(
+          tools ~= false,
+          contains(messages.error, "Profile chat does not accept Tools"),
+          vim.inspect(messages.error)
+        )
+        assert.is_false(contains(messages.error, "magick is required"))
+      end
+    end)
+    vim.fn.executable = executable
+    assert(ok, err)
+  end)
+
   it("reports Applet-owned image diagnostics", function()
     local ImageSystem = require("applet").ImageSystem
     local diagnostics = ImageSystem.diagnostics

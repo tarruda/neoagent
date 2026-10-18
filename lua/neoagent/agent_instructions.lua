@@ -94,6 +94,7 @@ function M.format(files)
   local lines = {
     "<project_context>",
     "Contextual instructions, ordered from broadest to most specific:",
+    "More specific instructions take precedence when they conflict. Resolve relative references from each instruction file's directory.",
     "",
   }
   for _, file in ipairs(files) do

@@ -69,18 +69,6 @@ describe("neoagent workspace trust UI", function()
         fake = { api = "fake-api", models = { test = {} } },
       },
       _apis = { ["fake-api"] = function() return model end },
-      tools = { {
-        name = "inspect",
-        description = "Inspect the workspace",
-        input_schema = {
-          type = "object",
-          properties = {},
-          additionalProperties = false,
-        },
-        execute = function()
-          return { content = { { type = "text", text = "ok" } } }
-        end,
-      } },
       agent_instructions = false,
       skills = false,
       workspace_trust = { path = trust_path },
@@ -110,6 +98,7 @@ describe("neoagent workspace trust UI", function()
   end
 
   ---@param text string
+  ---@return Neoagent.Agent, Neoagent.View
   local function start(text)
     assert(current_applet():open())
     current_applet():set_input(text)
@@ -355,7 +344,7 @@ describe("neoagent workspace trust UI", function()
     assert.is_not_nil((assert(active_view.dialog).active.body:find(
       "Review can load AGENTS.md", 1, true)))
     assert.is_not_nil((assert(active_view.dialog).active.body:find(
-      "native test sandbox", 1, true)))
+      "Tools run on the host because sandboxing is disabled", 1, true)))
     choose(active_view, "s")
     assert(vim.wait(1000, function()
       return active_view.dialog == nil and policy:is_trusted(vim.fn.getcwd())

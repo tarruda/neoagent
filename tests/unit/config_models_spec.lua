@@ -97,6 +97,41 @@ local function invalid_config(invalid)
 end
 
 describe("neoagent configuration and model resolution", function()
+  it("extends resolved providers without restoring removals or repeating catalog transforms", function()
+    local configured = config.resolve({ providers = { openai = false } })
+    local extended = config.extend(configured, { ui = { position = "left" } })
+    assert.is_nil(extended.providers.openai)
+    local transform = assert(extended.providers["openai-codex"]).catalog.transform_model
+    assert(transform)
+    local source = { id = "synthetic", reasoning_levels = { "off", "high" } }
+    local transformed = transform(source, { provider_id = "openai-codex", source_model = source })
+    assert(type(transformed) == "table")
+    assert.are.same({ off = {}, high = {
+      body = { include = { "reasoning.encrypted_content" }, reasoning = { summary = "auto", effort = "high" } },
+    } }, transformed.thinking)
+    local again = config.extend(extended, {})
+    assert.are.same(extended.providers, again.providers)
+    local added = config.extend(
+      again,
+      {
+        providers = {
+          synthetic = { api = "openai-responses", base_url = "https://example.test", models = { test = {} } },
+        },
+      }
+    )
+    assert.is_not_nil(added.providers.synthetic)
+    assert.is_nil(added.providers.openai)
+    assert.is_nil(again.providers.synthetic)
+  end)
+
+  it("owns default snapshots without requiring configuration input", function()
+    assert.are.same({}, config.agent_options())
+    local first, second = config.snapshot(), config.snapshot()
+    first.config.ui.position = "left"
+    assert.are_not.equal("left", second.config.ui.position)
+    assert.are.same({}, second.overrides)
+  end)
+
   it("validates explicit upload and prompt-cache policies without overriding disabled values", function()
     local configured = config.setup({ providers = {
       openai = { file_uploads = false },
@@ -1143,8 +1178,8 @@ describe("neoagent configuration and model resolution", function()
       } } })
     end, "tool[1].execute must be a function")
     assert.has_error(function()
-      invalid_config({ tools = {}, execute_tool = true })
-    end, "execute_tool must be a function")
+      invalid_config({ tools = {}, decorate_tool = true })
+    end, "decorate_tool must be a function")
     assert.has_error(function()
       invalid_config({ providers = { bad = { api = "custom", api_key = 42, models = {} } } })
     end)

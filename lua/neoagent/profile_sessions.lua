@@ -40,7 +40,7 @@ local M = {}
 ---@field workspace? string
 ---@field entry_id? string
 ---@field position? "before"|"at"
----@field target_native_api? string API allowed to preserve an active native checkpoint.
+---@field target_native_apis? string[] API allowed to preserve an active native checkpoint.
 ---@field persistence? Neoagent.Persistence
 
 ---@class Neoagent.OpenedProfileSession
@@ -80,24 +80,25 @@ end
 
 ---@param metadata unknown
 ---@return Neoagent.ProfileBinding?, Neoagent.Error?
----@return_overload Neoagent.ProfileBinding
----@return_overload nil, Neoagent.Error
-local function inspect_metadata(metadata)
+local function binding_metadata(metadata)
   if metadata == nil or metadata == vim.NIL then
-    return nil, profile_error("Session has no assigned Profile")
+    return nil
   end
   if not object(metadata) then
     return nil, profile_error("Session metadata must be an object")
   end
   local namespace = rawget(metadata, "neoagent")
   if namespace == nil or namespace == vim.NIL then
-    return nil, profile_error("Session has no assigned Profile")
+    return nil
   end
   if not object(namespace) then
     return nil, profile_error("Session metadata.neoagent must be an object")
   end
   if rawget(namespace, "profileId") == nil or rawget(namespace, "profileId") == vim.NIL then
-    return nil, profile_error("Session has no assigned Profile")
+    if rawget(namespace, "derivation") ~= nil and rawget(namespace, "derivation") ~= vim.NIL then
+      return nil, profile_error("Session metadata.neoagent.derivation requires an assigned Profile")
+    end
+    return nil
   end
   local selected, err = profile_id(rawget(namespace, "profileId"), "Session metadata.neoagent.profileId")
   if not selected then
@@ -126,6 +127,18 @@ local function inspect_metadata(metadata)
     profile_id = selected,
     derivation = derivation ~= nil and derivation ~= vim.NIL and util.copy(derivation) or nil,
   }
+end
+
+---@param metadata unknown
+---@return Neoagent.ProfileBinding?, Neoagent.Error?
+---@return_overload Neoagent.ProfileBinding
+---@return_overload nil, Neoagent.Error
+local function inspect_metadata(metadata)
+  local binding, err = binding_metadata(metadata)
+  if not binding then
+    return nil, err or profile_error("Session has no assigned Profile")
+  end
+  return binding
 end
 
 ---@param metadata? Neoagent.JsonObject
@@ -192,7 +205,7 @@ end
 function M.binding(session)
   assert(type(session) == "table" and type(session.metadata) == "function", "Session is required")
   local metadata = session:metadata()
-  local inspected, err = inspect_metadata(metadata and metadata.data or nil)
+  local inspected, err = binding_metadata(metadata and metadata.data or nil)
   if not inspected then
     return nil, err
   end
@@ -346,7 +359,7 @@ function M.derive(source, opts)
     return nil, profile_error("Cannot derive Session", path_err)
   end
   local checkpoint = session_tree.checkpoint_identity(path)
-  if checkpoint and checkpoint.api ~= opts.target_native_api then
+  if checkpoint and not vim.tbl_contains(opts.target_native_apis or {}, checkpoint.api) then
     return nil, profile_error("Target Profile cannot preserve encrypted context")
   end
   ---@type Neoagent.ProfileDerivation|false

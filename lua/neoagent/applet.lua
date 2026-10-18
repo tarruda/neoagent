@@ -8,7 +8,6 @@ local M = {}
 ---@field ui? Neoagent.UIConfigInput
 ---@field view? fun(options: Neoagent.ViewOptions): Neoagent.View
 ---@field host? Neoagent.ViewHostFactory
----@field metadata? Neoagent.ProfileAgentResources
 
 ---@class Neoagent.AgentAdoption: Neoagent.AgentAdoptionOptions
 ---@field agent Neoagent.Agent
@@ -16,7 +15,8 @@ local M = {}
 
 ---@class Neoagent.AppletOptions
 ---@field profiles? Neoagent.Profile[]
----@field default_profile? string
+---@field default_profile? Neoagent.DefaultProfile
+---@field snapshot? Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
 ---@field resources? Neoagent.ProfileResources
 ---@field provider_shell? Neoagent.ProviderShell
 ---@field agents? (Neoagent.Agent|Neoagent.AgentAdoption)[]
@@ -51,7 +51,6 @@ local M = {}
 ---@field agent Neoagent.Agent
 ---@field applet Neoagent.AgentApplet
 ---@field owned boolean
----@field metadata Neoagent.ProfileAgentResources
 ---@field session_id string
 ---@field activity? Neoagent.AgentActivitySnapshot
 ---@field activity_unsubscribe? fun()
@@ -82,7 +81,8 @@ local M = {}
 ---@field _neoagent_applet true
 ---@field profiles_by_id table<string, Neoagent.Profile>
 ---@field profile_order Neoagent.Profile[]
----@field default_profile? string
+---@field default_profile? Neoagent.DefaultProfile
+---@field snapshot? Neoagent.ConfigSnapshot<Neoagent.AgentToolEnvironment>
 ---@field resources? Neoagent.ProfileResources
 ---@field provider_shell_value? Neoagent.ProviderShell
 ---@field agent_order Neoagent.Agent[]
@@ -112,25 +112,17 @@ local function assert_agent(agent)
 end
 
 ---@param profiles Neoagent.Profile[]
----@param default_profile string?
+---@param default_profile Neoagent.DefaultProfile?
 ---@return table<string, Neoagent.Profile>, Neoagent.Profile[]
 local function validate_profiles(profiles, default_profile)
-  assert(type(profiles) == "table" and util.is_list(profiles), "Neoagent Applet Profiles must be a list")
-  local result, order = {}, {}
-  for _, profile in ipairs(profiles) do
-    assert(type(profile) == "table" and not util.is_list(profile), "Neoagent Applet Profiles must be objects")
-    assert(type(profile.id) == "string" and profile.id ~= "", "Profile id must be a non-empty string")
-    assert(type(profile.label) == "string" and profile.label ~= "", "Profile label must be a non-empty string")
-    assert(type(profile.create_applet) == "function", "Profile create_applet must be a function")
-    assert(type(profile.create_agent) == "function", "Profile create_agent must be a function")
-    assert(not result[profile.id], "Profile ids must be unique: " .. profile.id)
-    result[profile.id] = profile
-    order[#order + 1] = profile
-  end
+  local result = require("neoagent.profiles").index(profiles)
   if #profiles > 0 then
-    assert(type(default_profile) == "string" and result[default_profile], "Neoagent Applet default Profile is invalid")
+    assert(
+      type(default_profile) == "function" or type(default_profile) == "string" and result[default_profile],
+      "Neoagent Applet default Profile is invalid"
+    )
   end
-  return result, order
+  return result, profiles
 end
 
 ---@param opts Neoagent.AppletOptions?
@@ -138,6 +130,8 @@ end
 local function create(opts)
   opts = opts or {}
   local profiles, profile_order = validate_profiles(opts.profiles or {}, opts.default_profile)
+  assert(#profile_order == 0 or opts.snapshot, "Profile composition requires a shared configuration snapshot")
+  local config = require("neoagent.config")
   local provider_shell_value = opts.provider_shell
   if provider_shell_value == nil and opts.resources then
     provider_shell_value = opts.resources.provider_shell
@@ -148,6 +142,10 @@ local function create(opts)
     profiles_by_id = profiles,
     profile_order = profile_order,
     default_profile = opts.default_profile,
+    snapshot = opts.snapshot and {
+      config = config.copy(opts.snapshot.config),
+      overrides = config.copy(opts.snapshot.overrides),
+    } or nil,
     resources = opts.resources,
     provider_shell_value = provider_shell_value,
     agent_order = {},
@@ -236,7 +234,7 @@ function NeoagentApplet:_owner_callbacks(profile)
       return self:cycle_thinking_level()
     end or nil,
     on_select_model = profile and function(value)
-      return self:_select_unbound_model(profile, value)
+      return self:_select_unbound_model(value)
     end or nil,
     on_resume_session = profile and function(value)
       return self:_select_resume(value)
@@ -244,13 +242,48 @@ function NeoagentApplet:_owner_callbacks(profile)
     on_provider_shell = function()
       return self:toggle_provider_shell()
     end,
+    on_configure_draft = profile and function(value, ui)
+      local updated, err = self:update_draft_options({ ui = ui }, value)
+      return updated and true or nil, err
+    end or nil,
   }
+end
+
+---@param profile_id? string
+---@param workspace? string
+---@return Neoagent.ProfileComposition?, Neoagent.Error?
+function NeoagentApplet:_resolve(profile_id, workspace)
+  local snapshot = self.snapshot or require("neoagent.config").get_snapshot()
+  local configured = snapshot.config
+  local root = require("neoagent.fs").canonical(workspace or vim.fn.getcwd())
+  local explicit = profile_id or configured.profile
+  local retained = self.drafts_by_key[(explicit or "") .. "\0" .. root]
+  local accepted = retained and retained:snapshot()
+  if accepted and accepted.config.default_model then
+    return accepted
+  end
+  local resources = self.resources or {}
+  local ok, choice = pcall(require("neoagent.profiles.selection").resolve, {
+    profiles = self.profiles_by_id,
+    snapshot = snapshot,
+    policy = self.default_profile or configured.default_profile,
+    profile_id = explicit,
+    workspace = root,
+    auth = resources.auth,
+    runtimes = resources.runtimes or {},
+    overrides = accepted and accepted.options,
+    preference_source = accepted and accepted.preference_source,
+  })
+  if not ok then
+    return nil, util.normalize_error(choice, "profile")
+  end
+  return choice
 end
 
 ---@param id string?
 ---@return Neoagent.Profile?, Neoagent.Error?
 function NeoagentApplet:_profile(id)
-  local profile = self.profiles_by_id[id]
+  local profile = type(id) == "string" and self.profiles_by_id[id] or nil
   if not profile then
     return nil, util.error("profile", "Unknown Profile: " .. tostring(id))
   end
@@ -258,10 +291,12 @@ function NeoagentApplet:_profile(id)
 end
 
 ---@param profile Neoagent.Profile
+---@param name? string
 ---@return string, integer
-function NeoagentApplet:_next_label(profile)
+function NeoagentApplet:_next_label(profile, name)
+  name = name or profile.label
   local count = (self.label_counts[profile.id] or 0) + 1
-  return count == 1 and profile.label or profile.label .. " " .. count, count
+  return count == 1 and name or name .. " " .. count, count
 end
 
 ---@param applet Neoagent.AgentApplet
@@ -305,22 +340,23 @@ function NeoagentApplet:_applet_destroyed(applet)
   end
 end
 
----@param profile Neoagent.Profile
+---@param choice Neoagent.ProfileComposition
 ---@param workspace string?
 ---@return Neoagent.AgentApplet?, Neoagent.Error?
-function NeoagentApplet:_draft(profile, workspace)
+function NeoagentApplet:_draft(choice, workspace)
+  local profile, automatic = choice.profile, choice.automatic
   if self.destroyed then
     return nil, util.error("profile", "Neoagent Applet is destroyed")
   end
   workspace = require("neoagent.fs").canonical(workspace or vim.fn.getcwd())
-  local key = profile.id .. "\0" .. workspace
+  local key = (automatic == false and profile.id or "") .. "\0" .. workspace
   local current = self.drafts_by_key[key]
   if current and current:is_retained() and not current.applet:is_destroyed() then
     return current.applet
   end
-  local called, applet, options = pcall(profile.create_applet, {
-    profile = profile,
-    label = profile.label,
+  local called, applet = pcall(require("neoagent.profiles").create_applet, {
+    composition = choice,
+    label = choice.config.name or profile.label,
     workspace = workspace,
   })
   if not called then
@@ -341,10 +377,7 @@ function NeoagentApplet:_draft(profile, workspace)
     return nil, util.normalize_error(value, "profile")
   end
   if type(applet) ~= "table" or not applet._neoagent_agent_applet then
-    return rollback(applet == nil and options or "Profile create_applet must return an Agent Applet")
-  end
-  if options ~= nil and (type(options) ~= "table" or (next(options) ~= nil and util.is_list(options))) then
-    return rollback("Profile draft options must be an object")
+    return rollback("Profile create_applet must return an Agent Applet")
   end
   local owned, own_err = pcall(applet.claim, applet, self, self:_owner_callbacks(profile))
   if not owned then
@@ -354,12 +387,14 @@ function NeoagentApplet:_draft(profile, workspace)
   local resources = self.resources or {}
   local constructed, value, draft_err = pcall(require("neoagent.profile_draft").new, {
     key = key,
-    profile = profile,
+    composition = choice,
     workspace = workspace,
     applet = applet,
-    options = options,
     auth = resources.auth,
     runtimes = resources.runtimes,
+    profiles = self.profiles_by_id,
+    snapshot = assert(self.snapshot),
+    policy = assert(self.default_profile),
   })
   if not constructed or type(value) ~= "table" then
     return rollback(constructed and draft_err or value)
@@ -387,45 +422,43 @@ function NeoagentApplet:_construction_error(applet, value)
   return nil, err
 end
 
----@param profile Neoagent.Profile
+---@param resolved Neoagent.ProfileComposition
 ---@param applet Neoagent.AgentApplet
 ---@param session Neoagent.Session
 ---@param opts Neoagent.AgentConstructionOptions?
 ---@return Neoagent.Agent?, Neoagent.Error?
-function NeoagentApplet:_construct_agent(profile, applet, session, opts)
+function NeoagentApplet:_construct_agent(resolved, applet, session, opts)
   opts = opts or {}
   if self.destroyed then
     return nil, util.error("agent", "Neoagent Applet is destroyed")
   end
+  local profile = resolved.profile
   local draft = self.drafts_by_applet[applet]
   local workspace = opts.workspace or draft and draft.workspace
   assert(type(workspace) == "string" and workspace ~= "", "Agent Workspace is required")
   next_agent_id = next_agent_id + 1
   local id = "neoagent-agent-" .. next_agent_id
-  local label, label_count = self:_next_label(profile)
+  local label, label_count = self:_next_label(profile, resolved.config.name)
   local previous_label_count = self.label_counts[profile.id]
   local previous_foreground = self.foreground
   local previous_foreground_id = self.foreground_id
   local previous_selected = self.selected
   local previous_last_id = self.last_id
-  local draft_snapshot = draft and draft:snapshot() or {
-    options = {},
-    initial_selection = nil,
-  }
-  local draft_options = draft_snapshot.options
-  local ok, agent, metadata = pcall(profile.create_agent, {
-    id = id,
-    label = label,
-    profile = profile,
-    applet = applet,
-    session = session,
-    workspace = workspace,
-    restore_session_selection = opts.restore_session_selection == true,
-    commit_workspace_preference = opts.commit_workspace_preference == true,
-    options = draft_options,
-    initial_selection = draft_snapshot.initial_selection,
-    resources = self.resources,
-  })
+  local ok, agent = pcall(function()
+    return require("neoagent.profiles").create_agent({
+      composition = resolved,
+      applet = applet,
+      resources = self.resources,
+      runtime = {
+        id = id,
+        label = label,
+        session = session,
+        workspace = workspace,
+        restore_session_selection = opts.restore_session_selection == true,
+        commit_workspace_preference = opts.commit_workspace_preference == true,
+      },
+    })
+  end)
   if not ok then
     return self:_construction_error(applet, agent)
   end
@@ -447,15 +480,15 @@ function NeoagentApplet:_construct_agent(profile, applet, session, opts)
   end
   local prepared, record = pcall(self._prepare_record, self, agent, applet, {
     owned = true,
-    metadata = metadata,
   })
   if not prepared then
     pcall(agent.destroy, agent)
     return self:_construction_error(applet, record)
   end
   local draft_position
-  if opts.apply_draft_position and draft_options.ui then
-    draft_position = draft_options.ui.position
+  if opts.apply_draft_position and draft then
+    local ui = draft:options().ui
+    draft_position = ui and ui.position
   end
   if draft_position then
     local positioned, saved, save_err = pcall(agent.set_ui_position, agent, draft_position)
@@ -592,15 +625,31 @@ function NeoagentApplet:_bind_draft(profile, applet)
   if not draft or draft.profile ~= profile or self.drafts_by_key[draft.key] ~= draft or not draft:is_active() then
     return nil, util.error("agent", "Profile draft is not owned")
   end
+  if not draft:model_selection() then
+    -- A catalog may acquire its first Model after this draft was opened.
+    local choice, selection_err = self:_resolve(not draft:is_automatic() and profile.id or nil, draft.workspace)
+    if not choice then
+      return self:_construction_error(applet, selection_err)
+    end
+    if not choice.config.default_model then
+      return self:_construction_error(applet, choice.model_error or util.error("model", "No models are configured"))
+    end
+    local published, publish_err = self:_publish_draft_candidate(applet, choice)
+    if not published then
+      return self:_construction_error(applet, publish_err)
+    end
+    profile = choice.profile
+  end
+  local resolved = draft:snapshot()
   local called, session, err = pcall(require("neoagent.profile_sessions").new, {
     profile_id = profile.id,
     workspace = draft.workspace,
-    persistence = profile.config.persistence,
+    persistence = resolved.config.persistence,
   })
   if not called or not session then
     return self:_construction_error(applet, called and err or session)
   end
-  return self:_construct_agent(profile, applet, session, {
+  return self:_construct_agent(resolved, applet, session, {
     workspace = draft.workspace,
     commit_workspace_preference = true,
     apply_draft_position = true,
@@ -610,7 +659,7 @@ end
 
 ---@param agent Neoagent.Agent
 ---@param applet Neoagent.AgentApplet
----@param opts? {owned?: boolean, metadata?: Neoagent.ProfileAgentResources}
+---@param opts? {owned?: boolean}
 ---@return Neoagent.AgentRecord
 function NeoagentApplet:_prepare_record(agent, applet, opts)
   opts = opts or {}
@@ -629,7 +678,6 @@ function NeoagentApplet:_prepare_record(agent, applet, opts)
     agent = agent,
     applet = applet,
     owned = opts.owned == true,
-    metadata = opts.metadata or {},
     session_id = session_id,
   }
   record.activity_unsubscribe = agent:subscribe_activity(function(activity)
@@ -716,8 +764,10 @@ function NeoagentApplet:_adopt(agent, applet, opts)
     applet = applet or agent:applet()
     if not applet then
       local configured = agent:config()
+      local presentation = agent:presentation(opts.ui)
       applet = AgentApplet.new({
-        config = util.deep_merge(configured.ui, opts.ui or {}) --[[@as Neoagent.UIConfig]],
+        config = presentation.config,
+        renderer = presentation.renderer,
         persistence = configured.persistence,
         profile_id = agent:profile_id(),
         label = agent:label(),
@@ -807,6 +857,7 @@ end
 ---@param id string?
 ---@return Neoagent.Profile?
 function NeoagentApplet:profile(id)
+  assert(id == nil or type(id) == "string", "Profile ID must be a string")
   return self.profiles_by_id[id]
 end
 
@@ -859,8 +910,7 @@ end
 function NeoagentApplet:presenter()
   local applet = self.foreground or self.selected
   if not applet and self.default_profile then
-    local profile = assert(self:_profile(self.default_profile))
-    applet = self:_draft(profile)
+    applet = self:draft()
     if applet then
       self.selected = applet
     end
@@ -885,7 +935,7 @@ function NeoagentApplet:open()
   if not self.default_profile then
     return nil, util.error("profile", "No default Profile is configured")
   end
-  local opened, err = self:new(self.default_profile)
+  local opened, err = self:new()
   return opened and true or nil, err
 end
 
@@ -924,12 +974,7 @@ end
 ---@param profile_id string?
 ---@return (Neoagent.Agent|Neoagent.AgentApplet)?, Neoagent.Error|Applet.Error?
 function NeoagentApplet:new(profile_id)
-  local profile, err = self:_profile(profile_id or self.default_profile)
-  if not profile then
-    return nil, err
-  end
-  local applet
-  applet, err = self:_draft(profile)
+  local applet, err = self:draft(profile_id)
   if not applet then
     return nil, err
   end
@@ -940,23 +985,44 @@ end
 ---@param workspace string?
 ---@return Neoagent.AgentApplet?, Neoagent.Error?
 function NeoagentApplet:draft(profile_id, workspace)
-  local profile, err = self:_profile(profile_id or self.default_profile)
-  if not profile then
+  local retained, retained_err = self:retained_draft(profile_id, workspace)
+  if retained_err then
+    return nil, retained_err
+  end
+  if retained then
+    local draft = assert(self.drafts_by_applet[retained])
+    local explicit = profile_id or self.snapshot and self.snapshot.config.profile
+    if explicit and draft:is_automatic() and draft:is_active() then
+      local key = explicit .. "\0" .. draft.workspace
+      self.drafts_by_key[draft.key] = nil
+      draft:pin(key)
+      self.drafts_by_key[key] = draft
+    end
+    return retained
+  end
+  local choice, err = self:_resolve(profile_id, workspace)
+  if not choice then
     return nil, err
   end
-  return self:_draft(profile, workspace)
+  return self:_draft(choice, workspace)
 end
 
 ---@param profile_id string?
 ---@param workspace string?
 ---@return Neoagent.AgentApplet?, Neoagent.Error?
 function NeoagentApplet:retained_draft(profile_id, workspace)
-  local profile, err = self:_profile(profile_id or self.default_profile)
-  if not profile then
-    return nil, err
+  local explicit = profile_id or self.snapshot and self.snapshot.config.profile
+  if explicit and not self.profiles_by_id[explicit] then
+    return nil, util.error("profile", "Unknown Profile: " .. explicit)
   end
   local root = require("neoagent.fs").canonical(workspace or vim.fn.getcwd())
-  local draft = self.drafts_by_key[profile.id .. "\0" .. root]
+  local draft = self.drafts_by_key[(explicit or "") .. "\0" .. root]
+  if not draft and explicit then
+    local automatic = self.drafts_by_key["\0" .. root]
+    if automatic and automatic.profile.id == explicit then
+      draft = automatic
+    end
+  end
   local applet = draft and draft.applet or nil
   if draft and draft:is_retained() and applet and not applet:is_destroyed() then
     return applet
@@ -979,13 +1045,28 @@ end
 ---@param applet Neoagent.AgentApplet?
 ---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?, Neoagent.Error?
 function NeoagentApplet:update_draft_options(patch, applet)
-  assert(type(patch) == "table" and not util.is_list(patch), "Profile draft options must be an object")
+  assert(
+    type(patch) == "table" and (next(patch) == nil or not util.is_list(patch)),
+    "Profile draft options must be an object"
+  )
   applet = applet or self.foreground or self.selected
   local draft = applet and self.drafts_by_applet[applet]
-  if not draft or self.drafts_by_key[draft.key] ~= draft or not draft:is_active() then
+  if not applet or not draft or self.drafts_by_key[draft.key] ~= draft or not draft:is_active() then
     return nil, util.error("profile", "Profile draft is not owned")
   end
-  return draft:update(patch)
+  if patch.default_model then
+    local selected, err = self:_set_draft_model(applet, patch.default_model.provider, patch.default_model.model, patch)
+    if not selected then
+      return nil, err
+    end
+    return self:_owned_draft(applet):options()
+  end
+  local candidate, err = draft:prepare_update(patch)
+  if not candidate then
+    return nil, err
+  end
+  local published, publish_err = self:_publish_draft_candidate(applet, candidate)
+  return published and draft:options() or nil, publish_err
 end
 
 ---@param value Neoagent.Agent|string|integer
@@ -1019,9 +1100,8 @@ function NeoagentApplet:send(text)
     applet = agent and agent:applet() or nil
   end
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
@@ -1041,9 +1121,8 @@ end
 function NeoagentApplet:set_input(value)
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
@@ -1063,19 +1142,14 @@ end
 function NeoagentApplet:set_position(position)
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local draft_err
-    applet, draft_err = self:_draft(profile)
+    applet, draft_err = self:draft()
     if not applet then
       return nil, draft_err
     end
     self.selected = applet
   end
-  local selected, err = applet:set_position(position)
-  if selected and self.drafts_by_applet[applet] then
-    self:update_draft_options({ ui = { position = position } }, applet)
-  end
-  return selected, err
+  return applet:set_position(position)
 end
 
 ---@param renderer unknown
@@ -1083,9 +1157,8 @@ end
 function NeoagentApplet:set_renderer(renderer)
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
@@ -1099,9 +1172,8 @@ end
 function NeoagentApplet:set_transcript_style(style)
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
@@ -1132,6 +1204,68 @@ function NeoagentApplet:_report_draft_selection(applet, value)
   return nil, err
 end
 
+---@param applet Neoagent.AgentApplet
+---@param provider string
+---@param model string
+---@param patch? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
+---@return Neoagent.ModelSelection?, Neoagent.Error?
+function NeoagentApplet:_set_draft_model(applet, provider, model, patch)
+  local draft = self:_owned_draft(applet)
+  local called, candidate, err = pcall(draft.prepare_model, draft, provider, model, patch)
+  if not called then
+    return nil, util.normalize_error(candidate, "profile")
+  end
+  if not candidate then
+    return nil, err
+  end
+  local published, publish_err = self:_publish_draft_candidate(applet, candidate, true)
+  return published and draft:model_selection() or nil, publish_err
+end
+
+---@param applet Neoagent.AgentApplet
+---@param candidate Neoagent.ProfileComposition
+---@param selection_changed? boolean
+---@return true?, Neoagent.Error?
+function NeoagentApplet:_publish_draft_candidate(applet, candidate, selection_changed)
+  local draft = self:_owned_draft(applet)
+  local profile = candidate.profile
+  local selected = candidate.config.default_model
+  local rendered, failure = pcall(function()
+    local previous, resolved = draft:snapshot(), candidate
+    -- Reuse the realized presentation dependency while its accepted recipe is
+    -- unchanged. Public setters record intent in the composition before this.
+    local retain_renderer = profile.id == draft.profile.id
+      and previous.config.ui.style == resolved.config.ui.style
+      and previous.renderer == resolved.renderer
+      and previous.renderer_factory == resolved.renderer_factory
+    local presentation = require("neoagent.profiles.composition").presentation(
+      resolved,
+      retain_renderer and { renderer = applet.renderer } or nil
+    )
+    local presented, present_err = applet:publish_draft(self, {
+      profile = profile.id,
+      label = resolved.config.name or profile.label,
+      config = presentation.config,
+      renderer = presentation.renderer,
+      persistence = resolved.config.persistence,
+      context = {
+        position = resolved.config.ui.position,
+        model = selected and selected.provider .. "/" .. selected.model or "no model",
+        thinking = candidate.config.default_thinking_level,
+      },
+      callbacks = self:_owner_callbacks(profile),
+    })
+    if not presented then
+      error(present_err, 0)
+    end
+  end)
+  if not rendered then
+    return nil, util.normalize_error(failure, "profile")
+  end
+  draft:accept(candidate, selection_changed)
+  return true
+end
+
 ---@param provider string
 ---@param model string
 ---@return (Neoagent.Model|Neoagent.ModelSelection)?, Neoagent.Error?
@@ -1144,23 +1278,17 @@ function NeoagentApplet:set_model(provider, model)
   end
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
     self.selected = applet
   end
-  local draft = self:_owned_draft(applet)
-  local selection, selection_err = draft:set_model(provider, model)
+  local selection, selection_err = self:_set_draft_model(applet, provider, model)
   if not selection then
     return self:_report_draft_selection(applet, selection_err)
   end
-  applet:set_draft_context({ model = provider .. "/" .. model })
-  applet:set_draft_context({
-    thinking = draft:thinking_level() or false,
-  })
   return selection
 end
 
@@ -1171,19 +1299,15 @@ function NeoagentApplet:select_model()
     return agent:select_model()
   end
   local applet = self.foreground or self.selected
-  local profile = assert(self:_profile(self.default_profile))
   if not applet then
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
     self.selected = applet
-  else
-    local draft = self.drafts_by_applet[applet]
-    profile = draft and draft.profile or profile
   end
-  return self:_select_unbound_model(profile, applet)
+  return self:_select_unbound_model(applet)
 end
 
 ---@return Neoagent.ThinkingLevel?
@@ -1194,8 +1318,8 @@ function NeoagentApplet:get_thinking_level()
   end
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
-    return profile.config.default_thinking_level
+    local resolved = assert(self:_resolve())
+    return resolved.config.default_thinking_level
   end
   local draft = self.drafts_by_applet[applet]
   return draft and draft:thinking_level() or nil
@@ -1209,9 +1333,8 @@ function NeoagentApplet:available_thinking_levels()
   end
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
@@ -1228,21 +1351,18 @@ function NeoagentApplet:set_thinking_level(level)
   end
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
     self.selected = applet
   end
-  local draft = self:_owned_draft(applet)
-  local selected, selection_err = draft:set_thinking_level(level)
-  if not selected then
+  local updated, selection_err = self:update_draft_options({ default_thinking_level = level }, applet)
+  if not updated then
     return self:_report_draft_selection(applet, selection_err)
   end
-  applet:set_draft_context({ thinking = level })
-  return selected
+  return self:_owned_draft(applet):thinking_level()
 end
 
 ---@return Neoagent.ThinkingLevel?, Neoagent.Error?
@@ -1253,21 +1373,23 @@ function NeoagentApplet:cycle_thinking_level()
   end
   local applet = self.foreground or self.selected
   if not applet then
-    local profile = assert(self:_profile(self.default_profile))
     local err
-    applet, err = self:_draft(profile)
+    applet, err = self:draft()
     if not applet then
       return nil, err
     end
     self.selected = applet
   end
   local draft = self:_owned_draft(applet)
-  local selected, selection_err = draft:cycle_thinking_level()
-  if not selected then
-    return self:_report_draft_selection(applet, selection_err)
+  local candidate, err = draft:prepare_cycle()
+  if not candidate then
+    return self:_report_draft_selection(applet, err)
   end
-  applet:set_draft_context({ thinking = selected })
-  return selected
+  local published, publish_err = self:_publish_draft_candidate(applet, candidate)
+  if not published then
+    return self:_report_draft_selection(applet, publish_err)
+  end
+  return draft:thinking_level()
 end
 
 ---@return string?
@@ -1344,10 +1466,9 @@ function NeoagentApplet:provider_shell()
   return self.provider_shell_value
 end
 
----@param profile Neoagent.Profile
 ---@param applet Neoagent.AgentApplet
 ---@return true?, Neoagent.Error?
-function NeoagentApplet:_select_unbound_model(profile, applet)
+function NeoagentApplet:_select_unbound_model(applet)
   local resources = self.resources or {}
   local models = require("neoagent.models")
   local function items(values)
@@ -1355,9 +1476,10 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
       return { id = value, label = value, value = value }
     end, values)
   end
-  local choices, err = models.available(
-    profile.config, resources.auth, resources.runtimes or {}, profile.compaction.required_api
-  )
+  local draft = self:_owned_draft(applet)
+  local configured = draft:snapshot().config
+  local supported_apis = draft:model_apis()
+  local choices, err = models.available(configured, resources.auth, resources.runtimes or {}, supported_apis)
   if not choices then
     return self:_construction_error(applet, err)
   end
@@ -1365,18 +1487,21 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
     applet:presenter():notify({ message = "neoagent: no models configured" })
     return nil
   end
+  draft:cancel_model_picker()
+  local revision = draft.selection_revision
   local selection, update = applet:presenter():select({
     prompt = "Select model:",
     items = items(choices),
   })
+  draft.model_picker = selection
   local unsubscribe
   if not selection:is_done() and type(update) == "function" then
     unsubscribe = models.subscribe_available(
-      profile.config,
+      configured,
       resources.auth,
       resources.runtimes or {},
       function(updated, update_err)
-        if self.destroyed or applet:agent() then
+        if self.destroyed or not draft:is_active() or draft.selection_revision ~= revision then
           return
         end
         if update_err then
@@ -1390,7 +1515,7 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
           self:_report_draft_selection(applet, presentation_err)
         end
       end,
-      profile.compaction.required_api
+      supported_apis
     )
   end
   async.run(function()
@@ -1402,19 +1527,23 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
         unsubscribe()
         unsubscribe = nil
       end
-      if self.destroyed or not result.ok or applet:agent() then
+      if draft.model_picker == selection then
+        draft.model_picker = nil
+      end
+      if
+        self.destroyed
+        or not result.ok
+        or not draft:is_active()
+        or draft.selection_revision ~= revision
+        or applet:agent()
+        or self.drafts_by_applet[applet] ~= draft
+      then
         return
       end
       local provider, model = result.value:match("^([^/]+)/(.+)$")
       assert(provider and model, "available model selection must contain a provider and model")
-      local draft = self:_owned_draft(applet)
-      local selected, selection_err = draft:set_model(provider, model)
-      if selected then
-        applet:set_draft_context({
-          model = provider .. "/" .. model,
-          thinking = draft:thinking_level() or false,
-        })
-      elseif selection_err then
+      local selected, selection_err = self:_set_draft_model(applet, provider, model)
+      if not selected and selection_err then
         self:_report_draft_selection(applet, selection_err)
       end
     end,
@@ -1449,7 +1578,11 @@ function NeoagentApplet:_resume_opened(opened)
   if not profile then
     return nil, util.error("profile", "Session Profile is unavailable: " .. opened.profile_id)
   end
-  return self:_open_session(session, profile, opened.workspace, {
+  local destination, err = self:_session_destination(profile, opened.workspace)
+  if not destination then
+    return nil, err
+  end
+  return self:_open_session(session, destination, {
     workspace = opened.workspace,
     restore_session_selection = true,
   })
@@ -1544,18 +1677,56 @@ local function derived_open_error(session, value, agent)
   return result
 end
 
----@param session Neoagent.Session
+---@class Neoagent.SessionDestination
+---@field draft Neoagent.ProfileDraft
+---@field composition Neoagent.ProfileComposition
+---@field revision integer
+
+-- Acquiring a Session destination does not pin or consume an automatic draft.
+-- Storage and construction share this accepted value; binding commits ownership.
 ---@param profile Neoagent.Profile
 ---@param workspace string
----@param opts Neoagent.AgentConstructionOptions
----@return Neoagent.Agent?, Neoagent.Error|Applet.Error?
-function NeoagentApplet:_open_session(session, profile, workspace, opts)
-  local applet, err = self:_draft(profile, workspace)
+---@return Neoagent.SessionDestination?, Neoagent.Error?
+function NeoagentApplet:_session_destination(profile, workspace)
+  local applet, err = self:retained_draft(profile.id, workspace)
+  if not applet and not err then
+    local choice
+    choice, err = self:_resolve(profile.id, workspace)
+    if choice then
+      applet, err = self:_draft(choice, workspace)
+    end
+  end
   if not applet then
     return nil, err
   end
-  local agent
-  agent, err = self:_construct_agent(profile, applet, session, opts)
+  local draft = self.drafts_by_applet[applet]
+  if not draft or self.drafts_by_key[draft.key] ~= draft then
+    return nil, util.error("session", "The destination draft is no longer owned")
+  end
+  if not draft:is_active() then
+    return nil, util.error("session", "The destination draft is already being submitted")
+  end
+  local resolved = draft:snapshot()
+  resolved.automatic = false
+  return { draft = draft, composition = resolved, revision = draft.composition_revision }
+end
+
+---@param session Neoagent.Session
+---@param destination Neoagent.SessionDestination
+---@param opts Neoagent.AgentConstructionOptions
+---@return Neoagent.Agent?, Neoagent.Error|Applet.Error?
+function NeoagentApplet:_open_session(session, destination, opts)
+  local draft = destination.draft
+  local applet = draft.applet
+  if
+    self.destroyed
+    or self.drafts_by_applet[applet] ~= draft
+    or not draft:is_active()
+    or draft.composition_revision ~= destination.revision
+  then
+    return nil, util.error("session", "The destination draft changed before the Session could be opened")
+  end
+  local agent, err = self:_construct_agent(destination.composition, applet, session, opts)
   if not agent then
     return nil, err
   end
@@ -1567,12 +1738,11 @@ function NeoagentApplet:_open_session(session, profile, workspace, opts)
 end
 
 ---@param session Neoagent.Session
----@param profile Neoagent.Profile
----@param workspace string
+---@param destination Neoagent.SessionDestination
 ---@param opts Neoagent.AgentConstructionOptions
 ---@return Neoagent.Agent?, Neoagent.Error?
-function NeoagentApplet:_open_published_session(session, profile, workspace, opts)
-  local ok, agent, err = pcall(self._open_session, self, session, profile, workspace, opts)
+function NeoagentApplet:_open_published_session(session, destination, opts)
+  local ok, agent, err = pcall(self._open_session, self, session, destination, opts)
   if ok and agent then
     return agent
   end
@@ -1581,7 +1751,7 @@ function NeoagentApplet:_open_published_session(session, profile, workspace, opt
 end
 
 ---@param source_agent Neoagent.Agent
----@param target_profile_id string?
+---@param target_profile_id string
 ---@param opts Neoagent.AgentDeriveOptions
 ---@return Neoagent.Run<Neoagent.SessionDerivation, unknown>?, Neoagent.Error?
 function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
@@ -1590,13 +1760,16 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
   if source_agent:is_running() then
     return nil, util.error("session", "Cannot derive a Session while its Agent is running")
   end
+  local workspace = source_agent:get_workspace().root
   local profile, err = self:_profile(target_profile_id)
   if not profile then
     return nil, err
   end
-  local source_workspace = source_agent:get_workspace()
-  assert(source_workspace)
-  local workspace = source_workspace.root
+  local destination
+  destination, err = self:_session_destination(profile, workspace)
+  if not destination then
+    return nil, err
+  end
   local source_profile_id = opts.source_profile_id
   if source_profile_id == nil then
     source_profile_id = source_agent:profile_id()
@@ -1605,9 +1778,9 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
     kind = opts.kind,
     source_profile_id = source_profile_id,
     target_profile_id = profile.id,
-    target_native_api = profile.compaction.require_native and profile.compaction.required_api or nil,
+    target_native_apis = profile.supports_native_context and util.copy(profile.supported_apis) or nil,
     workspace = workspace,
-    persistence = util.copy(profile.config.persistence),
+    persistence = util.copy(destination.composition.config.persistence),
     entry_id = opts.entry_id,
     position = opts.position,
   }
@@ -1617,7 +1790,7 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
     if not session then
       error(derive_err, 0)
     end
-    local agent, open_err = self:_open_published_session(session, profile, workspace, {
+    local agent, open_err = self:_open_published_session(session, destination, {
       workspace = workspace,
       restore_session_selection = same_profile,
       commit_workspace_preference = not same_profile,
@@ -1639,18 +1812,40 @@ end
 
 ---@return Neoagent.ProfileSessionChoice[]
 function NeoagentApplet:_resume_choices()
-  local root = require("neoagent.fs").canonical(vim.fn.getcwd())
-  local seen_directories = {}
+  local fs = require("neoagent.fs")
+  local root = fs.canonical(vim.fn.getcwd())
+  local destinations, seen_directories, seen_sessions = {}, {}, {}
+  ---@param persistence Neoagent.PersistenceConfig
+  local function destination(persistence)
+    if persistence.enabled then
+      local directory = fs.canonical(persistence.directory)
+      if not seen_directories[directory] then
+        seen_directories[directory] = true
+        destinations[#destinations + 1] = persistence
+      end
+    end
+  end
+  for _, profile in ipairs(self.profile_order) do
+    destination(require("neoagent.profiles.selection").configuration(assert(self.snapshot), profile).persistence)
+  end
+  for _, draft in pairs(self.drafts_by_key) do
+    if draft:is_active() and draft.workspace == root then
+      destination(draft:snapshot().config.persistence)
+    end
+  end
+  for _, agent in ipairs(self.agent_order) do
+    if fs.canonical(agent:get_workspace().cwd) == root then
+      destination(agent:config().persistence)
+    end
+  end
   ---@type Neoagent.ListedProfileSession[]
   local sessions = {}
-  for _, profile in ipairs(self.profile_order) do
-    local configured = profile.config.persistence
-    if configured.enabled and not seen_directories[configured.directory] then
-      seen_directories[configured.directory] = true
-      for _, info in ipairs(require("neoagent.profile_sessions").list(configured, root)) do
-        if info.profile_id and self.profiles_by_id[info.profile_id] then
-          sessions[#sessions + 1] = info
-        end
+  for _, persistence in ipairs(destinations) do
+    for _, info in ipairs(require("neoagent.profile_sessions").list(persistence, root)) do
+      local path = fs.canonical(info.path)
+      if info.profile_id and self.profiles_by_id[info.profile_id] and not seen_sessions[path] then
+        seen_sessions[path] = true
+        sessions[#sessions + 1] = info
       end
     end
   end
@@ -1667,7 +1862,7 @@ end
 function NeoagentApplet:_select_resume(applet)
   applet = applet or self.foreground or self.selected
   if not applet then
-    local selected, err = self:new(self.default_profile)
+    local selected, err = self:new()
     if not selected then
       return nil, err
     end
@@ -1759,7 +1954,7 @@ function NeoagentApplet:fork(entry_id, position)
       end
     end
   end
-  return self:_derive(source, source:profile_id(), {
+  return self:_derive(source, assert(source:profile_id()), {
     kind = "fork",
     entry_id = entry_id,
     position = position,

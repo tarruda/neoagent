@@ -64,7 +64,7 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
----@param api? string
+---@param api? string[]
 ---@return string[]?, Neoagent.Error?
 function M.available(configured, manager, runtimes, api)
   configured = configured or config.get()
@@ -81,7 +81,7 @@ function M.available(configured, manager, runtimes, api)
     end
     if credential_state.usable then
       for model_id, model in pairs(runtime.catalog:snapshot().models) do
-        if model.hidden ~= true and (api == nil or (model.api or provider.api) == api) then
+        if model.hidden ~= true and (api == nil or vim.tbl_contains(api, model.api or provider.api)) then
           result[#result + 1] = provider_id .. "/" .. model_id
         end
       end
@@ -94,7 +94,7 @@ end
 ---@param configured Neoagent.ModelResolutionConfig?
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
----@param api? string
+---@param api? string[]
 ---@return Neoagent.ModelSelection?, Neoagent.Error?
 function M.first_available(configured, manager, runtimes, api)
   local available, err = M.available(configured, manager, runtimes, api)
@@ -113,7 +113,7 @@ end
 ---@param manager Neoagent.AuthManager?
 ---@param runtimes Neoagent.ProviderRuntimes
 ---@param listener fun(choices?: string[], err?: Neoagent.Error)
----@param api? string
+---@param api? string[]
 ---@return fun(): boolean
 function M.subscribe_available(configured, manager, runtimes, listener, api)
   runtimes = assert_runtimes(runtimes)

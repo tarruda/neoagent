@@ -318,25 +318,25 @@ function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
   local factory, reader = image_source.new(opts.files)
+  local settings, renderer = require("neoagent.config").ui_settings(opts.config)
   local selected =
-    protocol.assert(opts.renderer or opts.config.renderer or renderers.get(opts.config.style), "Applet UI Renderer")
+    protocol.assert(opts.renderer or renderer or renderers.get(settings.style or "codex"), "Applet UI Renderer")
   assert(selected.theme, "Applet UI Renderer requires a theme")
   local defined, define_err = protocol.define_highlights(selected)
   assert(defined, define_err and define_err.message or "Applet UI Renderer highlight definition failed")
 
   local image_system = opts.image_system
-  local owns_image_system = false
+  local owns_image_system = opts.image_system == nil
   if image_system == nil and opts.config.images ~= false then
     image_system = Applet.ImageSystem.new({
       backend = opts.config.images and opts.config.images.backend,
     })
-    owns_image_system = true
   elseif image_system == false then
     image_system = nil
   end
 
   local self = setmetatable({
-    config = util.copy(opts.config),
+    config = settings,
     renderer = selected,
     applet_theme = selected.theme,
     image_system = image_system,
@@ -914,8 +914,8 @@ function View:destroy()
   self.details, self.details_component, self.dialog_component = nil, nil, nil
   self.transcript:destroy()
   self.input:destroy()
-  if self.owns_image_system then
-    assert(self.image_system):destroy()
+  if self.owns_image_system and self.image_system then
+    self.image_system:destroy()
   end
 end
 
@@ -1466,6 +1466,75 @@ function View:set_position(position)
   return true
 end
 
+-- Keep configuration and all of its presentation effects inside the View.
+-- Replaced image resources remain alive until the candidate is published.
+---@class Neoagent.ViewConfigurationError: Neoagent.Error
+---@field restoration_error? Neoagent.Error The owner must discard this View and reconstruct accepted state.
+
+---@param config Neoagent.UIConfig
+---@param context Neoagent.AgentContext
+---@param renderer Neoagent.Renderer<unknown>
+---@return true?, Neoagent.ViewConfigurationError?
+function View:configure(config, context, renderer)
+  local previous_config, previous_context = self.config, self.context
+  local previous_renderer = self.renderer
+  local previous_position, previous_images = self.position, self.image_system
+  local images = previous_images
+  ---@param configured Neoagent.UIConfig
+  ---@param selected_context Neoagent.AgentContext
+  ---@param selected_images? Applet.ImageSystem
+  ---@param position Neoagent.UiPosition
+  ---@param selected_renderer Neoagent.Renderer<unknown>
+  local function apply(configured, selected_context, selected_images, position, selected_renderer)
+    self.config = util.copy(configured)
+    self.input:set_config(self.config)
+    self.transcript:set_config(self.config)
+    self.transcript:set_image_system(selected_images)
+    self.image_system = selected_images
+    if selected_renderer ~= self.renderer then
+      local selected, err = self:set_renderer(selected_renderer)
+      assert(selected, err and err.message)
+    end
+    self.context = util.copy(selected_context)
+    self:set_context(selected_context)
+    self.position = position
+    self:_submit_frame()
+    if self:is_open() then
+      local shown, err = self:_flush_frame()
+      assert(shown, err and err.message)
+    end
+  end
+  local published, failure = pcall(function()
+    if self.owns_image_system and not vim.deep_equal(config.images, previous_config.images) then
+      images = config.images ~= false and Applet.ImageSystem.new({ backend = config.images.backend }) or nil
+    end
+    apply(config, context, images, config.position, renderer)
+  end)
+  if not published then
+    local restored, restore_err =
+      pcall(apply, previous_config, previous_context, previous_images, previous_position, previous_renderer)
+    -- A failed restoration leaves the old resources owned until destruction.
+    -- The rejected image system is released here even if panes still refer to
+    -- it; the owner must discard the invalid View before presenting again.
+    self.image_system = previous_images
+    if images and images ~= previous_images then
+      images:destroy()
+    end
+    local err = util.normalize_error(failure, "ui")
+    return nil,
+      {
+        kind = err.kind,
+        message = err.message,
+        detail = err.detail,
+        restoration_error = not restored and util.normalize_error(restore_err, "ui") or nil,
+      }
+  end
+  if previous_images and previous_images ~= images then
+    previous_images:destroy()
+  end
+  return true
+end
+
 ---@param renderer unknown
 ---@return Neoagent.Renderer<unknown>?, Neoagent.Error?
 function View:set_renderer(renderer)
@@ -1492,7 +1561,6 @@ function View:set_renderer(renderer)
   end
   self.renderer = selected
   self.applet_theme = selected.theme
-  self.config.renderer = selected
   self.transcript:set_renderer(selected)
   self.input:set_theme(selected.theme)
   presentation_surface.set_theme(self, selected.theme)

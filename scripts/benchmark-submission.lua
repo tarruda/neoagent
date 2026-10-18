@@ -27,7 +27,7 @@ local ok, measurement = xpcall(function()
   local path = store:metadata().path
   local records = { vim.json.encode({
     type = "session", format = "neoagent-session", id = store:metadata().id, created_at = created_at,
-    cwd = vim.fn.getcwd(), metadata = { neoagent = { profileId = "neo" } },
+    cwd = vim.fn.getcwd(), metadata = { neoagent = { profileId = "pi" } },
   }) }
   local image_seed, image_bytes = 20260908, {}
   for index = 1, 1182 do
