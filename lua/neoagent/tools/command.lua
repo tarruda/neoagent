@@ -1,6 +1,25 @@
 local common = require("neoagent.tools.common")
 local M = {}
 
+---@param argv string[]
+---@param call Neoagent.ToolOperationCall
+---@return string[]
+function M.resolve(argv, call)
+  argv = require("neoagent.util").copy(argv)
+  local executable = assert(argv[1])
+  local resolved = executable:find("[/\\]") and common.resolve_path(executable, call) or vim.fn.exepath(executable)
+  assert(resolved ~= "", "Shell executable was not found: " .. executable)
+  argv[1] = resolved
+  return argv
+end
+
+---@param executable string
+---@return string
+function M.name(executable)
+  local name = executable:gsub("\\", "/"):match("([^/]+)$") or ""
+  return (name:lower():gsub("%.exe$", ""))
+end
+
 -- Neovim's shell options are argument lists, not shell programs. Double
 -- quotes group words; backslashes escape quotes/backslashes only inside them.
 ---@param value string
@@ -90,15 +109,13 @@ local function mode(argv, name, login, powershell)
   return result
 end
 
----@param command string
 ---@param shell? string Explicit executable; otherwise preserve 'shell' and 'shellcmdflag'.
 ---@param login? boolean Override POSIX login mode or PowerShell profile loading; nil preserves configured flags.
 ---@return string[]
-function M.argv(command, shell, login)
+function M.shell_argv(shell, login)
   local argv = shell and { (common.path(shell, "shell"):gsub('^"(.*)"$', "%1")) } or words(vim.o.shell)
   local executable = common.path(assert(argv[1], "shell must name an executable"), "shell")
-  local name = executable:gsub("\\", "/"):match("([^/]+)$") or ""
-  name = name:lower():gsub("%.exe$", "")
+  local name = M.name(executable)
   if name == "powershell" or name == "pwsh" then
     vim.list_extend(argv, shell and { "-Command" } or words(vim.o.shellcmdflag))
     if login ~= nil then
@@ -114,6 +131,15 @@ function M.argv(command, shell, login)
       argv = mode(argv, name, login, false)
     end
   end
+  return argv
+end
+
+---@param command string
+---@param shell? string
+---@param login? boolean
+---@return string[]
+function M.argv(command, shell, login)
+  local argv = M.shell_argv(shell, login)
   argv[#argv + 1] = command
   return argv
 end

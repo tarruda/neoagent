@@ -171,7 +171,10 @@ local ok, measurement = xpcall(function()
   assert(type(result) == "table", vim.inspect(resume_error))
   agent = result
   local active = result
-  local pane = assert(assert(owner:view()):pane("transcript"))
+  local view = owner:view()
+  assert(view)
+  local pane = view:pane("transcript")
+  assert(pane)
   assert(pane:flush())
   vim.cmd("stopinsert")
   local resume_ms = (vim.uv.hrtime() - resume_started) / 1e6
@@ -192,7 +195,7 @@ local ok, measurement = xpcall(function()
     accepted_ms, request_ms, published = nil, nil, false
     collectgarbage("collect")
     started = vim.uv.hrtime()
-    local run = assert(owner:send(prompt))
+    local run = owner:send(prompt)
     assert(type(run) == "table")
     local visible_ms
     assert(vim.wait(10000, function()

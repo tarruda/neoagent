@@ -91,7 +91,9 @@ describe("Agent retained process placement", function()
     })
     local profiles
     profiles, _, resources = require("neoagent.profiles").bundled(config, { startup = false })
-    local profile = assert(profiles[profile_id == "codex" and 3 or 1])
+    ---@type Neoagent.Profile?
+    local profile = profiles[profile_id == "codex" and 3 or 1]
+    assert(profile)
     applet = profile.create_applet({ profile = profile, label = "placement", workspace = root })
     local session = assert(require("neoagent.profile_sessions").new({
       profile_id = profile_id or "neo", workspace = root, persistence = { enabled = false },
@@ -99,7 +101,10 @@ describe("Agent retained process placement", function()
     local owned
     agent, owned = profile.create_agent({ id = "placement", label = "placement", profile = profile,
       applet = assert(applet), session = session, workspace = root })
-    runtime = assert(owned and owned.sandbox).runtime
+    assert(owned)
+    local sandbox = owned.sandbox
+    assert(sandbox)
+    runtime = sandbox.runtime
     owner = agent:get_process_sessions()
   end
 
@@ -181,7 +186,8 @@ describe("Agent retained process placement", function()
       commit_message = function() return true end,
     }), 15000)
     assert.is_true(result.ok, vim.inspect(result))
-    local message = assert(assert(result.new_messages)[2])
+    local message = assert(result.new_messages)[2]
+    assert(message)
     assert.is_false(message.isError, vim.inspect(message))
     assert.matches("restricted/yes", require("neoagent.util").text_content(message.content), 1, true)
     assert.are.equal(1, starts)
@@ -214,9 +220,12 @@ describe("Agent retained process placement", function()
     owner = agent:get_process_sessions()
     local finished = helper.wait(assert(agent:send("Run the command")), 15000)
     assert.is_true(finished.ok, vim.inspect(finished))
-    local message = assert(agent:get_session():messages()[3])
-    assert(message.role == "toolResult")
-    return message
+    local message = agent:get_session():messages()[3]
+    local normalized = require("neoagent.semantic_message").normalize(message)
+    if not normalized or normalized.role ~= "toolResult" then
+      error("Command did not publish a Tool result")
+    end
+    return normalized
   end
 
   ---@param selected Neoagent.SandboxComposition<Neoagent.AgentToolEnvironment>
@@ -249,7 +258,8 @@ describe("Agent retained process placement", function()
       15000
     )
     assert.is_true(observed.ok, vim.inspect(observed))
-    local message = assert(assert(observed.new_messages)[2])
+    local message = assert(observed.new_messages)[2]
+    assert(message)
     assert(message.role == "toolResult")
     return message
   end
@@ -311,7 +321,8 @@ describe("Agent retained process placement", function()
         }, function() error("Independent manager placement must not override Tool authority") end)
         assert.matches("retains this authority until it exits", assert(prompted), 1, true)
         assert.matches("Shell argv:", assert(prompted), 1, true)
-        assert.matches(vim.json.encode(executable):sub(2, -2), assert(prompted), 1, true)
+        local normalized = vim.fs.normalize(executable, { expand_env = false })
+        assert.matches(vim.json.encode(normalized):sub(2, -2), assert(prompted), 1, true)
         assert.matches("Working directory:", assert(prompted), 1, true)
         assert.are.equal(0, starts, "approved host command used the restricted worker")
         assert.are.equal(decision == "deny", message.isError, vim.inspect(message))

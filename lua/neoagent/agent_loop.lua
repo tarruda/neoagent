@@ -24,12 +24,14 @@ function M.validate_request_messages(model, messages, files)
   return normalized
 end
 
----@class Neoagent.Tool<C>: Neoagent.ToolDefinition
----@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@class Neoagent.ToolFacets<C>: Neoagent.ToolDefinition
 ---@field capabilities? {read_files?: boolean}
 ---@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: C)
 ---@field current? fun(context: C): unknown
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
+
+---@class Neoagent.Tool<C>: Neoagent.ToolFacets<C>
+---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 
 ---@class Neoagent.ToolPresentationOptions
 ---@field arguments Neoagent.JsonObject

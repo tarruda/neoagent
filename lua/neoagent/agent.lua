@@ -788,8 +788,8 @@ function M.from_config(options, runtime)
     if not state.workspace_model_pending then
       return true
     end
-    local selected =
-      assert(state.request_selection:model_selection(), "accepted Agent submission has no Model selection")
+    local selected = state.request_selection:model_selection()
+    assert(selected, "accepted Agent submission has no Model selection")
     local overrides = state.request_selection:workspace_preferences()
     local level = state.request_selection:thinking_level()
     local same_thinking = overrides.default_thinking_level == level
@@ -862,8 +862,10 @@ function M.from_config(options, runtime)
         local fallback_available = fallback_selection ~= nil
           and not RequestSelection.same_model(workspace_default, fallback_selection)
         if fallback_available then
-          local fallback_model = assert(state.request_selection:resolve(fallback_selection))
-          selected, model = assert(fallback_selection), fallback_model
+          local fallback_model = state.request_selection:resolve(fallback_selection)
+          assert(fallback_model)
+          assert(fallback_selection)
+          selected, model = fallback_selection, fallback_model
         else
           notify(
             "ignoring unavailable workspace model " .. selected.provider .. "/" .. selected.model,
@@ -1042,7 +1044,8 @@ function M.from_config(options, runtime)
         if state.destroyed or state.provider_id ~= provider_id then
           return
         end
-        local selected = assert(state.request_selection:model_selection(), "bound Provider has no Model selection")
+        local selected = state.request_selection:model_selection()
+        assert(selected, "bound Provider has no Model selection")
         if
           not state.request_selection:model()
           and selected.provider == provider_id

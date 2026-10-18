@@ -973,7 +973,7 @@ describe("neoagent sandbox composition", function()
     assert(configured.sandbox).profile = { network = "enabled" }
     configured.tools = { require("neoagent.tools.shell").new() }
     composed = composition.switchable(
-      { tools = configured.tools }, configured.sandbox, { platform = platform })
+      { tools = assert(configured.tools) }, configured.sandbox, { platform = platform })
     value = complete(function()
       return assert(composed.execute_tool)(
         assert(assert(composed.tools)[1]), { command = "true" }, context(root))
@@ -986,7 +986,7 @@ describe("neoagent sandbox composition", function()
     end)
     assert.is_false(ok)
     assert.are.equal("Sandbox requires a workspace root", util.normalize_error(err).message)
-    local _, failed_status = composition.switchable({ tools = configured.tools }, configured.sandbox, {
+    local _, failed_status = composition.switchable({ tools = assert(configured.tools) }, configured.sandbox, {
       platform = {
         name = "broken",
 

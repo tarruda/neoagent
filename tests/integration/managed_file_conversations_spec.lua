@@ -170,12 +170,14 @@ describe("captured managed-file conversations", function()
       store = require("neoagent.auth.store").new(directory .. "/credentials.json") })
     assert(auth.store:write("openai-codex", {type = "oauth", access = "upload-replay-key", refresh = "unused",
       accountId = "account-replay", expires = util.now_ms() + 3600000}))
+    ---@return Neoagent.Agent
     local function start()
       if agent then agent:destroy() end
       if runtimes then runtimes_module.destroy(runtimes) end
       runtimes = assert(runtimes_module.compose(configured, {auth = auth, transport = scenario, startup = false}))
-      agent = require("neoagent.agent").from_config(configured, { auth = auth, runtimes = runtimes, session = session })
-      return agent
+      local created = require("neoagent.agent").from_config(configured, { auth = auth, runtimes = runtimes, session = session })
+      agent = created
+      return created
     end
     local current = start()
     for index, prompt in ipairs({

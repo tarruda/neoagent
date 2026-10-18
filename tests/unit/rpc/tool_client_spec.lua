@@ -69,7 +69,7 @@ describe("neoagent Tool RPC connection", function()
   end)
 
   local function temp()
-    local root = vim.fn.tempname()
+    local root = fs.canonical(vim.fn.tempname())
     roots[#roots + 1] = root
     assert(vim.fn.mkdir(root, "p") == 1)
     return root

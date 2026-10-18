@@ -87,10 +87,12 @@ end
 ---@async
 local function execute_with(tool, arguments, context, overrides)
   local common = require("neoagent.tools.common")
-  local identity = assert(require("neoagent.tools.identities").identity(tool))
+  local invocation = require("neoagent.tools.invocation")
+  local prepared = assert(invocation.prepare(tool, arguments, context))
   local implementation = require("neoagent.tools." .. tool.name)
   local dependencies = implementation._dependencies(overrides)
-  local result = implementation.run(identity.prepare(arguments, identity.settings, common.call(context)), common.call(context), dependencies)
+  local call = common.call(context)
+  local result = implementation.run(invocation.request(prepared, call), call, dependencies)
   return result
 end
 

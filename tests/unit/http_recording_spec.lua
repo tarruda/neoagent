@@ -2435,7 +2435,8 @@ else:
         body = "server response",
       }),
     })
-    local draft = assert(owner:draft("neo", workspace))
+    local draft = owner:draft("neo", workspace)
+    assert(draft)
     local result = wait(assert(draft:send("record from setup")))
     assert(result.ok)
     local expected = assert(owner:target_agent()):summary()

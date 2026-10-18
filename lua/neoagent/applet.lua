@@ -1594,7 +1594,9 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
   if not profile then
     return nil, err
   end
-  local workspace = assert(source_agent:get_workspace()).root
+  local source_workspace = source_agent:get_workspace()
+  assert(source_workspace)
+  local workspace = source_workspace.root
   local source_profile_id = opts.source_profile_id
   if source_profile_id == nil then
     source_profile_id = source_agent:profile_id()

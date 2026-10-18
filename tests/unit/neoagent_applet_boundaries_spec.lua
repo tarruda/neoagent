@@ -40,6 +40,7 @@ describe("Neoagent Applet boundaries", function()
   local function configuration(model)
     return {
       workspace_trust = false,
+      sandbox = { enabled = false },
       default_registry = false,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
@@ -150,8 +151,10 @@ describe("Neoagent Applet boundaries", function()
     local owner = setup(fake_model.new({}))
     local unowned = agent(fake_model.new({}))
     assert.is_false(owner:destroy_agent(unowned))
-    local profile = assert(owner:profile("neo"))
-    local draft = assert(owner:draft("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
+    local draft = owner:draft("neo")
+    assert(draft)
     local bound, bind_err = owner:_bind_draft(profile, unbound_applet())
     assert.is_nil(bound)
     assert.matches("not owned", assert(bind_err).message)
@@ -169,7 +172,8 @@ describe("Neoagent Applet boundaries", function()
 
   it("rolls back every resource from failed draft construction", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_applet = profile.create_applet
     ---@type Neoagent.AgentApplet?
     local rejected
@@ -191,15 +195,18 @@ describe("Neoagent Applet boundaries", function()
     assert.is_nil((next(owner.drafts_by_applet)))
 
     profile.create_applet = create_applet
-    local retried = assert(owner:draft("neo"))
+    local retried = owner:draft("neo")
+    assert(retried)
     assert.are_not.equal(rejected, retried)
     assert.are.equal(owner, retried:owner())
   end)
 
   it("rejects late draft actions after destruction without recreating owned resources", function()
     local owner = setup(fake_model.new({}))
-    local initial = assert(owner:draft("neo"))
-    local profile = assert(owner:profile("neo"))
+    local initial = owner:draft("neo")
+    assert(initial)
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_applet = profile.create_applet
     local creations = 0
     profile.create_applet = function(context)
@@ -239,7 +246,8 @@ describe("Neoagent Applet boundaries", function()
 
   it("rolls back a draft when its Profile destroys the owner during creation", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_applet = profile.create_applet
     ---@type Neoagent.AgentApplet?
     local candidate
@@ -262,7 +270,8 @@ describe("Neoagent Applet boundaries", function()
   it("destroys an invalid Agent returned by a Profile", function()
     local owner = setup(fake_model.new({}))
     assert(owner:toggle())
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local rejected = { destroyed = false }
     function rejected:destroy() self.destroyed = true end
     profile.create_agent = function() return rejected --[[@as Neoagent.Agent]] end
@@ -279,7 +288,8 @@ describe("Neoagent Applet boundaries", function()
     local owner = setup(fake_model.new({}))
     assert(owner:toggle())
     assert.are.equal("left", owner:set_position("left"))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_agent = profile.create_agent
     ---@type Neoagent.Agent?
     local rejected
@@ -304,7 +314,8 @@ describe("Neoagent Applet boundaries", function()
     } }))
     assert(owner:toggle())
     assert.are.equal("left", owner:set_position("left"))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_agent = profile.create_agent
     profile.create_agent = function(context)
       local value, metadata = create_agent(context)
@@ -353,8 +364,10 @@ describe("Neoagent Applet boundaries", function()
     applets[#applets + 1] = owner
     assert(owner:open())
     assert.are.equal(second, owner:select(second))
-    local foreground = assert(second:applet())
-    local background = assert(first:applet())
+    local foreground = second:applet()
+    assert(foreground)
+    local background = first:applet()
+    assert(background)
     assert(background:open())
 
     background:close()
@@ -519,7 +532,8 @@ describe("Neoagent Applet boundaries", function()
     local headless = agent(fake_model.new({}))
     local first = NeoagentApplet.new({ agents = { headless } })
     applets[#applets + 1] = first
-    local surface = assert(headless:applet())
+    local surface = headless:applet()
+    assert(surface)
 
     first:destroy()
 
@@ -535,7 +549,8 @@ describe("Neoagent Applet boundaries", function()
     local headless = agent(fake_model.new({}))
     local owner = NeoagentApplet.new({ agents = { headless } })
     applets[#applets + 1] = owner
-    local surface = assert(headless:applet())
+    local surface = headless:applet()
+    assert(surface)
 
     surface:destroy()
 
@@ -578,18 +593,22 @@ describe("Neoagent Applet boundaries", function()
   it("routes draft model and resume actions through the selected Profile", function()
     local owner = setup(fake_model.new({}))
     assert(owner:new("chat"))
-    local draft = assert(owner:foreground_applet())
-    local view = assert(draft:view())
+    local draft = owner:foreground_applet()
+    assert(draft)
+    local view = draft:view()
+    assert(view)
 
     assert.is_string(view.callbacks.on_cycle_thinking())
     assert.is_true(view.callbacks.on_select_model())
-    local request = assert(draft:presenter():snapshot().active)
+    local request = draft:presenter():snapshot().active
+    assert(request)
     ---@type {message: string, level?: integer}?
     local notification
     function view:notify(message, level)
       notification = { message = message, level = level }
     end
-    local retained = assert(owner.drafts_by_applet[draft])
+    local retained = owner.drafts_by_applet[draft]
+    assert(retained)
     retained.set_model = function()
       return nil, util.error("model", "draft selection failed")
     end
@@ -751,8 +770,10 @@ describe("Neoagent Applet boundaries", function()
     local invalid, invalid_err = owner:set_thinking_level("missing" --[[@as Neoagent.ThinkingLevel]])
     assert.is_nil(invalid)
     assert.matches("thinking level", assert(invalid_err).message)
-    local profile = assert(owner:profile("neo"))
-    local draft = assert(owner:retained_draft("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
+    local draft = owner:retained_draft("neo")
+    assert(draft)
     local updated, update_err = owner:update_draft_options({ test = true }, unbound_applet())
     assert.is_nil(updated)
     assert.matches("not owned", assert(update_err).message)
@@ -802,8 +823,10 @@ describe("Neoagent Applet boundaries", function()
   it("contains Profile selection and provider alignment failures", function()
     local owner = setup(fake_model.new({}))
     assert(owner:new("neo"))
-    local draft = assert(owner:foreground_applet())
-    local retained = assert(owner.drafts_by_applet[draft])
+    local draft = owner:foreground_applet()
+    assert(draft)
+    local retained = owner.drafts_by_applet[draft]
+    assert(retained)
     retained.cycle_thinking_level = function()
       return nil, util.error("model", "thinking cycle failed")
     end
@@ -815,7 +838,8 @@ describe("Neoagent Applet boundaries", function()
       draft, "Select Profile:", nil, function()
         return nil, util.error("profile", "selection callback failed")
       end))
-    local request = assert(draft:presenter():snapshot().active)
+    local request = draft:presenter():snapshot().active
+    assert(request)
     assert(draft:presenter():resolve(request.id, "profile:neo"))
     assert(vim.wait(1000, function()
       return draft:presenter():snapshot().active == nil
@@ -854,7 +878,8 @@ describe("Neoagent Applet boundaries", function()
       local selected = owner:agents()[1]
       return selected ~= nil and not selected:is_running()
     end, 5))
-    local source = assert(owner:agents()[1])
+    local source = owner:agents()[1]
+    assert(source)
     local session = source:get_session()
     local snapshot = session.snapshot
     local failure = util.error("session", "source snapshot is unavailable")
@@ -862,25 +887,30 @@ describe("Neoagent Applet boundaries", function()
       return nil, failure
     end
 
-    local failed = assert(owner:fork())
+    local failed = owner:fork()
+    assert(failed)
 
     assert.is_true(failed:is_done())
-    local failed_result = assert(failed:result())
+    local failed_result = failed:result()
+    assert(failed_result)
     assert(failed_result.ok == false)
     assert.are.same(failure, failed_result.error)
     assert.are.equal(1, #owner:agents())
     session.snapshot = snapshot
-    local profile = assert(owner:profile(source:profile_id()))
+    local profile = owner:profile(source:profile_id())
+    assert(profile)
     local create_agent = profile.create_agent
     profile.create_agent = function()
       error("in-memory derived Agent failed")
     end
 
-    local derived = assert(owner:fork())
+    local derived = owner:fork()
+    assert(derived)
 
     profile.create_agent = create_agent
     assert.is_true(derived:is_done())
-    local result = assert(derived:result())
+    local result = derived:result()
+    assert(result)
     assert.is_false(result.ok)
     assert.matches("in%-memory derived Agent failed", result.error.message)
     assert.is_nil(result.error.session_created)
@@ -929,7 +959,8 @@ describe("Neoagent Applet boundaries", function()
     local owner = setup(fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "done" } }),
     } }))
-    local draft = assert(owner:new("neo"))
+    local draft = owner:new("neo")
+    assert(draft)
     assert(rawget(draft, "_neoagent_agent_applet"))
     ---@cast draft Neoagent.AgentApplet
     assert(owner:update_draft_options({ system_prompt = "Staged prompt" }, draft))
@@ -937,7 +968,8 @@ describe("Neoagent Applet boundaries", function()
     local run, err = draft:send("Create the Agent")
 
     assert(run, err and err.message)
-    local selected = assert(owner:target_agent())
+    local selected = owner:target_agent()
+    assert(selected)
     assert.are.equal("Staged prompt", selected:config().system_prompt)
   end)
 
@@ -961,7 +993,8 @@ describe("Neoagent Applet boundaries", function()
       configured.skills = variant.skills
       local owner = require("neoagent").setup(configured)
       applets[#applets + 1] = owner
-      local draft = assert(owner:new("neo"))
+      local draft = owner:new("neo")
+      assert(draft)
     assert(rawget(draft, "_neoagent_agent_applet"))
     ---@cast draft Neoagent.AgentApplet
 
@@ -969,14 +1002,16 @@ describe("Neoagent Applet boundaries", function()
 
       assert.is_nil(run)
       assert.are.equal("workspace_trust", assert(err).kind)
-      local selected = assert(owner:target_agent())
+      local selected = owner:target_agent()
+      assert(selected)
       assert(assert(assert(owner:record(selected)).metadata.sandbox).trust)
     end
   end)
 
   it("validates every Profile Applet recipe result transactionally", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local create_applet = profile.create_applet
 
     profile.create_applet = function(_)
@@ -1035,8 +1070,10 @@ describe("Neoagent Applet boundaries", function()
 
   it("rolls back draft binding when visibility or Session construction fails", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
-    local draft = assert(owner:draft("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
+    local draft = owner:draft("neo")
+    assert(draft)
     local profile_sessions = require("neoagent.profile_sessions")
     local new_session = profile_sessions.new
     profile_sessions.new = function()
@@ -1060,8 +1097,10 @@ describe("Neoagent Applet boundaries", function()
 
   it("contains initial, live, and stale draft model publications", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
-    local draft = assert(owner:draft("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
+    local draft = owner:draft("neo")
+    assert(draft)
     local models = require("neoagent.models")
     local available = models.available
     models.available = function()
@@ -1122,8 +1161,10 @@ describe("Neoagent Applet boundaries", function()
     assert(options._apis)["openai-codex-responses"] = function() return model end
     local owner = require("neoagent").setup(options)
     applets[#applets + 1] = owner
-    local profile = assert(owner:profile("codex"))
-    local applet = assert(owner:draft("codex"))
+    local profile = owner:profile("codex")
+    assert(profile)
+    local applet = owner:draft("codex")
+    assert(applet)
     local draft = owner:_owned_draft(applet)
     local selected, err = draft:set_model("fake", "plain")
     assert.is_nil(selected)
@@ -1161,9 +1202,12 @@ describe("Neoagent Applet boundaries", function()
 
   it("leaves Codex without a default when only incompatible Models are configured", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("codex"))
-    local applet = assert(owner:draft("codex"))
-    local draft = assert(owner:_owned_draft(applet))
+    local profile = owner:profile("codex")
+    assert(profile)
+    local applet = owner:draft("codex")
+    assert(applet)
+    local draft = owner:_owned_draft(applet)
+    assert(draft)
 
     assert.are.same({ provider = "fake", model = "test" },
       assert(owner:profile("neo")).config.default_model)
@@ -1183,7 +1227,8 @@ describe("Neoagent Applet boundaries", function()
 
   it("propagates resume construction failures and reuses an Agent after activation retry", function()
     local owner = setup(fake_model.new({}))
-    local profile = assert(owner:profile("neo"))
+    local profile = owner:profile("neo")
+    assert(profile)
     local workspace = vim.fn.getcwd()
     local session = assert(require("neoagent.profile_sessions").new({
       profile_id = profile.id,
@@ -1216,7 +1261,8 @@ describe("Neoagent Applet boundaries", function()
     profile.create_agent = create_agent
     assert.is_nil(resumed)
     assert.matches("resume Agent construction failed", assert(err).message)
-    local draft = assert(owner:retained_draft(profile.id, workspace))
+    local draft = owner:retained_draft(profile.id, workspace)
+    assert(draft)
     local open = draft.open
     draft.open = function()
       return nil, util.error("ui", "resume activation failed")
@@ -1269,9 +1315,11 @@ describe("Neoagent Applet boundaries", function()
     end
     local ok, err = pcall(function()
       assert(owner:resume())
-      local surface = assert(owner:selected_applet())
+      local surface = owner:selected_applet()
+      assert(surface)
       local presenter = surface:presenter()
-      local request = assert(presenter:snapshot().active)
+      local request = presenter:snapshot().active
+      assert(request)
       local selected_id
       for index, choice in ipairs(choices) do
         if choice.path == disappeared_path then
@@ -1322,16 +1370,20 @@ describe("Neoagent Applet boundaries", function()
     }
     local owner = require("neoagent").setup(configured)
     applets[#applets + 1] = owner
-    local draft = assert(owner:new("neo"))
+    local draft = owner:new("neo")
+    assert(draft)
     assert(rawget(draft, "_neoagent_agent_applet"))
     ---@cast draft Neoagent.AgentApplet
 
     local run, err = draft:send("Protected provisional work")
     assert.is_nil(run)
     assert.are.equal("workspace_trust", assert(err).kind)
-    local selected = assert(owner:target_agent())
-    local record = assert(owner:record(selected))
-    local trust = assert(assert(record.metadata.sandbox).trust)
+    local selected = owner:target_agent()
+    assert(selected)
+    local record = owner:record(selected)
+    assert(record)
+    local trust = assert(record.metadata.sandbox).trust
+    assert(trust)
     local pending_message = draft.pending_message
     draft.pending_message = function() return nil end
     local prepare = selected.prepare
@@ -1407,7 +1459,8 @@ describe("Neoagent Applet boundaries", function()
     vim.notify = function(message) notifications[#notifications + 1] = message end
     local owner = require("neoagent").setup(configured)
     applets[#applets + 1] = owner
-    local draft = assert(owner:draft("neo"))
+    local draft = owner:draft("neo")
+    assert(draft)
     models.first_available = first_available
     vim.notify = notify
     assert.is_table(draft)

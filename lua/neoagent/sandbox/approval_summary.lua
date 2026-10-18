@@ -1,72 +1,53 @@
 local identities = require("neoagent.tools.identities")
+local invocations = require("neoagent.tools.invocation")
 local util = require("neoagent.util")
 local M = {}
 
 ---@alias Neoagent.SandboxApprovalContext {context?: {cwd?: string}|{workspace?: {cwd?: string}}}
 
----@param ctx? Neoagent.SandboxApprovalContext
----@return {cwd?: string}?
-local function workspace(ctx)
-  local context = ctx and ctx.context
-  return context and rawget(context, "workspace") or context
-end
-
----@param ctx? Neoagent.SandboxApprovalContext
----@return string?
-local function cwd(ctx)
-  local value = workspace(ctx)
-  return type(value) == "table" and value.cwd or nil
-end
-
----@type table<string, fun(arguments: Neoagent.JsonObject, ctx?: Neoagent.SandboxApprovalContext): string>
+---@type table<table, fun(request: table): string>
 local summaries = {
-  shell = function(arguments)
-    return "$ " .. tostring(arguments.command)
+  [identities.read_file] = function(request)
+    return "Read " .. request.resolved_path
   end,
-  read_file = function(arguments)
-    return "Read " .. tostring(arguments.path)
+  [identities.write_file] = function(request)
+    return string.format("Write %s (%d bytes)", request.resolved_path, #request.content)
   end,
-  write_file = function(arguments)
-    local size = type(arguments.content) == "string" and #arguments.content or 0
-    return string.format("Write %s (%d bytes)", tostring(arguments.path), size)
+  [identities.edit_file] = function(request)
+    local count = #request.edits
+    return string.format("Edit %s (%d replacement%s)", request.resolved_path, count, count == 1 and "" or "s")
   end,
-  edit_file = function(arguments)
-    local count = type(arguments.edits) == "table" and #arguments.edits or 0
-    return string.format("Edit %s (%d replacement%s)", tostring(arguments.path), count, count == 1 and "" or "s")
+  [identities.grep] = function(request)
+    return "Search for " .. request.pattern .. " in " .. request.resolved_path
   end,
-  grep = function(arguments, ctx)
-    local root = arguments.path or cwd(ctx) or "the workspace"
-    return "Search for " .. tostring(arguments.pattern) .. " in " .. tostring(root)
-  end,
-  find = function(arguments, ctx)
-    local root = arguments.path or cwd(ctx) or "the workspace"
-    return "Find " .. tostring(arguments.pattern) .. " in " .. tostring(root)
-  end,
-  read_agent_documentation = function()
-    return "Read Neoagent documentation"
+  [identities.find] = function(request)
+    return "Find " .. request.pattern .. " in " .. request.resolved_path
   end,
 }
 
 ---@generic C
 ---@param tool Neoagent.Tool<C>
 ---@param arguments Neoagent.JsonObject
----@param ctx? Neoagent.SandboxApprovalContext
+---@param ctx? Neoagent.ToolContext<C>
 ---@return string
 function M.for_tool(tool, arguments, ctx)
   local identity = identities.identity(tool)
-  if identity and identity.token == identities.exec_command then
-    local directory = assert(cwd(ctx), "Command approval requires a working directory")
-    local spec = require("neoagent.subprocess.validate").spec(identity.prepare(arguments, identity.settings, {
-      workspace = { root = directory, cwd = directory },
-      on_update = function() end,
-    }))
-    local argv = util.copy(spec.argv)
-    local command = table.remove(argv)
-    return "Shell argv: " .. vim.json.encode(argv) .. "\nWorking directory: " .. spec.cwd .. "\n$ " .. command
+  local shell = identity and (identity.token == identities.exec_command or identity.token == identities.shell)
+  local summarize = identity and summaries[identity.token]
+  if shell or summarize then
+    local prepared = invocations.current(tool.execute, ctx)
+      or assert(invocations.prepare(tool, arguments, assert(ctx, "Tool approval requires its execution context")))
+    local request = util.copy(prepared.request)
+    if shell then
+      return "Shell argv: "
+        .. vim.json.encode(rawget(request, "argv"))
+        .. "\nWorking directory: "
+        .. (rawget(request, "cwd") or assert(prepared.workspace).cwd)
+    end
+    return assert(summarize)(request)
   end
-  local summarize = summaries[tool.name]
-  if summarize then
-    return summarize(arguments, ctx)
+  if tool.name == "read_agent_documentation" then
+    return "Read Neoagent documentation"
   end
   return "Run " .. tostring(tool.name) .. " with its current arguments"
 end

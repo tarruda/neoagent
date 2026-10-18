@@ -842,7 +842,8 @@ describe("Codex process Tools", function()
     assert(vim.wait(3000, function()
       return not assert(agent):is_running()
     end, 5))
-    local message = assert(agent:get_session():messages()[3])
+    local message = agent:get_session():messages()[3]
+    assert(message)
     assert.are.equal("toolResult", message.role)
     ---@cast message Neoagent.ToolResultMessage
     local id = assert(details(message).session_id)

@@ -282,7 +282,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       status = { ok = true, platform = "test", capabilities = {} },
     })
     assert(selected)
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     for index, tool in ipairs(selected.tools) do
       assert.is_nil(rawget(tool, "sandbox"))
       assert.is_nil(assert(tool.input_schema.properties).options, tostring(index))
@@ -318,7 +319,8 @@ describe("neoagent sandbox Tool RPC selection", function()
     local selected = composition.compose({ tools = { documentation, custom } }, { enabled = true }, {
       status = { ok = false, platform = "test", message = "isolation unavailable" },
     })
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     local ctx = context(root)
     local values = wait(async.run(function()
       return {
@@ -357,6 +359,7 @@ describe("neoagent sandbox Tool RPC selection", function()
           message = "synthetic unavailable sandbox",
         },
       }
+      ---@type Neoagent.SandboxToolset<unknown>, Neoagent.SandboxActivation
       local selected, status
       if constructor == "compose" then
         selected, status = composition.compose({ tools = tools }, { enabled = true, parent_tools = { parent } }, options)
@@ -370,7 +373,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       else
         assert.matches("Sandbox controls", assert(selected.system_prompt))
       end
-      local execute = assert(selected.execute_tool)
+      local execute = selected.execute_tool
+      assert(execute)
       local ctx = context(root)
       local values = wait(async.run(function()
         return {
@@ -581,7 +585,8 @@ describe("neoagent sandbox Tool RPC selection", function()
       nvim = vim.env.NEOAGENT_NVIM,
     })
     assert(selected)
-    local execute = assert(selected.execute_tool)
+    local execute = selected.execute_tool
+    assert(execute)
     local value = wait(async.run(function()
       return execute(assert(selected.tools[1]), {
         path = "remote.txt",

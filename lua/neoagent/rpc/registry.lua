@@ -3,6 +3,7 @@ local methods = require("neoagent.rpc.methods")
 local identities = require("neoagent.tools.identities")
 local common = require("neoagent.tools.common")
 local util = require("neoagent.util")
+local invocations = require("neoagent.tools.invocation")
 
 local M = {}
 
@@ -66,8 +67,12 @@ function M.proxy(tool, options)
     if not active then
       error("Tool RPC proxy invocation has expired", 0)
     end
+    if identity.check_context then
+      identity.check_context(ctx, arguments)
+    end
     local call = common.call(ctx)
-    local request = identity.prepare(arguments, identity.settings, call)
+    local prepared = invocations.current(tool.execute, ctx) or assert(invocations.prepare(tool, arguments, ctx))
+    local request = invocations.request(prepared, call)
     same_workspace(expected_call, call)
     return options.invoke(adapter.method, request, call)
   end

@@ -321,7 +321,8 @@ describe("Agent Applet boundaries", function()
     store.load = function() return { "first", "second" } end
     assert(value:open())
     assert(value:select_input_history())
-    local request = assert(value:presenter():snapshot().active)
+    local request = value:presenter():snapshot().active
+    assert(request)
     assert(value:presenter():resolve(request.id, "history-2"))
     assert(vim.wait(1000, function()
       return assert(record.view):get_input() == "second"
@@ -374,7 +375,8 @@ describe("Agent Applet boundaries", function()
     assert.is_false((selection:is_done()))
     rejected.view_factory = view_factory(rejected_record)
     assert(rejected:open())
-    local active = assert(rejected:presenter():snapshot().active)
+    local active = rejected:presenter():snapshot().active
+    assert(active)
     assert(rejected:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
 
@@ -452,7 +454,8 @@ describe("Agent Applet boundaries", function()
     local level = assert(callbacks.on_cycle_thinking)()
     assert.is_nil(level)
     assert.is_true((assert(callbacks.on_select_model)()))
-    local active = assert(owned_agent:presenter():snapshot().active)
+    local active = owned_agent:presenter():snapshot().active
+    assert(active)
     assert(owned_agent:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function()
       return owned_agent:presenter():snapshot().active == nil
@@ -680,7 +683,8 @@ describe("Agent Applet boundaries", function()
           if method == "set_dialog" then
             value:dialogs():cancel_pending("test complete")
           else
-            local active = assert(value:presenter():snapshot().active)
+            local active = value:presenter():snapshot().active
+            assert(active)
             value:presenter():cancel(active.id, "test complete")
           end
           assert(vim.wait(1000, function() return pending:is_done() end))
@@ -1421,7 +1425,8 @@ describe("Agent Applet boundaries", function()
     assert.is_true((selected:select_model(function(model)
       callback_model = model
     end)))
-    local request = assert(presenter:snapshot().active)
+    local request = presenter:snapshot().active
+    assert(request)
     assert(presenter:resolve(request.id, assert(assert(request.items)[1]).id))
     assert(vim.wait(1000, function() return callback_model ~= nil end, 5))
     assert.are.equal(callback_model, selected:get_model())
@@ -1537,7 +1542,8 @@ describe("Agent Applet boundaries", function()
     assert.is_true((value:select_model()))
     assert(original:snapshot().active)
 
-    local presentation = assert(original:snapshot().active)
+    local presentation = original:snapshot().active
+    assert(presentation)
     assert(original:cancel(
       presentation.id, "test cancellation"))
     assert(vim.wait(1000, function()

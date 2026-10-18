@@ -158,7 +158,8 @@ describe("neoagent generic dialog UI", function()
     assert.is_nil(view:pane("dialog"))
     assert.are.equal("neoagent-dialog",
       vim.bo[view_handles.buffer(view, "transcript")].filetype)
-    local transcript = assert(view:pane("transcript"))
+    local transcript = view:pane("transcript")
+    assert(transcript)
     local first = "dialog:first:widget:actions:item:run"
     assert.are.equal(first, assert(transcript:focused_target()).key)
     assert.is_true(target_is_highlighted(transcript, first))
@@ -170,7 +171,8 @@ describe("neoagent generic dialog UI", function()
     assert.are.equal(view_handles.window(view, "dialog"),
       vim.api.nvim_get_current_win())
     assert.is_not_nil(view_handles.window(view, "dialog"))
-    local dialog = assert(view:pane("dialog"))
+    local dialog = view:pane("dialog")
+    assert(dialog)
     local allow = "dialog:second:actions:item:allow"
     assert.are.equal(allow, assert(dialog:focused_target()).key)
     assert.is_true(target_is_highlighted(dialog, allow))
@@ -197,7 +199,8 @@ describe("neoagent generic dialog UI", function()
     assert.is_true((view:open()))
     view:set_dialog(snapshot(transcript_dialog(), "native"))
 
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     local first = "dialog:native:widget:actions:item:run"
     local target = assert(assert(pane.layout).targets[first])
     local rectangle = assert(target.rectangles[1])
@@ -284,7 +287,8 @@ describe("neoagent generic dialog UI", function()
     end, 5))
 
     local request = assert(dialogs:snapshot().active)
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     local deny = "dialog:" .. request.id .. ":widget:actions:item:deny"
     assert(vim.wait(1000, function()
       local target = pane:focused_target()
@@ -351,7 +355,8 @@ describe("neoagent generic dialog UI", function()
       "Choose one of the following options.",
     }, "\n")
     view:set_dialog(snapshot(request, "sandbox"))
-    local pane = assert(view:pane("transcript"))
+    local pane = view:pane("transcript")
+    assert(pane)
     assert(vim.wait(1000, function()
       return pane.layout
         and pane.layout.targets[
@@ -402,8 +407,10 @@ describe("neoagent generic dialog UI", function()
     view:set_input("retained draft")
     view:set_dialog(snapshot(transcript_dialog(), "first"))
 
-    local input = assert(view:pane("input"))
-    local transcript = assert(view:pane("transcript"))
+    local input = view:pane("input")
+    assert(input)
+    local transcript = view:pane("transcript")
+    assert(transcript)
     local pane_input = require("applet.pane.input")
     view:focus_input()
     assert.is_true(pane_input.dispatch(input, "n", "J"))

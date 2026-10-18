@@ -219,6 +219,17 @@ function M.text_from_bytes(value)
   return table.concat(parts), escaped
 end
 
+---@generic T: table
+---@param value T
+---@return T
+function M.shallow_copy(value)
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = child
+  end
+  return result
+end
+
 ---@generic T
 ---@param value T
 ---@param seen? table<table, table>

@@ -368,7 +368,8 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentProvider inspect first second")
     assert(vim.wait(1000, function() return calls == 1 end, 5))
     assert.are.equal("first second", operation_args)
-    local shell = assert(applet:provider_shell())
+    local shell = applet:provider_shell()
+    assert(shell)
     local function wait_enabled()
       for _, operation in ipairs(shell:operations()) do
         if operation.id == "wait" then return operation.enabled end

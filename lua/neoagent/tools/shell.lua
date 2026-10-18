@@ -91,8 +91,9 @@ end
 
 ---@param arguments Neoagent.JsonObject
 ---@param settings Neoagent.ShellSettings
+---@param call Neoagent.ToolOperationCall
 ---@return Neoagent.ShellRequest
-local function prepare(arguments, settings)
+local function prepare(arguments, settings, call)
   local command = common.require_string(arguments, "command")
   local timeout = arguments.timeout
   if timeout ~= nil and not valid_timeout(timeout) then
@@ -102,7 +103,7 @@ local function prepare(arguments, settings)
     timeout = settings.default_timeout
   end
   return validate_request({
-    argv = shell_argv(command),
+    argv = require("neoagent.tools.command").resolve(shell_argv(command), call),
     timeout_ms = timeout and math.max(1, math.floor(timeout * 1000)) or nil,
   })
 end
@@ -389,17 +390,15 @@ local function new(options)
       required = { "command" },
       additionalProperties = false,
     },
-    ---@async
-    execute = function(arguments, ctx)
-      local call = common.call(ctx)
-      return run(prepare(arguments, settings), call, deps)
-    end,
     render = presentation.shell,
   }
   return identities.bind(tool, {
     token = identities.shell,
     settings = settings,
-    prepare = prepare,
+    prepare = identities.workspace_prepare(prepare),
+    run = function(request, _, ctx)
+      return run(request, common.call(ctx), deps)
+    end,
   })
 end
 

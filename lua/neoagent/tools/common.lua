@@ -13,6 +13,7 @@ local M = {}
 ---@field workspace Neoagent.ToolWorkspace
 ---@field artifacts? Neoagent.ToolArtifactPublisher
 ---@field on_update fun(update: Neoagent.ToolResult)
+---@field on_file_changed? fun(path: string)
 
 ---@class Neoagent.ToolDependencyOverrides
 ---@field fs? Neoagent.ToolFilesystem
@@ -166,7 +167,11 @@ end
 function M.validate_call(value)
   assert(M.object(value), "Tool operation call must be an object")
   ---@cast value table
-  M.fields(value, { workspace = true, artifacts = true, on_update = true }, "Tool operation call")
+  M.fields(
+    value,
+    { workspace = true, artifacts = true, on_update = true, on_file_changed = true },
+    "Tool operation call"
+  )
   assert(M.object(value.workspace), "Tool workspace must be an object")
   M.fields(value.workspace, { root = true, cwd = true }, "Tool workspace")
   local root = M.path(value.workspace.root, "Tool workspace root")
@@ -178,10 +183,15 @@ function M.validate_call(value)
     )
   end
   assert(type(value.on_update) == "function", "Tool on_update must be a function")
+  assert(
+    value.on_file_changed == nil or type(value.on_file_changed) == "function",
+    "Tool on_file_changed must be a function"
+  )
   return {
     workspace = { root = root, cwd = cwd },
     artifacts = value.artifacts and { put = value.artifacts.put } or nil,
     on_update = value.on_update,
+    on_file_changed = value.on_file_changed,
   }
 end
 
@@ -199,6 +209,7 @@ function M.call(ctx)
     workspace = { root = workspace.root, cwd = workspace.cwd },
     artifacts = files.writable(storage) and { put = storage.put } or nil,
     on_update = ctx and ctx.on_update or function() end,
+    on_file_changed = type(composition) == "table" and rawget(composition, "file_changed") or nil,
   })
 end
 

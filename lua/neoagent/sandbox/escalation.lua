@@ -2,6 +2,7 @@ local result = require("neoagent.sandbox.result")
 local summaries = require("neoagent.sandbox.approval_summary")
 local identities = require("neoagent.tools.identities")
 local util = require("neoagent.util")
+local invocations = require("neoagent.tools.invocation")
 
 local M = {}
 ---@alias Neoagent.SandboxShellKind 'posix'|'cmd'|'powershell'
@@ -718,12 +719,9 @@ function Escalation:wrap(executors)
       })
     end
     self:_sync_session(ctx)
+    ctx = invocations.context(ctx, invocations.prepare(tool, stripped, ctx))
     if not escalation then
       return executors.restricted(tool, stripped, ctx)
-    end
-    local identity = identities.identity(tool)
-    if identity and identity.token == identities.exec_command then
-      tool = require("neoagent.tools.process").prepare_command(tool, stripped, ctx)
     end
     local decision, approval_err, decision_metadata
     if self:_matches(tool, stripped) then
