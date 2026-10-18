@@ -71,6 +71,7 @@ The Pane runtime methods are:
                            Replace an editable Pane's text.
   cursor()                 Return `{ line, column }`.
   set_cursor(cursor)       Apply a semantic cursor.
+  set_image_system(system) Replace the borrowed ImageSystem, or disable with nil.
   at_start()               Test the first editable position.
   at_end()                 Test the final editable position.
   move_cursor(direction[, count])
@@ -611,6 +612,8 @@ needed for presentation.
 
 Loading is asynchronous and preserves content while preparing a revision.
 Removing a node releases its slot; disconnecting a Pane clears presentation.
+Changing a Pane's ImageSystem releases its old references and subscription;
+the caller remains responsible for destroying the ImageSystem.
 Unavailable backends use the text fallback without reserving an image
 rectangle. Kitty supports direct terminals and tmux pass-through. Applet
 performs no network fetch or image conversion. Call `images:destroy()` when
