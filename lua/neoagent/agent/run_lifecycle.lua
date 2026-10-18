@@ -33,8 +33,13 @@ local util = require("neoagent.util")
 ---@field processes? Neoagent.ProcessSessions
 ---@field file_changed? fun(path: string)
 
----@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>: Neoagent.SandboxToolset<C>
+---@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>
+---@field tools Neoagent.Tool<C>[]
+---@field execute_tool? Neoagent.ToolExecutor<C>
 ---@field system_prompt? string
+---@field execution_policy? fun(workspace: {root: string, cwd: string}): Neoagent.ExecutionPolicyFacts
+---@field process_placement? fun(context: C, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
+---@field sandbox? Neoagent.SandboxControls Borrowed controls for this execution policy.
 
 ---@class Neoagent.AgentInteractionOptions: Neoagent.ChatOptions<Neoagent.AgentToolEnvironment>
 ---@field session Neoagent.Session

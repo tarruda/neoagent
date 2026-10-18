@@ -243,12 +243,10 @@ describe("neoagent generic dialog UI", function()
     end)
 
     local escalation = require("neoagent.sandbox.escalation").new()
-    local shell = escalation:tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
+    local shell = require("neoagent.tools.shell").new()
     local elevated = false
     local execute = escalation:wrap({
-      restricted = function() error("restricted executor ran") end,
+      restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
       elevated = function()
         elevated = true
         return { content = { { type = "text", text = "elevated" } } }
@@ -261,13 +259,6 @@ describe("neoagent generic dialog UI", function()
         type = "toolCall", id = "escalate", name = "shell",
         arguments = {
           command = "touch ~/random && ls -la ~/random",
-          options = {
-            require_escalation = true,
-            escalation_justification = table.concat({
-              "User requested testing the escalation path for creating a file",
-              "in the home directory, which is read-only inside the sandbox.",
-            }, " "),
-          },
         },
       } }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },

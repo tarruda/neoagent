@@ -102,6 +102,55 @@ describe("Codex process Tools", function()
     return details(call("exec_command", { cmd = command, shell = shell, login = false, tty = tty, yield_time_ms = 0 }))
   end
 
+  it("honors requested native command prefixes and rejects mismatched grants", function()
+    for _, matches in ipairs({ true, false }) do
+      local elevated, prompts = 0, 0
+      local execute = require("neoagent.sandbox.escalation").new():wrap({
+        restricted = function() error("explicit approval used restricted execution") end,
+        elevated = function()
+          elevated = elevated + 1
+          return { content = {} }
+        end,
+      })
+      ---@param request Neoagent.DialogRequest
+      local function show(request)
+        prompts = prompts + 1
+        if prompts == 2 then
+          local expected = jit.os == "Windows" and '"git"' or "'git'"
+          assert.are.equal(expected, assert(request.input).value)
+          return { ok = true, action = "accept_prefix", input = expected }
+        end
+        local offers_prefix = vim.tbl_contains(vim.tbl_map(function(action)
+          return action.id
+        end, request.actions), "approve_prefix")
+        assert.are.equal(matches, offers_prefix)
+        return matches and "approve_prefix" or "deny"
+      end
+      ---@async
+      ---@param tool Neoagent.Tool<unknown>
+      ---@param arguments Neoagent.JsonObject
+      ---@param ctx Neoagent.ToolContext<unknown>
+      local function with_dialog(tool, arguments, ctx)
+        rawset(ctx, "dialog", {
+          show = function(_, request) return show(request) end,
+          choose_pending = function() return 0 end,
+        })
+        return execute(tool, arguments, ctx)
+      end
+      local run, published = start("exec_command", {
+        cmd = "git status", shell = shell, sandbox_permissions = "require_escalated",
+        justification = "Inspect repository", prefix_rule = { matches and "git" or "rg" },
+      }, nil, with_dialog)
+      assert.is_true(helper.wait(run).ok)
+      local result = published()
+      assert.are.equal(matches and 1 or 0, elevated)
+      assert.are.equal(matches and 2 or 1, prompts)
+      if not matches then
+        assert.is_true(assert(assert(result.execution).sandbox).denied_by_user)
+      end
+    end
+  end)
+
   it("returns ordinary command output, cwd and exit status without retaining a session", function()
     vim.fn.mkdir(root .. "/sub directory", "p")
     local command = jit.os == "Windows" and "Get-Location; Write-Output hello" or "pwd; printf hello"
@@ -592,7 +641,12 @@ describe("Codex process Tools", function()
         id,
         details(call("write_stdin", { session_id = id, chars = "\3", yield_time_ms = 0 })).session_id
       )
-      local response = call("write_stdin", { session_id = id, terminate = true, yield_time_ms = 5000 })
+      helper.complete(function()
+        local interaction = owner:begin_interaction(id)
+        interaction.collect(5000, { kind = "terminate", reason = "test finished" })
+        interaction.abort()
+      end, 8000)
+      local response = call("write_stdin", { session_id = id, yield_time_ms = 5000 })
       assert.is_table(response.details, util.text_content(response.content))
       assert(vim.wait(10000, function()
         if assert(response.details).session_id then
@@ -889,10 +943,13 @@ describe("Codex process Tools", function()
   end)
 
   it("enforces an explicit lifetime independently of the initial yield", function()
-    local first = details(
-      call("exec_command", { cmd = sleeper, shell = shell, login = false, yield_time_ms = 0, timeout_ms = 100 })
-    )
-    local response = call("write_stdin", { session_id = assert(first.session_id), yield_time_ms = 5000 })
+    local first = helper.complete(function()
+      local admission = owner:reserve({ argv = { shell, jit.os == "Windows" and "-Command" or "-c", sleeper }, cwd = root, stdio = { kind = "pipes" }, timeout_ms = 100 })
+      local observed = admission.start(0)
+      admission.commit(true)
+      return observed
+    end, 5000)
+    local response = call("write_stdin", { session_id = first.session_id, yield_time_ms = 5000 })
     assert.is_true(response.isError)
     assert.matches("timed out", util.text_content(response.content), 1, true)
     assert.is_nil(assert(response.details).session_id)

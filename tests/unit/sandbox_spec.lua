@@ -177,6 +177,137 @@ describe("neoagent sandbox composition", function()
     return path
   end
 
+  it("uses the Pi Bash grammar for prefix grants when the editor shell differs", function()
+    local previous = vim.o.shell
+    vim.o.shell = "cmd.exe"
+    local ok, err = pcall(function()
+      local tool = require("neoagent.tools.pi.command").new({ shell = "bash" })
+      local replies = { "approve_prefix", { ok = true, action = "accept_prefix", input = "git" }, "deny" }
+      local elevated = 0
+      local execute = require("neoagent.sandbox.escalation").new():wrap({
+        restricted = function()
+          return require("neoagent.sandbox.result").sandbox("preflight", { preflight_denied = true })
+        end,
+        elevated = function()
+          elevated = elevated + 1
+          return { content = { { type = "text", text = "approved" } } }
+        end,
+      })
+      local ctx = dialog_context(temp(), function() return table.remove(replies, 1) end)
+      execute(tool, { command = "git status" }, ctx)
+      local value = execute(tool, { command = "git status; echo unapproved" }, ctx)
+      assert.is_true(value.isError)
+      assert.are.equal(1, elevated)
+      assert.are.equal(0, #replies)
+    end)
+    vim.o.shell = previous
+    assert(ok, err)
+  end)
+
+  it("shows prepared paths in renamed file and patch approvals", function()
+    local root = temp()
+    local cases = {
+      { tool = require("neoagent.tools.pi.write").new(), arguments = { path = "../outside.txt", content = "text" } },
+      { tool = require("neoagent.tools.codex.apply_patch").new(), arguments = {
+        patch = "*** Begin Patch\n*** Add File: ../outside.txt\n+text\n*** End Patch",
+      } },
+    }
+    for _, case in ipairs(cases) do
+      ---@type string?
+      local body
+      local execute = require("neoagent.sandbox.escalation").new():wrap({
+        restricted = function()
+          return require("neoagent.sandbox.result").sandbox("preflight", { preflight_denied = true })
+        end,
+        elevated = function() error("denied operation ran") end,
+      })
+      execute(case.tool, case.arguments, dialog_context(root, function(request)
+        body = request.body
+        return "deny"
+      end))
+      assert.matches(vim.fs.joinpath(vim.fs.dirname(root), "outside.txt"), assert(body), 1, true)
+    end
+  end)
+
+  it("summarizes image, multi-file patch, and documentation approvals", function()
+    local root = temp()
+    local ctx = context(root)
+    ctx.model.input = { "text", "image" }
+    local summary = require("neoagent.sandbox.approval_summary").for_tool
+    assert.are.equal(
+      "View image " .. root .. "/image.png (high)",
+      summary(require("neoagent.tools.codex.view_image").new(), { path = "image.png" }, ctx)
+    )
+    local text = summary(
+      require("neoagent.tools.codex.apply_patch").new(),
+      {
+        patch = table.concat({
+          "*** Begin Patch",
+          "*** Update File: old",
+          "*** Move to: moved",
+          "@@",
+          "-before",
+          "+after",
+          "*** Update File: other",
+          "@@",
+          "-before",
+          "+after",
+          "*** End Patch",
+        }, "\n"),
+      },
+      ctx
+    )
+    assert.are.equal("Move and update " .. root .. "/old to " .. root .. "/moved\nUpdate " .. root .. "/other", text)
+    assert.are.equal(
+      "Read Neoagent documentation",
+      summary(require("neoagent.tools.read_agent_documentation").new(), {}, ctx)
+    )
+  end)
+
+  it("keeps prefix grants distinct for case-sensitive executable paths", function()
+    if jit.os ~= "Linux" then return end
+    local root = temp()
+    assert(fs.mkdirp(root .. "/Upper"))
+    assert(fs.mkdirp(root .. "/upper"))
+    local replies = { "approve_prefix", { ok = true, action = "accept_prefix", input = "git" }, "deny" }
+    local elevated = 0
+    local execute = require("neoagent.sandbox.escalation").new():wrap({
+      restricted = function()
+        return require("neoagent.sandbox.result").sandbox("preflight", { preflight_denied = true })
+      end,
+      elevated = function()
+        elevated = elevated + 1
+        return { content = { { type = "text", text = "approved" } } }
+      end,
+    })
+    local ctx = dialog_context(root, function() return table.remove(replies, 1) end)
+    execute(require("neoagent.tools.pi.command").new({ shell = root .. "/Upper/bash" }), { command = "git status" }, ctx)
+    local value = execute(require("neoagent.tools.pi.command").new({ shell = root .. "/upper/bash" }), { command = "git status" }, ctx)
+    assert.is_true(value.isError)
+    assert.are.equal(1, elevated)
+    assert.are.equal(0, #replies)
+  end)
+
+  it("reports copied grants and parent Tool exceptions for the active execution policy", function()
+    local root = temp()
+    local tool = require("neoagent.tools.read_file").new()
+    local _, _, _, runtime = require("neoagent.sandbox.composition").switchable(
+      { tools = { tool } }, { enabled = true, parent_tools = { tool }, profile = { network = "enabled" } },
+      { platform = test_platform(), status = { ok = true, platform = "test" } }
+    )
+    local facts = runtime:facts({ root = root, cwd = root })
+    assert.are.equal("sandbox", facts.mode)
+    assert.are.equal("enabled", facts.network)
+    assert.are.same({ "read_file" }, facts.parent_tools)
+    assert.are.equal("read", assert(facts.filesystem).default)
+    assert.is_true(vim.tbl_contains(vim.tbl_map(function(entry) return entry.path end,
+      assert(facts.filesystem).entries), root))
+    facts.network = "restricted"
+    assert.are.equal("enabled", runtime:facts({ root = root, cwd = root }).network)
+    assert(runtime:set_enabled(false))
+    assert.are.equal("host", runtime:facts({ root = root, cwd = root }).mode)
+  end)
+
   it("validates sandbox settings while direct Agents stay explicit",
     ---@async
     function()
@@ -203,7 +334,7 @@ describe("neoagent sandbox composition", function()
       } --[[@as Neoagent.ConfigInput]])
     end, "sandbox.parent_tools must be a list")
 
-    local agent = require("neoagent.agent").new({
+    local agent = require("neoagent").new({
       name = "Direct",
       default_registry = false,
       providers = {},
@@ -531,7 +662,7 @@ describe("neoagent sandbox composition", function()
     })
     assert.is_true(toolset_status.active)
     assert.are.equal(dialog_source, returned_dialogs)
-    assert.is_table(assert(assert(assert(toolset).tools[1]).input_schema.properties).options)
+    assert.is_nil(assert(assert(assert(toolset).tools[1]).input_schema.properties).options)
     assert.is_nil(original.tools[1].input_schema.properties.options)
 
     local composed, _, dialogs =
@@ -539,7 +670,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal(1, checked)
     assert.is_table(dialogs)
     assert.are.equal("write_file", assert(assert(composed.tools)[1]).name)
-    assert.is_table(
+    assert.is_nil(
       assert(assert(assert(composed.tools)[1]).input_schema.properties).options)
     assert.is_nil(
       original.tools[1].input_schema.properties.options)
@@ -597,7 +728,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal("brief", assert(value.content[1]).text)
   end)
 
-  it("carries sandbox guidance in the composed toolset prompt",
+  it("exposes sandbox execution facts from the composed Toolset",
     ---@async
     function()
     local original = {
@@ -631,15 +762,16 @@ describe("neoagent sandbox composition", function()
       platform = platform,
       status = { ok = true, platform = "test" },
       dialogs = require("neoagent.dialog").new(),
-    })
-    assert.is_true(status.active)
-    assert.is_string(assert(toolset).system_prompt)
-    assert.matches("Sandboxed execution", (assert(assert(toolset).system_prompt)))
-    assert.matches("native test sandbox", (assert(assert(toolset).system_prompt)))
-    assert.matches("require_escalation", (assert(assert(toolset).system_prompt)))
-    assert.matches("denial", (assert(assert(toolset).system_prompt)))
-
-  end)
+    }
+      )
+      assert.is_true(status.active)
+      local root = temp()
+      local policy = assert(toolset.execution_policy)({ root = root, cwd = root })
+      assert.are.equal("sandbox", policy.mode)
+      assert.are.equal("test", policy.platform)
+      assert.are.equal("restricted", policy.network)
+    end
+  )
 
   it("switches one stable toolset between host and sandbox execution",
     ---@async
@@ -668,10 +800,6 @@ describe("neoagent sandbox composition", function()
       return execute(assert(stable.tools[1]), {
         path = "switchable.txt",
         content = "host\n",
-        options = {
-          require_escalation = true,
-          escalation_justification = "inspect host execution",
-        },
       }, context(root))
     end)
     assert.matches("Successfully wrote", assert(assert(value.content[1]).text))
@@ -1052,7 +1180,7 @@ describe("neoagent sandbox composition", function()
         },
       }
       assert.is_true(status.active)
-      local agent = require("neoagent.agent").new({
+      local agent = require("neoagent").new({
         name = "Sandbox status", default_registry = false, tools = {},
         sandbox = { enabled = true },
       })
@@ -1299,109 +1427,75 @@ describe("neoagent sandbox execution", function()
     return path
   end
 
-  it("decorates schemas and grants one revocable approved call",
-    ---@async
-    function()
-    local root = temp()
-    local original_arguments = {
-      path = "file",
-      options = {
-        native = "keep",
-        require_escalation = true,
-        escalation_justification = "needed for this test",
-      },
-    }
-    local tool = {
-      name = "custom",
-      description = "custom",
-      input_schema = {
-        type = "object",
-        properties = {
-          path = { type = "string" },
-          options = {
-            type = "object",
-            properties = { native = { type = "string" } },
-            additionalProperties = false,
-          },
-        },
-        additionalProperties = false,
-      },
-      execute = function() error("tool must not run") end,
-    }
-    ---@type Neoagent.JsonObject?, Neoagent.DialogRequest?
-    local seen, approval
+  it("preserves Tool schemas and approves only a proven preflight denial", function()
+    local tool = require("neoagent.tools.pi.write").new()
     local escalation = require("neoagent.sandbox.escalation").new()
-    local approved_ctx = dialog_context(root, function(value)
-      approval = value
+    local schema = util.copy(tool.input_schema)
+    local restricted, elevated, prompts = 0, 0, 0
+    local execute = escalation:wrap({
+      restricted = function()
+        restricted = restricted + 1
+        return require("neoagent.sandbox.result").sandbox("denied before effects", { preflight_denied = true })
+      end,
+      elevated = function() elevated = elevated + 1; return { content = { { type = "text", text = "approved" } } } end,
+    })
+    local value = execute(tool, { path = "file", content = "text" }, dialog_context(temp(), function()
+      prompts = prompts + 1
+      return "approve"
+    end))
+    assert.are.equal("approved", assert(value.content[1]).text)
+    assert.are.equal(1, restricted)
+    assert.are.equal(1, elevated)
+    assert.are.equal(1, prompts)
+    assert.are.same(schema, tool.input_schema)
+    for _, metadata in ipairs({ { denied = true }, { outcome_uncertain = true }, { unavailable = true } }) do
+      local blocked = escalation:wrap({
+        restricted = function() return require("neoagent.sandbox.result").sandbox("operation may have run", metadata) end,
+        elevated = function() error("unproven denial must not elevate") end,
+      })
+      assert.is_true(blocked(tool, { path = "file", content = "text" }, context(temp())).isError)
+    end
+  end)
+
+  it("shares one prepared invocation across approval, RPC, and host execution", function()
+    local root = temp()
+    local tool = require("neoagent.tools.pi.write").new()
+    tool.name = "renamed_write"
+    ---@type Neoagent.WriteFileRequest?
+    local request
+    local execute = require("neoagent.sandbox.escalation").new():wrap({
+      restricted = function(selected, arguments, ctx)
+        assert.are.equal(tool, selected)
+        arguments.path, arguments.content = "changed.txt", "changed"
+        local proxy, revoke = require("neoagent.rpc.registry").proxy(selected, {
+          call = require("neoagent.tools.common").call(ctx),
+          invoke = function(_, prepared)
+            request = require("neoagent.tools.write_file").validate_request(prepared)
+            return require("neoagent.sandbox.result").sandbox("preflight", { preflight_denied = true })
+          end,
+        })
+        local value = assert(proxy).execute(arguments, ctx)
+        assert(revoke)()
+        return value
+      end,
+      elevated = function(selected, _, ctx)
+        assert.are.equal(tool, selected)
+        return selected.execute({ path = "changed-again.txt", content = "changed again" }, ctx)
+      end,
+    })
+    local ctx = dialog_context(root, function(prompt)
+      assert.matches(root .. "/original.txt", prompt.body, 1, true)
+      assert.is_nil((prompt.body:find("changed.txt", 1, true)))
       return "approve"
     end)
-    local transformed = escalation:tools({ tool })
-    assert.is_nil(
-      tool.input_schema.properties.options.properties.require_escalation)
-    assert.is_table(assert(assert(assert(transformed[1]).input_schema.properties).options
-      .properties).require_escalation)
-    ---@async
-    ---@param arguments Neoagent.JsonObject
-    ---@return Neoagent.ToolResult
-    local function elevated_read(_, arguments)
-      assert(type(arguments.path) == "string")
-      seen = arguments
-      return {
-        content = { {
-          type = "text",
-          text = "host:" .. arguments.path,
-        } },
-      }
-    end
-    local execute = escalation:wrap({
-      restricted = function() error("restricted path ran") end,
-      elevated = elevated_read,
-    })
-    local value = complete(function()
-      return execute(assert(transformed[1]), original_arguments, approved_ctx)
+    local result = complete(function()
+      return execute(tool, { path = "original.txt", content = "original" }, ctx)
     end)
-    assert.are.equal("host:file", assert(value.content[1]).text)
-    assert.are.same({ path = "file", options = { native = "keep" } },
-      seen)
-    assert.is_true(original_arguments.options.require_escalation)
-    assert.are.equal("transcript", assert(approval).placement)
-    assert.matches("Tool: custom", assert(approval).body)
-    assert.matches("needed for this test", assert(approval).body)
-    assert.are.same({
-      { id = "approve", label = "approve", key = "y" },
-      { id = "deny", label = "deny", key = "n" },
-      { id = "deny_all", label = "deny all pending", key = "N" },
-    }, assert(approval).actions)
-    local bypassed = complete(function()
-      return escalation:bypass(function(_, arguments)
-      local native = assert(arguments.options).native
-      if type(native) ~= "string" then error("native option was not preserved") end
-      return { content = { { type = "text", text = native } } }
-      end)(assert(transformed[1]), { options = { native = "keep" } }, context(root))
-    end)
-    assert.are.equal("keep", assert(bypassed.content[1]).text)
-
-    local malformed = complete(function()
-      return execute(assert(transformed[1]), {
-        options = { require_escalation = true },
-      }, context(root))
-    end)
-    assert.is_true(assert(assert(malformed.execution).sandbox).invalid_escalation)
-
-    local denied = complete(function()
-      return require("neoagent.sandbox.escalation").new():wrap({
-        restricted = function() error("restricted path ran") end,
-        elevated = function() error("elevated path ran") end,
-      })(assert(transformed[1]), original_arguments,
-        dialog_context(root, function() return "deny" end))
-    end)
-    assert.is_true(assert(assert(denied.execution).sandbox).denied_by_user)
-
-    local invalid = complete(function()
-      return escalation:bypass(function() error("must not execute") end)(
-        assert(transformed[1]), "invalid" --[[@as Neoagent.JsonObject]], context(root))
-    end)
-    assert.is_true(assert(assert(invalid.execution).sandbox).invalid_escalation)
+    assert.is_not_true(result.isError)
+    assert.are.equal(root .. "/original.txt", assert(request).resolved_path)
+    assert.are.equal("original", fs.read(root .. "/original.txt"))
+    assert.is_nil(fs.read(root .. "/changed.txt"))
+    assert.is_nil(fs.read(root .. "/changed-again.txt"))
   end)
 
   it("renders shell approval commands separately from agent justification",
@@ -1409,22 +1503,15 @@ describe("neoagent sandbox execution", function()
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
-      local shell = module.new():tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
+      local shell = require("neoagent.tools.shell").new()
       ---@type Neoagent.DialogRequest?
       local request
       local execute = module.new():wrap({
-        restricted = function() error("restricted") end,
+        restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
         elevated = function() error("elevated") end,
       })
       local value = execute(assert(shell), {
         command = "rm /outside/test.md",
-        options = {
-          require_escalation = true,
-          escalation_justification =
-            "User wants to clean up the test file.",
-        },
       }, dialog_context(root, function(candidate)
         request = candidate
         return "deny"
@@ -1435,9 +1522,10 @@ describe("neoagent sandbox execution", function()
         "",
         "Tool: shell",
         "Working directory: " .. root,
-        "Agent justification: User wants to clean up the test file.",
+        "Agent justification: The workspace policy denied this operation before execution.",
         "",
-        "$ rm /outside/test.md",
+        "Shell argv: " .. vim.json.encode(require("neoagent.tools.command").argv("rm /outside/test.md"))
+          .. "\\x0AWorking directory: " .. root,
         "",
         "This grants the tool your full user filesystem, process, environment, and network authority for this call.",
       }, "\n"), assert(request).body)
@@ -1445,11 +1533,11 @@ describe("neoagent sandbox execution", function()
 
   for _, replacement in ipairs({ "renamed", "custom" }) do
     it("uses implementation identity for " .. replacement .. " shell approvals", function()
-      local escalation = require("neoagent.sandbox.escalation").new({ shell = "/bin/sh" })
-      local shell = assert(escalation:tools({ require("neoagent.tools.shell").new() })[1])
+      local escalation = require("neoagent.sandbox.escalation").new()
+      local shell = assert(require("neoagent.tools.shell").new())
       local elevated = 0
       local execute = escalation:wrap({
-        restricted = function() error("expected an escalation request") end,
+        restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
         elevated = function()
           elevated = elevated + 1
           return { content = { { type = "text", text = "approved" } } }
@@ -1457,7 +1545,6 @@ describe("neoagent sandbox execution", function()
       })
       local arguments = {
         command = "git status --short",
-        options = { require_escalation = true, escalation_justification = "inspect the repository" },
       }
       local replies = {
         "approve_prefix",
@@ -1494,13 +1581,15 @@ describe("neoagent sandbox execution", function()
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
-      local escalation = module.new({ shell = "/bin/sh" })
-      local shell = escalation:tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
+      local escalation = module.new()
+      local shell = require("neoagent.tools.shell").new()
       local elevated, restricted = {}, {}
+      local preflight_denied = true
       local execute = escalation:wrap({
         restricted = function(_, arguments)
+          if preflight_denied then
+            return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true })
+          end
           restricted[#restricted + 1] = arguments.command
           return { content = { { type = "text", text = "restricted" } } }
         end,
@@ -1510,17 +1599,9 @@ describe("neoagent sandbox execution", function()
         end,
       })
       ---@param command string
-      ---@param requested? boolean
       ---@return Neoagent.JsonObject
-      local function arguments(command, requested)
-        local value = { command = command }
-        if requested ~= false then
-          value.options = {
-            require_escalation = true,
-            escalation_justification = "required by the test",
-          }
-        end
-        return value
+      local function arguments(command)
+        return { command = command }
       end
       ---@param session_id string
       ---@param replies (string|Neoagent.DialogResult)[]
@@ -1607,7 +1688,8 @@ describe("neoagent sandbox execution", function()
         with_dialog("session-two", { "deny" }, {}))
       assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
 
-      value = execute(assert(shell), arguments("git status --short", false),
+      preflight_denied = false
+      value = execute(assert(shell), arguments("git status --short"),
         with_dialog("session-one", {}, {}))
       assert.are.equal("restricted", assert(value.content[1]).text)
       assert.are.same({ "git status --short" }, restricted)
@@ -1618,9 +1700,7 @@ describe("neoagent sandbox execution", function()
     function()
     local root = temp()
     local module = require("neoagent.sandbox.escalation")
-    local shell = module.new({ shell = "/bin/sh" }):tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
+    local shell = require("neoagent.tools.shell").new()
     local attacks = {
       "git status && rm -rf /tmp/owned",
       "git status || rm -rf /tmp/owned",
@@ -1652,13 +1732,11 @@ describe("neoagent sandbox execution", function()
       "git status --short extra",
     }
     for index, prefix in ipairs(attacks) do
-      local escalation = module.new({ shell = "/bin/sh" })
-      shell = escalation:tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
+      local escalation = module.new()
+      shell = require("neoagent.tools.shell").new()
       local elevated = false
       local execute = escalation:wrap({
-        restricted = function() error("restricted") end,
+        restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
         elevated = function() elevated = true return { content = {} } end,
       })
       local requests = {}
@@ -1679,10 +1757,6 @@ describe("neoagent sandbox execution", function()
       ctx.context.session_id = "attack-" .. index
       local value = execute(assert(shell), {
         command = "git status --short",
-        options = {
-          require_escalation = true,
-          escalation_justification = "test unsafe prefix",
-        },
       }, ctx)
       assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
       assert.is_false(elevated)
@@ -1690,13 +1764,11 @@ describe("neoagent sandbox execution", function()
       assert.matches("cannot be remembered", requests[3].body)
     end
 
-    local escalation = module.new({ shell = "/bin/sh" })
-    shell = escalation:tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
+    local escalation = module.new()
+    shell = require("neoagent.tools.shell").new()
     local elevated = 0
     local execute = escalation:wrap({
-      restricted = function() error("restricted") end,
+      restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
       elevated = function()
         elevated = elevated + 1
         return { content = { { type = "text", text = "ok" } } }
@@ -1716,10 +1788,6 @@ describe("neoagent sandbox execution", function()
     ctx.context.session_id = "quoted-operator"
     execute(assert(shell), {
       command = [[printf "%s" "&&"]],
-      options = {
-        require_escalation = true,
-        escalation_justification = "test quoted operator",
-      },
     }, ctx)
     local remembered_ctx = dialog_context(root, function()
       error("remembered quoted operator unexpectedly prompted")
@@ -1727,10 +1795,6 @@ describe("neoagent sandbox execution", function()
     remembered_ctx.context.session_id = "quoted-operator"
     execute(assert(shell), {
       command = [[printf "%s" "&&" ignored]],
-      options = {
-        require_escalation = true,
-        escalation_justification = "test quoted operator",
-      },
     }, remembered_ctx)
     assert.are.equal(2, elevated)
   end)
@@ -1740,26 +1804,23 @@ describe("neoagent sandbox execution", function()
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
-      local shell_tool = require("neoagent.tools.shell").new()
       ---@param shell string
       ---@param command string
       ---@return string[]
       ---@async
       local function action_ids(shell, command)
-        local escalation = module.new({ shell = shell })
-        local tool = escalation:tools({ shell_tool })[1]
+        local escalation = module.new()
+        local tool = require("neoagent.tools.shell").new({
+          argv = require("neoagent.tools.command").shell_argv(shell, false),
+        })
         ---@type Neoagent.DialogRequest?
         local request
         local execute = escalation:wrap({
-          restricted = function() error("restricted") end,
+          restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
           elevated = function() error("elevated") end,
         })
         local value = execute(assert(tool), {
           command = command,
-          options = {
-            require_escalation = true,
-            escalation_justification = "test shell parser",
-          },
         }, dialog_context(root, function(candidate)
           request = candidate
           return "deny"
@@ -1828,15 +1889,10 @@ describe("neoagent sandbox execution", function()
     local root = temp()
     local module = require("neoagent.sandbox.escalation")
     local active_shell = "/bin/sh"
-    local escalation = module.new({
-      shell = function() return active_shell end,
-    })
-    local shell = escalation:tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
+    local escalation = module.new()
     local elevated = {}
     local execute = escalation:wrap({
-      restricted = function() error("restricted") end,
+      restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
       elevated = function(_, arguments)
         elevated[#elevated + 1] = arguments.command
         return { content = { { type = "text", text = "ok" } } }
@@ -1852,12 +1908,10 @@ describe("neoagent sandbox execution", function()
         return reply
       end)
       ctx.context.session_id = "coalesced"
-      local value = execute(assert(shell), {
+      local value = execute(require("neoagent.tools.shell").new({
+        argv = require("neoagent.tools.command").shell_argv(active_shell, false),
+      }), {
         command = command,
-        options = {
-          require_escalation = true,
-          escalation_justification = "test rule coalescing",
-        },
       }, ctx)
       assert.are.equal("ok", assert(value.content[1]).text)
       assert.are.equal(0, #replies)
@@ -1878,7 +1932,7 @@ describe("neoagent sandbox execution", function()
     remember("cargo test --lib", "cargo test")
     run("cargo test --doc", {})
 
-    active_shell = "pwsh.exe"
+    active_shell = "/opt/pwsh.exe"
     remember("Write-Output literal", "Write-Output")
     run("Write-Output other", {})
     active_shell = "/bin/sh"
@@ -1891,13 +1945,11 @@ describe("neoagent sandbox execution", function()
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
-      local escalation = module.new({ shell = "/bin/sh" })
-      local shell = escalation:tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
+      local escalation = module.new()
+      local shell = require("neoagent.tools.shell").new()
       local elevated = {}
       local execute = escalation:wrap({
-        restricted = function() error("restricted") end,
+        restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
         elevated = function(_, arguments)
           elevated[#elevated + 1] = arguments.command
           return { content = { { type = "text", text = "elevated" } } }
@@ -1918,10 +1970,6 @@ describe("neoagent sandbox execution", function()
         ctx.context.session_id = "any-prefix"
         local value = execute(assert(shell), {
           command = command,
-          options = {
-            require_escalation = true,
-            escalation_justification = "test user-chosen prefixes",
-          },
         }, ctx)
         assert.are.equal(0, #replies)
         return value
@@ -1986,13 +2034,11 @@ describe("neoagent sandbox execution", function()
       ---@param shell_path string
       ---@param session string
       local function harness(shell_path, session)
-        local escalation = module.new({ shell = shell_path })
-        local tool = escalation:tools({
-          require("neoagent.tools.shell").new(),
-        })[1]
+        local escalation = module.new()
+        local tool = require("neoagent.tools.shell").new({ argv = require("neoagent.tools.command").shell_argv(shell_path, false) })
         local elevated = {}
         local execute = escalation:wrap({
-          restricted = function() error("restricted") end,
+          restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
           elevated = function(_, arguments)
             elevated[#elevated + 1] = arguments.command
             return { content = { { type = "text", text = "elevated" } } }
@@ -2014,10 +2060,6 @@ describe("neoagent sandbox execution", function()
           ctx.context.session_id = session
           local value = execute(assert(tool), {
             command = command,
-            options = {
-              require_escalation = true,
-              escalation_justification = "test chaining boundaries",
-            },
           }, ctx)
           assert.are.equal(0, #replies, command)
           return value
@@ -2066,7 +2108,7 @@ describe("neoagent sandbox execution", function()
         "git status\nwhoami",
       }, "git status & whoami")
 
-      check("pwsh.exe", "pwsh-chaining", {
+      check("/opt/pwsh.exe", "pwsh-chaining", {
         "git status; whoami",
         "git status | whoami",
         "git status & whoami",
@@ -2084,12 +2126,10 @@ describe("neoagent sandbox execution", function()
     ---@param replies (string|Neoagent.DialogResult)[]
     ---@async
     local function attempt(replies)
-      local escalation = module.new({ shell = "/bin/sh" })
-      local shell = escalation:tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
+      local escalation = module.new()
+      local shell = require("neoagent.tools.shell").new()
       local execute = escalation:wrap({
-        restricted = function() error("restricted") end,
+        restricted = function() return require("neoagent.sandbox.result").sandbox("preflight denial", { preflight_denied = true }) end,
         elevated = function() error("must not elevate") end,
       })
       local ctx = dialog_context(root, function()
@@ -2100,10 +2140,6 @@ describe("neoagent sandbox execution", function()
       ctx.context.session_id = "unsettled"
       local value = execute(assert(shell), {
         command = "git status --short",
-        options = {
-          require_escalation = true,
-          escalation_justification = "test failed editor",
-        },
       }, ctx)
       assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
       assert.are.equal(0, #replies)
@@ -2139,334 +2175,140 @@ describe("neoagent sandbox execution", function()
     attempt(cancelled)
   end)
 
-  it("validates escalation schemas, requests, and presenter failures",
-    ---@async
-    function()
+  it("validates native command approval inputs and fails closed without a presenter", function()
     local root = temp()
-    local function tool(schema)
-      return {
-        name = "custom",
-        description = "custom",
-        input_schema = schema or {
-          type = "object",
-          properties = {},
-          additionalProperties = false,
-        },
-        execute = function() error("tool must not run") end,
-      }
-    end
-    local module = require("neoagent.sandbox.escalation")
-    local transform = module.new()
-    assert.has_error(function()
-      transform:tools({ tool({
-        type = "object",
-        properties = { options = { type = "string" } },
-      }) })
-    end, "tool options schema must be object-valued for custom")
-    assert.has_error(function()
-      transform:tools({ tool({
-        type = "object",
-        properties = {
-          options = {
-            type = "object",
-            properties = {
-              require_escalation = { type = "boolean" },
-            },
-          },
-        },
-      }) })
-    end,
-      "tool options schema reserves require_escalation for sandbox escalation in custom")
-    assert.has_error(function()
-      transform:tools({ tool({
-        type = "object",
-        properties = { "not", "an", "object" },
-      }) })
-    end, "tool input_schema.properties must be an object for custom")
-    assert.has_error(function()
-      transform:tools({ tool({
-        type = "object",
-        properties = {
-          options = {
-            type = "object",
-            properties = { "not", "an", "object" },
-          },
-        },
-      }) })
-    end, "tool options properties must be an object for custom")
-
-    local transformed = transform:tools({ tool() })[1]
-    local calls = 0
-    local execute = transform:wrap({
-      restricted = function(_, arguments)
-        calls = calls + 1
-        return {
-          content = { {
-            type = "text",
-            text = arguments.options and "options" or "restricted",
-          } },
-        }
-      end,
-      elevated = function()
-        calls = calls + 1
-        return { content = { { type = "text", text = "elevated" } } }
-      end,
+    local tool = require("neoagent.tools.process").exec_command()
+    local escalation = require("neoagent.sandbox.escalation").new()
+    local execute = escalation:wrap({
+      restricted = function() return { content = { { type = "text", text = "restricted" } } } end,
+      elevated = function() error("malformed or unanswered approval must not execute") end,
     })
-    local value = execute(assert(transformed), {}, context(root))
-    assert.are.equal("restricted", assert(value.content[1]).text)
-    value = execute(assert(transformed), { options = {} }, context(root))
-    assert.are.equal("restricted", assert(value.content[1]).text)
-    for _, arguments in ipairs({
-      "invalid",
-      { options = "invalid" },
-      {
-        options = {
-          require_escalation = false,
-          escalation_justification = "reason",
-        },
-      },
-      {
-        options = {
-          require_escalation = true,
-          escalation_justification = string.rep("x", 1001),
-        },
-      },
+    for _, input in ipairs({
+      { cmd = "echo test", sandbox_permissions = "invalid" },
+      { cmd = "echo test", sandbox_permissions = "require_escalated" },
+      { cmd = "echo test", sandbox_permissions = "use_default", justification = "invalid" },
+      { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = {} },
+      { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = { "" } },
+      { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = { 42 } },
+      vim.json.decode('["array"]'),
     }) do
-      value = execute(assert(transformed), arguments --[[@as Neoagent.JsonObject]], context(root))
-      assert.is_true(assert(assert(value.execution).sandbox).invalid_escalation)
+      local rejected = execute(tool, input, context(root))
+      assert.is_true(assert(assert(rejected.execution).sandbox).invalid_escalation)
     end
-
-    local pending = async.run(function()
-      return async.await(function() return function() end end)
-    end)
-    value = module.new():wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })(assert(transformed), {
-      options = {
-        require_escalation = true,
-        escalation_justification = "reason",
-      },
-    }, dialog_context(root, function() return pending end))
-    assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
-    assert.is_true(pending:is_cancelled())
-
-    for _, decision in ipairs({
-      function() return "invalid" end,
-      function() error("presenter failed") end,
-      function()
-        return {
-          ok = false,
-          presenter_unavailable = true,
-          error = util.error("dialog", "presenter detached"),
-        }
-      end,
-      function()
-        return async.run(function()
-          return {
-            ok = false,
-            error = util.error("dialog", "presenter missing"),
-          }
-        end)
-      end,
-    }) do
-      value = module.new():wrap({
-        restricted = function() error("restricted") end,
-        elevated = function() error("elevated") end,
-      })(assert(transformed), {
-        options = {
-          require_escalation = true,
-          escalation_justification = "reason",
-        },
-      }, dialog_context(root, decision))
-      assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
-    end
-
-    value = module.new():wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })(assert(transformed), {
-      options = {
-        require_escalation = true,
-        escalation_justification = "reason",
-      },
-    }, dialog_context(root, function()
-      return { ok = true, action = "deny" }
-    end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-
-    local approval_arguments = {
-      options = {
-        require_escalation = true,
-        escalation_justification = "reason",
-      },
-    }
-    value = execute(assert(transformed), approval_arguments,
-      dialog_context(root, function() return true end))
-    assert.are.equal("elevated", assert(value.content[1]).text)
-    value = execute(assert(transformed), approval_arguments,
-      dialog_context(root, function() return false end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-
-    local failed_shell = module.new({
-      shell = function() error("shell lookup failed") end,
-    })
-    local failed_shell_tool = failed_shell:tools({
-      require("neoagent.tools.shell").new(),
-    })[1]
-    value = failed_shell:wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })(assert(failed_shell_tool), {
-      command = "git status",
-      options = approval_arguments.options,
-    },
-      dialog_context(root, function() return "deny" end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-
-    local failing_execute = module.new():wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated failed") end,
-    })
-    local failed_ok, failed_err = pcall(failing_execute,
-      assert(transformed), approval_arguments,
-      dialog_context(root, function() return true end))
-    assert.is_false(failed_ok)
-    assert.matches("elevated failed", tostring(failed_err))
-
-    ---@type Neoagent.DialogRequest?
-    local summarized
-    local summary_transform = module.new({
-      summarize = function()
-        error("summary failed")
-      end,
-    })
-    local summary_tool = summary_transform:tools({ tool() })[1]
-    local summary_execute = summary_transform:wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })
-    value = summary_execute(assert(summary_tool), {
-      options = {
-        require_escalation = true,
-        escalation_justification = "bad\0reason",
-      },
-    }, dialog_context(root, function(request)
-      summarized = request
-      return "deny"
-    end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-    assert.matches("current arguments", assert(summarized).body)
-    assert.matches("\\x00", assert(summarized).body, 1, true)
-
-    local long_summary = module.new({
-      summarize = function() return string.rep("s", 2100) end,
-    })
-    local long_tool = long_summary:tools({ tool() })[1]
-    value = long_summary:wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })(assert(long_tool), approval_arguments,
-      dialog_context(root, function(request)
-        summarized = request
-        return "deny"
-      end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-    assert.is_true(assert(summarized).body:find(
-      string.rep("s", 1997) .. "...", 1, true
-    ) ~= nil)
-
-    local escalation_arguments = {
-      options = {
-        require_escalation = true,
-        escalation_justification = "reason",
-      },
-    }
-    local incomplete = context(root)
-    rawset(incomplete, "dialog", {
-      show = function() return "approve" end,
-    })
-    value = execute(assert(transformed), escalation_arguments, incomplete)
-    assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
-
-    for _, choose_pending in ipairs({
-      function() error("bulk action failed") end,
-      function()
-        return nil, util.error("dialog", "bulk action unavailable")
-      end,
-    }) do
-      value = execute(assert(transformed), escalation_arguments,
-        dialog_context(root, function() return "deny_all" end,
-          choose_pending))
-      assert.is_true(assert(assert(value.execution).sandbox).approval_unavailable)
-    end
-    value = execute(assert(transformed), escalation_arguments,
-      dialog_context(root, function() return "deny_all" end,
-        function(_, action, reason)
-          assert.are.equal("deny", action)
-          assert.matches("another sandbox request", (assert(reason)))
-          return 2
-        end))
-    assert.is_true(assert(assert(value.execution).sandbox).denied_by_user)
-
-    local source = require("neoagent.dialog").new()
-    local detach = source:subscribe(function() end)
-    local composed = module.new():wrap({
-      restricted = function() error("restricted") end,
-      elevated = function() error("elevated") end,
-    })
-    local run = async.run(function()
-      return composed(assert(transformed), {
-        options = {
-          require_escalation = true,
-          escalation_justification = "reason",
-        },
-      }, dialog_context(root, function(request)
-        return source:show(request)
-      end, function(_, action, reason)
-        return source:choose_pending(action, reason)
-      end))
-    end)
-    assert(vim.wait(1000, function()
-      return source:snapshot().active ~= nil
-    end, 5))
-    detach()
-    assert(vim.wait(1000, function() return run:is_done() end, 5))
-    assert.is_true(
-      assert(assert(assert(run:result()).execution).sandbox).approval_unavailable)
-    assert.is_false(
-      assert(assert(assert(run:result()).execution).sandbox).denied_by_user == true)
-    assert.are.equal(3, calls)
+    local unanswered = execute(tool, { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason" }, context(root))
+    assert.is_true(assert(assert(unanswered.execution).sandbox).approval_unavailable)
+    local bypassed = escalation:bypass(function(_, input)
+      assert.is_nil(input.sandbox_permissions)
+      assert.is_nil(input.justification)
+      assert(type(input.cmd) == "string")
+      return { content = { { type = "text", text = input.cmd } } }
+    end)(tool, { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason" }, context(root))
+    assert.are.equal("echo test", assert(bypassed.content[1]).text)
+    local malformed = escalation:bypass(function()
+      error("invalid options executed")
+    end)(tool, { cmd = "echo test", sandbox_permissions = "invalid" }, context(root))
+    assert.is_true(assert(assert(malformed.execution).sandbox).invalid_escalation)
   end)
 
-  it("summarizes every bundled tool without exposing write contents",
-    ---@async
-    function()
-    local summarize =
-      require("neoagent.sandbox.approval_summary").for_tool
-    local ctx = context(temp())
-    local cases = {
-      shell = { command = "printf test" },
-      read_file = { path = "input.txt" },
-      write_file = {
-        path = "output.txt",
-        content = "private contents",
-      },
-      edit_file = {
-        path = "output.txt",
-        edits = { { oldText = "a", newText = "b" } },
-      },
-      grep = { pattern = "needle" },
-      find = { pattern = "*.lua" },
-      read_agent_documentation = {},
-    }
-    for name, arguments in pairs(cases) do
-      local summary = summarize({ name = name, description = "Probe summary", input_schema = { type = "object", properties = {} }, execute = function() return { content = {} } end }, arguments, ctx)
-      assert.is_string(summary)
-      assert.is_true(summary ~= "")
-      assert.is_nil((summary:find("private contents", 1, true)))
+  it("contains unavailable, invalid, and queued native approval decisions", function()
+    local root = temp()
+    local tool = require("neoagent.tools.process").exec_command()
+    local arguments = { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason" }
+    for _, decision in ipairs({ false, "invalid", "deny_all", "deny_all_throw", "deny_all_error", "show_throw" }) do
+      local execute = require("neoagent.sandbox.escalation").new():wrap({
+        restricted = function()
+          error("restricted execution")
+        end,
+        elevated = function()
+          error("unanswered approval executed")
+        end,
+      })
+      local ctx = dialog_context(root, function()
+        if decision == "show_throw" then
+          error("presenter failed")
+        end
+        if decision == "deny_all_throw" or decision == "deny_all_error" then
+          return "deny_all"
+        end
+        return decision
+      end, function(_, action)
+        assert.are.equal("deny", action)
+        if decision == "deny_all_throw" then
+          error("queue failed")
+        end
+        if decision == "deny_all_error" then
+          return nil, util.error("sandbox_approval", "queue failed")
+        end
+        return 0
+      end)
+      local result = execute(tool, arguments, ctx)
+      local metadata = assert(assert(result.execution).sandbox)
+      if decision == false or decision == "deny_all" then
+        assert.is_true(metadata.denied_by_user)
+      else
+        assert.is_true(metadata.approval_unavailable)
+      end
     end
-    assert.matches("custom",
-      summarize({ name = "custom", description = "Probe summary", input_schema = { type = "object", properties = {} }, execute = function() return { content = {} } end }, {}, ctx))
+    local dialogs = require("neoagent.dialog").new()
+    local detach = dialogs:subscribe(function() end)
+    local execute = require("neoagent.sandbox.escalation").new():wrap({
+      restricted = function()
+        error("restricted execution")
+      end,
+      elevated = function()
+        error("pending approval executed")
+      end,
+    })
+    local pending = execute(
+      tool,
+      arguments,
+      dialog_context(root, function(request)
+        return dialogs:show(request)
+      end)
+    )
+    detach()
+    assert.is_true(assert(assert(pending.execution).sandbox).approval_unavailable)
+    assert.is_nil(dialogs:snapshot().active)
+  end)
+
+  it("bounds approval summaries, falls back on summary errors, and propagates admitted execution errors", function()
+    local root = temp()
+    local tool = require("neoagent.tools.process").exec_command()
+    for _, failure in ipairs({ false, true }) do
+      local execute = require("neoagent.sandbox.escalation")
+        .new({
+          summarize = function()
+            if failure then
+              error("summary failed")
+            end
+            return string.rep("a", 2100)
+          end,
+        })
+        :wrap({
+          restricted = function()
+            error("restricted execution")
+          end,
+          elevated = function()
+            error("admitted operation failed")
+          end,
+        })
+      local ctx = dialog_context(root, function(request)
+        if failure then
+          assert.matches("Run exec_command with its current arguments", request.body, 1, true)
+        else
+          assert.matches(string.rep("a", 1997) .. "...", request.body, 1, true)
+          assert.is_nil((request.body:find(string.rep("a", 2001), 1, true)))
+        end
+        return true
+      end)
+      local ok, err = pcall(
+        execute,
+        tool,
+        { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason" },
+        ctx
+      )
+      assert.is_false(ok)
+      assert.matches("admitted operation failed", tostring(err))
+    end
   end)
 end)

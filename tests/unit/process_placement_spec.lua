@@ -199,7 +199,7 @@ describe("Agent retained process placement", function()
     assert.are.same({}, assert(agent):get_toolset().tools)
   end)
 
-  ---@param selected Neoagent.SandboxComposition<Neoagent.AgentToolEnvironment>
+  ---@param selected Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
   ---@param arguments Neoagent.JsonObject
   ---@param placement? fun(context: Neoagent.AgentToolEnvironment, spec: Neoagent.SubprocessSpec): Neoagent.ProcessControllerFactory
   ---@return Neoagent.ToolResultMessage
@@ -228,7 +228,7 @@ describe("Agent retained process placement", function()
     return normalized
   end
 
-  ---@param selected Neoagent.SandboxComposition<Neoagent.AgentToolEnvironment>
+  ---@param selected Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
   ---@param name string
   ---@param arguments Neoagent.JsonObject
   ---@return Neoagent.ToolResultMessage

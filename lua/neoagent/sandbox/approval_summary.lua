@@ -4,8 +4,6 @@ local util = require("neoagent.util")
 local M = {}
 local patch_actions = { add = "Add ", delete = "Delete ", update = "Update " }
 
----@alias Neoagent.SandboxApprovalContext {context?: {cwd?: string}|{workspace?: {cwd?: string}}}
-
 ---@type table<table, fun(request: table): string>
 local summaries = {
   [identities.read_file] = function(request)

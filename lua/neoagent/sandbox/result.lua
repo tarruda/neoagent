@@ -13,9 +13,8 @@ M.SANDBOX_FAILURE = table.concat({
   "",
   "This tool call was blocked by the sandbox.",
   "",
-  "To retry this exact tool call outside the sandbox, keep the same",
-  "arguments and merge these fields into `options`:",
-  '{"require_escalation":true,"escalation_justification":"(reason why you need to run this tool outside of the sandbox)"}',
+  "Command tools expose sandbox_permissions and justification for explicit approval requests.",
+  "Do not retry automatically: an operation may have completed effects before the failure.",
 }, "\n")
 
 M.USER_DENIED = table.concat({

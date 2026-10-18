@@ -55,7 +55,7 @@ local M = {}
 
 ---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
 ---@param profile_id string
----@return Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
+---@return Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
 local function configured_toolset(configured, profile_id)
   local tools = configured.tools
   if not configured._tools_supplied then
@@ -70,7 +70,7 @@ local function configured_toolset(configured, profile_id)
 end
 
 ---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
----@param toolset Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
+---@param toolset Neoagent.AgentToolset<Neoagent.AgentToolEnvironment>
 ---@return boolean
 local function trust_protected(configured, toolset)
   return #toolset.tools > 0

@@ -201,6 +201,17 @@ local function exec_command()
   local input = {
     type = "object",
     properties = {
+      sandbox_permissions = {
+        type = "string",
+        enum = { "use_default", "require_escalated" },
+        description = "Per-command sandbox override; require_escalated requests user-approved host execution.",
+      },
+      justification = { type = "string", description = "User-facing approval question for require_escalated." },
+      prefix_rule = {
+        type = "array",
+        items = { type = "string" },
+        description = "Optional reusable approval prefix for require_escalated.",
+      },
       cmd = { type = "string", description = "Shell command to execute." },
       workdir = { type = "string", description = "Working directory; defaults to the workspace cwd." },
       shell = { type = "string", description = "Shell executable; defaults to Neovim's shell." },
@@ -214,15 +225,11 @@ local function exec_command()
       },
       yield_time_ms = {
         type = "integer",
-        description = "Initial wait, 0–30000 ms. Defaults to 10000. This does not stop the command.",
+        description = "Initial wait, 250–30000 ms. Defaults to 10000; this does not stop the command.",
       },
       max_output_tokens = {
         type = "integer",
         description = "Approximate output budget, 0–10000 tokens (four bytes each). Defaults to 10000.",
-      },
-      timeout_ms = {
-        type = "integer",
-        description = "Optional process lifetime limit in milliseconds. Omit for no lifetime limit.",
       },
     },
     required = { "cmd" },
@@ -240,7 +247,6 @@ local function exec_command()
       cwd = arguments.workdir and common.resolve_path(common.require_string(arguments, "workdir"), call)
         or call.workspace.cwd,
       stdio = arguments.tty and { kind = "pty", columns = 80, rows = 24 } or { kind = "pipes" },
-      timeout_ms = arguments.timeout_ms ~= nil and common.integer(arguments.timeout_ms, "timeout_ms") or nil,
     }
   end
   ---@async
@@ -251,6 +257,7 @@ local function exec_command()
   local function run(request, arguments, ctx)
     validate(input, arguments)
     local wait_ms = budget(arguments.yield_time_ms, 10000, 30000, "yield_time_ms")
+    wait_ms = math.max(250, wait_ms)
     local tokens = budget(arguments.max_output_tokens, 10000, 10000, "max_output_tokens")
     local owner = processes(ctx)
     assert(type(ctx.on_result) == "function", "exec_command requires Tool result acceptance")
@@ -281,6 +288,7 @@ local function exec_command()
   end
   return identities.bind({
     name = "exec_command",
+    capabilities = { read_files = true },
     description = "Run a shell command, returning output and a session ID if it is still running. Use write_stdin to poll, send PTY input, or interrupt. New commands use the Agent's sandbox policy; retained processes keep their admitted authority.",
     input_schema = input,
     render = require("neoagent.tools.activity_presentation").exec_command,
@@ -302,10 +310,6 @@ function M.write_stdin()
         type = "string",
         description = "PTY input (up to 65536 bytes). Empty polls; a single Ctrl-C interrupts pipes or PTYs.",
       },
-      terminate = {
-        type = "boolean",
-        description = "End the owned process with forced escalation if needed. Cannot be combined with nonempty chars.",
-      },
       yield_time_ms = {
         type = "integer",
         description = "Wait budget. Empty polls default to 5000 ms (maximum 300000); input defaults to 250 ms (maximum 30000).",
@@ -323,16 +327,13 @@ function M.write_stdin()
     validate(input, arguments)
     local chars = arguments.chars and common.require_string(arguments, "chars", true) or ""
     assert(#chars <= 65536, "chars must not exceed 65536 bytes")
-    assert(not arguments.terminate or chars == "", "terminate cannot be combined with chars")
     local wait_ms =
       budget(arguments.yield_time_ms, chars == "" and 5000 or 250, chars == "" and 300000 or 30000, "yield_time_ms")
     local tokens = budget(arguments.max_output_tokens, 10000, 10000, "max_output_tokens")
     local id = common.require_string(arguments, "session_id")
     ---@type Neoagent.ProcessControl?
     local control
-    if arguments.terminate then
-      control = { kind = "terminate", reason = "Terminated through write_stdin" }
-    elseif chars == "\3" then
+    if chars == "\3" then
       control = { kind = "interrupt" }
     elseif chars ~= "" then
       control = { kind = "write", data = chars }
@@ -369,8 +370,9 @@ function M.write_stdin()
   end
   return identities.bind({
     name = "write_stdin",
-    description = "Send input to an existing process, poll new output, or terminate it. Cancelling this wait preserves the process and unpublished output. Sessions belong to this Agent and are unavailable after the Agent is destroyed or the editor restarts.",
+    description = "Send input to an existing process or poll new output. Cancelling this wait preserves the process and unpublished output. Sessions belong to this Agent and are unavailable after the Agent is destroyed or the editor restarts.",
     input_schema = input,
+    render = require("neoagent.tools.activity_presentation").write_stdin,
   }, {
     token = identities.write_stdin,
     settings = {},

@@ -359,7 +359,7 @@ describe("neoagent sandbox Tool RPC selection", function()
           message = "synthetic unavailable sandbox",
         },
       }
-      ---@type Neoagent.SandboxToolset<unknown>, Neoagent.SandboxActivation
+      ---@type Neoagent.AgentToolset<unknown>, Neoagent.SandboxActivation
       local selected, status
       if constructor == "compose" then
         selected, status = composition.compose({ tools = tools }, { enabled = true, parent_tools = { parent } }, options)
@@ -368,11 +368,7 @@ describe("neoagent sandbox Tool RPC selection", function()
       end
       assert.is_true(status.enabled)
       assert.is_false(status.active)
-      if constructor == "compose" then
-        assert.is_nil(selected.system_prompt, "inactive isolation must not advertise sandboxed execution")
-      else
-        assert.matches("Sandbox controls", assert(selected.system_prompt))
-      end
+      assert.are.equal("blocked", assert(selected.execution_policy)({ root = root, cwd = root }).mode)
       local execute = selected.execute_tool
       assert(execute)
       local ctx = context(root)
@@ -883,7 +879,7 @@ describe("neoagent sandbox Tool RPC selection", function()
 
     assert.is_true(value.isError)
     assert.matches("Write access is denied", value.content[1].text, 1, true)
-    assert.matches("require_escalation", value.content[1].text, 1, true)
+    assert.matches("sandbox_permissions", value.content[1].text, 1, true)
     local failure = assert(assert(value.execution).sandbox)
     assert.is_true(failure.denied)
     assert.is_nil(failure.ran_restricted)
