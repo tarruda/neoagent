@@ -25,6 +25,7 @@ local summary = require("neoagent.compaction.summary")
 ---@field model Neoagent.Model
 ---@field model_options? Neoagent.StreamOverrides
 ---@field instructions? string
+---@field prepare_request? Neoagent.PrepareRequest
 ---@field reason? string
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]

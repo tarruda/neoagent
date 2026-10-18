@@ -24,8 +24,13 @@ describe("neoagent.native_compaction", function()
     local native = { role = "nativeCompaction", api = "openai-codex-responses", provider = model.provider,
       model = model.id, encrypted_content = "synthetic-ciphertext" }
     ---@type Neoagent.NativeCompactionPreparation
-    local preparation = { kind = "native", source_messages = { native }, request_messages = { native },
-      retained_users = {}, tokens_before = 100, settings = settings }
+    local preparation = {
+      kind = "native",
+      source_messages = { native },
+      request = { messages = { native } },
+      retained_users = {},
+      tokens_before = 100,
+      settings = settings, }
     local result = finish(component.run({ model = model, preparation = preparation }))
     assert.is_false(result.ok)
     assert.matches("requires a Codex Model", assert(result.error).message)

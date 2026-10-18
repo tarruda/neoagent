@@ -11,9 +11,9 @@ local M = {}
 ---@param path Neoagent.JournalEntry[]
 ---@param settings Neoagent.CompactionSettings
 ---@param source_messages Neoagent.RequestMessage[]
----@param request_messages Neoagent.RequestMessage[]
+---@param request Neoagent.NativeCompactionOptions
 ---@return Neoagent.NativeCompactionPreparation?
-local function prepare(path, settings, source_messages, request_messages)
+local function prepare(path, settings, source_messages, request)
   if #path == 0 then
     return nil
   end
@@ -58,7 +58,7 @@ local function prepare(path, settings, source_messages, request_messages)
   return {
     kind = "native",
     source_messages = util.copy(source_messages),
-    request_messages = request_messages,
+    request = request,
     retained_users = retained,
     tokens_before = math.ceil(compaction.estimate_context(tree.context_messages(path)).tokens),
     settings = util.copy(settings),
@@ -67,23 +67,16 @@ end
 
 ---@async
 ---@param model Neoagent.Model
----@param messages Neoagent.RequestMessage[]
----@param system_prompt? string
----@param tools? Neoagent.ToolDefinition[]
----@param force_reduce? boolean
+---@param request Neoagent.NativeCompactionOptions
 ---@param fraction? number
----@param inherited? Neoagent.StreamOverrides
 ---@return Neoagent.RequestMessage[]?, Neoagent.Error?
-local function bounded_request(model, messages, system_prompt, tools, force_reduce, fraction, inherited)
+local function bounded_request(model, request, fraction)
   local estimate = require("neoagent.api.request_estimate")
-  local call = request_preparation.copy(inherited or {})
-  ---@cast call Neoagent.StreamOptions
-  call.messages, call.system_prompt, call.tools = messages, system_prompt, tools
+  local call = request_preparation.copy(request)
   local target = model.context_window or math.huge
-  if force_reduce then
+  if fraction then
     local tokens = estimate.request(model, call, "compact") + 32
-    target =
-      math.min(math.floor(target * (fraction or 1)), 32 + math.floor(math.max(0, tokens - 32) * (fraction or 0.5)))
+    target = math.min(math.floor(target * fraction), 32 + math.floor(math.max(0, tokens - 32) * fraction))
   end
   return reduction.request(model, call, target, true, "compact")
 end
@@ -107,21 +100,9 @@ local function run(options)
       return { ok = false, error = util.error("compaction", "Codex compaction requires native preparation") }
     end
     ---@cast preparation Neoagent.NativeCompactionPreparation
-    local bounded = util.copy(preparation.request_messages)
-    local inherited = options.model_options or {}
-    ---@type Neoagent.NativeCompactionOptions
-    local model_options = {
-      messages = bounded,
-      _preparation = request_preparation.new(),
-      files = inherited.files,
-      file_cache = inherited.file_cache,
-      request_context = inherited.request_context,
-      system_prompt = options.system_prompt,
-      tools = util.copy(options.tools or {}),
-      timeout_ms = inherited.timeout_ms,
-      request_opts = inherited.request_opts,
-      thinking_level = inherited.thinking_level,
-    }
+    local model_options = request_preparation.copy(preparation.request)
+    local source = request_preparation.copy(preparation.request)
+    source.messages = preparation.source_messages
     model_options.on_event = function(event)
       if event.type == "provider_status" or event.type == "inference_stats" then
         run:emit(event)
@@ -140,21 +121,12 @@ local function run(options)
         end
         return { ok = false, error = result.error }
       end
-      local reduced = bounded_request(
-        model,
-        preparation.source_messages,
-        options.system_prompt,
-        options.tools,
-        true,
-        attempt == 0 and 0.75 or 0.5,
-        options.model_options
-      )
-      if not reduced or vim.deep_equal(reduced, bounded) then
+      local reduced = bounded_request(model, source, attempt == 0 and 0.75 or 0.5)
+      if not reduced or vim.deep_equal(reduced, model_options.messages) then
         result.error.retry_exhausted = "native_reduction"
         return { ok = false, error = result.error }
       end
-      bounded = reduced
-      model_options.messages = bounded
+      model_options.messages = reduced
     end
     assert(result and result.ok)
     return {
@@ -249,19 +221,34 @@ M.component = {
   fit = fit,
   evaluate = compaction.evaluate_budget,
   prepare = function(options)
-    local bounded, err = bounded_request(
-      options.model,
+    local projection = request_preparation.project(
+      options.prepare_request,
       options.messages,
       options.system_prompt,
-      options.tools,
-      nil,
-      nil,
-      options.model_options
+      options.tools or {},
+      options.model_options and options.model_options.files,
+      options.model_options and options.model_options._preparation
     )
+    local inherited = options.model_options or {}
+    ---@type Neoagent.NativeCompactionOptions
+    local request = {
+      messages = projection.messages,
+      system_prompt = projection.system_prompt,
+      tools = util.copy(options.tools or {}),
+      _preparation = request_preparation.new(),
+      files = inherited.files,
+      file_cache = inherited.file_cache,
+      request_context = inherited.request_context,
+      timeout_ms = inherited.timeout_ms,
+      request_opts = inherited.request_opts,
+      thinking_level = inherited.thinking_level,
+    }
+    local bounded, err = bounded_request(options.model, request)
     if not bounded then
       return nil, err
     end
-    return prepare(options.path, options.budget.settings, options.messages, bounded)
+    request.messages = bounded
+    return prepare(options.path, options.budget.settings, projection.messages, request)
   end,
   run = run,
   require_native = true,

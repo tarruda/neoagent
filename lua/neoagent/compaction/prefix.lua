@@ -60,7 +60,15 @@ local function run(opts)
       content = { { type = "text", text = prompt } },
       timestamp = util.now_ms(),
     }
-    call.system_prompt = opts.system_prompt
+    local projection = require("neoagent.api.request_preparation").project(
+      opts.prepare_request,
+      call.messages,
+      opts.system_prompt,
+      opts.tools or {},
+      call.files
+    )
+    call.messages = projection.messages
+    call.system_prompt = projection.system_prompt
     call.tools = util.copy(opts.tools or {})
     local planned_output =
       math.min(preparation.max_output_tokens, plan.summary_output_limit(opts.model, preparation.settings))

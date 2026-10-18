@@ -277,8 +277,13 @@ describe("prefix compaction", function()
     local failed = result(prefix.run({
       model = model,
       reason = "manual",
-      preparation = { kind = "native", source_messages = {}, request_messages = {}, retained_users = {},
-        tokens_before = 500, settings = evaluation.settings },
+      preparation = {
+        kind = "native",
+        source_messages = {},
+        request = { messages = {} },
+        retained_users = {},
+        tokens_before = 500,
+        settings = evaluation.settings, },
     }))
     assert.is_false(failed.ok)
     assert.matches("requires prefix preparation", assert(failed.error).message)

@@ -454,6 +454,16 @@ local function summarize(run, opts, messages, previous, instructions, suffix, ph
   }
   model_options.system_prompt = system_prompt or M.system_prompt
   model_options.tools = {}
+  local projected = request_preparation.project(
+    opts.prepare_request,
+    model_options.messages,
+    model_options.system_prompt,
+    model_options.tools,
+    model_options.files,
+    model_options._preparation
+  )
+  model_options.messages = projected.messages
+  model_options.system_prompt = projected.system_prompt
   local preparation = opts.preparation --[[@as Neoagent.CompactionPreparation]]
   local output_limit = plan.summary_output_limit(opts.model, preparation.settings)
   ---@type integer
