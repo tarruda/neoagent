@@ -259,7 +259,7 @@ local function run(request, call, deps)
   local content
   if shortened.firstLineExceedsLimit then
     content = string.format(
-      "[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]",
+      "[Line %d is %s, exceeds %s limit. Use a command Tool to inspect it in chunks.]",
       request.offset,
       truncate.format_size(assert(shortened.firstLineBytes)),
       truncate.format_size(truncate.MAX_BYTES)

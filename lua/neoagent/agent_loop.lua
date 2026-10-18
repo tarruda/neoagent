@@ -29,6 +29,8 @@ end
 ---@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: C)
 ---@field current? fun(context: C): unknown
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
+---@field prompt_snippet? string
+---@field prompt_guidelines? string[]
 
 ---@class Neoagent.Tool<C>: Neoagent.ToolFacets<C>
 ---@field execute async fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
@@ -160,6 +162,8 @@ end
 
 ---@type table<string, boolean>
 local tool_fields = {
+  prompt_snippet = true,
+  prompt_guidelines = true,
   name = true,
   description = true,
   input_schema = true,
@@ -197,6 +201,22 @@ function M.validate_toolset(tools, execute_tool)
       error(label .. "." .. schema_err, 0)
     end
     tool.input_schema = schema
+    assert(
+      tool.prompt_snippet == nil or type(tool.prompt_snippet) == "string" and util.is_valid_utf8(tool.prompt_snippet),
+      label .. ".prompt_snippet must be UTF-8 text"
+    )
+    if tool.prompt_guidelines ~= nil then
+      assert(
+        type(tool.prompt_guidelines) == "table" and util.is_list(tool.prompt_guidelines),
+        label .. ".prompt_guidelines must be a list"
+      )
+      for _, guideline in ipairs(tool.prompt_guidelines) do
+        assert(
+          type(guideline) == "string" and util.is_valid_utf8(guideline),
+          label .. ".prompt_guidelines must contain UTF-8 text"
+        )
+      end
+    end
     assert(type(tool.execute) == "function", label .. ".execute must be a function")
     assert(tool.capabilities == nil or object(tool.capabilities), label .. ".capabilities must be an object")
     for key in pairs(tool.capabilities or {}) do

@@ -30,16 +30,19 @@ local function dependencies(options)
   }
 end
 
-local DEFAULT_TIMEOUT_SECONDS = 300
 local MAX_TIMEOUT_MS = require("neoagent.subprocess.validate").MAX_TIMEOUT_MS
 local MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000
 local ESCAPE = "\27"
 
 ---@class Neoagent.ShellOptions
 ---@field default_timeout? number|false
+---@field argv? string[] Interpreter and flags; defaults to Neovim's shell settings.
+---@field command_prefix? string
 
 ---@class Neoagent.ShellSettings
 ---@field default_timeout number|false
+---@field argv? string[]
+---@field command_prefix? string
 
 ---@class Neoagent.ShellRequest
 ---@field argv string[]
@@ -53,12 +56,6 @@ local ESCAPE = "\27"
 ---@field snapshot fun(options?: Neoagent.TruncationOptions): Neoagent.ShellSnapshot, Neoagent.ShellSnapshot?
 ---@field output_path fun(): string?
 ---@field spill_error fun(): string?
-
----@param command string
----@return string[]
-local function shell_argv(command)
-  return require("neoagent.tools.command").argv(command)
-end
 
 ---@param value unknown
 ---@return boolean
@@ -102,8 +99,11 @@ local function prepare(arguments, settings, call)
   if timeout == nil then
     timeout = settings.default_timeout
   end
+  local commands = require("neoagent.tools.command")
+  local argv = util.copy(settings.argv or commands.shell_argv())
+  argv[#argv + 1] = (settings.command_prefix or "") .. command
   return validate_request({
-    argv = require("neoagent.tools.command").resolve(shell_argv(command), call),
+    argv = commands.resolve(argv, call),
     timeout_ms = timeout and math.max(1, math.floor(timeout * 1000)) or nil,
   })
 end
@@ -364,16 +364,23 @@ local function new(options)
   local presentation = require("neoagent.tools.activity_presentation")
   options = options or {}
   assert(type(options) == "table", "shell options must be a table")
+  common.fields(options, { default_timeout = true, argv = true, command_prefix = true }, "shell options")
   local default_timeout = options.default_timeout
   if default_timeout == nil then
-    default_timeout = DEFAULT_TIMEOUT_SECONDS
+    default_timeout = false
   end
   assert(
     default_timeout == false or valid_timeout(default_timeout),
     "shell default_timeout must be false or a positive number no greater than " .. MAX_TIMEOUT_SECONDS .. " seconds"
   )
   ---@type Neoagent.ShellSettings
-  local settings = { default_timeout = default_timeout }
+  local settings = {
+    default_timeout = default_timeout,
+    argv = options.argv ~= nil and validate_request({ argv = options.argv }).argv or nil,
+    command_prefix = options.command_prefix ~= nil
+        and common.string(options.command_prefix, "shell command_prefix", true)
+      or nil,
+  }
   local deps = dependencies()
   local timeout_description = default_timeout == false and "Optional positive timeout in seconds"
     or "Positive timeout in seconds. Defaults to " .. default_timeout

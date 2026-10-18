@@ -705,6 +705,16 @@ describe("neoagent bundled tools", function()
     assert.matches("offset=2001", (assert(assert(long.content[1]).text)))
   end)
 
+  it("gives Pi an oversized-line recovery hint independent of command Tool names", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert(fs.write_all(root .. "/wide.txt", string.rep("x", 60 * 1024)))
+    local tool = require("neoagent.tools.pi.read").new()
+    local result = execute(tool, { path = "wide.txt" }, ctx(workspace))
+    assert.are.equal("read", tool.name)
+    assert.matches("Use a command Tool to inspect it in chunks", assert(assert(result.content[1]).text), 1, true)
+  end)
+
   it("streams text reads without loading the complete file", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
@@ -1500,7 +1510,7 @@ describe("neoagent bundled tools", function()
   end)
 
 
-  it("defaults shell commands to five minutes and accepts an override", function()
+  it("defaults shell commands to no lifetime timeout and accepts an override", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local timeouts = {}
@@ -1526,7 +1536,7 @@ describe("neoagent bundled tools", function()
         end,
       }))
 
-    assert.are.same({ 300000, 2500, 1 }, timeouts)
+    assert.are.same({ 2500, 1 }, timeouts)
     assert.is_nil(unbounded)
   end)
 

@@ -2,6 +2,7 @@ local M = {}
 
 ---@class Neoagent.ToolPresetOptions
 ---@field shell_timeout? number|false
+---@field shell? string Explicit command interpreter for the Pi preset.
 
 ---@alias Neoagent.BundledToolName "read_file"|"write_file"|"edit_file"|"shell"|"grep"|"find"|"read_agent_documentation"|"update_plan"|"exec_command"|"write_stdin"
 
