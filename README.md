@@ -33,8 +33,8 @@ subscription access.
 
 Open `:Neoagent`, enter a prompt, and press Enter to submit. Use
 `:NeoagentModel` to change models and `:NeoagentCycle` to switch Agents or
-start another conversation. Pi is the default profile; OpenAI and
-`openai-codex` models default to Codex. Set `profile = "pi"` or
+start another conversation. Pi is the default profile; OpenAI, `openai-codex`,
+and DeepSeek models default to Codex. Set `profile = "pi"` or
 `profile = "codex"` to override the selection.
 
 ## Trust and sandboxing

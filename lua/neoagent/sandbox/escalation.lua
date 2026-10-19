@@ -346,7 +346,11 @@ function Escalation:_extract(tool, arguments)
   local prefix = copied.prefix_rule
   copied.sandbox_permissions, copied.justification, copied.prefix_rule = nil, nil, nil
   if requested == nil or requested == "use_default" then
-    if justification ~= nil or prefix ~= nil then
+    -- Models may fill unused approval fields with empty placeholders. They
+    -- carry no escalation intent; execution still uses the selected policy.
+    local empty_justification = justification == nil or justification == ""
+    local empty_prefix = prefix == nil or type(prefix) == "table" and util.is_list(prefix) and next(prefix) == nil
+    if not empty_justification or not empty_prefix then
       return nil, "justification and prefix_rule require sandbox_permissions = require_escalated"
     end
     return copied

@@ -306,6 +306,7 @@ describe("neoagent default agent", function()
     end
     local agent = neoagent.new({
       workspace_trust = false, default_registry = false, persistence = { enabled = false },
+      profile = "pi",
       default_model = { provider = "deepseek", model = "deepseek-v4.1-flash-expires-on-0910" },
       providers = { deepseek = { api = "openai-completions", base_url = "https://api.deepseek.com",
         auth = "deepseek", api_key = "synthetic-key", models = {

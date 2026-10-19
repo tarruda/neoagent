@@ -21,7 +21,7 @@ end
 
 ---@type Neoagent.ProviderDefinition
 local provider = {
-  api = "openai-completions",
+  api = "openai-responses",
   base_url = "https://api.deepseek.com",
   api_key = function()
     return vim.env.DEEPSEEK_API_KEY
@@ -37,7 +37,6 @@ local provider = {
     discover = require("neoagent.providers.deepseek").discover_models,
     transform_model = transform,
   },
-  request_opts = { body = { stream_options = { include_usage = true } } },
   models = {},
   service = require("neoagent.providers.deepseek").new,
 }

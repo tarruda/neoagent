@@ -183,7 +183,10 @@ local renderer_styles = { codex = true, pi = true }
 ---@param selection? Neoagent.ModelSelection
 ---@return string
 local function default_profile(selection)
-  if selection and (selection.provider == "openai" or selection.provider == "openai-codex") then
+  if
+    selection
+    and (selection.provider == "openai" or selection.provider == "openai-codex" or selection.provider == "deepseek")
+  then
     return "codex"
   end
   return "pi"
