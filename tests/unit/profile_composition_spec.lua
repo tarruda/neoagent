@@ -391,7 +391,7 @@ describe("Profile coding environments", function()
     local policy = config.resolve({ default_registry = false }).default_profile
     assert.are.equal("pi", selection.choose(policy))
     assert.are.equal("pi", selection.choose(policy, { provider = "anthropic", model = "claude" }))
-    for _, provider in ipairs({ "openai", "openai-codex" }) do
+    for _, provider in ipairs({ "openai", "openai-codex", "deepseek" }) do
       assert.are.equal("codex", selection.choose(policy, { provider = provider, model = "gpt-test" }))
     end
     local original = { provider = "openai", model = "gpt-test" }
@@ -409,6 +409,82 @@ describe("Profile coding environments", function()
         error("selector unavailable", 0)
       end, original)
     end, "default_profile failed: selector unavailable")
+  end)
+
+  it("defaults built-in DeepSeek Agents and drafts to Codex while allowing explicit Pi", function()
+    local transport = require("tests.helpers.fake_transport").new({
+      {
+        chunks = {
+          "data: " .. vim.json.encode({
+            type = "response.completed",
+            response = {
+              status = "completed",
+              output = {
+                {
+                  type = "message",
+                  id = "answer",
+                  role = "assistant",
+                  status = "completed",
+                  content = { { type = "output_text", text = "done" } },
+                },
+              },
+            },
+          }) .. "\n\n",
+        },
+      },
+    })
+    local provider = util.copy(require("neoagent.registry.deepseek"))
+    provider.api_key = "deepseek-key"
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
+    local options = {
+      default_registry = false,
+      default_model = { provider = "deepseek", model = "deepseek-v4-pro" },
+      default_thinking_level = "high",
+      providers = { deepseek = provider },
+      workspace_trust = false,
+      persistence = { enabled = false },
+      agent_instructions = false,
+      skills = false,
+    }
+    local owner = require("neoagent")._setup(options, { startup = false, transport = transport })
+    local direct
+    local ok, err = pcall(function()
+      local resources = assert(owner.resources)
+      direct = require("neoagent").new(options, { auth = resources.auth, runtimes = resources.runtimes })
+      assert.are.equal("codex", direct:profile_id())
+      assert.is_true(assert(direct:get_toolset().sandbox):status().enabled)
+      local draft = assert(owner:draft())
+      assert.are.equal("codex", draft.profile)
+      assert.are.equal("codex", draft.transcript_style)
+      local run = draft:send("work")
+      assert(type(run) == "table")
+      assert(vim.wait(2000, function()
+        return run:is_done()
+      end))
+      assert.is_true(assert(run:result()).ok)
+      local request = assert(transport.requests[1])
+      assert.are.equal("https://api.deepseek.com/responses", request.url)
+      local body = vim.json.decode((assert(request.body)))
+      assert.are.equal("deepseek-v4-pro", body.model)
+      assert.are.same({ effort = "high" }, body.reasoning)
+      assert.are.equal("developer", body.input[2].role)
+      assert.matches("environment_context", body.input[3].content[1].text)
+      local tools = {}
+      for _, tool in ipairs(body.tools) do
+        tools[tool.name] = tool.type
+      end
+      assert.are.equal("function", tools.exec_command)
+      assert.are.equal("custom", tools.apply_patch)
+      assert.is_nil(tools.web_search)
+      local explicit = assert(owner:draft("pi"))
+      assert.are.equal("pi", explicit.profile)
+      assert.are.equal("pi", explicit.transcript_style)
+    end)
+    if direct then
+      direct:destroy()
+    end
+    owner:destroy()
+    assert(ok, err)
   end)
 
   it("uses explicit Profile Workspace preferences in headless composition", function()

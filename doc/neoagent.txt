@@ -119,9 +119,9 @@ Use `catalog.additions` for unlisted models: >lua
             input = { "text" },
             context_window = 1000000,
             max_output_tokens = 384000,
-            thinking = require("neoagent.model_efforts").thinking_completions({
+            thinking = require("neoagent.model_efforts").openai_responses({
               "off", "low", "high", "max",
-            }),
+            }, { summary = false, encrypted = false }),
           },
         },
       },
@@ -232,7 +232,8 @@ The default provider IDs are:
   openai-codex       ChatGPT subscription; login `openai-codex`.
   anthropic          Anthropic API; login `anthropic` or
                      `ANTHROPIC_API_KEY`.
-  deepseek           DeepSeek API; login `deepseek` or `DEEPSEEK_API_KEY`.
+  deepseek           DeepSeek Responses API; login `deepseek` or
+                     `DEEPSEEK_API_KEY`.
   alibaba-token-plan Alibaba Cloud Token Plan Personal; login
                      `alibaba-token-plan` or use
                      `BAILIAN_TOKEN_PLAN_API_KEY` for inference; optional
@@ -278,7 +279,8 @@ respective prompts and coding Tools; see |neoagent-composition|. An explicit
 `tools` list replaces a coding preset. Chat rejects nonempty Tool lists and
 loads project instructions only when explicitly enabled.
 
-Pi is the default; exact provider IDs `openai` and `openai-codex` select Codex.
+Pi is the default; exact provider IDs `openai`, `openai-codex`, and `deepseek`
+select Codex.
 Set `profile = "pi"` (or another bundled ID) to pin the composition. Configure
 `default_profile` as an ID or a callback receiving a copied
 `{ provider, model }` selection; nil input means no selected Model, and a nil

@@ -32,12 +32,12 @@ function M.for_id(id)
   if id:find("flash", 1, true) then
     result.input = { "text", "image" }
   end
-  result.thinking = efforts.thinking_completions({
+  result.thinking = efforts.openai_responses({
     "off",
     "low",
     "high",
     "max",
-  })
+  }, { summary = false, encrypted = false })
   local override = overrides[id]
   if override then
     result.input = util.copy(override.input or result.input)

@@ -2175,6 +2175,44 @@ describe("neoagent sandbox execution", function()
     attempt(cancelled)
   end)
 
+  it("treats empty command approval fields as absent without changing execution authority", function()
+    local root = temp()
+    local tool = require("neoagent.tools.process").exec_command()
+    for _, bypass in ipairs({ false, true }) do
+      local executions = 0
+      local function next_execute(_, input)
+        executions = executions + 1
+        assert.are.same({ cmd = "echo placeholder" }, input)
+        return { content = { { type = "text", text = "completed" } } }
+      end
+      local escalation = require("neoagent.sandbox.escalation").new()
+      local execute = bypass and escalation:bypass(next_execute)
+        or escalation:wrap({
+          restricted = next_execute,
+          elevated = function()
+            error("empty approval fields must not elevate execution")
+          end,
+        })
+      for _, input in ipairs({
+        { cmd = "echo placeholder", justification = "" },
+        { cmd = "echo placeholder", prefix_rule = util.list() },
+        {
+          cmd = "echo placeholder",
+          sandbox_permissions = "use_default",
+          justification = "",
+          prefix_rule = util.list(),
+        },
+      }) do
+        local original = util.copy(input)
+        local result = execute(tool, input, context(root))
+        assert.is_falsy(result.isError)
+        assert.are.equal("completed", util.text_content(result.content))
+        assert.are.same(original, input)
+      end
+      assert.are.equal(3, executions)
+    end
+  end)
+
   it("validates native command approval inputs and fails closed without a presenter", function()
     local root = temp()
     local tool = require("neoagent.tools.process").exec_command()
@@ -2187,6 +2225,11 @@ describe("neoagent sandbox execution", function()
       { cmd = "echo test", sandbox_permissions = "invalid" },
       { cmd = "echo test", sandbox_permissions = "require_escalated" },
       { cmd = "echo test", sandbox_permissions = "use_default", justification = "invalid" },
+      { cmd = "echo test", sandbox_permissions = "use_default", justification = 0 },
+      { cmd = "echo test", sandbox_permissions = "use_default", justification = "", prefix_rule = { "echo" } },
+      { cmd = "echo test", sandbox_permissions = "use_default", prefix_rule = "" },
+      { cmd = "echo test", sandbox_permissions = "use_default", prefix_rule = vim.empty_dict() },
+      { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "", prefix_rule = util.list() },
       { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = {} },
       { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = { "" } },
       { cmd = "echo test", sandbox_permissions = "require_escalated", justification = "reason", prefix_rule = { 42 } },

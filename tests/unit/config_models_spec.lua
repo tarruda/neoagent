@@ -525,7 +525,7 @@ describe("neoagent configuration and model resolution", function()
     config.setup({})
 
     local provider = config.get().providers.deepseek
-    assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("openai-responses", provider.api)
     assert.are.equal("deepseek", provider.auth)
     assert.are.equal("https://api.deepseek.com", provider.base_url)
     assert.is_function(provider.service)
@@ -538,13 +538,19 @@ describe("neoagent configuration and model resolution", function()
       tools = {},
       request_opts = assert(model.thinking).max,
     })
-    assert.are.equal("https://api.deepseek.com/chat/completions", request.url)
+    assert.are.equal("https://api.deepseek.com/responses", request.url)
     assert.are.equal("Bearer deepseek-key", rawget(assert(request.headers), "Authorization"))
-    assert.are.equal(384000, assert(request.body).max_completion_tokens)
-    assert.is_true(assert(request.body).stream_options.include_usage)
-    assert.are.same({ type = "enabled" }, assert(request.body).thinking)
-    assert.are.equal("max", assert(request.body).reasoning_effort)
-    assert.are.equal("", assert(request.body).messages[1].reasoning_content)
+    assert.are.equal(384000, request.body.max_output_tokens)
+    assert.are.same({ effort = "max" }, request.body.reasoning)
+    assert.is_nil(request.body.include)
+    assert.is_nil(request.body.stream_options)
+    assert.is_nil(request.body.thinking)
+    assert.is_nil(request.body.reasoning_effort)
+    assert.are.equal("function_call", request.body.input[1].type)
+    assert.are.equal("call-1", request.body.input[1].call_id)
+    assert.are.equal("inspect", request.body.input[1].name)
+    local disabled = request_for(model, { messages = {}, tools = {}, request_opts = assert(model.thinking).off })
+    assert.are.same({ effort = "none" }, disabled.body.reasoning)
   end)
 
   it("fills discovered DeepSeek metadata before applying user overrides", function()
@@ -553,10 +559,7 @@ describe("neoagent configuration and model resolution", function()
       ["deepseek-v4-flash-vision-exp"] = {
         thinking = {
           low = false,
-          high = { body = {
-            thinking = { type = "enabled" },
-            reasoning_effort = "custom-high",
-          } },
+          high = { body = { reasoning = { effort = "custom-high" } } },
         },
       },
     } } } })
@@ -566,7 +569,7 @@ describe("neoagent configuration and model resolution", function()
       id = "deepseek-v4-flash-vision-exp",
       input = { "text" },
       thinking = {
-        off = { body = { thinking = { type = "disabled" } } },
+        off = { body = { reasoning = { effort = "none" } } },
       },
     } }))
     local model = models.resolve("deepseek",
@@ -578,8 +581,7 @@ describe("neoagent configuration and model resolution", function()
     local request = request_for(model, {
       messages = {}, tools = {}, request_opts = assert(model.thinking).high,
     })
-    assert.are.equal("custom-high", assert(request.body).reasoning_effort)
-    assert.are.same({ type = "enabled" }, assert(request.body).thinking)
+    assert.are.same({ effort = "custom-high" }, request.body.reasoning)
   end)
 
   it("routes the built-in OpenCode Go catalog across its three APIs", function()
@@ -648,14 +650,14 @@ describe("neoagent configuration and model resolution", function()
     })
 
     assert.are.same({
-      { type = "text", text = "Inspect this" },
-      { type = "text", text = "(image omitted: model does not support images)" },
-    }, assert(request.body).messages[1].content)
-    assert.are.equal("tool", assert(request.body).messages[3].role)
+      { type = "input_text", text = "Inspect this" },
+      { type = "input_text", text = "(image omitted: model does not support images)" },
+    }, request.body.input[1].content)
+    assert.are.equal("function_call_output", request.body.input[3].type)
     assert.are.equal("Read image file [image/png]\n"
       .. "(tool image omitted: model does not support images)",
-      assert(request.body).messages[3].content)
-    assert.are.equal(3, #assert(request.body).messages)
+      request.body.input[3].output)
+    assert.are.equal(3, #request.body.input)
     assert.are.same({ "text" }, model.input)
   end)
 

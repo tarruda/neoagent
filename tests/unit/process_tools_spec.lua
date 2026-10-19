@@ -151,6 +151,90 @@ describe("Codex process Tools", function()
     end
   end)
 
+  it("executes Responses command calls with empty approval fields without requesting elevation", function()
+    local command = jit.os == "Windows" and "Write-Output placeholder-ok" or "printf placeholder-ok"
+    local call = {
+      type = "function_call",
+      id = "item-placeholder",
+      call_id = "call-placeholder",
+      name = "exec_command",
+      arguments = vim.json.encode({
+        cmd = command,
+        shell = shell,
+        login = false,
+        tty = false,
+        workdir = root,
+        yield_time_ms = 10000,
+        max_output_tokens = 1000,
+        sandbox_permissions = "use_default",
+        justification = "",
+        prefix_rule = util.list(),
+      }),
+    }
+    local transport = require("tests.helpers.fake_transport").new()
+    for _, output in ipairs({
+      { call },
+      {
+        {
+          type = "message",
+          id = "answer",
+          role = "assistant",
+          status = "completed",
+          content = { { type = "output_text", text = "Finished." } },
+        },
+      },
+    }) do
+      transport.responses[#transport.responses + 1] = {
+        chunks = {
+          "data: " .. vim.json.encode({
+            type = "response.completed",
+            response = { status = "completed", output = output },
+          }) .. "\n\n",
+        },
+      }
+    end
+    local target = require("neoagent.api.openai_responses").new({
+      provider = "deepseek",
+      model = "synthetic",
+      base_url = "https://api.test",
+      transport = transport,
+    })
+    local executions = 0
+    local execute = require("neoagent.sandbox.escalation").new():wrap({
+      restricted = function(tool, arguments, ctx)
+        executions = executions + 1
+        return tool.execute(arguments, ctx)
+      end,
+      elevated = function()
+        error("ordinary commands must not request elevation")
+      end,
+    })
+    local result
+    local run = loop.run({
+      model = target,
+      messages = { { role = "user", content = "Run the output check." } },
+      tools = { tools.exec_command() },
+      context = { workspace = { root = root, cwd = root }, processes = owner },
+      execute_tool = execute,
+      commit_message = function(message)
+        if message.role == "toolResult" then
+          result = message
+        end
+        return true
+      end,
+    })
+    assert.is_true(helper.wait(run, 15000).ok)
+    local observed = details(assert(result))
+    assert.are.equal(1, executions)
+    assert.are.equal(0, observed.exit_code)
+    assert.matches("placeholder-ok", observed.output, 1, true)
+    assert.is_nil(observed.session_id)
+    local replay = vim.json.decode((assert(assert(transport.requests[2]).body)))
+    local output = replay.input[#replay.input]
+    assert.are.equal("function_call_output", output.type)
+    assert.matches("placeholder-ok", output.output, 1, true)
+  end)
+
   it("returns ordinary command output, cwd and exit status without retaining a session", function()
     vim.fn.mkdir(root .. "/sub directory", "p")
     local command = jit.os == "Windows" and "Get-Location; Write-Output hello" or "pwd; printf hello"
