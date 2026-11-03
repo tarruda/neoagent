@@ -116,6 +116,15 @@ Transcript.__index = Transcript
 local render
 local image_scope = 0
 
+---@param block Neoagent.TranscriptBlock
+---@return boolean
+local function visible_block(block)
+  if block.kind == "assistant" or block.kind == "thinking" then
+    return (block.text or ""):find("%S") ~= nil
+  end
+  return true
+end
+
 ---@return string
 local function next_image_scope()
   image_scope = image_scope + 1
@@ -480,14 +489,15 @@ end
 
 ---@param state Neoagent.TranscriptPaneState
 ---@param env Applet.PaneRenderEnvironment
+---@param blocks Neoagent.TranscriptBlock[]
 ---@param block Neoagent.TranscriptBlock
 ---@param index integer
 ---@param width integer
 ---@param cache table<string, Neoagent.TranscriptBlockCache>
 ---@return Applet.Node, string
-local function cached_block_node(state, env, block, index, width, cache)
-  local previous = state.blocks[index - 1]
-  local following = state.blocks[index + 1]
+local function cached_block_node(state, env, blocks, block, index, width, cache)
+  local previous = blocks[index - 1]
+  local following = blocks[index + 1]
   ---@type Neoagent.TranscriptBlockSignature
   local signature = {
     image_source = state.image_source or false,
@@ -563,6 +573,12 @@ render = function(state, env, cache)
   local width = math.max(1, env.width - 2)
   local document = cache.document
   if not document or document.revision ~= state.document_revision or document.width ~= width then
+    local blocks = {}
+    for _, block in ipairs(state.blocks) do
+      if visible_block(block) then
+        blocks[#blocks + 1] = block
+      end
+    end
     local block_regions = {}
     local dirty = {}
     local reusable = document
@@ -570,9 +586,9 @@ render = function(state, env, cache)
       and document.details_key == state.details_key
       and document.wrap_cards == (state.config.wrap_cards == true)
       and document.show_images == (state.config.images ~= false and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"))
-      and #state.blocks >= #(document.block_regions or {})
+      and #blocks >= #(document.block_regions or {})
     if reusable and document then
-      for index, block in ipairs(state.blocks) do
+      for index, block in ipairs(blocks) do
         block_regions[index] = document.block_regions[index]
         if document.block_snapshots[index] ~= block then
           dirty[index - 1] = true
@@ -581,15 +597,15 @@ render = function(state, env, cache)
         end
       end
     else
-      for index = 1, #state.blocks do
+      for index = 1, #blocks do
         dirty[index] = true
       end
     end
     local active = {}
-    for index, block in ipairs(state.blocks) do
+    for index, block in ipairs(blocks) do
       active[block.key] = true
       if dirty[index] then
-        local node, revision = cached_block_node(state, env, block, index, width, cache.blocks)
+        local node, revision = cached_block_node(state, env, blocks, block, index, width, cache.blocks)
         block_regions[index] = ui.region({
           key = "block:" .. block.key,
           revision = revision,
@@ -624,7 +640,7 @@ render = function(state, env, cache)
       show_images = state.config.images ~= false
         and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"),
       block_regions = block_regions,
-      block_snapshots = vim.list_slice(state.blocks),
+      block_snapshots = vim.list_slice(blocks),
       root = ui.scope({
         key = "transcript:scope",
         bindings = root_bindings(state),
@@ -1193,8 +1209,26 @@ end
 ---@return Neoagent.TranscriptBlock?
 function Transcript:block(key)
   for _, block in ipairs(self.blocks) do
-    if block.key == key then
+    if block.key == key and visible_block(block) then
       return block
+    end
+  end
+end
+
+---@param key string
+---@param direction integer
+---@return Neoagent.TranscriptBlock?
+function Transcript:adjacent_block(key, direction)
+  for candidate, block in ipairs(self.blocks) do
+    if block.key == key then
+      local last = direction > 0 and #self.blocks or 1
+      for index = candidate + direction, last, direction do
+        local neighbor = self.blocks[index]
+        if neighbor and visible_block(neighbor) then
+          return neighbor
+        end
+      end
+      break
     end
   end
 end
