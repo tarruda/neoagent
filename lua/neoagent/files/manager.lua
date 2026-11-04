@@ -79,13 +79,14 @@ function Manager:invalidate(key, generation)
 end
 
 ---@param deadline number
+---@param maximum? integer
 ---@return integer
-function Manager:remaining(deadline)
+function Manager:remaining(deadline, maximum)
   local value = math.floor(deadline - self.monotonic())
   if value <= 0 then
     error(util.error("files", "Image preparation timed out"), 0)
   end
-  return math.min(30000, value)
+  return math.min(maximum or 30000, value)
 end
 
 ---@async
@@ -151,7 +152,7 @@ function Manager:produce(key, operation_key, asset, access, producer)
           and (not checked_at or mono - checked_at >= 300000 or current.lifetime.kind == "unknown")
       )
     then
-      local inspected = await_stage(self.backend.inspect(current, access, self:remaining(deadline)))
+      local inspected = await_stage(self.backend.inspect(current, access, self:remaining(deadline, self.budget_ms)))
       if inspected.ok == false then
         error(inspected.error, 0)
       end
@@ -178,7 +179,7 @@ function Manager:produce(key, operation_key, asset, access, producer)
       waiting.until_ready(function()
         return self.monotonic() >= poll_at
       end, deadline, self.monotonic)
-      local inspected = await_stage(self.backend.inspect(current, access, self:remaining(deadline)))
+      local inspected = await_stage(self.backend.inspect(current, access, self:remaining(deadline, self.budget_ms)))
       if inspected.ok == false then
         error(inspected.error, 0)
       end

@@ -96,6 +96,23 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
       assert.is_true(assert(second.timeout_ms) < assert(first.timeout_ms))
     end)
 
+    it("retries rate-limited metadata within its original deadline and authorization", function()
+      respond = function(_, attempt)
+        return attempt == 1 and { ok = true, status = 429, headers = {}, body = '{"error":"private-rate-limit"}' }
+          or success
+      end
+      local result = wait(backend.inspect(object, access, 2000))
+      assert.is_true(result.ok, vim.inspect(result.error))
+      assert.are.equal(object.locator, assert(result.object).locator)
+      assert.are.equal(2, #requests)
+      local first, second = assert(requests[1]), assert(requests[2])
+      assert.are.equal("GET", first.method)
+      assert.are.equal(first.method, second.method)
+      assert.are.equal(first.url, second.url)
+      assert.are.same(first.headers, second.headers)
+      assert.is_true(assert(second.timeout_ms) < assert(first.timeout_ms))
+    end)
+
     it("stops after three failed metadata attempts", function()
       respond = function() return failure(6) end
       local result = wait(backend.inspect(object, access, 3000))
@@ -104,6 +121,20 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
       assert.is_false(assert(result.error).retryable)
       assert.are.equal(3, #requests)
     end)
+
+    for _, status in ipairs({ 429, 500 }) do
+      it("stops after three HTTP " .. status .. " errors without restarting preparation", function()
+        respond = function()
+          return { ok = true, status = status, headers = {}, body = '{"error":"private-server-detail"}' }
+        end
+        local result = wait(backend.inspect(object, access, 3000))
+        assert.is_false(result.ok)
+        assert.matches("HTTP " .. status, assert(result.error).message, 1, true)
+        assert.is_false(assert(result.error).retryable)
+        assert.is_nil((vim.inspect(result):find("private-", 1, true)))
+        assert.are.equal(3, #requests)
+      end)
+    end
 
     it("does not renew the budget after a slow failed request", function()
       local now = 0
@@ -173,6 +204,7 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
     it("does not retry HTTP denial or invalid metadata responses", function()
       for _, response in ipairs({
         { ok = true, status = 401, headers = {}, body = '{"error":"private-denial"}' },
+        { ok = true, status = 501, headers = {}, body = '{"error":"private-server-detail"}' },
         { ok = true, status = 200, headers = {}, body = "private-invalid-json" },
       }) do
         requests = {}
@@ -184,6 +216,20 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
         assert.are.equal(1, #requests)
       end
     end)
+
+    for _, status in ipairs({ 429, 503 }) do
+      it("retries HTTP " .. status .. " errors whose body transfer failed", function()
+        respond = function(_, attempt)
+          if attempt > 1 then return success end
+          local result = failure(22)
+          rawset(result.error, "response", { status = status, headers = {} })
+          return result
+        end
+        local result = wait(backend.inspect(object, access, 2000))
+        assert.is_true(result.ok, vim.inspect(result.error))
+        assert.are.equal(2, #requests)
+      end)
+    end
 
     it("does not retry a denied HTTP response whose body transfer failed", function()
       respond = function()
@@ -197,13 +243,13 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
       assert.are.equal(1, #requests)
     end)
 
-    it("retains HTTP rejection classification for request-level recovery", function()
+    it("retains upload HTTP rejection classification for request-level recovery", function()
       respond = function()
         local result = failure(22)
         rawset(result.error, "response", { status = 503, headers = {} })
         return result
       end
-      local result = wait(backend.inspect(object, access, 2000))
+      local result = wait(backend.upload(asset, access, 2000))
       assert.matches("HTTP 503", assert(result.error).message, 1, true)
       assert.is_nil(assert(result.error).retryable)
       assert.is_nil(rawget(assert(result.error), "exit_code"))
@@ -211,6 +257,16 @@ for _, provider in ipairs({ "generic", "anthropic", "codex" }) do
     end)
 
     if provider == "generic" then
+      for _, status in ipairs({ 502, 503, 504 }) do
+        it("retries HTTP " .. status .. " while inspecting metadata", function()
+          respond = function(_, attempt)
+            return attempt == 1 and { ok = true, status = status, headers = {}, body = "" } or success
+          end
+          assert.is_true(wait(backend.inspect(object, access, 2000)).ok)
+          assert.are.equal(2, #requests)
+        end)
+      end
+
       it("retries metadata through the live curl adapter's fetch failure", function()
         local original_system = vim.system
         local attempts = 0

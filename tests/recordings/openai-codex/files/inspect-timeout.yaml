@@ -1,0 +1,31 @@
+# Synthetic Codex image inspection timing out after response headers.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://chatgpt.com/backend-api/files/file-tile/download
+  headers:
+    Authorization: Bearer upload-replay-key
+    chatgpt-account-id: account-replay
+---
+type: response_body
+at_us: 1000
+bytes: 0
+body: ""
+---
+type: response
+at_us: 1000
+status: 200
+headers: {}
+---
+type: complete
+at_us: 1000
+ok: false
+error:
+  kind: transport
+  code: timeout
+  exit_code: 28
+  message: Synthetic request timed out

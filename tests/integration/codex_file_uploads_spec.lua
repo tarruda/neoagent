@@ -1,4 +1,5 @@
 local assert = require("luassert")
+local async = require("neoagent.async")
 local chat = require("neoagent.chat")
 local config = require("neoagent.config")
 local fs = require("neoagent.fs")
@@ -8,6 +9,8 @@ local runtimes_module = require("neoagent.provider_runtimes")
 local Session = require("neoagent.session")
 local storage = require("neoagent.storage")
 local util = require("neoagent.util")
+local waiting = require("neoagent.files.wait")
+local original_now = waiting.now
 
 local PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lWQAAAAASUVORK5CYII="
 
@@ -32,6 +35,7 @@ describe("Codex subscription file uploads", function()
   local workspace
 
   after_each(function()
+    waiting.now = original_now
     if runtimes then runtimes_module.destroy(runtimes); runtimes = nil end
     local completed = scenario
     if completed then completed.close(); scenario = nil end
@@ -44,11 +48,12 @@ describe("Codex subscription file uploads", function()
   ---@param exchanges (string|Neoagent.ReplayEntryOptions)[]
   ---@param lite? boolean
   ---@param record? boolean
+  ---@param wrap? fun(transport: Neoagent.ByteBackend): Neoagent.ByteBackend
   ---@return Neoagent.Session
   ---@return fun(uploads?: boolean): Neoagent.Model
   ---@return string
   ---@return Neoagent.AuthManager
-  local function conversation(exchanges, lite, record)
+  local function conversation(exchanges, lite, record, wrap)
     local entries = {}
     for _, entry in ipairs(exchanges) do
       entries[#entries + 1] = type(entry) == "string"
@@ -56,7 +61,7 @@ describe("Codex subscription file uploads", function()
     end
     scenario = replay.new({ exchanges = entries })
     directory = vim.fn.tempname()
-    local transport = scenario
+    local transport = wrap and wrap(scenario) or scenario
     if record then
       recorder = assert(require("neoagent.http_recording").new({
         config = { enabled = true, retention = "all", format = "json" }, directory = directory .. "/recordings",
@@ -194,6 +199,84 @@ describe("Codex subscription file uploads", function()
     local session, start = conversation({ "create", "put", "finalize-retry", "finalize", "conversation" })
     send(session, start(), "Describe the tile.")
     assert.are.equal(5, #assert(scenario).requests)
+  end)
+
+  it("continues after a transient server error while checking a retained image", function()
+    local session, start = conversation({
+      "create", "put", "finalize", "conversation", "inspect-server-error", "inspect", "reuse",
+    })
+    local model = start()
+    send(session, model, "Describe the tile.")
+    send(session, model, "Describe it again.")
+    local requests = assert(scenario).requests
+    assert.are.equal(7, #requests)
+    assert.are.equal("GET", assert(requests[5]).method)
+    assert.are.equal(assert(requests[5]).url, assert(requests[6]).url)
+    assert.are.equal("https://chatgpt.com/backend-api/codex/responses", assert(requests[7]).url)
+  end)
+
+  it("continues after a rate limit while checking a retained image", function()
+    local limited = replay.read("tests/recordings/openai-codex/files/inspect-server-error.yaml")
+    limited.response.status = 429
+    local session, start = conversation({
+      "create", "put", "finalize", "conversation", { exchange = limited }, "inspect", "reuse",
+    })
+    local model = start()
+    send(session, model, "Describe the tile.")
+    send(session, model, "Describe it again.")
+    local requests = assert(scenario).requests
+    assert.are.equal(7, #requests)
+    assert.are.equal("GET", assert(requests[5]).method)
+    assert.are.equal("GET", assert(requests[6]).method)
+    assert.are.equal(assert(requests[5]).url, assert(requests[6]).url)
+    assert.are.equal("https://chatgpt.com/backend-api/codex/responses", assert(requests[7]).url)
+  end)
+
+  it("continues after an image check uses its full per-attempt timeout", function()
+    local elapsed = 0
+    waiting.now = function() return original_now() + elapsed end
+    local session, start = conversation({
+      "create", "put", "finalize", "conversation", "inspect-timeout", "inspect", "reuse",
+    }, false, false, function(transport)
+      return {
+        request = transport.request,
+        fetch = function(opts)
+          return async.run(function()
+            local result = assert(transport.fetch)(opts):await()
+            if not result.ok and result.error.code == "timeout" then
+              elapsed = elapsed + assert(opts.request.timeout_ms)
+            end
+            return result
+          end)
+        end,
+      }
+    end)
+    local model = start()
+    send(session, model, "Describe the tile.")
+    send(session, model, "Describe it again.")
+    local requests = assert(scenario).requests
+    assert.are.equal(7, #requests)
+    assert.are.equal(30000, assert(requests[5]).timeout_ms)
+    assert.are.equal(assert(requests[5]).url, assert(requests[6]).url)
+    assert.are.equal("https://chatgpt.com/backend-api/codex/responses", assert(requests[7]).url)
+  end)
+
+  it("stops after repeated server errors without repeating an upload or inference", function()
+    local session, start = conversation({
+      "create", "put", "finalize", "conversation",
+      "inspect-server-error", "inspect-server-error", "inspect-server-error",
+    })
+    local model = start()
+    send(session, model, "Describe the tile.")
+    local result = wait(chat.send(session, "Describe it again.", { model = model }))
+    assert.is_false(result.ok)
+    assert.are.equal("files", assert(result.error).kind)
+    assert.is_false(assert(result.error).retryable)
+    assert.matches("HTTP 500", assert(result.error).message, 1, true)
+    assert.are.equal(7, #assert(scenario).requests)
+    local messages = session:messages()
+    assert.are.equal("user", messages[#messages].role)
+    assert.are.equal("Describe it again.", messages[#messages].content)
   end)
 
   for _, stage in ipairs({ "upload", "inspection" }) do
