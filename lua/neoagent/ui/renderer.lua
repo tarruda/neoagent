@@ -107,6 +107,7 @@ local block_fields = {
   "message",
   "finished",
   "summary",
+  "checkpoint",
   "tokens_before",
   "header",
   "resting_header",

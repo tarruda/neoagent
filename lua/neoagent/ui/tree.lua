@@ -208,7 +208,7 @@ local function focus_decorations(block, opts)
   end
   ---@param row integer
   ---@param header string
-  local function inline_tool_badge(row, header)
+  local function inline_badge(row, header)
     header = fit_badge(header, width)
     local start = math.max(0, width - 1 - text.width(header))
     if text.width(line(row)) > start and start >= 4 then
@@ -267,9 +267,12 @@ local function focus_decorations(block, opts)
     if after then
       add(opts.attachments and "end" or after, hinted_bottom())
     end
-  elseif block.kind == "tool" and first == last and focus.inline_single_line_tool_hint then
+  elseif
+    first == last
+    and (block.kind == "compaction" or (block.kind == "tool" and focus.inline_single_line_tool_hint))
+  then
     if opts.details_key and text.width(line(first)) <= width then
-      inline_tool_badge(first, "[" .. opts.details_key .. " to expand]")
+      inline_badge(first, "[" .. opts.details_key .. " to expand]")
     end
   else
     add(first, "╭" .. string.rep("─", width - 2) .. "╮")

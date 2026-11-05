@@ -3586,6 +3586,71 @@ describe("neoagent.ui", function()
     close_details(result)
   end)
 
+  for _, checkpoint in ipairs({ false, true }) do
+    it("keeps a single-line " .. (checkpoint and "checkpoint" or "compaction") .. " visible on hover", function()
+      local result = view({ position = "center", width = 100, style = "codex" })
+      ---@type Neoagent.TranscriptMessage
+      local message
+      if checkpoint then
+        message = { role = "compactionCheckpoint", tokens_before = 12345, created_at = 1 }
+      else
+        message = { role = "compactionSummary", summary = "", tokens_before = 12345, created_at = 1 }
+      end
+      result:set_messages({
+        message,
+        { role = "assistant", content = { { type = "text", text = "Retained answer" } } },
+      })
+      assert(result:open())
+      result.transcript.pane:flush()
+      local buffer = assert(view_handles.buffer(result, "transcript"))
+      local window = assert(view_handles.window(result, "transcript"))
+      local label = checkpoint and "[checkpoint]" or "[compaction]"
+      local lines = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+      ---@type integer?
+      local card_row
+      for index, line in ipairs(lines) do
+        if line:find("12,345 tokens", 1, true) then
+          card_row = index
+          break
+        end
+      end
+      assert.is_not_nil(card_row)
+      local row = assert(card_row)
+      local title = assert(lines[row])
+      assert.matches("12,345 tokens", title)
+      result:focus_transcript()
+      vim.api.nvim_win_set_cursor(window, { row, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buffer })
+
+      local hint
+      for _, mark in ipairs(get_extmarks(
+        buffer, result.transcript.pane.focus_namespace, { row - 1, 0 }, { row - 1, -1 }, { details = true }
+      )) do
+        local chunks = mark[4].virt_text or {}
+        local overlay = table.concat(vim.tbl_map(function(chunk)
+          return chunk[1]
+        end, chunks))
+        local column = mark[4].virt_text_win_col or mark[3]
+        assert.is_true(
+          column >= vim.fn.strdisplaywidth(title) - 1 or column + vim.fn.strdisplaywidth(overlay) <= 1,
+          "Hover decoration overwrites the compaction text"
+        )
+        if overlay:find("to expand", 1, true) then
+          hint = overlay
+        end
+      end
+      assert.are.equal("[<CR> to expand]", hint)
+      assert.is_true(title:find(label, 1, true) ~= nil)
+      assert.are.same(lines, vim.api.nvim_buf_get_lines(buffer, 0, -1, false))
+      assert.is_true(result:show_card_details())
+      local details = table.concat(
+        vim.api.nvim_buf_get_lines(assert(view_handles.buffer(result, "details")), 0, -1, false), "\n")
+      assert.is_true(details:find(label, 1, true) ~= nil)
+      assert.matches("12,345 tokens", details)
+      close_details(result)
+    end)
+  end
+
   it("shows bounded no-wrap compaction summaries and expands full details", function()
     local summary = {}
     for index = 1, 24 do
