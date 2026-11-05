@@ -317,6 +317,7 @@ function M.from_config(options, runtime)
     "append_compaction",
     "preview_compaction",
     "messages",
+    "_message_update",
     "context_messages",
     "checkpoint_identity",
     "entries",
@@ -756,17 +757,37 @@ function M.from_config(options, runtime)
     return session_lifecycle.transcript_messages(session)
   end
 
+  ---@type table<Neoagent.Tool<Neoagent.AgentToolEnvironment>, Neoagent.MessageCursor>
+  local tool_cursors = {}
+  local synchronized_tools
   local function sync_tools()
-    local messages = state.session:messages()
+    if synchronized_tools ~= state.toolset.tools then
+      synchronized_tools = state.toolset.tools
+      tool_cursors = {}
+    end
     local hook_context = { session_id = state.session_id, files = state.session:files() }
     for _, tool in ipairs(state.toolset.tools) do
       if type(tool.on_messages) == "function" then
-        local ok, err = pcall(tool.on_messages, util.copy(messages), hook_context)
-        if not ok then
-          notify(
-            "tool " .. tostring(tool.name) .. " failed to read the session: " .. tostring(err),
-            vim.log.levels.ERROR
-          )
+        local update = state.session:_message_update(tool_cursors[tool])
+        if update then
+          local ok, err = pcall(function()
+            if update.reset or not tool.on_message then
+              tool.on_messages(update.reset and update.messages or state.session:messages(), hook_context)
+            else
+              for _, message in ipairs(update.messages) do
+                tool.on_message(message, hook_context)
+              end
+            end
+          end)
+          if ok then
+            tool_cursors[tool] = update.cursor
+          else
+            tool_cursors[tool] = nil
+            notify(
+              "tool " .. tostring(tool.name) .. " failed to read the session: " .. tostring(err),
+              vim.log.levels.ERROR
+            )
+          end
         end
       end
     end

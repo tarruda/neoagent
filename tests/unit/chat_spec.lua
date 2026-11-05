@@ -417,6 +417,20 @@ describe("neoagent.chat", function()
         on_messages = true,
       } },
       { {
+        name = "invalid_append_hook",
+        description = "cannot observe appended messages",
+        input_schema = {},
+        execute = function() end,
+        on_message = true,
+      } },
+      { {
+        name = "missing_restore_hook",
+        description = "cannot restore observed state",
+        input_schema = {},
+        execute = function() end,
+        on_message = function() end,
+      } },
+      { {
         name = "invalid_current_hook",
         description = "cannot expose current state",
         input_schema = {},

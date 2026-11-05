@@ -72,11 +72,14 @@ local ok, measurement = xpcall(function()
   for index = 1, iterations do
     local id = "measured-" .. index
     assert(session:append(assistant(id)))
+    assert(session:context_messages())
     assert(session:append(result(id)))
+    assert(session:context_messages())
   end
   local elapsed = (vim.uv.hrtime() - started) / 1e6
   local messages = session:messages()
   assert(#messages == 7008 + 2 * iterations)
+  assert(#assert(session:context_messages()) == context_messages + 2 * iterations)
   assert(messages[#messages].role == "toolResult")
   local duplicate, err = session:append(result("measured-" .. iterations))
   assert(not duplicate and err and tostring(err.detail):find("unknown toolCall", 1, true))

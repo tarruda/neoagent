@@ -381,6 +381,26 @@ describe("neoagent bundled tools", function()
     assert.is_nil(tool.current({ session_id = second_session }))
   end)
 
+  it("accepts incremental plan messages without retaining caller-owned arguments", function()
+    local tool = require("neoagent.tools.update_plan").new()
+    local observe = tool.on_message
+    assert(type(observe) == "function")
+    local context = { session_id = {} }
+    local arguments = { plan = { { step = "Accepted", status = "in_progress" } } }
+    observe({ role = "user", content = "ignored" }, {})
+    observe({ role = "assistant", content = {
+      { type = "toolCall", id = "plan", name = "update_plan", arguments = arguments },
+    } }, context)
+    arguments.plan[1].step = "mutated"
+    observe({ role = "toolResult", toolCallId = "plan", toolName = "update_plan", content = {} }, context)
+    assert.are.equal("Accepted", tool.current(context).plan[1].step)
+    observe({ role = "compactionCheckpoint", tokens_before = 100, created_at = 1 }, context)
+    assert.are.equal("Accepted", tool.current(context).plan[1].step)
+    observe({ role = "toolResult", toolCallId = "unknown", toolName = "update_plan",
+      isError = true, content = {} }, context)
+    assert.are.equal("Accepted", tool.current(context).plan[1].step)
+  end)
+
   it("rejects update_plan payloads that Codex cannot deserialize", function()
     local tool = require("neoagent.tools.update_plan").new()
     assert.has_error(function() tool.execute(nil) end)

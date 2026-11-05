@@ -1587,6 +1587,10 @@ Optional Tool fields are:
   capabilities.read_files   Enable skill discovery for this toolset.
   on_messages(messages, ctx)
                             Derive state from the active conversation.
+  on_message(message, ctx)   With `on_messages`, consume accepted appends one
+                            message at a time. `on_messages` then restores
+                            state on first use, branch changes, or hook failure.
+                            Unchanged snapshots do not invoke message hooks.
   render(opts)              Return semantic presentation data.
   prompt_snippet            Short description for the Pi system prompt.
   prompt_guidelines         Instruction strings for the Pi system prompt.

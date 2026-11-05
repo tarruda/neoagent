@@ -79,6 +79,15 @@ local M = {}
 local Session = {}
 Session.__index = Session
 
+---@class Neoagent.MessageCursor
+---@field source Neoagent.ProjectionMessage[]
+---@field count integer
+
+---@class Neoagent.MessageUpdate
+---@field messages Neoagent.ProjectionMessage[]
+---@field reset boolean
+---@field cursor Neoagent.MessageCursor
+
 ---@param bytes? integer
 ---@return string
 local function random_id(bytes)
@@ -245,6 +254,27 @@ function Session:messages()
   return util.copy(self._messages)
 end
 
+-- Cursors belong to Agent tool synchronization. A replacement invalidates
+-- them; accepted appends preserve the source array and expose only its tail.
+---@param cursor? Neoagent.MessageCursor
+---@return Neoagent.MessageUpdate?
+function Session:_message_update(cursor)
+  local reset = not cursor or cursor.source ~= self._messages
+  local first = not reset and assert(cursor).count + 1 or 1
+  if not reset and first > #self._messages then
+    return nil
+  end
+  local messages = {}
+  for index = first, #self._messages do
+    messages[#messages + 1] = util.copy(self._messages[index])
+  end
+  return {
+    messages = messages,
+    reset = reset,
+    cursor = { source = self._messages, count = #self._messages },
+  }
+end
+
 ---@return Neoagent.RequestMessage[]?, Neoagent.Error?
 function Session:context_messages()
   if self._store and type(self._store.context_messages) == "function" then
@@ -259,11 +289,11 @@ function Session:context_messages()
     return normalized
   end
   if #self._entries > 0 then
-    local path, err = self:path()
-    if not path then
-      return nil, err
+    local messages, err = tree.indexed_context_messages(self._by_id, self._leaf_id or vim.NIL)
+    if not messages then
+      return nil, util.error("session", "Failed to build session context", err)
     end
-    return tree.context_messages(path)
+    return messages
   end
   return tree.to_llm(self._messages)
 end

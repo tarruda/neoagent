@@ -15,18 +15,17 @@ describe("neoagent.session", function()
   it("propagates unavailable journal paths without inventing context or checkpoints", function()
     local session = assert(Session.new())
     assert(session:append({ role = "user", content = "History" }))
-    local failure = { kind = "session", message = "Journal path unavailable" }
-    session.path = function() return nil, failure end
+    session._leaf_id = "unavailable"
     local messages, err = session:context_messages()
     assert.is_nil(messages)
-    assert.are.equal(failure, err)
+    assert.matches("entry not found: unavailable", tostring(assert(err).detail), 1, true)
     messages, err = session:preview_compaction({ summary = "Summary", tokens_before = 1 })
     assert.is_nil(messages)
-    assert.are.equal(failure, err)
+    assert.matches("entry not found: unavailable", tostring(assert(err).detail), 1, true)
     local identity
     identity, err = session:checkpoint_identity()
     assert.is_nil(identity)
-    assert.are.equal(failure, err)
+    assert.matches("entry not found: unavailable", tostring(assert(err).detail), 1, true)
     assert.are.equal(1, #session:entries())
   end)
 
@@ -374,17 +373,20 @@ describe("neoagent.session", function()
     local session = assert(Session.new())
     assert(session:append({ role = "user", content = "one" }))
     local indexed_path = tree.indexed_path
+    local indexed_context = tree.indexed_context_messages
     tree.indexed_path = function() return nil, "path dependency failed" end
+    tree.indexed_context_messages = function() return nil, "path dependency failed" end
     local path, path_err = session:path()
+    local context, context_err = session:context_messages()
+    local state, state_err = session:state()
+    tree.indexed_path = indexed_path
+    tree.indexed_context_messages = indexed_context
     assert.is_nil(path)
     assert.matches("path dependency failed", tostring(assert(path_err).detail))
-    local context, context_err = session:context_messages()
     assert.is_nil(context)
     assert.matches("path dependency failed", tostring(assert(context_err).detail))
-    local state, state_err = session:state()
     assert.is_nil(state)
     assert.matches("path dependency failed", tostring(assert(state_err).detail))
-    tree.indexed_path = indexed_path
   end)
 
   it("propagates store and in-memory branch publication failures", function()

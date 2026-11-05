@@ -635,25 +635,26 @@ describe("neoagent default agent", function()
     assert.is_true(child_cancelled)
     assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
 
-    local original_messages
+    local original_path
     agent = setup_model(fake_model.new({}), {
       _interaction = function(options)
         local child = controlled_run(options, function()
           child_cancelled = true
         end)
         local session = agent:get_session()
-        original_messages = session.messages
-        session.messages = function() error("transcript installation failed") end
+        original_path = session.path
+        session.path = function() error("transcript installation failed") end
         return child
       end,
     })
     child_cancelled = false
     run = assert(agent:send("fail child installation"))
     assert(type(run) == "table")
-    assert(vim.wait(1000, function()
+    local installed = vim.wait(1000, function()
       return run:is_done() and not agent:is_running()
-    end))
-    agent:get_session().messages = original_messages
+    end)
+    agent:get_session().path = original_path
+    assert(installed)
     assert.is_true(child_cancelled)
     assert.matches("transcript installation failed", assert(assert(run:result()).error).message)
   end)
