@@ -53,6 +53,30 @@ end, {})
 vim.api.nvim_create_user_command("NeoagentStop", function()
   require("neoagent").stop()
 end, {})
+vim.api.nvim_create_user_command("NeoagentProfile", function(opts)
+  local profiler = require("neoagent.profiler")
+  local path, err
+  local message
+  if opts.args == "start" then
+    path, err = profiler.start()
+    message = "LuaJIT profiling started; report: "
+  elseif opts.args == "stop" then
+    path, err = profiler.stop()
+    message = "LuaJIT profile saved: "
+  else
+    err = "expected :NeoagentProfile start or :NeoagentProfile stop"
+  end
+  if path then
+    vim.notify("neoagent: " .. message .. path, vim.log.levels.INFO)
+  else
+    vim.notify("neoagent: " .. assert(err), vim.log.levels.ERROR)
+  end
+end, {
+  nargs = 1,
+  complete = function()
+    return { "start", "stop" }
+  end,
+})
 vim.api.nvim_create_user_command("NeoagentSandboxInfo", function()
   require("neoagent").show_sandbox_info()
 end, {})

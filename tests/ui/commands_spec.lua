@@ -49,7 +49,7 @@ describe("neoagent commands", function()
     setup()
     for _, name in ipairs({
       "Neoagent", "NeoagentCycle", "NeoagentResume",
-      "NeoagentCopySession", "NeoagentStop", "NeoagentModel",
+      "NeoagentCopySession", "NeoagentStop", "NeoagentProfile", "NeoagentModel",
       "NeoagentThinking", "NeoagentPosition", "NeoagentCompact",
       "NeoagentBranch",
       "NeoagentFork", "NeoagentSandboxInfo", "NeoagentToggleSandbox",
