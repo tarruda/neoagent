@@ -100,8 +100,8 @@ dependencies and clean up processes, timers, files, buffers, and windows.
 
 Run benchmarks separately from suites for useful timings:
 `make benchmark-applet`, `make benchmark-transcript`,
-`make benchmark-submission`, and `make benchmark-compaction`. CI enforces
-their budgets.
+`make benchmark-submission`, `make benchmark-compaction`, and
+`make benchmark-session`. CI enforces their budgets.
 
 ## Coverage
 
