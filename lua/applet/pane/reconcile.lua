@@ -357,9 +357,7 @@ local function target_at(layout, row, col)
   end
   local region = layout.region_document and region_at(layout, row)
   local selected = region and layout.regions[region.index]
-  local order = selected and (selected.hit_order or selected.target_order)
-    or layout.hit_order
-    or layout.target_order
+  local order = selected and (selected.hit_order or selected.target_order) or layout.hit_order or layout.target_order
   for _, key in ipairs(order) do
     local target = layout.targets[key]
     for index, rect in ipairs(target and target.rectangles or {}) do
@@ -1761,14 +1759,10 @@ function M.retain(opts)
     clear_scene_provider(state)
     state.runtime_scene = nil
     if previous and (opts.window_changed or differences.chrome) and vim.api.nvim_buf_is_loaded(surface.buffer) then
-      sync_decorations(
-        surface.buffer,
-        assert(opts.namespace),
-        state,
-        previous,
-        layout,
-        continuation_context(surface, layout)
-      )
+      local continuation = continuation_context(surface, layout)
+      if not util.equal(state.continuation_context, continuation) then
+        sync_decorations(surface.buffer, assert(opts.namespace), state, previous, layout, continuation)
+      end
     end
   end
   state.layout = layout
