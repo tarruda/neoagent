@@ -1,5 +1,6 @@
 local util = require("applet.util")
 local Mode = require("applet.mode")
+local TargetIndex = require("applet.pane.target_index")
 
 ---@class Applet.InputTarget
 ---@field key string
@@ -75,6 +76,7 @@ local Mode = require("applet.mode")
 ---@field mapping_description? string
 ---@field saved_mappings? table<string, Applet.SavedMapping>
 ---@field installed_mappings? table<string, Applet.MappingPair>
+---@field target_index? Applet.TargetIndex
 ---@field key fun(self: P): string
 ---@field _draw_focus fun(self: P)
 ---@field _report fun(self: P, phase: string, error: unknown, generation: integer)
@@ -85,7 +87,7 @@ local M = {}
 ---@param pane P
 ---@return_overload integer, integer, integer
 ---@return_overload nil, nil, nil
-local function cursor_position(pane)
+function M.cursor_position(pane)
   local surface = pane.surface
   if not surface then
     return nil
@@ -140,6 +142,19 @@ function M.target_at(layout, row, col)
     end
   end
   return nearest
+end
+
+---@generic P: Applet.InputPane<P>
+---@param pane P
+---@param layout Applet.InputLayout
+---@param row integer
+---@param col integer
+---@return Applet.InputTarget?
+local function indexed_target(pane, layout, row, col)
+  local index = pane.target_index or TargetIndex.new()
+  pane.target_index = index
+  index:refresh(layout)
+  return index:at(row, col)
 end
 
 ---@param layout Applet.InputLayout
@@ -262,7 +277,7 @@ end
 ---@return boolean
 function M.move(pane, payload, count)
   local layout = pane.layout
-  local row, col, window = cursor_position(pane)
+  local row, col, window = M.cursor_position(pane)
   if not layout or not row then
     return false
   end
@@ -277,7 +292,7 @@ function M.move(pane, payload, count)
   if #candidates == 0 then
     return false
   end
-  local current = M.target_at(layout, row, col)
+  local current = indexed_target(pane, layout, row, col)
   ---@type integer?
   local index
   for candidate_index, candidate in ipairs(candidates) do
@@ -432,7 +447,7 @@ end
 ---@return boolean
 function M.dispatch(pane, mode, lhs)
   local layout = pane.layout
-  local row, col = cursor_position(pane)
+  local row, col = M.cursor_position(pane)
   if not layout or not row then
     return false
   end
@@ -440,7 +455,7 @@ function M.dispatch(pane, mode, lhs)
   if not binding then
     return false
   end
-  local target = M.target_at(layout, row, col)
+  local target = indexed_target(pane, layout, row, col)
   local count = binding.count and vim.v.count1 or 1
   return M.dispatch_action(pane, binding.action, target, count, mode, row, col, binding)
 end
@@ -609,11 +624,11 @@ end
 ---@return Applet.InputTarget?
 function M.focus_target(pane)
   local layout = pane.layout
-  local row, col = cursor_position(pane)
+  local row, col = M.cursor_position(pane)
   if not layout or not row then
     return nil
   end
-  return M.target_at(layout, row, col)
+  return indexed_target(pane, layout, row, col)
 end
 
 ---@param rectangles? Applet.Rectangle[]

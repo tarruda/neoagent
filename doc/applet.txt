@@ -77,7 +77,7 @@ The Pane runtime methods are:
   move_cursor(direction[, count])
                            Move up, down, previous, next, start, or end.
   scroll(opts)             Scroll to a target and optional alignment.
-  focused_target()         Return the target under the cursor.
+  focused_target()         Return a copied target under the cursor.
   targets([opts])          Return copied targets, optionally filtered by group.
   move_target(opts[, count])
                            Move among semantic targets.

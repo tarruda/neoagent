@@ -154,6 +154,13 @@ local Mode = require("applet.mode")
 ---@field view_policy_revision integer
 ---@field interaction_revision integer
 ---@field focus_signature? string
+---@field focus_targets? table<string, Applet.CompiledTarget>
+---@field focus_hit_order? string[]
+---@field focus_active? string
+---@field focus_selecting? boolean
+---@field focus_marks table<string, Applet.FocusMarks>
+---@field focus_edits? Applet.FocusEdit[]
+---@field target_index? Applet.TargetIndex
 ---@field mask_signature? string
 ---@field surface_option_states? table<string, Applet.WrittenOption>
 ---@field requested_surface_options? Applet.Options
@@ -592,6 +599,7 @@ function Pane.new(opts)
     owned_buffers = {},
     initial_target_applied = false,
     interaction_revision = 0,
+    focus_marks = {},
     position_overrides = {},
     compile_cache = {},
     image_region_cache = {},
@@ -966,11 +974,18 @@ function Pane:_attach_buffer()
   self.known_changedtick = vim.api.nvim_buf_get_changedtick(self.surface.buffer)
   self.observed_edit_changedtick = self.known_changedtick
   self.attached = vim.api.nvim_buf_attach(self.surface.buffer, false, {
-    on_lines = function(_, _, changedtick)
-      if not pane.surface or pane.buffer_mode ~= "managed" then
+    on_lines = function(_, _, changedtick, first, last, new_last)
+      if not pane.surface then
         return
       end
-      if pane.committing or changedtick == pane.known_changedtick then
+      if pane.committing or pane.buffer_mode == "editable" then
+        if next(pane.focus_marks) ~= nil then
+          pane.focus_edits = pane.focus_edits or {}
+          pane.focus_edits[#pane.focus_edits + 1] = { first = first, last = last, new_last = new_last }
+        end
+        return
+      end
+      if changedtick == pane.known_changedtick then
         return
       end
       pane.reconcile_state.unknown = true
@@ -1782,6 +1797,12 @@ function Pane:_flush_requested()
   for key, value in pairs(changes) do
     self.counters[key] = (self.counters[key] or 0) + value
   end
+  if changes.full_rebuilds > 0 then
+    self.focus_signature, self.focus_targets = nil, nil
+    for _, record in pairs(self.focus_marks) do
+      record.target = nil
+    end
+  end
   self.layout = layout
   self.current_scene = layout.scene
   self.tree = tree
@@ -1834,75 +1855,185 @@ function Pane:_view_policy_revision()
   return self.view_policy_revision
 end
 
+---@class Applet.FocusMarks
+---@field ids integer[]
+---@field target? Applet.CompiledTarget
+---@field active? boolean
+---@field first_row? integer
+---@field last_row? integer
+
+---@class Applet.FocusEdit
+---@field first integer
+---@field last integer
+---@field new_last integer
+
+---@param record Applet.FocusMarks
+---@param edits? Applet.FocusEdit[]
+---@return boolean
+local function focus_affected(record, edits)
+  if record.first_row == nil or not edits then
+    return false
+  end
+  local first, last = record.first_row, assert(record.last_row)
+  for _, edit in ipairs(edits) do
+    -- Include the following boundary: insertion can reveal a previously
+    -- missing hint, and replacement can move an existing boundary extmark.
+    if first <= edit.last and last >= edit.first then
+      return true
+    end
+    if first > edit.last then
+      local offset = edit.new_last - edit.last
+      first, last = first + offset, last + offset
+    end
+  end
+  -- A reused line suffix can move native marks away from retained geometry.
+  return first ~= record.first_row
+end
+
+---@param buffer integer
+---@param namespace integer
+---@param record Applet.FocusMarks
+---@param target Applet.CompiledTarget
+---@param active boolean
+local function draw_target_focus(buffer, namespace, record, target, active)
+  local count = 0
+  ---@type integer?, integer?
+  local first_row, last_row
+  ---@param row integer
+  ---@return string?
+  local function text_at(row)
+    first_row = math.min(first_row or row, row)
+    last_row = math.max(last_row or row, row)
+    return vim.api.nvim_buf_get_lines(buffer, row, row + 1, false)[1]
+  end
+  ---@param row integer
+  ---@param col integer
+  ---@param options vim.api.keyset.set_extmark
+  local function write(row, col, options)
+    count = count + 1
+    options.id = record.ids[count]
+    record.ids[count] = vim.api.nvim_buf_set_extmark(buffer, namespace, row, col, options)
+  end
+  local state = active and "active" or "inactive"
+  for _, decoration in ipairs(target.focus and target.focus[state] or {}) do
+    local text = text_at(decoration.row)
+    if text then
+      local width = vim.fn.strdisplaywidth(text)
+      local options = { virt_text = decoration.chunks, priority = decoration.priority }
+      if decoration.win_col ~= nil then
+        options.virt_text_win_col = decoration.win_col
+      else
+        options.virt_text_pos = decoration.position or "overlay"
+      end
+      write(decoration.row, util.byte_col(text, math.min(decoration.col, width)), options)
+    end
+  end
+  if active and target.focus_style then
+    for _, rect in ipairs(target.rectangles) do
+      for row = rect.row, rect.row + rect.height - 1 do
+        ---@cast row integer
+        local text = text_at(row)
+        if text then
+          local width = vim.fn.strdisplaywidth(text)
+          local start_col = util.byte_col(text, math.min(rect.col, width))
+          local end_col = util.byte_col(text, math.min(rect.col + rect.width, width))
+          write(row, start_col, {
+            end_row = row,
+            end_col = math.max(start_col, end_col),
+            hl_group = target.focus_style,
+            priority = 200,
+            hl_eol = rect.col + rect.width >= width,
+          })
+        end
+      end
+    end
+  end
+  for index = #record.ids, count + 1, -1 do
+    pcall(vim.api.nvim_buf_del_extmark, buffer, namespace, record.ids[index])
+    record.ids[index] = nil
+  end
+  record.target, record.active = target, active
+  record.first_row, record.last_row = first_row, last_row
+end
+
 function Pane:_draw_focus()
-  if not self.surface or not vim.api.nvim_buf_is_valid(self.surface.buffer) then
+  if
+    self.committing
+    or not self.surface
+    or not vim.api.nvim_buf_is_valid(self.surface.buffer)
+    or not vim.api.nvim_buf_is_loaded(self.surface.buffer)
+  then
     return
   end
+  local buffer = self.surface.buffer
   local mode = vim.api.nvim_get_mode().mode
   local selecting = mode == "v" or mode == "V" or mode == "\22" or mode == "s" or mode == "S" or mode == "\19"
   local _, _, focused = dimensions(self)
-  local active = not selecting and focused and input.focus_target(self) or nil
-  ---@cast active Applet.CompiledTarget?
+  local row, col = input.cursor_position(self)
+  local targets = self.layout and self.layout.targets
+  local hit_order = self.layout and (self.layout.hit_order or self.layout.target_order)
   local signature = table.concat({
     tostring(self.interaction_revision),
-    selecting and "selecting" or "normal",
-    active and active.key or "",
+    tostring(selecting),
+    tostring(focused),
+    tostring(row),
+    tostring(col),
+    tostring(vim.api.nvim_buf_get_changedtick(buffer)),
   }, "\0")
-  if signature == self.focus_signature then
+  if signature == self.focus_signature and targets == self.focus_targets and hit_order == self.focus_hit_order then
     return
   end
-  self.focus_signature = signature
-  vim.api.nvim_buf_clear_namespace(self.surface.buffer, self.focus_namespace, 0, -1)
   if selecting then
+    if not self.focus_selecting then
+      vim.api.nvim_buf_clear_namespace(buffer, self.focus_namespace, 0, -1)
+      self.focus_marks = {}
+    end
+    self.focus_selecting = true
+    self.focus_active = nil
+    self.focus_targets, self.focus_hit_order = nil, nil
+    self.focus_signature = signature
+    self.focus_edits = nil
     return
   end
-  for _, key in ipairs(self.layout and self.layout.target_order or {}) do
-    local target = assert(self.layout).targets[key]
-    local state = target == active and "active" or "inactive"
-    for _, decoration in ipairs(target.focus and target.focus[state] or {}) do
-      local text = vim.api.nvim_buf_get_lines(self.surface.buffer, decoration.row, decoration.row + 1, false)[1]
-      if text then
-        local width = vim.fn.strdisplaywidth(text)
-        local options = {
-          virt_text = decoration.chunks,
-          priority = decoration.priority,
-        }
-        if decoration.win_col ~= nil then
-          options.virt_text_win_col = decoration.win_col
-        else
-          options.virt_text_pos = decoration.position or "overlay"
+  local active = focused and input.focus_target(self) or nil
+  ---@cast active Applet.CompiledTarget?
+  ---@param key string?
+  local function update(key)
+    local target = key and targets and targets[key]
+    if not target then
+      return
+    end
+    local record = self.focus_marks[key]
+    if not record then
+      record = { ids = {} }
+      self.focus_marks[key] = record
+    end
+    local selected = target == active
+    if record.target ~= target or record.active ~= selected or focus_affected(record, self.focus_edits) then
+      draw_target_focus(buffer, self.focus_namespace, record, target, selected)
+    end
+  end
+  if targets ~= self.focus_targets or hit_order ~= self.focus_hit_order or self.focus_edits then
+    for _, key in ipairs(self.layout and self.layout.target_order or {}) do
+      update(key)
+    end
+    for key, record in pairs(self.focus_marks) do
+      if not targets or not targets[key] then
+        for _, id in ipairs(record.ids) do
+          pcall(vim.api.nvim_buf_del_extmark, buffer, self.focus_namespace, id)
         end
-        vim.api.nvim_buf_set_extmark(
-          self.surface.buffer,
-          self.focus_namespace,
-          decoration.row,
-          util.byte_col(text, math.min(decoration.col, width)),
-          options
-        )
+        self.focus_marks[key] = nil
       end
     end
+  else
+    update(self.focus_active)
+    update(active and active.key)
   end
-  if not active or not active.focus_style then
-    return
-  end
-  for _, rect in ipairs(active.rectangles) do
-    for row = rect.row, rect.row + rect.height - 1 do
-      ---@cast row integer
-      local text = vim.api.nvim_buf_get_lines(self.surface.buffer, row, row + 1, false)[1]
-      if text then
-        local start_col = util.byte_col(text, math.min(rect.col, vim.fn.strdisplaywidth(text)))
-        local end_display = math.min(rect.col + rect.width, vim.fn.strdisplaywidth(text))
-        local end_col = util.byte_col(text, end_display)
-        vim.api.nvim_buf_set_extmark(self.surface.buffer, self.focus_namespace, row, start_col, {
-          end_row = row,
-          end_col = math.max(start_col, end_col),
-          hl_group = active.focus_style,
-          priority = 200,
-          hl_eol = rect.col + rect.width >= vim.fn.strdisplaywidth(text),
-        })
-      end
-    end
-  end
+  self.focus_active = active and active.key
+  self.focus_targets, self.focus_hit_order = targets, hit_order
+  self.focus_selecting = false
+  self.focus_signature = signature
+  self.focus_edits = nil
 end
 
 ---@return integer
@@ -2102,7 +2233,8 @@ end
 
 ---@return Applet.CompiledTarget?
 function Pane:focused_target()
-  return input.focus_target(self) --[[@as Applet.CompiledTarget?]]
+  local target = input.focus_target(self) --[[@as Applet.CompiledTarget?]]
+  return target and vim.deepcopy(target) or nil
 end
 
 ---@param opts? {group?: string}
@@ -2117,7 +2249,7 @@ function Pane:targets(opts)
   for _, key in ipairs(self.layout and self.layout.target_order or {}) do
     local target = assert(self.layout).targets[key]
     if target and (opts.group == nil or target.group == opts.group) then
-      local value = util.copy(target)
+      local value = vim.deepcopy(target)
       value.key = key
       result[#result + 1] = value
     end
@@ -2207,6 +2339,11 @@ function Pane:_disconnect(wiped)
   self.requested_image_references = nil
   self.pending_scene, self.current_scene = nil, nil
   self.focus_signature = nil
+  self.focus_targets, self.focus_hit_order, self.focus_active = nil, nil, nil
+  self.focus_selecting = nil
+  self.focus_marks = {}
+  self.focus_edits = nil
+  self.target_index = nil
   self.last_width, self.last_height, self.last_focused = nil, nil, nil
   self.last_window = nil
   self.last_flush_ns = nil
