@@ -169,7 +169,7 @@ describe("neoagent Agent session lifecycle", function()
   it("propagates invalid Session projections during initialization and branching", function()
     local path_error = { kind = "session", message = "path unavailable" }
     local _, _, _, invalid_session = fixture()
-    invalid_session.path = function() return nil, path_error end
+    invalid_session.transcript_entries = function() return nil, path_error end
     local path_ok, raised = pcall(function()
       lifecycle_module.transcript_messages(invalid_session)
     end)

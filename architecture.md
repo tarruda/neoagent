@@ -38,10 +38,10 @@ cancels; completing a coroutine does not end native ownership.
 ## Agents and composition
 
 An Agent binds one Profile, Workspace, and Session. It owns Tools, Model and
-thinking selection, steering, dialogs, retained processes, and one activity at
-a time. Closing its UI preserves the Agent; stopping an activity preserves
-committed retained processes. Destroying the Agent disposes its resources.
-Headless Agents do not load UI modules.
+thinking selection, steering, dialogs, retained processes, transient transcript
+segment selection, and one activity at a time. Closing its UI preserves the
+Agent; stopping an activity preserves committed retained processes. Destroying
+the Agent disposes its resources. Headless Agents do not load UI modules.
 
 A Profile supplies eligible Model APIs, prompt/context composition, Tools,
 compaction, and execution and presentation defaults. Shared composition resolves
@@ -88,8 +88,8 @@ bodies stay out of diagnostics. Credential storage is private and atomic.
 ## Sessions and persistence
 
 A Session owns messages and the active path through a conversation tree. It is
-tool-free and can use memory or an injected store. Model context is a projection
-of that journal, not a replacement for it.
+tool-free and can use memory or an injected store. Model context and transcript
+segments are independent projections of the journal.
 
 Workspace storage owns Session documents, immutable attachment blobs, provider
 mappings, and a rebuildable index. Attachments use content identity rather than

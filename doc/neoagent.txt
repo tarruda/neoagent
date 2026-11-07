@@ -387,6 +387,7 @@ Agent methods include: >lua
   agent:stop()
   agent:branch(entry_id)
   agent:select_branch([callback])
+  agent:navigate_transcript(direction)
   agent:select_model([callback])
   agent:set_model(provider, model)
   agent:available_thinking_levels()
@@ -428,6 +429,15 @@ process sessions survive `stop()` and UI close. Configure their limits with
 `snapshot()` supplies current state for a newly attached consumer.
 `submission_accepted` identifies the prompt that became durable.
 
+Snapshots and `messages` updates include `history`: optional starting entry
+`id`, one-based `position`, segment `total`, adjacent IDs `previous`/`next`,
+and the `latest` flag.
+
+A `messages` update with `reset = true` replaces the transcript, followed by
+any `events` and `result`. Snapshots and updates may include a positive
+`pending_message_ends` count: ignore queued transcript events until that many
+`message_end` publications have arrived.
+
 `agent:presenter()` serializes semantic selection, input, confirmation, and
 notice requests. `agent:dialogs()` exposes the Agent's dialog source for
 executor interactions. The bundled Agent Applet presents both; a headless
@@ -436,6 +446,10 @@ Agent uses the fallback host presentation.
 `branch()` and `select_branch()` move inside the Agent's Session. New, resume,
 fork, and copy operations belong to the top-level Applet, which keeps one live
 claim for each Session ID.
+
+`navigate_transcript(direction)` selects `"first"`, `"previous"`, `"next"`, or
+`"latest"` history without moving the Session leaf. It returns `true` for a
+change, `false` at an endpoint, or `nil, error`; see |neoagent-ui|.
 
 WORKSPACE TRUST                                     *neoagent-workspace-trust*
 
@@ -941,9 +955,16 @@ Session, the error includes its path so it can be resumed.
 
 The bundled Agent UI is available as `require("neoagent.ui").new(opts)`.
 
-The transcript supports native search, motions, Visual selection, and yank.
-Streamed redraws pause during interactions that require stable text. `<A-f>`
-toggles following in an expanded streaming card.
+The transcript supports native search, motions, Visual selection, and yank
+within the displayed segment. Streamed redraws pause during interactions that
+require stable text. `<A-f>` toggles following in an expanded streaming card.
+
+Compaction divides the active branch into segments, from the first message
+or a compaction card to just before the next compaction. Sessions open at the
+latest segment. Browsing older history preserves the draft and leaves the
+Agent running; returning to the latest segment restores current output.
+Use First, Previous, Next, and Latest in the menu above the transcript.
+Branch changes and accepted input also select the latest segment.
 
 Input submitted while an Agent is busy becomes steering and is consumed after
 the current assistant response and tool calls. The interrupt mapping cancels
@@ -1788,6 +1809,7 @@ Tree-aware Session methods are: >lua
   session:entry(id)
   session:leaf_id()
   session:path([id])
+  session:transcript_entries([segment_id[, direction]])
   session:state()
   session:preview_compaction(values)
   session:append_compaction(values)
@@ -1806,6 +1828,12 @@ next append creates a branch.
 
 `checkpoint_identity()` returns the active encrypted checkpoint's required
 API, provider, and Model, or nil when there is none.
+
+`transcript_entries(segment_id, direction)` returns copied entries for one
+segment of the active branch as `entries, nil, history`, or `nil, error`.
+Omit the starting entry ID for the latest segment. `direction` accepts
+`"first"`, `"previous"`, or `"next"`, stopping at endpoints. The bundled Store
+shares this API; see |neoagent-agents| for `history`.
 
 `append_compaction(values)` requires `tokens_before` and either:
 

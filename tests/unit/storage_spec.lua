@@ -1063,6 +1063,54 @@ describe("neoagent.storage", function()
     assert.is_nil(context)
     assert.matches("Failed to build session context", assert(context_err).message)
     assert.matches("entry not found: unavailable", vim.inspect(context_err), 1, true)
+    local transcript, transcript_err = store:transcript_entries()
+    assert.is_nil(transcript)
+    assert.matches("Failed to build session transcript", assert(transcript_err).message)
+    assert.matches("entry not found: unavailable", vim.inspect(transcript_err), 1, true)
+  end)
+
+  it("reopens local and native transcript segments without changing model retention", function()
+    for _, native in ipairs({ false, true }) do
+      local directory = tempdir()
+      dirs[#dirs + 1] = directory
+      local store = storage.new({ directory = directory, cwd = directory })
+      local session = assert(Session.new({ store = store }))
+      local _, _, first = session:append({ role = "user", content = "complete original request" })
+      assert(first)
+      local _, _, checkpoint = session:append_compaction({
+        tokens_before = 100,
+        summary = not native and "summary" or nil,
+        first_kept_entry_id = not native and first.id or nil,
+        native = native and { role = "nativeCompaction", api = "openai-codex-responses", provider = "fake",
+          model = "test", encrypted_content = "synthetic-ciphertext" } or nil,
+        retained_users = native and { { entry_id = first.id, text_chars = 3 } } or nil,
+      })
+      assert(checkpoint)
+      assert(session:append({ role = "user", content = "latest request" }))
+      local context = assert(session:context_messages())
+      local leaf = session:leaf_id()
+      local reopened = assert(Session.new({ store = assert(open_session(store:metadata().path)) }))
+      local entries, _, history = reopened:transcript_entries()
+      assert.are.equal(checkpoint.id, assert(assert(entries)[1]).id)
+      assert.are.equal(2, #assert(entries))
+      assert.is_true(assert(history).latest)
+      local older = assert(reopened:transcript_entries(nil, "first"))
+      assert.are.equal(1, #older)
+      assert.are.equal("complete original request", assert(assert(older[1]).message).content)
+      local adjacent, _, adjacent_history = reopened:transcript_entries(first.id, "next")
+      assert.are.equal(checkpoint.id, assert(assert(adjacent)[1]).id)
+      assert.is_true(assert(adjacent_history).latest)
+      adjacent, _, adjacent_history = reopened:transcript_entries(checkpoint.id, "previous")
+      assert.are.equal(first.id, assert(assert(adjacent)[1]).id)
+      assert.are.equal(1, #assert(adjacent))
+      assert.is_false(assert(adjacent_history).latest)
+      assert.are.equal(leaf, reopened:leaf_id())
+      assert.are.same(context, assert(reopened:context_messages()))
+      assert(reopened:move_to(first.id))
+      local before, _, before_history = reopened:transcript_entries()
+      assert.are.equal(1, #assert(before))
+      assert.are.equal(1, assert(before_history).total)
+    end
   end)
 
   it("projects Session appends incrementally without Store reloads", function()

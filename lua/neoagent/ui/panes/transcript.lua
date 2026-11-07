@@ -14,6 +14,7 @@ local widgets = Applet.Pane.widgets
 ---@class Neoagent.TranscriptPaneState
 ---@field image_source? Neoagent.ImageSourceFactory
 ---@field blocks Neoagent.TranscriptBlock[]
+---@field history? Neoagent.TranscriptHistory
 ---@field context Neoagent.AgentContext
 ---@field dialog? Neoagent.ActiveDialogSnapshot
 ---@field renderer Neoagent.Renderer<unknown>
@@ -29,6 +30,7 @@ local widgets = Applet.Pane.widgets
 ---@class Neoagent.TranscriptPaneCallbacks
 ---@field details? fun(block: string): unknown
 ---@field card_move? fun(direction: integer, count: integer): unknown
+---@field history? fun(direction: 'first'|'previous'|'next'|'latest'): unknown
 ---@field dialog? fun(dialog: string, action: string): unknown
 
 ---@class Neoagent.TranscriptPaneOptions
@@ -87,6 +89,7 @@ local widgets = Applet.Pane.widgets
 ---@field pane Applet.Pane<Neoagent.TranscriptPaneState>
 ---@field blocks Neoagent.TranscriptBlock[]
 ---@field messages Neoagent.TranscriptMessage[]
+---@field history? Neoagent.TranscriptHistory
 ---@field calls table<string, Neoagent.TranscriptBlock>
 ---@field pending_calls table<string, Neoagent.TranscriptBlock>
 ---@field live_texts table<string, Neoagent.TranscriptBlock>
@@ -175,7 +178,49 @@ local function title(state)
   if type(state.context.thinking) == "string" then
     parts[#parts + 1] = "think: " .. state.context.thinking
   end
+  if state.history and state.history.total > 1 then
+    parts[#parts + 1] = string.format(
+      "History %d/%d%s",
+      state.history.position,
+      state.history.total,
+      state.history.latest and " · latest" or ""
+    )
+  end
   return { { text = " " .. table.concat(parts, " · ") .. " ", style = "window_title" } }
+end
+
+---@param state Neoagent.TranscriptPaneState
+---@return Applet.RegionNode?
+local function history_region(state)
+  local history = state.history
+  if not history or history.total == 1 then
+    return nil
+  end
+  local children = {}
+  for _, control in ipairs({
+    { direction = "first", label = "First", enabled = history.position > 1 },
+    { direction = "previous", label = "Previous", enabled = history.previous ~= nil },
+    { direction = "next", label = "Next", enabled = history.next ~= nil },
+    { direction = "latest", label = "Latest", enabled = not history.latest },
+  }) do
+    children[#children + 1] = ui.target({
+      key = "transcript:history:" .. control.direction,
+      group = "transcript:history",
+      role = "button",
+      disabled = not control.enabled,
+      action = ui.action("transcript.history", { direction = control.direction }),
+      focus_style = "selected",
+      child = ui.text({
+        key = "transcript:history:" .. control.direction .. ":label",
+        runs = { { text = "[" .. control.label .. "]", style = control.enabled and "accent" or "muted" } },
+      }),
+    })
+  end
+  return ui.region({
+    key = "transcript:history",
+    revision = state.document_revision,
+    child = ui.row({ key = "transcript:history:controls", gap = 1, children = children }),
+  })
 end
 
 ---@param value number
@@ -452,6 +497,10 @@ local function new_pane(self)
       ["transcript.card_move"] = function(event)
         assert(self.callbacks.card_move)((event.payload --[[@as {direction: integer}]]).direction, event.count)
       end,
+      ["transcript.history"] = function(event)
+        local payload = event.payload --[[@as {direction: 'first'|'previous'|'next'|'latest'}]]
+        assert(self.callbacks.history)(payload.direction)
+      end,
       ["transcript.dialog"] = function(event)
         local payload = event.payload --[[@as {dialog: string, action: string}]]
         assert(self.callbacks.dialog)(payload.dialog, payload.action)
@@ -618,7 +667,12 @@ render = function(state, env, cache)
         cache.blocks[key] = nil
       end
     end
-    local regions = vim.list_slice(block_regions)
+    local regions = {}
+    local navigation = history_region(state)
+    if navigation then
+      regions[#regions + 1] = navigation
+    end
+    vim.list_extend(regions, block_regions)
     local status = status_region(state)
     if status then
       regions[#regions + 1] = status
@@ -689,6 +743,7 @@ function Transcript.new(opts)
     callbacks = {
       details = callbacks.details or function() end,
       card_move = callbacks.card_move or function() end,
+      history = callbacks.history or function() end,
       dialog = callbacks.dialog or function() end,
     },
     blocks = {},
@@ -734,6 +789,7 @@ function Transcript:_state()
   end
   return {
     blocks = self.snapshot_blocks,
+    history = util.copy(self.history),
     image_source = self.image_source,
     context = util.copy(self.context),
     dialog = util.copy(self.dialog),
@@ -936,16 +992,24 @@ function Transcript:_message(message, prefix)
 end
 
 ---@param messages Neoagent.TranscriptMessage[]?
-function Transcript:set_messages(messages)
+---@param history? Neoagent.TranscriptHistory
+---@param reset? boolean
+function Transcript:set_messages(messages, history, reset)
   messages = messages or {}
-  if self:_can_append(messages) then
+  local changed_segment = history and self.history and history.id ~= self.history.id
+  local changed_history = not vim.deep_equal(history, self.history)
+  self.history = util.copy(history)
+  if changed_history then
+    self.document_revision = self.document_revision + 1
+  end
+  if not reset and not changed_segment and self:_can_append(messages) then
     local first = #self.messages + 1
     for index = first, #messages do
       local message = util.copy((assert(messages[index])))
       self.messages[index] = message
       self:_message(message, "message:" .. tostring(message._neoagent_entry_id or index))
     end
-    if first <= #messages then
+    if first <= #messages or changed_history then
       self:_publish()
     end
     return

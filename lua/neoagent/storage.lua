@@ -399,6 +399,18 @@ function Store:path(...)
   return path
 end
 
+---@param segment_id? string
+---@param direction? 'first'|'previous'|'next'
+---@return Neoagent.JournalEntry[]?, Neoagent.Error?, Neoagent.TranscriptHistory?
+function Store:transcript_entries(segment_id, direction)
+  local entries, err, history =
+    tree.indexed_transcript_entries(self._by_id, self._leaf_id or vim.NIL, segment_id, direction)
+  if not entries then
+    return nil, storage_error("Failed to build session transcript", err)
+  end
+  return entries, nil, history
+end
+
 ---@return Neoagent.StoredSessionInfo
 function Store:info()
   local first_message

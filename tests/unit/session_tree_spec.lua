@@ -310,7 +310,25 @@ describe("neoagent.session_tree", function()
     assert.matches("entry not found", (assert(err)))
   end)
 
-  it("orders compacted model context and transcripts identically", function()
+  it("starts the visible transcript at the latest local or native checkpoint", function()
+    for _, native in ipairs({ false, true }) do
+      local user = valid_entry("message", { id = "user", message = { role = "user", content = "complete request" } })
+      local checkpoint = valid_entry("compaction", {
+        id = "checkpoint", parent_id = user.id, tokens_before = 100,
+        summary = not native and "summary" or nil,
+        first_kept_entry_id = not native and user.id or nil,
+        native = native and { role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+          model = "test", encrypted_content = "opaque" } or nil,
+        retained_users = native and { { entry_id = user.id, text_chars = 3 } } or nil,
+      })
+      local after = valid_entry("message", { id = "after", parent_id = checkpoint.id,
+        message = { role = "user", content = "continue" } })
+      assert.are.same({ "checkpoint", "after" }, vim.tbl_map(function(entry) return entry.id end,
+        assert(tree.transcript_entries({ user, checkpoint, after }))))
+    end
+  end)
+
+  it("keeps retained local messages in context and their original transcript segment", function()
     local prefix = valid_entry("message", {
       id = "prefix", message = { role = "user", content = "old" },
     })
@@ -333,11 +351,11 @@ describe("neoagent.session_tree", function()
 
     assert.are.same({ "compaction", "kept", "after" },
       ids(tree.context_entries(path)))
-    assert.are.same({ "compaction", "kept", "after" },
-      ids(tree.transcript_entries(path)))
+    assert.are.same({ "compaction", "after" }, ids(assert(tree.transcript_entries(path))))
+    assert.are.same({ "prefix", "kept" }, ids(assert(tree.transcript_entries(path, "prefix"))))
   end)
 
-  it("keeps native checkpoint history visible without retaining it in requests", function()
+  it("shows complete native retained users in their original segment and budgets request text separately", function()
     local user = valid_entry("message", { id = "user", message = { role = "user", content = "question" } })
     local answer = valid_entry("message", { id = "answer", parent_id = user.id,
       message = { role = "assistant", content = { { type = "text", text = "completed answer" } } } })
@@ -350,8 +368,63 @@ describe("neoagent.session_tree", function()
       return vim.tbl_map(function(entry) return entry.id end, entries)
     end
     assert.are.same({ "user", "checkpoint" }, ids(tree.context_entries(path)))
-    assert.are.same({ "user", "answer", "checkpoint" }, ids(tree.transcript_entries(path)))
-    assert.are.equal("question", assert(assert(tree.transcript_entries(path)[1]).message).content)
+    assert.are.same({ "checkpoint" }, ids(assert(tree.transcript_entries(path))))
+    local older = assert(tree.transcript_entries(path, "user"))
+    assert.are.same({ "user", "answer" }, ids(older))
+    assert.are.equal("question", assert(assert(older[1]).message).content)
+    assert.are.equal("que", assert(assert(tree.context_entries(path)[1]).message).content)
+  end)
+
+  it("navigates consecutive active-branch ranges without copying excluded message bodies", function()
+    local entries = {
+      valid_entry("message", { id = "first", message = { role = "user", content = {
+        { type = "text", text = "large excluded history" },
+      } } }),
+      valid_entry("compaction", { id = "a", parent_id = "first", summary = "first summary", tokens_before = 10 }),
+      valid_entry("compaction", { id = "b", parent_id = "a", summary = "second summary", tokens_before = 10 }),
+      valid_entry("message", { id = "last", parent_id = "b", message = { role = "user", content = "current" } }),
+      valid_entry("compaction", { id = "other-branch", parent_id = "first", summary = "other", tokens_before = 10 }),
+    }
+    local by_id = assert(tree.validate_entries(entries)).by_id
+    local util = require("neoagent.util")
+    local copy = util.copy
+    local excluded = assert(assert(entries[1]).message).content
+    util.copy = function(value, seen)
+      assert.are_not.equal(excluded, value, "copied a body outside the selected transcript segment")
+      return copy(value, seen)
+    end
+    local ok, selected, err, history = pcall(tree.indexed_transcript_entries, by_id, "last")
+    util.copy = copy
+    assert(ok, selected)
+    assert.is_nil(err)
+    assert.are.same({ "b", "last" }, vim.tbl_map(function(entry) return entry.id end, assert(selected)))
+    assert.are.same({ id = "b", position = 3, total = 3, previous = "a", latest = true }, history)
+    assert(assert(selected[2]).message).content = "changed"
+    assert.are.equal("current", assert(assert(by_id.last).message).content)
+    local middle, _, middle_history = tree.indexed_transcript_entries(by_id, "last", "a")
+    assert.are.equal("a", assert(assert(middle)[1]).id)
+    assert.are.equal(1, #assert(middle))
+    assert.are.same({ id = "a", position = 2, total = 3, previous = "first", next = "b", latest = false }, middle_history)
+    local first, _, first_history = tree.indexed_transcript_entries(by_id, "last", nil, "first")
+    assert.are.equal("first", assert(assert(first)[1]).id)
+    assert.are.same({ id = "first", position = 1, total = 3, next = "a", latest = false }, first_history)
+    local invalid, invalid_err = tree.indexed_transcript_entries(by_id, "last", "other-branch")
+    assert.is_nil(invalid)
+    assert.matches("not found on active branch", assert(invalid_err))
+    invalid, invalid_err = tree.indexed_transcript_entries(by_id, "missing")
+    assert.is_nil(invalid)
+    assert.matches("entry not found", assert(invalid_err))
+  end)
+
+  it("handles empty histories, leading checkpoints, and internal leaf markers", function()
+    local entries, _, history = tree.transcript_entries({}, nil, "first")
+    assert.are.same({}, entries)
+    assert.are.same({ position = 1, total = 1, latest = true }, history)
+    local checkpoint = valid_entry("compaction", { id = "checkpoint", summary = "summary", tokens_before = 0 })
+    local marker = valid_entry("leaf", { id = "marker", parent_id = checkpoint.id, target_id = checkpoint.id })
+    entries, _, history = tree.transcript_entries({ checkpoint, marker }, nil, "first")
+    assert.are.same({ checkpoint }, entries)
+    assert.are.same({ id = "checkpoint", position = 1, total = 1, latest = true }, history)
   end)
 
   it("projects compaction summaries into LLM context", function()

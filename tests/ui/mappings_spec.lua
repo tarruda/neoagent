@@ -13,6 +13,24 @@ local function contains(lines, value)
 end
 
 describe("neoagent UI mappings", function()
+  it("leaves compaction history navigation keys unmapped", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    assert(result:open())
+    local checked, err = pcall(function()
+      for _, buffer in ipairs({ view_handles.buffer(result, "input"), view_handles.buffer(result, "transcript") }) do
+        vim.api.nvim_buf_call(buffer, function()
+          for _, key in ipairs({ "[c", "]c", "]C" }) do
+            assert.are.equal("", vim.fn.maparg(key, "n"))
+          end
+        end)
+      end
+    end)
+    result:destroy()
+    assert(checked, err)
+  end)
+
   it("opens full details for the transcript card under the cursor", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
@@ -452,12 +470,6 @@ describe("neoagent UI mappings", function()
     assert.are.equal(rows["third card"] - 1, cursor_row())
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
 
-    for _, buffer in ipairs({ view_handles.buffer(result, "input"), view_handles.buffer(result, "transcript") }) do
-      vim.api.nvim_buf_call(buffer, function()
-        assert.are.equal("", vim.fn.maparg("[c", "n"))
-        assert.are.equal("", vim.fn.maparg("]c", "n"))
-      end)
-    end
     result:destroy()
   end)
 
