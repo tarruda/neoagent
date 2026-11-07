@@ -11,9 +11,7 @@ describe("Linux native executable lookup failures", function()
   local original = require("neoagent.subprocess.linux_pty")
   local ffi = require("ffi")
   local C = ffi.C --[[@as Neoagent.PtyLibc]]
-  local glibc = pcall(function()
-    return C.gnu_get_libc_version()
-  end)
+  local glibc = require("neoagent.subprocess.posix_executable").glibc()
   ---@type Neoagent.SubprocessScope
   local owner
   ---@type string

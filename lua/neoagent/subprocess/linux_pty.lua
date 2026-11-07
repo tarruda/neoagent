@@ -26,7 +26,6 @@ typedef struct {
 } NeoagentGlibcSpawnAttributes;
 typedef struct { int allocated, used; void *actions; int padding[16]; } NeoagentSpawnActions;
 typedef struct { unsigned short rows, columns, xpixel, ypixel; } NeoagentPtySize;
-const char *gnu_get_libc_version(void);
 int posix_openpt(int);
 int grantpt(int);
 int unlockpt(int);
@@ -50,7 +49,6 @@ int posix_spawn(int *, const char *, const NeoagentSpawnActions *, const void *,
 ]])
 
 ---@alias Neoagent.PtyLibc {
---- gnu_get_libc_version: (fun(): ffi.cdata*),
 --- posix_openpt: (fun(flags: integer): integer),
 --- grantpt: (fun(fd: integer): integer),
 --- unlockpt: (fun(fd: integer): integer),
@@ -113,9 +111,7 @@ function M.new(spec, env, callbacks)
   if not available then
     error(validate.error("pty_unavailable", "Native PTYs require libc spawn working-directory support"), 0)
   end
-  local glibc = pcall(function()
-    return C.gnu_get_libc_version()
-  end)
+  local glibc = executable.glibc()
   -- execvp treats these as missing PATH candidates, preserving an earlier
   -- EACCES only if the entire search fails without a more definitive error.
   local missing = { [2] = true, [20] = true } -- ENOENT, ENOTDIR

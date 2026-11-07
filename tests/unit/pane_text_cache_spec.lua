@@ -182,6 +182,78 @@ describe("Pane text fragment reuse", function()
     assert.matches("left%s+right", assert(second.lines[1]))
   end)
 
+  it("inserts background coverage before retained sparse text without changing its cached row", function()
+    local cache = {}
+    local function content(revision, background)
+      return ui.region({
+        key = "wide",
+        revision = revision,
+        child = ui.panel({
+          key = "wide:panel",
+          background = background,
+          child = ui.row({
+            key = "wide:row",
+            width = 60,
+            children = {
+              ui.column({ key = "wide:empty", children = {} }),
+              ui.text({ key = "wide:text", text = "far", wrap = "none" }),
+            },
+          }),
+        }),
+      })
+    end
+    local first = compiler.compile({ tree = content(1, nil), width = 20, cache = cache })
+    local before = vim.deepcopy(first)
+    local second = compiler.compile({
+      tree = content(2, "NormalFloat"),
+      width = 20,
+      cache = cache,
+      previous = first,
+    })
+    assert.are.same({ { first = 30, last = 33 } }, first.coverage[0])
+    assert.are.same({ { first = 0, last = 20 }, { first = 30, last = 33 } }, second.coverage[0])
+    assert.are.same(first.lines, second.lines)
+    assert.are.same(before, first)
+  end)
+
+  it("keeps coverage rows disjoint while cached document Regions move", function()
+    local cache = {}
+    local function content(text, revision)
+      return ui.column({
+        key = "document",
+        gap = 1,
+        children = {
+          ui.region({
+            key = "stable",
+            revision = 1,
+            child = ui.text({ key = "stable:text", text = "stable" }),
+          }),
+          ui.region({
+            key = "tail",
+            revision = revision,
+            child = ui.text({ key = "tail:text", text = text }),
+          }),
+        },
+      })
+    end
+    local first = compiler.compile({ tree = content("old", 1), width = 20, cache = cache })
+    local before = vim.deepcopy(first)
+    local second = compiler.compile({
+      tree = content("new\nline", 2),
+      width = 20,
+      cache = cache,
+      previous = first,
+    })
+    local expected = compiler.compile({ tree = content("new\nline", 2), width = 20 })
+    assert.are.same({ "stable", "", "new", "line" }, second.lines)
+    assert.are.same(expected.coverage, second.coverage)
+    assert.is_true(rawequal(first.coverage[0], second.coverage[0]))
+    assert.are.same(before, first)
+    local recomposed = compiler.compile({ tree = content("new\nline", 2), width = 20, cache = cache })
+    assert.are.same(expected.coverage, recomposed.coverage)
+    assert.are.same(before, first)
+  end)
+
   it("preserves cached fallback text when a revised Image shrinks and grows", function()
     local cache = {}
     ---@param revision integer

@@ -533,14 +533,10 @@ end
 ---@param destination Applet.Fragment
 ---@param source Applet.Fragment
 local function append_placed_metadata(destination, source)
+  -- Document Regions occupy disjoint rows, so their coverage stays borrowed.
   for row, intervals in pairs(source.coverage or {}) do
-    if destination.coverage[row] == nil then
-      destination.coverage[row] = intervals
-    else
-      for _, interval in ipairs(intervals) do
-        add_coverage(destination, row, interval.first, interval.last)
-      end
-    end
+    assert(destination.coverage[row] == nil, "Document Region coverage overlaps")
+    destination.coverage[row] = intervals
   end
   for _, decoration in ipairs(source.decorations) do
     destination.decorations[#destination.decorations + 1] = decoration

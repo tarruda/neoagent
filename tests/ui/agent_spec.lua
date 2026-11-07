@@ -2647,6 +2647,33 @@ describe("neoagent default agent", function()
       assert(assert(run:result()).error).message)
   end)
 
+  it("reports a manual checkpoint projection failure without changing committed history", function()
+    local model = fake_model.new({})
+    local agent = setup_model(model, {
+      compaction = { auto = false, reserve_tokens = 20, keep_recent_tokens = 5 },
+    })
+    local session = agent:get_session()
+    assert(session:append({ role = "user", content = "Retain this request" }))
+    local before = session:entries()
+    local context_messages = session.context_messages
+    session.context_messages = function()
+      return nil, require("neoagent.util").error("storage", "checkpoint projection unavailable")
+    end
+    local completed, err = pcall(function()
+      local run = assert(agent:compact())
+      assert(vim.wait(1000, function()
+        return run:is_done() and not agent:is_running()
+      end))
+      local result = assert(run:result())
+      assert.is_false(result.ok)
+      assert.matches("checkpoint projection unavailable", assert(result.error).message)
+      assert.are.equal(0, #model.requests)
+      assert.are.same(before, session:entries())
+    end)
+    session.context_messages = context_messages
+    assert.is_true(completed, vim.inspect(err))
+  end)
+
   for _, strategy in ipairs({ "summary", "prefix" }) do
     it("compacts and retries a context overflow once on the active branch with " .. strategy, function()
       local directory = fs.canonical(vim.fn.tempname())

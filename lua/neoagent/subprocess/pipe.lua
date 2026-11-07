@@ -1,4 +1,5 @@
 local environment = require("neoagent.subprocess.environment")
+local executable = require("neoagent.subprocess.posix_executable")
 local validate = require("neoagent.subprocess.validate")
 local streams = require("neoagent.subprocess.streams")
 
@@ -74,8 +75,10 @@ function M.new(spec, env, callbacks, input_limits)
   ---@type uv.uv_pipe_t?
   local stdin
 
-  ---@type uv.uv_pipe_t
-  local stdout, stderr
+  ---@type uv.uv_pipe_t?
+  local stdout
+  ---@type uv.uv_pipe_t?
+  local stderr
   ---@type uv.uv_process_t?
   local process
   ---@type Neoagent.PosixChild?
@@ -138,11 +141,6 @@ function M.new(spec, env, callbacks, input_limits)
         failed = callbacks.failed,
       })
     end
-    stdout, stderr = io.pipe(), io.pipe()
-    if spec.stdio.stdin == "open" then
-      stdin = io.pipe()
-      io.input(stdin)
-    end
     local argv = spec.argv
     local verbatim = false
     if jit.os == "Windows" then
@@ -153,29 +151,62 @@ function M.new(spec, env, callbacks, input_limits)
       end
     end
     local _, spawn_code
-    -- A binding exception cannot prove whether native execution occurred.
-    -- Only an ordinary failed spawn return restores proof of no execution.
-    if callbacks.execution then
-      callbacks.execution("unknown")
-    end
-    process, _, spawn_code = uv.spawn(assert(argv[1]), {
-      args = vim.list_slice(argv, 2),
-      cwd = spec.cwd,
-      env = env_list,
-      stdio = { stdin, stdout, stderr },
-      detached = jit.os ~= "Windows",
-      hide = true,
-      verbatim = verbatim,
-    }, complete)
-    if not process then
-      if callbacks.execution then
-        callbacks.execution("not_started")
+    local function spawn(file, args)
+      -- libuv can connect streams even when execution fails. Retain their
+      -- close callbacks and allocate fresh pipes before another attempt.
+      io.close(stdin)
+      io.close(stdout)
+      io.close(stderr)
+      stdin = nil
+      stdout, stderr = io.pipe(), io.pipe()
+      if spec.stdio.stdin == "open" then
+        stdin = io.pipe()
+        io.input(stdin)
       end
+      -- A binding exception cannot prove whether native execution occurred.
+      -- Only an ordinary failed spawn return restores proof of no execution.
+      if callbacks.execution then
+        callbacks.execution("unknown")
+      end
+      process, _, spawn_code = uv.spawn(file, {
+        args = args,
+        cwd = spec.cwd,
+        env = env_list,
+        stdio = { stdin, stdout, stderr },
+        detached = jit.os ~= "Windows",
+        hide = true,
+        verbatim = verbatim,
+      }, complete)
+      if callbacks.execution then
+        callbacks.execution(process and "started" or "not_started")
+      end
+    end
+    local program, args = assert(argv[1]), vim.list_slice(argv, 2)
+    spawn(program, args)
+    if not process and spawn_code == "ENOEXEC" and executable.glibc() then
+      -- posix_spawn-based libuv does not provide glibc execvp's shell retry.
+      -- Replay native PATH attempts to locate the script without mistaking
+      -- a candidate with a missing shebang interpreter for executable text.
+      for _, path in ipairs(executable.candidates(program, env.PATH or "/usr/bin:/bin")) do
+        if not program:find("/", 1, true) then
+          -- An empty PATH entry identifies cwd, not another PATH search.
+          path = path:find("/", 1, true) and path or "./" .. path
+          spawn(path, args)
+        end
+        if not process and spawn_code == "ENOEXEC" then
+          local shell_args = { "--", path }
+          vim.list_extend(shell_args, args)
+          spawn("/bin/sh", shell_args)
+          break
+        end
+        if process or spawn_code ~= "ENOENT" and spawn_code ~= "ENOTDIR" and spawn_code ~= "EACCES" then
+          break
+        end
+      end
+    end
+    if not process then
       local code = type(spawn_code) == "string" and spawn_code:match("^E[A-Z0-9]+$") or "UNKNOWN"
       error(validate.error("process_start", "Failed to start process (" .. code .. ")"), 0)
-    end
-    if callbacks.execution then
-      callbacks.execution("started")
     end
     if jit.os == "Windows" then
       -- Keep uv's process handle and the Job until native exit, even when
@@ -193,8 +224,8 @@ function M.new(spec, env, callbacks, input_limits)
     elseif tree and not tree:attach(pid) then
       error(validate.error("process_supervision", "Failed to supervise process tree"), 0)
     end
-    io.read(stdout, "stdout")
-    io.read(stderr, "stderr")
+    io.read(assert(stdout), "stdout")
+    io.read(assert(stderr), "stderr")
     if child then
       child.poll()
     end

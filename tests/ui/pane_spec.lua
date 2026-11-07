@@ -182,6 +182,35 @@ describe("Pane buffer surfaces", function()
     assert.are.same({ "recovered" }, lines(host.buffer))
   end)
 
+  it("ignores duplicate buffer notifications and repairs a later managed edit", function()
+    local value = pane({ key = "duplicate-buffer-observer" })
+    local host = surface("applet-duplicate-buffer-observer", true)
+    local attach = vim.api.nvim_buf_attach
+    ---@type vim.api.keyset.buf_attach?
+    local observer
+    vim.api.nvim_buf_attach = function(buffer, send_buffer, options)
+      if buffer == host.buffer then
+        observer = options
+      end
+      return attach(buffer, send_buffer, options)
+    end
+    local connected, err = pcall(value._connect, value, host)
+    vim.api.nvim_buf_attach = attach
+    assert.is_true(connected, vim.inspect(err))
+    value:update(ui.text({ key = "body", text = "retained" }))
+    assert(value:flush())
+    local before = value:_stats()
+    assert(assert(observer).on_lines)("lines", host.buffer, vim.api.nvim_buf_get_changedtick(host.buffer), 0, 1, 1, 0)
+    assert.are.same(before, value:_stats())
+    assert.is_false(value.reconcile_state.unknown)
+    assert.are.same({ "retained" }, lines(host.buffer))
+    vim.bo[host.buffer].modifiable = true
+    vim.api.nvim_buf_set_lines(host.buffer, 0, -1, false, { "external edit" })
+    assert(value:flush())
+    assert.are.same({ "retained" }, lines(host.buffer))
+    assert.is_true(value:_stats().commits > before.commits)
+  end)
+
   it("ignores retained native observation callbacks after disconnecting its surface", function()
     local value = pane({ key = "retired-observers", buffer_mode = "editable" })
     local host = surface("applet-retired-observers", true)
