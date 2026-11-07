@@ -208,7 +208,7 @@ function M.fetch(opts)
   local request = assert(opts.request, "request is required")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
   return async.run(
-    ---@return Neoagent.ByteFetchSuccess
+    ---@return Neoagent.ByteFetchResult
     function()
       local maximum = request.max_response_bytes
       if maximum ~= nil then
@@ -280,7 +280,9 @@ function M.fetch(opts)
         if headers and (header_status or next(headers) ~= nil) then
           err.response = { status = header_status, headers = headers }
         end
-        error(err, 0)
+        -- Response metadata is protocol input; another Run error conversion
+        -- would sanitize opaque header values before their consumer sees them.
+        return { ok = false, error = err }
       end
       if not headers then
         error(util.error("transport", "Failed reading curl response headers", header_error), 0)
@@ -308,7 +310,7 @@ function M.request(opts)
   opts = opts or {}
   local request = assert(opts.request, "request is required")
   return async.run(
-    ---@return Neoagent.ByteStreamSuccess
+    ---@return Neoagent.ByteStreamResult
     function()
       local header_path = header_file()
       local stderr = ""
@@ -375,7 +377,7 @@ function M.request(opts)
         if headers and (status or next(headers) ~= nil) then
           err.response = { status = status, headers = headers }
         end
-        error(err, 0)
+        return { ok = false, error = err }
       end
       if not headers then
         error(util.error("transport", "Failed reading curl response headers", header_error), 0)

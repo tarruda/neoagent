@@ -14,15 +14,18 @@ end
 
 describe("neoagent.transport.curl", function()
   for _, method in ipairs({ "fetch", "request" }) do
-    it("classifies " .. method .. " failures without losing received HTTP status", function()
+    it("preserves exact " .. method .. " failure metadata and bounded diagnostics", function()
       local original_system = vim.system
+      local token = string.rep("t", 8192)
       vim.system = function(command, _, on_exit)
         for index, argument in ipairs(command) do
           if argument == "--dump-header" then
-            vim.fn.writefile({ "HTTP/1.1 401 Unauthorized", "" }, (assert(command[index + 1])))
+            vim.fn.writefile({
+              "HTTP/1.1 401 Unauthorized", "X-Codex-Turn-State: " .. token, "",
+            }, (assert(command[index + 1])))
           end
         end
-        assert(on_exit)({ code = 56, signal = 0, stderr = "synthetic partial transfer" })
+        assert(on_exit)({ code = 56, signal = 0, stderr = string.rep("synthetic partial transfer ", 100) })
         return { kill = function() end } --[[@as vim.SystemObj]]
       end
       local run = require("neoagent.async").run(function()
@@ -43,6 +46,8 @@ describe("neoagent.transport.curl", function()
       assert.are.equal(56, rawget(err, "exit_code"))
       local response = assert(rawget(err, "response"))
       assert.are.equal(401, response.status)
+      assert.are.equal(token, response.headers["x-codex-turn-state"])
+      assert.is_true(#tostring(err.detail) <= util.MAX_ERROR_STRING_CHARACTERS + 3)
     end)
   end
 

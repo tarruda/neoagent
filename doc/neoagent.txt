@@ -273,6 +273,10 @@ conversation content. Configure or disable the sink under the provider: >lua
   }
 <
 
+The Codex adapter uses Session identity for prompt-cache affinity and retains
+server routing state within a turn, including retries and automatic compaction.
+Routing state is discarded when the turn finishes or is cancelled.
+
 AGENTS AND APPLETS                                           *neoagent-agents*
 
 `setup(opts)` registers Pi, Chat, and Codex Profiles. Pi and Codex supply their

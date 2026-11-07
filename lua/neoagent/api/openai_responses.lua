@@ -28,6 +28,7 @@ local M = {}
 ---@field native_compaction? boolean
 ---@field custom_tools? boolean
 ---@field supports_image_detail_original? boolean
+---@field _request_transport? fun(transport: Neoagent.HttpClient, options: Neoagent.RequestOptions): Neoagent.HttpClient Internal adapter-owned request transport.
 
 ---@class Neoagent.ResponsesModel: Neoagent.Model
 ---@field _base_url string
@@ -46,6 +47,7 @@ local M = {}
 ---@field _request_context? Neoagent.RequestIdentity
 ---@field _transport Neoagent.HttpClient
 ---@field _images? Neoagent.ImageRequest
+---@field _request_transport? fun(transport: Neoagent.HttpClient, options: Neoagent.RequestOptions): Neoagent.HttpClient
 local Model = {}
 Model.__index = Model
 
@@ -82,7 +84,11 @@ function Model:stream(opts)
       local ok, outcome = pcall(function()
         require("neoagent.model").require_files(opts)
         local request, identity = self:_request(opts)
-        local transport = request_context.bind_transport(self._transport, identity)
+        local transport = self._transport
+        if self._request_transport then
+          transport = self._request_transport(transport, opts)
+        end
+        transport = request_context.bind_transport(transport, identity)
         stream = decoder.new(self, function(event)
           run:emit(event)
         end, opts.tools)
@@ -150,7 +156,11 @@ local function compact(self, opts)
   return async.run(function(run)
     model_contract.require_files(opts)
     local request, identity = self:_request(opts, true)
-    local transport = request_context.bind_transport(self._transport, identity)
+    local transport = self._transport
+    if self._request_transport then
+      transport = self._request_transport(transport, opts)
+    end
+    transport = request_context.bind_transport(transport, identity)
     local native = compact_decoder.new(self)
     local result = request_stream.send(transport, request, opts, { on_event = native.process }, self._images):await()
     local response = http_response.check(result)
@@ -216,6 +226,7 @@ function M.new(opts)
       _request_context = request_context.copy(opts.request_context),
       _transport = http.new(opts.transport),
       _images = request_stream.validate(opts._images),
+      _request_transport = opts._request_transport,
     }, Model),
     "OpenAI Responses constructor"
   )

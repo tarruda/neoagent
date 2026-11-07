@@ -2,6 +2,7 @@ local request_preparation = require("neoagent.api.request_preparation")
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local responses = require("neoagent.api.openai_responses")
+local affinity = require("neoagent.api.openai_codex_affinity")
 local util = require("neoagent.util")
 
 local M = {}
@@ -533,6 +534,7 @@ local function wrap_stream(model, opts)
           local attempt = 0
           while true do
             local call = request_preparation.copy(call_opts)
+            call._turn = call._turn or run
             call.on_event = function(event)
               run:emit(event)
             end
@@ -601,6 +603,7 @@ local function wrap_stream(model, opts)
         local ok, outcome = pcall(function()
           while true do
             local call = request_preparation.copy(call_opts)
+            call._turn = call._turn or run
             call.on_event = function(event)
               run:emit(event)
             end
@@ -646,6 +649,9 @@ function M.new(opts)
   opts.profile = "codex"
   opts.native_compaction = true
   opts.response_status = rate_limit_status
+  opts.request_opts_layers = opts.request_opts_layers or {}
+  table.insert(opts.request_opts_layers, 1, affinity.request_opts)
+  opts._request_transport = affinity.new()
   local model = responses.new(opts)
   model.api = "openai-codex-responses"
   local wrapped = wrap_stream(model, opts)

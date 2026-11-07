@@ -330,6 +330,7 @@ function M.send(session, prompt, opts)
       function()
         async.yield()
         local model_opts = model_options(session, prepared.model_options)
+        model_opts._turn = model_opts._turn or run
         ---@cast model_opts Neoagent.StreamOptions
         model_opts.messages = context_messages(session, prepared)
         model_opts._preparation = request_preparation.new()
@@ -422,13 +423,15 @@ local function run_agent(session, opts)
     ---@return Neoagent.ChatResult
     function()
       async.yield()
+      local call = model_options(session, opts.model_options)
+      call._turn = call._turn or run
       ---@type Neoagent.AgentLoopOptions<C>
       local child_options = {
         model = opts.model,
         messages = context_messages(session, opts),
         system_prompt = opts.system_prompt,
         tools = opts.tools,
-        model_options = model_options(session, opts.model_options),
+        model_options = call,
         context = opts.context,
         execute_tool = opts.execute_tool,
         get_steering_messages = opts.get_steering_messages,

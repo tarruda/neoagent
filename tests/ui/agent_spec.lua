@@ -1288,7 +1288,7 @@ describe("neoagent default agent", function()
     ---@param opts Neoagent.StreamOptions
     ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function model:stream(opts)
-      self.requests[#self.requests + 1] = vim.deepcopy(opts)
+      self.requests[#self.requests + 1] = require("neoagent.api.request_preparation").copy(opts)
       if #self.requests == 1 then
         return async.run(function()
           return async.await(function(done) pending = done end)
@@ -1975,6 +1975,60 @@ describe("neoagent default agent", function()
     local latest = assert(entries[3])
     assert(latest.type == "message")
     assert.are.equal("Arrived during preparation", latest.message.content)
+  end)
+
+  it("keeps Codex routing through length recovery and resets it for manual compaction", function()
+    local function reply(token, incomplete)
+      return {
+        headers = { ["x-codex-turn-state"] = token },
+        chunks = { "data: " .. vim.json.encode({ type = incomplete and "response.incomplete" or "response.completed",
+          response = { id = "synthetic-response", status = incomplete and "incomplete" or "completed",
+            incomplete_details = incomplete and { reason = "max_output_tokens" } or nil,
+            usage = { input_tokens = incomplete and 9900 or 20, output_tokens = 4,
+              total_tokens = incomplete and 9904 or 24 },
+            output = { { type = "message", id = "msg_reply", role = "assistant", status = "completed",
+              content = { { type = "output_text", text = "Synthetic answer", annotations = {} } } } },
+          } }) .. "\n\n" },
+      }
+    end
+    local function compacted(token)
+      local value = reply(token)
+      table.insert(value.chunks, 1, "data: " .. vim.json.encode({ type = "response.output_item.done",
+        item = { type = "compaction", encrypted_content = "synthetic-checkpoint" } }) .. "\n\n")
+      return value
+    end
+    local transport = require("tests.helpers.fake_transport").new({
+      reply("turn-one", true), compacted("ignored-compaction"), reply("ignored-continuation"),
+      compacted("manual-compaction"), reply("turn-two"),
+    })
+    local model = require("neoagent.api.openai_codex_responses").new({
+      provider = "fake", model = "test", base_url = "https://example.test", context_window = 10000,
+      transport = transport,
+    })
+    setup_model(model, {
+      _compaction_component = require("neoagent.compaction.codex").component,
+      compaction = { auto = true, reserve_tokens = 200, keep_recent_tokens = 10 },
+    })
+    local first = assert(neoagent.send("Continue the long answer"))
+    assert(type(first) == "table")
+    assert(vim.wait(3000, function() return first:is_done() and is_idle() end))
+    assert.is_true(assert(first:result()).ok)
+    assert.are.equal(3, #transport.requests)
+    for _, index in ipairs({ 2, 3 }) do
+      assert.are.equal("turn-one", rawget(assert(assert(transport.requests[index]).headers), "x-codex-turn-state"))
+    end
+    local manual = assert(neoagent.compact())
+    assert(vim.wait(3000, function() return manual:is_done() and is_idle() end))
+    assert.is_true(assert(manual:result()).ok)
+    local next_turn = assert(neoagent.send("Start the next turn"))
+    assert(type(next_turn) == "table")
+    assert(vim.wait(3000, function() return next_turn:is_done() and is_idle() end))
+    assert.is_true(assert(next_turn:result()).ok)
+    for _, index in ipairs({ 1, 4, 5 }) do
+      assert.is_nil(rawget(assert(assert(transport.requests[index]).headers), "x-codex-turn-state"))
+    end
+    assert.are.equal(5, #transport.requests)
+    assert.is_nil(vim.inspect(current_session():entries()):find("x%-codex%-turn%-state"))
   end)
 
   it("recovers an overflow immediately after a native checkpoint", function()
