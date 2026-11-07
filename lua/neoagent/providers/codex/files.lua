@@ -25,9 +25,10 @@ local function storage_url(value)
 end
 
 ---@param result Neoagent.HttpResult
+---@param metadata_request? boolean
 ---@return Neoagent.JsonValue?
-local function checked(result)
-  return file_http.checked(result, "Codex Files")
+local function checked(result, metadata_request)
+  return file_http.checked(result, "Codex Files", metadata_request)
 end
 
 ---@param value unknown
@@ -160,7 +161,7 @@ function M.new(opts)
         if file_http.status(result) == 404 then
           return { ok = true }
         end
-        return { ok = true, object = metadata(checked(result), object.locator) }
+        return { ok = true, object = metadata(checked(result, true), object.locator) }
       end, { error_kind = "files" })
     end,
   }

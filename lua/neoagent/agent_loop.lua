@@ -24,9 +24,14 @@ function M.validate_request_messages(model, messages, files)
   return normalized
 end
 
+---@class Neoagent.ToolMessageContext
+---@field session_id table
+---@field files? Neoagent.Files
+
 ---@class Neoagent.ToolFacets<C>: Neoagent.ToolDefinition
 ---@field capabilities? {read_files?: boolean}
----@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: C)
+---@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: Neoagent.ToolMessageContext)
+---@field on_message? fun(message: Neoagent.ProjectionMessage, context: Neoagent.ToolMessageContext)
 ---@field current? fun(context: C): unknown
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
 ---@field prompt_snippet? string
@@ -175,6 +180,7 @@ local tool_fields = {
   execute = true,
   capabilities = true,
   on_messages = true,
+  on_message = true,
   current = true,
   render = true,
 }
@@ -237,6 +243,8 @@ function M.validate_toolset(tools, execute_tool)
       label .. ".capabilities.read_files must be a boolean"
     )
     assert(tool.on_messages == nil or type(tool.on_messages) == "function", label .. ".on_messages must be a function")
+    assert(tool.on_message == nil or type(tool.on_message) == "function", label .. ".on_message must be a function")
+    assert(tool.on_message == nil or tool.on_messages ~= nil, label .. ".on_message requires on_messages")
     assert(tool.current == nil or type(tool.current) == "function", label .. ".current must be a function")
     assert(tool.render == nil or type(tool.render) == "function", label .. ".render must be a function")
     lookup[tool.name] = tool

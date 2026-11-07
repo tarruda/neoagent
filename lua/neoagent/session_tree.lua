@@ -621,8 +621,9 @@ end
 
 ---@param by_id Neoagent.JournalIndex
 ---@param leaf_id? string|vim.NIL
+---@param borrowed? boolean
 ---@return Neoagent.JournalEntry[]?, string?
-local function indexed_path(by_id, leaf_id)
+local function indexed_path(by_id, leaf_id, borrowed)
   if leaf_id == vim.NIL then
     return {}
   end
@@ -640,7 +641,7 @@ local function indexed_path(by_id, leaf_id)
   end
   local result = {}
   for index = #reversed, 1, -1 do
-    result[#result + 1] = util.copy(reversed[index])
+    result[#result + 1] = borrowed and reversed[index] or util.copy(reversed[index])
   end
   return result
 end
@@ -867,6 +868,19 @@ function M.context_messages(path)
     end
   end
   return result
+end
+
+-- Select the active projection before copying entries. Historical journal
+-- values stay borrowed within this module and never escape to a caller.
+---@param by_id Neoagent.JournalIndex
+---@param leaf_id? string|vim.NIL
+---@return Neoagent.RequestMessage[]?, string?
+function M.indexed_context_messages(by_id, leaf_id)
+  local path, err = indexed_path(by_id, leaf_id, true)
+  if not path then
+    return nil, err
+  end
+  return M.context_messages(path)
 end
 
 -- Snapshot one source path for a planning operation. Candidate validation and

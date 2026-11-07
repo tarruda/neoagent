@@ -145,6 +145,29 @@ local canvas = require("applet.pane.canvas")
 
 ---@alias Applet.ImageDependencyKeys table<string, {desired_identity: string}|'invalid'>
 
+---@class Applet.TextWidthContext
+---@field ambiwidth string
+---@field emoji boolean
+---@field display string
+---@field isprint string
+---@field overrides integer[][]
+
+---@class Applet.TextCacheEntry
+---@field node Applet.TextNode
+---@field width integer
+---@field theme? Applet.CompileTheme
+---@field theme_generation integer
+---@field width_context Applet.TextWidthContext
+---@field lines string[]
+---@field coverage Applet.CellCoverage
+---@field decorations Applet.CompiledDecoration[]
+
+---@class Applet.TextCache
+---@field previous table<string, Applet.TextCacheEntry>
+---@field current table<string, Applet.TextCacheEntry>
+---@field theme? Applet.CompileTheme Explicit Theme identity; default styles are fixed.
+---@field width_context Applet.TextWidthContext
+
 ---@class Applet.RegionCacheEntry
 ---@field revision string|number
 ---@field constraints Applet.RegionConstraints
@@ -152,6 +175,7 @@ local canvas = require("applet.pane.canvas")
 ---@field image_keys table<string, boolean>
 ---@field dependency_keys Applet.ImageDependencyKeys
 ---@field placement? {row: integer, metadata: Applet.Fragment}
+---@field texts? table<string, Applet.TextCacheEntry>
 
 ---@class Applet.LayerCacheEntry
 ---@field content Applet.Node
@@ -211,6 +235,7 @@ local canvas = require("applet.pane.canvas")
 ---@field scope? string
 ---@field positioned? boolean
 ---@field background_group? string
+---@field text_cache? Applet.TextCache
 
 ---@class Applet.DocumentShape
 ---@field wrappers {key: string, modal: boolean, bindings: Applet.Binding[]}[]
@@ -327,25 +352,36 @@ local function add_coverage(value, row, first, last)
   if first >= last then
     return
   end
-  local intervals = value.coverage[row] or {}
-  intervals[#intervals + 1] = { first = first, last = last }
-  table.sort(intervals, function(left, right)
-    if left.first == right.first then
-      return left.last < right.last
-    end
-    return left.first < right.first
-  end)
-  local merged = {}
+  local intervals = value.coverage[row]
+  if not intervals then
+    value.coverage[row] = { { first = first, last = last } }
+    return
+  end
   for _, interval in ipairs(intervals) do
-    local previous = merged[#merged]
-    if previous and interval.first <= previous.last then
-      previous.last = math.max(previous.last, interval.last)
-    else
-      merged[#merged + 1] = {
-        first = interval.first,
-        last = interval.last,
-      }
+    if interval.first <= first and interval.last >= last then
+      return
     end
+  end
+  -- Coverage rows may be borrowed from a retained fragment. Merge into a
+  -- fresh row so later backgrounds cannot alter an earlier Layout.
+  local merged = {}
+  local inserted = false
+  for _, interval in ipairs(intervals) do
+    if interval.last < first then
+      merged[#merged + 1] = interval
+    elseif last < interval.first then
+      if not inserted then
+        merged[#merged + 1] = { first = first, last = last }
+        inserted = true
+      end
+      merged[#merged + 1] = interval
+    else
+      first = math.min(first, interval.first)
+      last = math.max(last, interval.last)
+    end
+  end
+  if not inserted then
+    merged[#merged + 1] = { first = first, last = last }
   end
   value.coverage[row] = merged
 end
@@ -395,8 +431,13 @@ end
 ---@param preserve_linewise? boolean
 local function append_metadata(destination, source, row, display_col, byte_cols, preserve_linewise)
   for source_row, intervals in pairs(source.coverage or {}) do
-    for _, interval in ipairs(intervals) do
-      add_coverage(destination, source_row + row, interval.first + display_col, interval.last + display_col)
+    local destination_row = source_row + row
+    if display_col == 0 and destination.coverage[destination_row] == nil then
+      destination.coverage[destination_row] = intervals
+    else
+      for _, interval in ipairs(intervals) do
+        add_coverage(destination, destination_row, interval.first + display_col, interval.last + display_col)
+      end
     end
   end
   for _, decoration in ipairs(source.decorations) do
@@ -458,6 +499,8 @@ local function append_metadata(destination, source, row, display_col, byte_cols,
   end
 end
 
+local zero_byte_columns = {}
+
 ---@param destination Applet.Fragment
 ---@param source Applet.Fragment
 ---@param gap integer
@@ -475,11 +518,7 @@ local function append_vertical(destination, source, gap)
   for _, line in ipairs(source.lines) do
     destination.lines[#destination.lines + 1] = line
   end
-  local byte_cols = {}
-  for index = 1, math.max(#source.lines, 1) do
-    byte_cols[index] = 0
-  end
-  append_metadata(destination, source, row, 0, byte_cols, true)
+  append_metadata(destination, source, row, 0, zero_byte_columns, true)
 end
 
 ---@param source Applet.Fragment
@@ -487,21 +526,17 @@ end
 ---@return Applet.Fragment
 local function placed_metadata(source, row)
   local result = fragment()
-  local byte_cols = {}
-  for index = 1, math.max(#source.lines, 1) do
-    byte_cols[index] = 0
-  end
-  append_metadata(result, source, row, 0, byte_cols, true)
+  append_metadata(result, source, row, 0, zero_byte_columns, true)
   return result
 end
 
 ---@param destination Applet.Fragment
 ---@param source Applet.Fragment
 local function append_placed_metadata(destination, source)
+  -- Document Regions occupy disjoint rows, so their coverage stays borrowed.
   for row, intervals in pairs(source.coverage or {}) do
-    for _, interval in ipairs(intervals) do
-      add_coverage(destination, row, interval.first, interval.last)
-    end
+    assert(destination.coverage[row] == nil, "Document Region coverage overlaps")
+    destination.coverage[row] = intervals
   end
   for _, decoration in ipairs(source.decorations) do
     destination.decorations[#destination.decorations + 1] = decoration
@@ -897,6 +932,24 @@ end
 ---@param path string
 ---@return Applet.Fragment
 local function compile_text(node, ctx, path)
+  local cache = ctx.text_cache
+  local cached = cache and cache.previous[path]
+  if
+    cache
+    and cached
+    and cached.width == ctx.width
+    and cached.theme == cache.theme
+    and cached.theme_generation == (ctx.theme.generation or 0)
+    and util.equal(cached.width_context, cache.width_context)
+    and util.equal(cached.node, node)
+  then
+    cache.current[path] = cached
+    -- Wrappers own their interaction maps; only immutable text data is shared.
+    local reused = fragment(cached.lines)
+    reused.coverage = cached.coverage
+    reused.decorations = cached.decorations
+    return reused
+  end
   local mode = node.wrap or "word"
   applet_expect(
     mode == "word" or mode == "character" or mode == "none" or mode == "native",
@@ -998,6 +1051,18 @@ local function compile_text(node, ctx, path)
         continuation = mode == "native" or nil,
       }
     end
+  end
+  if cache then
+    cache.current[path] = {
+      node = vim.deepcopy(node),
+      width = ctx.width,
+      theme = cache.theme,
+      theme_generation = ctx.theme.generation or 0,
+      width_context = cache.width_context,
+      lines = result.lines,
+      coverage = result.coverage,
+      decorations = result.decorations,
+    }
   end
   return result
 end
@@ -2246,7 +2311,8 @@ local function image_fallback(node, ctx, path, width, height, reserve_height)
   applet_expect(fallback.type ~= "image", path .. ".fallback", "must not be an image")
   local child_ctx = util.copy(ctx)
   child_ctx.width = width
-  local result = compile_node(fallback, child_ctx, path .. ".fallback")
+  -- Sizing mutates the fallback; compiled text may belong to the Region cache.
+  local result = vim.deepcopy(compile_node(fallback, child_ctx, path .. ".fallback"))
   while #result.lines > height do
     table.remove(result.lines)
   end
@@ -3545,6 +3611,14 @@ function M.compile(opts)
     stats = stats,
   }
   local explicit, wrappers, gap, document_shape = normalize_regions(tree.root)
+  ---@type Applet.TextWidthContext
+  local width_context = {
+    ambiwidth = vim.o.ambiwidth,
+    emoji = vim.o.emoji,
+    display = vim.o.display,
+    isprint = vim.o.isprint,
+    overrides = vim.fn.getcellwidths(),
+  }
   local value = fragment()
   value.regions = {}
   if explicit then
@@ -3683,6 +3757,14 @@ function M.compile(opts)
         validate_plain(region.child, path .. ".child", {})
         local region_ctx = util.copy(ctx)
         region_ctx.image_keys = {}
+        if cache and region.revision ~= nil then
+          region_ctx.text_cache = {
+            previous = descriptor.cached and descriptor.cached.texts or {},
+            current = {},
+            theme = opts.theme,
+            width_context = width_context,
+          }
+        end
         child = compile_node(region.child, region_ctx, path .. ".child")
         for image_key in pairs(region_ctx.image_keys) do
           applet_expect(not ctx.image_keys[image_key], path, ("duplicate image key %q"):format(image_key))
@@ -3698,6 +3780,7 @@ function M.compile(opts)
             fragment = child,
             image_keys = util.copy(region_ctx.image_keys),
             dependency_keys = descriptor.dependencies_keys,
+            texts = region_ctx.text_cache and region_ctx.text_cache.current or nil,
           }
           cache.regions[region.key] = cache_entry
         end

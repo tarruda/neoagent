@@ -740,6 +740,34 @@ describe("neoagent native Renderer protocol", function()
     assert.are.equal("read-image-target", assert(assert(target).action).payload.block)
   end)
 
+  it("renders an empty custom tool body without a focusable card", function()
+    local node = assert(protocol.render_block(renderers.codex, {
+      key = "empty-tool",
+      kind = "tool",
+      state = "success",
+      call = { id = "empty-call", name = "empty", arguments = {} },
+      message = {
+        role = "toolResult",
+        toolCallId = "empty-call",
+        toolName = "empty",
+        content = {},
+      },
+    }, {
+      width = 40,
+      details_key = "<CR>",
+      tool = {
+        name = "empty",
+        render = function()
+          return { kind = "text", lines = {} }
+        end,
+      },
+    }))
+    local value = layout(node, renderers.codex.theme, 40)
+    assert.are.same({ "" }, value.lines)
+    assert.are.same({}, value.targets)
+    assert.are.same({}, value.target_order)
+  end)
+
   it("renders semantic tool plans, edits, activities, and fallbacks", function()
     ---@param selected Neoagent.Renderer<unknown>
     ---@param semantic unknown

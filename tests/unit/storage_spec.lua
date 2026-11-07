@@ -1054,7 +1054,7 @@ describe("neoagent.storage", function()
     dirs[#dirs + 1] = directory
     local store = storage.new({ directory = directory, cwd = directory })
     assert(store:append({ role = "user", content = "message" }))
-    tree.indexed_path = function() return nil, "projection unavailable" end
+    store._leaf_id = "unavailable"
 
     local path, path_err = store:path()
     assert.is_nil(path)
@@ -1062,7 +1062,7 @@ describe("neoagent.storage", function()
     local context, context_err = store:context_messages()
     assert.is_nil(context)
     assert.matches("Failed to build session context", assert(context_err).message)
-    assert.matches("projection unavailable", vim.inspect(context_err))
+    assert.matches("entry not found: unavailable", vim.inspect(context_err), 1, true)
   end)
 
   it("projects Session appends incrementally without Store reloads", function()

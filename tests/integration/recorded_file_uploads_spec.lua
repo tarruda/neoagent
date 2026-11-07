@@ -119,7 +119,8 @@ describe("recorded conversations with uploaded images", function()
     local first, second = assert(requests[3]), assert(requests[4])
     assert.are.equal("GET", first.method)
     assert.are.equal(first.url, second.url)
-    assert.is_true(assert(second.timeout_ms) < assert(first.timeout_ms))
+    assert.is_true(assert(second.timeout_ms) <= assert(first.timeout_ms))
+    assert.is_true(assert(first.timeout_ms) <= 30000)
     assert.are.equal("https://api.deepseek.com/chat/completions", assert(requests[5]).url)
     assert.are.same(first.headers, second.headers)
   end)
@@ -345,12 +346,21 @@ describe("recorded conversations with uploaded images", function()
       else body.error[changed] = "synthetic unrelated inspection failure" end
       rejected.body = vim.json.encode(body)
       rejected.chunks = {{data = rejected.body, bytes = #rejected.body, at_us = 1000}}
-      local session, start = conversation("deepseek", {"upload", "conversation", {exchange = rejected}})
+      local exchanges = {"upload", "conversation", {exchange = rejected}}
+      if changed == "status" then
+        exchanges[#exchanges + 1] = {exchange = rejected}
+        exchanges[#exchanges + 1] = {exchange = rejected}
+      end
+      local session, start = conversation("deepseek", exchanges)
       send(session, start(), "Describe the tile.")
       local result = wait(chat.send(session, "Continue.", {model = start()}))
       assert.is_false(result.ok)
       assert.matches("HTTP " .. (changed == "status" and "503" or "400"), assert(result.error).message)
-      assert.are.equal(3, #assert(scenario).requests, "inspection errors must not trigger another upload or inference")
+      local requests = assert(scenario).requests
+      assert.are.equal(changed == "status" and 5 or 3, #requests)
+      for index = 3, #requests do
+        assert.are.equal("GET", assert(requests[index]).method, "inspection errors must not trigger another upload or inference")
+      end
     end)
   end
 end)

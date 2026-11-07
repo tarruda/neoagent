@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local files = require("neoagent.files")
+local linkage = require("neoagent.message_linkage")
 
 local M = {}
 
@@ -945,40 +946,16 @@ function M.normalize_list(messages, opts)
     "message index_offset must be a non-negative integer"
   )
   local result = {}
-  local calls = {}
-  local seen_calls = {}
+  local update = linkage.stage()
   for message_index, message in ipairs(messages) do
     local displayed_index = message_index + index_offset
     local normalized, err = M.normalize(message)
     if not normalized then
       return nil, "message " .. tostring(displayed_index) .. ": " .. err
     end
-    if normalized.role == "assistant" then
-      for _, block in ipairs(normalized.content) do
-        if block.type == "toolCall" then
-          if seen_calls[block.id] then
-            return failure(
-              "message " .. tostring(displayed_index) .. ": duplicate conversation toolCall id: " .. block.id
-            )
-          end
-          seen_calls[block.id] = true
-          calls[block.id] = block.name
-        end
-      end
-    elseif normalized.role == "toolResult" then
-      local name = calls[normalized.toolCallId]
-      if name == nil then
-        return failure(
-          "message "
-            .. tostring(displayed_index)
-            .. ": toolResult references an unknown toolCall: "
-            .. normalized.toolCallId
-        )
-      end
-      if normalized.toolName ~= nil and normalized.toolName ~= name then
-        return failure("message " .. tostring(displayed_index) .. ": toolResult toolName does not match its toolCall")
-      end
-      calls[normalized.toolCallId] = nil
+    local linked, linkage_err = linkage.check(update, normalized, displayed_index)
+    if not linked then
+      return nil, linkage_err
     end
     result[message_index] = normalized
   end

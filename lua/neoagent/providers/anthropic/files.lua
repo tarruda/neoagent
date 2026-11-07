@@ -52,7 +52,7 @@ end
 ---@param previous? Neoagent.RemoteFile
 ---@return Neoagent.RemoteFile
 local function metadata(result, asset, previous)
-  local value = file_http.checked(result, "Anthropic Files")
+  local value = file_http.checked(result, "Anthropic Files", previous ~= nil)
   if
     type(value) ~= "table"
     or value.type ~= "file"

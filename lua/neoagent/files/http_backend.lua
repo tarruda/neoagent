@@ -13,7 +13,7 @@ local extensions = { ["image/png"] = "png", ["image/jpeg"] = "jpg", ["image/gif"
 ---@param previous? Neoagent.RemoteFile
 ---@return Neoagent.RemoteFile
 local function metadata(result, purpose, bytes, previous)
-  local value = file_http.checked(result, "Files")
+  local value = file_http.checked(result, "Files", previous ~= nil)
   if
     type(value) ~= "table"
     or value.object ~= "file"

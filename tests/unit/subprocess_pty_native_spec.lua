@@ -65,9 +65,11 @@ describe("native subprocess PTY ownership", function()
       local terminal = helper.complete(function()
         return owner:run(selected, { capture = { max_bytes = 1024 } })
       end)
-      if pipes.error then
+      if pipes.error and not require("neoagent.subprocess.posix_executable").glibc() then
         assert.are.equal("process_start", assert(terminal.error).code)
       else
+        assert.are.equal(23, pipes.code, vim.inspect(pipes))
+        assert.are.equal("literal $() *:environment", pipes.output)
         assert.are.equal(23, terminal.code, vim.inspect(terminal))
         assert.are.equal("literal $() *:environment", terminal.output)
       end

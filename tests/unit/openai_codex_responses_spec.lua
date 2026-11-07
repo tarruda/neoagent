@@ -653,6 +653,74 @@ describe("neoagent.api.openai_codex_responses", function()
     }, statuses)
   end)
 
+  for _, operation in ipairs({ "stream", "compact" }) do
+    it("retries a plain-text HTTP 520 response during " .. operation, function()
+      local chunks = { event({
+        type = "response.completed",
+        response = {
+          id = "recovered",
+          status = "completed",
+          output = operation == "compact"
+              and { { type = "compaction", encrypted_content = "synthetic-checkpoint" } }
+            or { {
+              type = "message",
+              id = "reply",
+              role = "assistant",
+              status = "completed",
+              content = { { type = "output_text", text = "Recovered", annotations = {} } },
+            } },
+        },
+      }) }
+      if operation == "compact" then
+        table.insert(chunks, 1, event({
+          type = "response.output_item.done",
+          item = { type = "compaction", encrypted_content = "synthetic-checkpoint" },
+        }))
+      end
+      local transport = fake_transport.new({
+        {
+          status = 520,
+          headers = { server = "cloudflare", ["content-type"] = "text/plain", ["cf-ray"] = "synthetic-ray" },
+          chunks = { "error code: 520\n" },
+        },
+        { chunks = chunks },
+      })
+      local delays, diagnostics = {}, {}
+      local model = codex.new({
+        provider = "openai-codex",
+        model = "gpt-test",
+        base_url = "https://example.test/codex",
+        transport = transport,
+        request_max_retries = 1,
+        sleep = function(delay)
+          delays[#delays + 1] = delay
+        end,
+        on_diagnostic = function(value)
+          diagnostics[#diagnostics + 1] = value
+        end,
+      })
+      local call = { messages = { { role = "user", content = "Continue the synthetic task" } } }
+      local result
+      if operation == "compact" then
+        result = wait(assert(model.compact)(model, call))
+        assert.is_true(result.ok)
+        assert.are.equal("synthetic-checkpoint", assert(result.item).encrypted_content)
+      else
+        result = wait(model:stream(call))
+        assert.is_true(result.ok)
+        assert.are.equal("Recovered", result.text)
+      end
+      assert.are.equal(2, #transport.requests)
+      assert.are.same(transport.requests[1], transport.requests[2])
+      assert.are.same({ 200 }, delays)
+      assert.are.equal(1, #diagnostics)
+      assert.are.equal("request_retry", diagnostics[1].type)
+      assert.are.equal(520, diagnostics[1].status)
+      assert.is_true(diagnostics[1].retryable)
+      assert.are.equal("synthetic-ray", diagnostics[1].cf_ray)
+    end)
+  end
+
   it("honors provider retry delays with the default cancellable timer", function()
     local output = { {
       type = "message", id = "msg", role = "assistant", status = "completed",
@@ -682,21 +750,19 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.are.equal(2, #transport.requests)
   end)
 
-  it("clears reconnect state when request retries are exhausted", function()
+  it("clears reconnect state when HTTP 520 retries are exhausted", function()
     local failure = {
-      kind = "transport",
-      message = "HTTP 503: overloaded",
-      response = { status = 503, headers = {} },
+      status = 520,
+      headers = { ["content-type"] = "text/plain" },
+      chunks = { "error code: 520\n" },
     }
+    local transport = fake_transport.new({ vim.deepcopy(failure), vim.deepcopy(failure) })
     local statuses = {}
     local result = wait(codex.new({
       provider = "openai-codex",
       model = "gpt-test",
       base_url = "https://example.test/codex",
-      transport = fake_transport.new({
-        { error = vim.deepcopy(failure) },
-        { error = vim.deepcopy(failure) },
-      }),
+      transport = transport,
       request_max_retries = 1,
       sleep = function() end,
     }):stream({
@@ -709,6 +775,10 @@ describe("neoagent.api.openai_codex_responses", function()
     }))
 
     assert.is_false(result.ok)
+    assert.are.equal(520, rawget(assert(result.error), "status"))
+    assert.is_true(assert(result.error).retryable)
+    assert.are.equal("request", assert(result.error).retry_exhausted)
+    assert.are.equal(2, #transport.requests)
     assert.is_true(statuses[1].reconnecting)
     assert.is_false(statuses[#statuses].reconnecting)
   end)

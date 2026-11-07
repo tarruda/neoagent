@@ -462,7 +462,7 @@ describe("neoagent.ui", function()
     } })
 
     result.transcript.pane:flush()
-    assert.are.same({ " considering ", "", "", "", " read x ", "", "" },
+    assert.are.same({ " considering ", "", "", " read x ", "", "" },
       vim.api.nvim_buf_get_lines((assert(view_handles.buffer(result, "transcript"))), 0, -1, false))
   end)
 
@@ -1360,6 +1360,155 @@ describe("neoagent.ui", function()
     assert.are.equal(0, separator_count())
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
     assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
+  end)
+
+  it("groups restored Codex tools across empty reasoning and prose", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    local messages = {
+      { role = "assistant", content = { {
+        type = "toolCall", id = "first", name = "shell", arguments = { command = "printf first" },
+      } } },
+      { role = "toolResult", toolCallId = "first", toolName = "shell", isError = false,
+        content = { { type = "text", text = "first" } } },
+      { role = "assistant", content = {
+        { type = "thinking", thinking = "", thinkingSignature = "encrypted" },
+        { type = "toolCall", id = "second", name = "shell", arguments = { command = "printf second" } },
+      } },
+      { role = "toolResult", toolCallId = "second", toolName = "shell", isError = false,
+        content = { { type = "text", text = "second" } } },
+      { role = "assistant", content = {
+        { type = "thinking", thinking = " \n\t", thinkingSignature = "encrypted" },
+        { type = "text", text = "\n" },
+        { type = "text", text = "Final answer" },
+        { type = "thinking", thinking = "", thinkingSignature = "encrypted" },
+        { type = "toolCall", id = "third", name = "shell", arguments = { command = "printf third" } },
+      } },
+    }
+    result:set_messages(messages)
+    assert(result:open())
+    result.transcript.pane:flush()
+
+    local lines = vim.api.nvim_buf_get_lines(
+      (assert(view_handles.buffer(result, "transcript"))), 0, -1, false)
+    ---@type integer?, integer?, integer?, integer?
+    local first, second, answer, third
+    local separators = {}
+    for index, line in ipairs(lines) do
+      if line:find("printf first", 1, true) then first = index end
+      if line:find("printf second", 1, true) then second = index end
+      if line:find("Final answer", 1, true) then answer = index end
+      if line:find("printf third", 1, true) then third = index end
+      if line:find("────", 1, true) then
+        separators[#separators + 1] = index
+      end
+    end
+    assert.are.equal(2, #separators)
+    assert.is_true(assert(first) < assert(second))
+    assert.is_true(assert(second) < separators[1] and separators[1] < assert(answer))
+    assert.is_true(answer < separators[2] and separators[2] < assert(third))
+    assert.are.same(messages, result.messages)
+  end)
+
+  it("updates Codex separators when streamed prose becomes visible or empty", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "first", name = "shell", arguments = { command = "printf first" },
+      } } },
+    })
+    assert(result:open())
+    local function lines()
+      result.transcript.pane:flush()
+      return vim.api.nvim_buf_get_lines(
+        (assert(view_handles.buffer(result, "transcript"))), 0, -1, false)
+    end
+    local function separator_count()
+      local count = 0
+      for _, line in ipairs(lines()) do
+        if line:find("────", 1, true) then count = count + 1 end
+      end
+      return count
+    end
+
+    result:apply({ type = "thinking_delta", index = 0, text = "" })
+    result:apply({ type = "thinking_delta", index = 0, text = " \n" })
+    assert.are.equal(0, separator_count())
+    result:apply({
+      type = "tool_call_delta", index = 1, id = "second",
+      name = "shell", arguments_delta = '{"command":"printf second"}',
+    })
+    assert.are.equal(0, separator_count())
+    result:apply({ type = "thinking_delta", index = 0, text = "Checking" })
+    assert.are.equal(2, separator_count())
+    assert.are.equal(" \nChecking", assert(result.transcript.blocks[2]).text)
+    local rendered = table.concat(lines(), "\n")
+    local first = assert((rendered:find("printf first", 1, true)))
+    local thinking = assert((rendered:find("Checking", 1, true)))
+    local second = assert((rendered:find("printf second", 1, true)))
+    assert.is_true(first < thinking and thinking < second)
+
+    result:apply({ type = "message_end", message = { role = "assistant", content = {
+      { type = "thinking", index = 0, thinking = "", thinkingSignature = "encrypted" },
+      { type = "toolCall", index = 1, id = "second", name = "shell", arguments = { command = "printf second" } },
+    } } })
+    assert.are.equal(0, separator_count())
+    result:apply({
+      type = "tool_call_delta", index = 1, id = "third",
+      name = "shell", arguments_delta = '{"command":"printf third"}',
+    })
+    result:apply({ type = "message_end", message = { role = "assistant", content = {
+      { type = "thinking", index = 0, thinking = "", thinkingSignature = "encrypted" },
+      { type = "toolCall", index = 1, id = "third", name = "shell", arguments = { command = "printf third" } },
+    } } })
+    assert.are.equal(0, separator_count())
+    result:apply({ type = "text_delta", index = 0, text = "\n" })
+    assert.are.equal(0, separator_count())
+    result:apply({ type = "text_delta", index = 0, text = "Final answer" })
+    assert.are.equal(1, separator_count())
+    result:apply({ type = "message_end", message = { role = "assistant", content = {
+      { type = "text", index = 0, text = "\nFinal answer" },
+    } } })
+    assert.are.equal(1, separator_count())
+
+    local messages = vim.deepcopy(result.messages)
+    result:set_messages({})
+    result:set_messages(messages)
+    assert.are.equal(1, separator_count())
+    assert.are.same(messages, result.messages)
+  end)
+
+  it("skips empty prose when navigating card details", function()
+    local result = view({ position = "center", style = "codex" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "First card" },
+      { type = "thinking", thinking = "", thinkingSignature = "encrypted" },
+      { type = "text", text = " \n" },
+      { type = "text", text = "Second card" },
+    } } })
+    assert(result:open())
+    assert(result:show_card_details(assert(result.transcript.blocks[1]).key))
+    local input = require("applet.pane.input")
+    local function move(action)
+      assert(input.dispatch_action(assert(result.details).pane,
+        Applet.Pane.nodes.action(action), nil, 1, "n", 0, 0))
+    end
+    move("details.next")
+    assert.are.equal("Second card", assert(assert(result.details).block).text)
+    move("details.previous")
+    assert.are.equal("First card", assert(assert(result.details).block).text)
+
+    close_details(result)
+    result:apply({ type = "thinking_delta", index = 1, text = "Temporary reasoning" })
+    result.transcript.pane:flush()
+    assert(result:show_card_details(assert(result.transcript.blocks[5]).key))
+    result:apply({ type = "message_end", message = { role = "assistant", content = {
+      { type = "thinking", index = 1, thinking = "", thinkingSignature = "encrypted" },
+    } } })
+    assert.is_nil(view_handles.window(result, "details"))
   end)
 
   it("renders through an injected Renderer and replaces it live", function()
@@ -3436,6 +3585,71 @@ describe("neoagent.ui", function()
     assert.matches("5 more lines", text(result))
     close_details(result)
   end)
+
+  for _, checkpoint in ipairs({ false, true }) do
+    it("keeps a single-line " .. (checkpoint and "checkpoint" or "compaction") .. " visible on hover", function()
+      local result = view({ position = "center", width = 100, style = "codex" })
+      ---@type Neoagent.TranscriptMessage
+      local message
+      if checkpoint then
+        message = { role = "compactionCheckpoint", tokens_before = 12345, created_at = 1 }
+      else
+        message = { role = "compactionSummary", summary = "", tokens_before = 12345, created_at = 1 }
+      end
+      result:set_messages({
+        message,
+        { role = "assistant", content = { { type = "text", text = "Retained answer" } } },
+      })
+      assert(result:open())
+      result.transcript.pane:flush()
+      local buffer = assert(view_handles.buffer(result, "transcript"))
+      local window = assert(view_handles.window(result, "transcript"))
+      local label = checkpoint and "[checkpoint]" or "[compaction]"
+      local lines = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+      ---@type integer?
+      local card_row
+      for index, line in ipairs(lines) do
+        if line:find("12,345 tokens", 1, true) then
+          card_row = index
+          break
+        end
+      end
+      assert.is_not_nil(card_row)
+      local row = assert(card_row)
+      local title = assert(lines[row])
+      assert.matches("12,345 tokens", title)
+      result:focus_transcript()
+      vim.api.nvim_win_set_cursor(window, { row, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buffer })
+
+      local hint
+      for _, mark in ipairs(get_extmarks(
+        buffer, result.transcript.pane.focus_namespace, { row - 1, 0 }, { row - 1, -1 }, { details = true }
+      )) do
+        local chunks = mark[4].virt_text or {}
+        local overlay = table.concat(vim.tbl_map(function(chunk)
+          return chunk[1]
+        end, chunks))
+        local column = mark[4].virt_text_win_col or mark[3]
+        assert.is_true(
+          column >= vim.fn.strdisplaywidth(title) - 1 or column + vim.fn.strdisplaywidth(overlay) <= 1,
+          "Hover decoration overwrites the compaction text"
+        )
+        if overlay:find("to expand", 1, true) then
+          hint = overlay
+        end
+      end
+      assert.are.equal("[<CR> to expand]", hint)
+      assert.is_true(title:find(label, 1, true) ~= nil)
+      assert.are.same(lines, vim.api.nvim_buf_get_lines(buffer, 0, -1, false))
+      assert.is_true(result:show_card_details())
+      local details = table.concat(
+        vim.api.nvim_buf_get_lines(assert(view_handles.buffer(result, "details")), 0, -1, false), "\n")
+      assert.is_true(details:find(label, 1, true) ~= nil)
+      assert.matches("12,345 tokens", details)
+      close_details(result)
+    end)
+  end
 
   it("shows bounded no-wrap compaction summaries and expands full details", function()
     local summary = {}

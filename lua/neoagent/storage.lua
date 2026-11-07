@@ -79,6 +79,7 @@ local M = {}
 ---@field _index_path string
 ---@field _persisted boolean
 ---@field _messages Neoagent.ProjectionMessage[]
+---@field _context_messages? Neoagent.RequestMessage[]
 ---@field _entries Neoagent.JournalEntry[]
 ---@field _by_id Neoagent.JournalIndex
 ---@field _pending Neoagent.JournalEntry[]
@@ -282,6 +283,7 @@ end
 ---@param store Neoagent.SessionStore
 ---@return true?, string?
 local function rebuild(store)
+  store._context_messages = nil
   local path, err = tree.indexed_path(store._by_id, store._leaf_id == nil and vim.NIL or store._leaf_id)
   if not path then
     return nil, err
@@ -297,6 +299,13 @@ end
 local function project_append(store, entry)
   local messages = tree.entry_messages(entry)
   vim.list_extend(store._messages, messages)
+  if store._context_messages then
+    if entry.type == "message" then
+      vim.list_extend(store._context_messages, tree.to_llm(messages))
+    else
+      store._context_messages = nil
+    end
+  end
   store._state = tree.apply_state(store._state, entry)
   return messages
 end
@@ -345,11 +354,14 @@ end
 
 ---@return Neoagent.RequestMessage[]?, Neoagent.Error?
 function Store:context_messages()
-  local path, err = self:path()
-  if not path then
-    return nil, storage_error("Failed to build session context", err)
+  if not self._context_messages then
+    local messages, err = tree.indexed_context_messages(self._by_id, self._leaf_id or vim.NIL)
+    if not messages then
+      return nil, storage_error("Failed to build session context", err)
+    end
+    self._context_messages = messages
   end
-  return tree.context_messages(path)
+  return util.copy(self._context_messages)
 end
 
 ---@return Neoagent.JournalEntry[]

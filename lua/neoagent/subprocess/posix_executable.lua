@@ -1,5 +1,18 @@
+local ffi = require("ffi")
 local validate = require("neoagent.subprocess.validate")
 local M = {}
+
+ffi.cdef("const char *gnu_get_libc_version(void);")
+
+---@alias Neoagent.PosixExecutableLibc {gnu_get_libc_version: (fun(): ffi.cdata*)}
+local C = ffi.C --[[@as Neoagent.PosixExecutableLibc]]
+
+---@return boolean
+function M.glibc()
+  return jit.os == "Linux" and pcall(function()
+    return C.gnu_get_libc_version()
+  end)
+end
 
 -- Prepare native execution attempts without consulting the ambient PATH or
 -- resolving filesystem links. Linux libc and libuv's Darwin spawn lookup use

@@ -2,6 +2,7 @@ local util = require("neoagent.util")
 local tree = require("neoagent.session_tree")
 local semantic_message = require("neoagent.semantic_message")
 local files = require("neoagent.files")
+local linkage = require("neoagent.message_linkage")
 
 local M = {}
 ---@class Neoagent.SessionMetadata
@@ -70,12 +71,22 @@ local M = {}
 ---@field _identity table
 ---@field _header? Neoagent.SessionHeader
 ---@field _messages Neoagent.ProjectionMessage[]
+---@field _linkage Neoagent.MessageLinkage
 ---@field _store? Neoagent.SessionStorage
 ---@field _entries Neoagent.JournalEntry[]
 ---@field _by_id Neoagent.JournalIndex
 ---@field _leaf_id? string
 local Session = {}
 Session.__index = Session
+
+---@class Neoagent.MessageCursor
+---@field source Neoagent.ProjectionMessage[]
+---@field count integer
+
+---@class Neoagent.MessageUpdate
+---@field messages Neoagent.ProjectionMessage[]
+---@field reset boolean
+---@field cursor Neoagent.MessageCursor
 
 ---@param bytes? integer
 ---@return string
@@ -85,6 +96,25 @@ local function random_id(bytes)
       return string.format("%02x", char:byte())
     end)
   )
+end
+
+---@param messages Neoagent.ProjectionMessage[]
+---@param base? Neoagent.MessageLinkage
+---@param offset? integer
+---@return Neoagent.MessageLinkageUpdate?, string?
+local function stage_projection(messages, base, offset)
+  local update = linkage.stage(base)
+  for index, message in ipairs(messages) do
+    if message.role == "compactionSummary" or message.role == "compactionCheckpoint" then
+      linkage.reset(update)
+    else
+      local accepted, err = linkage.check(update, message, (offset or 0) + index)
+      if not accepted then
+        return nil, err
+      end
+    end
+  end
+  return update
 end
 
 ---@param self Neoagent.Session
@@ -111,9 +141,13 @@ local function memory_append(self, entry_type, values)
     self._leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
     local path = assert(tree.indexed_path(self._by_id, self._leaf_id == nil and vim.NIL or self._leaf_id))
     self._messages = tree.messages(path, false)
+    self._linkage = linkage.commit(assert(stage_projection(self._messages)))
   else
     self._leaf_id = entry.id
     vim.list_extend(self._messages, tree.entry_messages(entry))
+    if entry.type == "compaction" then
+      self._linkage = {}
+    end
   end
   return true, nil, util.copy(entry)
 end
@@ -128,7 +162,6 @@ local function apply_store_projection(self, projection)
   if projection.type == "append" then
     ---@type Neoagent.ProjectionMessage[]
     local normalized = {}
-    local linked = false
     for index, message in ipairs(projection.messages) do
       local value, err = tree.normalize_projection_message(message)
       if not value then
@@ -136,29 +169,13 @@ local function apply_store_projection(self, projection)
           util.error("storage", "Store returned invalid messages", "message " .. tostring(index) .. ": " .. err)
       end
       normalized[index] = value
-      if value.role == "toolResult" then
-        linked = true
-      elseif value.role == "assistant" then
-        ---@cast value Neoagent.AssistantMessage
-        for _, block in ipairs(value.content) do
-          if block.type == "toolCall" then
-            linked = true
-            break
-          end
-        end
-      end
     end
-    if linked then
-      local candidate = util.copy(self._messages)
-      vim.list_extend(candidate, normalized)
-      local complete, err = tree.normalize_projection(candidate)
-      if not complete then
-        return nil, util.error("storage", "Store returned invalid messages", err)
-      end
-      self._messages = complete
-    else
-      vim.list_extend(self._messages, normalized)
+    local update, err = stage_projection(normalized, self._linkage, #self._messages)
+    if not update then
+      return nil, util.error("storage", "Store returned invalid messages", err)
     end
+    vim.list_extend(self._messages, normalized)
+    self._linkage = linkage.commit(update)
     return true
   end
   if projection.type == "replace" then
@@ -167,43 +184,10 @@ local function apply_store_projection(self, projection)
       return nil, util.error("storage", "Store returned invalid messages", err)
     end
     self._messages = normalized
+    self._linkage = linkage.commit(assert(stage_projection(normalized)))
     return true
   end
   return nil, util.error("storage", "Store returned an unknown projection")
-end
-
----@param message Neoagent.Message
----@return boolean
-local function requires_linkage_check(message)
-  if message.role == "toolResult" then
-    return true
-  end
-  if message.role ~= "assistant" then
-    return false
-  end
-  ---@cast message Neoagent.AssistantMessage
-  for _, block in ipairs(message.content) do
-    if block.type == "toolCall" then
-      return true
-    end
-  end
-  return false
-end
-
----@param self Neoagent.Session
----@param message Neoagent.Message
----@return true?, Neoagent.Error?
-local function validate_append_linkage(self, message)
-  if not requires_linkage_check(message) then
-    return true
-  end
-  local messages = util.copy(self._messages)
-  messages[#messages + 1] = message
-  local normalized, err = tree.normalize_projection(messages)
-  if not normalized then
-    return nil, util.error("session", "Invalid Session message", err)
-  end
-  return true
 end
 
 ---@param self Neoagent.Session
@@ -241,9 +225,9 @@ function Session:append(message, state)
   if not published then
     return nil, file_err
   end
-  local linked, linkage_err = validate_append_linkage(self, copy)
-  if not linked then
-    return nil, linkage_err
+  local update, linkage_err = stage_projection({ copy }, self._linkage, #self._messages)
+  if not update then
+    return nil, util.error("session", "Invalid Session message", linkage_err)
   end
   state = util.copy(state or {})
   if self._store then
@@ -257,12 +241,38 @@ function Session:append(message, state)
     end
     return true, nil, entry
   end
-  return memory_append_message(self, copy, state)
+  local accepted, err, entry = memory_append_message(self, copy, state)
+  if not accepted then
+    return nil, err
+  end
+  self._linkage = linkage.commit(update)
+  return true, nil, entry
 end
 
 ---@return Neoagent.ProjectionMessage[]
 function Session:messages()
   return util.copy(self._messages)
+end
+
+-- Cursors belong to Agent tool synchronization. A replacement invalidates
+-- them; accepted appends preserve the source array and expose only its tail.
+---@param cursor? Neoagent.MessageCursor
+---@return Neoagent.MessageUpdate?
+function Session:_message_update(cursor)
+  local reset = not cursor or cursor.source ~= self._messages
+  local first = not reset and assert(cursor).count + 1 or 1
+  if not reset and first > #self._messages then
+    return nil
+  end
+  local messages = {}
+  for index = first, #self._messages do
+    messages[#messages + 1] = util.copy(self._messages[index])
+  end
+  return {
+    messages = messages,
+    reset = reset,
+    cursor = { source = self._messages, count = #self._messages },
+  }
 end
 
 ---@return Neoagent.RequestMessage[]?, Neoagent.Error?
@@ -279,11 +289,11 @@ function Session:context_messages()
     return normalized
   end
   if #self._entries > 0 then
-    local path, err = self:path()
-    if not path then
-      return nil, err
+    local messages, err = tree.indexed_context_messages(self._by_id, self._leaf_id or vim.NIL)
+    if not messages then
+      return nil, util.error("session", "Failed to build session context", err)
     end
-    return tree.context_messages(path)
+    return messages
   end
   return tree.to_llm(self._messages)
 end
@@ -622,11 +632,13 @@ function M.new(opts)
       data = util.copy(opts.metadata),
     }
   end
+  local initial_messages = assert(messages)
   return setmetatable({
     _id = id,
     _identity = {},
     _header = header,
-    _messages = messages,
+    _messages = initial_messages,
+    _linkage = linkage.commit(assert(stage_projection(initial_messages))),
     _store = opts.store,
     _files = attachment_store,
     _file_cache = cache,

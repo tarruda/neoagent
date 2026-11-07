@@ -1,0 +1,26 @@
+# Synthetic Codex image inspection returning the observed HTTP 500.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://chatgpt.com/backend-api/files/file-tile/download
+  headers:
+    Authorization: Bearer upload-replay-key
+    chatgpt-account-id: account-replay
+---
+type: response_body
+at_us: 1000
+bytes: 0
+body: ""
+---
+type: response
+at_us: 1000
+status: 500
+headers: {}
+---
+type: complete
+at_us: 1000
+ok: true

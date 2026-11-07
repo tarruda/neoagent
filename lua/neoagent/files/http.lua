@@ -16,6 +16,14 @@ local metadata_retry = {
   receive = true,
 }
 
+local metadata_retry_status = {
+  [429] = true,
+  [500] = true,
+  [502] = true,
+  [503] = true,
+  [504] = true,
+}
+
 ---@param value unknown
 ---@param minimum integer
 ---@param maximum integer
@@ -42,8 +50,9 @@ end
 
 ---@param result Neoagent.HttpResult
 ---@param label string
+---@param metadata? boolean
 ---@return Neoagent.JsonValue?
-function M.checked(result, label)
+function M.checked(result, label, metadata)
   local status = M.status(result)
   if result.ok and status and status >= 200 and status < 300 then
     return result.body
@@ -54,10 +63,12 @@ function M.checked(result, label)
   ---@type Neoagent.FileHttpError
   local err = util.error("files", label .. " request failed" .. (status and " (HTTP " .. status .. ")" or ""))
   err.status = status
+  if metadata then
+    err.retryable = false
+  end
   if result.ok == false and (not status or status < 400) then
     -- File preparation owns transport retries. Inference recovery must not
-    -- repeat an upload or restart an exhausted metadata-read budget. HTTP
-    -- rejections retain the existing request-level recovery policy.
+    -- repeat an upload or restart an exhausted metadata-read budget.
     err.retryable = false
     local failure = transport_failure.classify(result.error)
     if failure then
@@ -108,7 +119,7 @@ local function pause(delay)
 end
 
 -- Only metadata GETs retry. Every attempt and backoff shares one deadline;
--- uploads, HTTP rejections and malformed responses keep their own outcomes.
+-- uploads, other HTTP rejections and malformed responses keep their outcomes.
 ---@async
 ---@param client Neoagent.HttpClient
 ---@param request Neoagent.HttpRequest
@@ -129,22 +140,22 @@ function M.get(client, request, timeout_ms)
       end
       error(terminal_error("Image preparation timed out"), 0)
     end
-    request.timeout_ms = remaining
+    request.timeout_ms = math.min(30000, remaining)
     result = client.fetch({ request = request }):await()
     attempt = attempt + 1
-    if result.ok then
-      return result
-    end
-    local err = result.error
-    local failure = transport_failure.classify(err)
     local status = M.status(result)
-    if
-      not failure
-      or not metadata_retry[failure.code]
-      or err.retryable == false
-      or status and status >= 400
-      or attempt >= 3
-    then
+    local retryable = status and metadata_retry_status[status] or false
+    if not result.ok then
+      local err = result.error
+      if err.kind == "cancelled" or err.retryable == false then
+        return result
+      end
+      if not status or status < 400 then
+        local failure = transport_failure.classify(err)
+        retryable = failure ~= nil and metadata_retry[failure.code] == true
+      end
+    end
+    if not retryable or attempt >= 3 then
       return result
     end
     local delay = 250 * attempt

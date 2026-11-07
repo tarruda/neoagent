@@ -98,6 +98,21 @@ describe("Codex process Tools", function()
     ---@cast observed Neoagent.ProcessToolDetails
     return observed
   end
+  ---@param observed Neoagent.ProcessToolDetails
+  ---@return string
+  local function completed_output(observed)
+    local output = observed.output
+    local completed = vim.wait(10000, function()
+      if observed.session_id then
+        observed = details(call("write_stdin", { session_id = observed.session_id, yield_time_ms = 100 }))
+        output = output .. observed.output
+      end
+      return observed.session_id == nil
+    end, 5)
+    assert.is_true(completed, vim.inspect(observed))
+    assert.are.equal(0, observed.exit_code, vim.inspect(observed))
+    return output
+  end
   local function launch(command, tty)
     return details(call("exec_command", { cmd = command, shell = shell, login = false, tty = tty, yield_time_ms = 0 }))
   end
@@ -769,7 +784,7 @@ describe("Codex process Tools", function()
 
   it("uses the configured shell and supports login/profile selection", function()
     local ordinary = details(call("exec_command", { cmd = "echo default", yield_time_ms = 5000 }))
-    assert.matches("default", ordinary.output, 1, true)
+    assert.matches("default", completed_output(ordinary), 1, true)
     if jit.os == "Windows" then
       for _, login in ipairs({ false, true }) do
         local response = details(
@@ -778,7 +793,7 @@ describe("Codex process Tools", function()
             { cmd = "Write-Output profile", shell = "powershell.exe", login = login, yield_time_ms = 10000 }
           )
         )
-        assert.matches("profile", response.output, 1, true)
+        assert.matches("profile", completed_output(response), 1, true)
       end
     end
   end)
@@ -794,7 +809,7 @@ describe("Codex process Tools", function()
         local observed = details(call("exec_command", {
           cmd = "literal argument", login = true, yield_time_ms = 10000,
         }))
-        assert.are.equal("-NoProfile|literal argument", observed.output)
+        assert.are.equal("-NoProfile|literal argument", completed_output(observed))
       end)
       vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
       if not ok then error(err, 0) end
@@ -810,7 +825,7 @@ describe("Codex process Tools", function()
           local observed = details(call("exec_command", {
             cmd = encoded, login = false, yield_time_ms = 10000,
           }))
-          assert.are.equal("ENCODED", observed.output)
+          assert.are.equal("ENCODED", completed_output(observed))
         end)
         vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
         if not ok then error(err, 0) end
@@ -826,13 +841,38 @@ describe("Codex process Tools", function()
             cmd = "[Console]::Write([Environment]::GetCommandLineArgs() -contains '" .. flag .. "')",
             login = true, yield_time_ms = 10000,
           }))
-          assert.are.equal("False", observed.output)
+          assert.are.equal("False", completed_output(observed))
         end)
         vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
         if not ok then error(err, 0) end
       end)
     end
   else
+    it("collects configured shell output after startup outlasts the initial wait", function()
+      local saved_shell, saved_flags = vim.o.shell, vim.o.shellcmdflag
+      local path = root .. "/configured shell"
+      assert(
+        require("neoagent.fs").write_all(
+          path,
+          '#!/bin/sh\nwhile [ ! -f startup-ready ]; do sleep 0.01; done\nexec sh "$@"\n',
+          "w",
+          448
+        )
+      )
+      vim.o.shell, vim.o.shellcmdflag = '"' .. path .. '"', "-c"
+      local ok, err = pcall(function()
+        local initial = details(call("exec_command", { cmd = "printf configured", yield_time_ms = 0 }))
+        assert.is_string(initial.session_id)
+        assert.are.equal("", initial.output)
+        vim.fn.writefile({ "ready" }, root .. "/startup-ready")
+        assert.are.equal("configured", completed_output(initial))
+      end)
+      vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
+      if not ok then
+        error(err, 0)
+      end
+    end)
+
     for _, source in ipairs({ "shell", "flags", "option operand" }) do
       it("enables Bash login mode with configured long options in " .. source, function()
         local saved_shell, saved_flags = vim.o.shell, vim.o.shellcmdflag
@@ -846,7 +886,7 @@ describe("Codex process Tools", function()
             cmd = "if shopt -q login_shell; then printf LOGIN; else printf PLAIN; fi",
             yield_time_ms = 5000,
           }))
-          assert.are.equal("LOGIN", observed.output)
+          assert.are.equal("LOGIN", completed_output(observed))
         end)
         vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
         if not ok then
@@ -867,7 +907,7 @@ describe("Codex process Tools", function()
             cmd = "if shopt -q login_shell; then printf LOGIN; else printf PLAIN; fi",
             login = false, yield_time_ms = 5000,
           }))
-          assert.are.equal("PLAIN", observed.output)
+          assert.are.equal("PLAIN", completed_output(observed))
         end)
         vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
         if not ok then error(err, 0) end
@@ -880,7 +920,7 @@ describe("Codex process Tools", function()
       vim.o.shell, vim.o.shellcmdflag = 'bash --noprofile -- -l ""', ""
       local ok, err = pcall(function()
         local observed = details(call("exec_command", { cmd = "literal argument", login = false, yield_time_ms = 5000 }))
-        assert.are.equal("[]literal argument", observed.output)
+        assert.are.equal("[]literal argument", completed_output(observed))
       end)
       vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
       if not ok then error(err, 0) end
@@ -909,7 +949,7 @@ describe("Codex process Tools", function()
       vim.o.shellcmdflag = "-c"
       local ok, err = pcall(function()
         local response = details(call("exec_command", { cmd = "printf done", login = false, yield_time_ms = 5000 }))
-        assert.are.equal('quoted"value|path\\name||done', response.output)
+        assert.are.equal('quoted"value|path\\name||done', completed_output(response))
       end)
       vim.o.shell, vim.o.shellcmdflag = saved_shell, saved_flags
       if not ok then error(err, 0) end

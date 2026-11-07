@@ -12,6 +12,7 @@ CONTENTS                                                   *neoagent-contents*
    AGENTS.md and skills                               |neoagent-context-files|
    Provider runtimes and services                 |neoagent-provider-services|
    HTTP recording                                         |neoagent-recording|
+   Lua profiling                                          |neoagent-profiling|
    Workspace settings                            |neoagent-workspace-settings|
 3. Commands                                                |neoagent-commands|
 4. UI                                                            |neoagent-ui|
@@ -841,6 +842,36 @@ content-free diagnostics and do not change provider results. A
 finalization failure. Failed finalization may also leave private `.body`
 temporary files beside it.
 
+LUA PROFILING                                             *neoagent-profiling*
+
+Use LuaJIT's sampling profiler to capture Lua function hotspots: >
+
+  :NeoagentProfile start
+  " Reproduce the slow operation.
+  :NeoagentProfile stop
+<
+
+The commands report the file path under
+`stdpath("state") .. "/neoagent/profiling"`. Stopping or exiting Neovim saves a
+private text report with function samples, call stacks up to ten frames deep,
+and shares of compiled Lua, interpreted Lua, C code, GC, and JIT compilation.
+If saving fails, run `:NeoagentProfile stop` again to retry.
+
+Profiling covers all Lua in the editor process, including other plugins, and
+continues when an Agent is closed or switched. It uses a requested 2 ms sample
+interval; actual precision depends on the platform. Percentages are sampling
+estimates, not exact call durations. C samples include Neovim and native
+libraries without native stack details. Subprocesses are outside the capture.
+On builds using CPU-time sampling, idle and blocked time is not measured.
+
+Only one LuaJIT sampling profiler can run per process. Stop other sampling
+profilers before starting this one. On macOS, stop sampling before launching
+a PTY subprocess; see |neoagent-subprocess|. Reports include local source
+paths and function names; review them before sharing.
+
+The Lua API is `require("neoagent.profiler").start()` and `.stop()`. Both return
+the report path on success, or `nil, error_message` on failure.
+
 WORKSPACE SETTINGS                               *neoagent-workspace-settings*
 
 With persistence enabled, the first accepted message saves model and thinking
@@ -871,6 +902,7 @@ deletes `vim.NIL` keys.
   :NeoagentResume [path]          Resume through the Session's Profile.
   :NeoagentCopySession            Copy under a selected Profile.
   :NeoagentStop                   Cancel the active Agent Run.
+  :NeoagentProfile start|stop     Profile Lua; see |neoagent-profiling|.
   :NeoagentModel [provider/model] Select a Model or open the selector.
   :NeoagentThinking [level]       Set or cycle the thinking level.
   :NeoagentPosition [position]    Set or select the UI position.
@@ -1555,6 +1587,10 @@ Optional Tool fields are:
   capabilities.read_files   Enable skill discovery for this toolset.
   on_messages(messages, ctx)
                             Derive state from the active conversation.
+  on_message(message, ctx)   With `on_messages`, consume accepted appends one
+                            message at a time. `on_messages` then restores
+                            state on first use, branch changes, or hook failure.
+                            Unchanged snapshots do not invoke message hooks.
   render(opts)              Return semantic presentation data.
   prompt_snippet            Short description for the Pi system prompt.
   prompt_guidelines         Instruction strings for the Pi system prompt.

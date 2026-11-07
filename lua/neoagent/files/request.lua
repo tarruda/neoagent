@@ -156,7 +156,8 @@ function M.new(manager_for, policy)
             -- Inspect all references from this request before repairing, so a
             -- single resubmission can replace every confirmed dangling object.
             for key, record in pairs(prepared) do
-              local inspected = manager.backend.inspect(record.object, access, manager:remaining(deadline)):await()
+              local inspected =
+                manager.backend.inspect(record.object, access, manager:remaining(deadline, manager.budget_ms)):await()
               if inspected.ok == false then
                 error(inspected.error, 0)
               end

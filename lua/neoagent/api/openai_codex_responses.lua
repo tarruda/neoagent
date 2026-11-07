@@ -444,7 +444,13 @@ local function enrich_error(value)
   if err.retryable == false or err.kind == "cancelled" or terminal_error(err.code, err.message) then
     err.retryable = false
   elseif status then
-    err.retryable = status == 429 or status == 500 or status == 502 or status == 503 or status == 504 or status == 200
+    err.retryable = status == 429
+      or status == 500
+      or status == 502
+      or status == 503
+      or status == 504
+      or status == 520
+      or status == 200
   else
     err.retryable = err.kind == "transport" or err.kind == "protocol" or err.kind == "model"
   end

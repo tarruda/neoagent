@@ -1228,14 +1228,7 @@ end
 function View:_details_move(direction)
   local details = assert(self.details)
   local current = assert(details.block)
-  local index
-  for candidate, value in ipairs(self.transcript.blocks) do
-    if value.key == current.key then
-      index = candidate
-      break
-    end
-  end
-  local block = index and self.transcript.blocks[index + direction]
+  local block = current.key and self.transcript:adjacent_block(current.key, direction)
   if not block then
     if direction > 0 then
       self:_close_details(false)

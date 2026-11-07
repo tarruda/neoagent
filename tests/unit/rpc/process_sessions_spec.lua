@@ -69,8 +69,10 @@ describe("retained process RPC", function()
         end,
         create_worker = function(request)
           if vim.env.NEOAGENT_COVERAGE == "1" then
-            table.insert(request.argv, 2, "--cmd")
-            table.insert(request.argv, 3, ("lua dofile(%q)"):format(root .. "/tests/fixtures/coverage_worker.lua"))
+            local index = vim.fn.index(request.argv, "--headless") + 1
+            assert(index > 0, "Expected a headless Neovim worker")
+            table.insert(request.argv, index, "--cmd")
+            table.insert(request.argv, index + 1, ("lua dofile(%q)"):format(root .. "/tests/fixtures/coverage_worker.lua"))
           end
           if reap_gate then
             request.env.NEOAGENT_TEST_REAP_GATE = reap_gate

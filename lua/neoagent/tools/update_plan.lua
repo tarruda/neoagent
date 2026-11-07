@@ -70,32 +70,34 @@ local function session_id(ctx)
   return type(context) == "table" and rawget(context, "session_id") or nil
 end
 
----@param messages? Neoagent.ProjectionMessage[]
----@return Neoagent.Plan?
-local function latest(messages)
-  ---@type table<string, Neoagent.JsonObject>
-  local calls = {}
-  ---@type Neoagent.Plan?
-  local current
-  for _, message in ipairs(messages or {}) do
-    if message.role == "assistant" then
-      ---@cast message Neoagent.AssistantMessage
-      for _, block in ipairs(message.content or {}) do
-        if block.type == "toolCall" and block.name == "update_plan" and type(block.id) == "string" then
-          calls[block.id] = block.arguments
-        end
-      end
-    elseif message.role == "toolResult" and message.toolName == "update_plan" and message.isError ~= true then
-      ---@cast message Neoagent.ToolResultMessage
-      local details = type(message.details) == "table" and rawget(message.details, "plan") ~= nil and message.details
-        or nil
-      local value = accepted(calls[message.toolCallId] or details)
-      if value then
-        current = value
+---@class Neoagent.PlanState
+---@field calls table<string, Neoagent.JsonObject>
+---@field current? Neoagent.Plan
+
+---@param state Neoagent.PlanState
+---@param message Neoagent.ProjectionMessage
+local function consume(state, message)
+  if message.role == "assistant" then
+    ---@cast message Neoagent.AssistantMessage
+    for _, block in ipairs(message.content or {}) do
+      if block.type == "toolCall" and block.name == "update_plan" and type(block.id) == "string" then
+        state.calls[block.id] = util.copy(block.arguments)
       end
     end
+  elseif message.role == "toolResult" and message.toolName == "update_plan" then
+    ---@cast message Neoagent.ToolResultMessage
+    if message.isError ~= true then
+      local details = type(message.details) == "table" and rawget(message.details, "plan") ~= nil and message.details
+        or nil
+      local value = accepted(state.calls[message.toolCallId] or details)
+      if value then
+        state.current = value
+      end
+    end
+    state.calls[message.toolCallId] = nil
+  elseif message.role == "compactionSummary" or message.role == "compactionCheckpoint" then
+    state.calls = {}
   end
-  return current
 end
 
 ---@param opts? Neoagent.ToolPresentationOptions
@@ -139,7 +141,7 @@ end
 
 ---@return Neoagent.Tool<unknown>
 local function new()
-  ---@type table<unknown, Neoagent.Plan>
+  ---@type table<unknown, Neoagent.PlanState>
   local states = setmetatable({}, { __mode = "k" })
   return identities.bind_parent({
     name = "update_plan",
@@ -153,12 +155,25 @@ local function new()
     on_messages = function(messages, ctx)
       local id = session_id(ctx)
       if id then
-        states[id] = latest(messages)
+        local state = { calls = {} }
+        for _, message in ipairs(messages) do
+          consume(state, message)
+        end
+        states[id] = state
+      end
+    end,
+    on_message = function(message, ctx)
+      local id = session_id(ctx)
+      if id then
+        local state = states[id] or { calls = {} }
+        consume(state, message)
+        states[id] = state
       end
     end,
     current = function(ctx)
       local id = session_id(ctx)
-      return id and util.copy(states[id]) or nil
+      local state = id and states[id]
+      return state and util.copy(state.current) or nil
     end,
     render = presentation,
   })
