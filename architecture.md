@@ -113,6 +113,12 @@ instructions and ephemeral request context from copied facts. Estimation,
 inference, and compaction share that context; request-only messages never
 enter the Session journal or accumulate in the Loop's history.
 
+Request owners lend their current Run as the turn lifetime across Tool calls,
+retries, continuations, and automatic compaction. Adapters own transient
+protocol state associated with that lifetime and release it on completion or
+cancellation. Provider routing tokens stay out of semantic messages, copied
+request identity, and Session storage.
+
 Profiles may supply compaction; otherwise composition selects the configured
 local strategy. Components propose checkpoints; the Session validates their
 context projection, the Model checks its budget, and the Agent publishes against

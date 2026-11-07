@@ -606,6 +606,7 @@ function M.new(opts)
   ---@return Neoagent.CompactionRequest
   local function compaction_request(environment, tools, model_options)
     local call = request_preparation.copy(model_options or {})
+    call._turn = call._turn or state.activity and state.activity.run
     call._preparation = request_preparation.new()
     call.files = state.session:files()
     call.file_cache = state.session:file_cache()
@@ -1426,6 +1427,7 @@ function M.new(opts)
       return nil, err
     end
     local outer = install_activity("interaction", release, function(run, activity)
+      base.model_options._turn = run
       base.on_accept = function(entry)
         accepted(activity, prompt, entry)
       end
