@@ -33,6 +33,7 @@ local M = {}
 ---@field entry? fun(self: Neoagent.SessionStorage, id: string): Neoagent.JournalEntry?
 ---@field leaf_id? fun(self: Neoagent.SessionStorage): string?
 ---@field path? fun(self: Neoagent.SessionStorage, ...: string|nil): Neoagent.JournalEntry[]?, Neoagent.Error?
+---@field transcript_entries? fun(self: Neoagent.SessionStorage, segment_id?: string, direction?: 'first'|'previous'|'next'): Neoagent.JournalEntry[]?, Neoagent.Error?, Neoagent.TranscriptHistory?
 ---@field state? fun(self: Neoagent.SessionStorage): Neoagent.SelectionState?, Neoagent.Error?
 ---@field append_compaction? fun(self: Neoagent.SessionStorage, values: Neoagent.CompactionPayload): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
 ---@field set_leaf? fun(self: Neoagent.SessionStorage, id?: string): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
@@ -254,6 +255,19 @@ function Session:messages()
   return util.copy(self._messages)
 end
 
+-- Replay counts durable messages independently of optional journal receipts.
+-- Checkpoint cards have no corresponding message_end publication.
+---@return integer
+function Session:_message_count()
+  local count = 0
+  for _, message in ipairs(self._messages) do
+    if message.role ~= "compactionSummary" and message.role ~= "compactionCheckpoint" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 -- Cursors belong to Agent tool synchronization. A replacement invalidates
 -- them; accepted appends preserve the source array and expose only its tail.
 ---@param cursor? Neoagent.MessageCursor
@@ -352,6 +366,30 @@ function Session:path(...)
     return nil, util.error("session", "Failed to build session path", err)
   end
   return path
+end
+
+---@param segment_id? string
+---@param direction? 'first'|'previous'|'next'
+---@return Neoagent.JournalEntry[]?, Neoagent.Error?, Neoagent.TranscriptHistory?
+function Session:transcript_entries(segment_id, direction)
+  if self._store and type(self._store.transcript_entries) == "function" then
+    return self._store:transcript_entries(segment_id, direction)
+  end
+  local entries, err, history
+  if self._store then
+    local path, path_err = self:path()
+    if not path then
+      return nil, path_err
+    end
+    entries, err, history = tree.transcript_entries(path, segment_id, direction)
+  else
+    entries, err, history =
+      tree.indexed_transcript_entries(self._by_id, self._leaf_id or vim.NIL, segment_id, direction)
+  end
+  if not entries then
+    return nil, util.error("session", "Failed to build session transcript", err)
+  end
+  return entries, nil, history
 end
 
 ---@return Neoagent.SelectionState?, Neoagent.Error?

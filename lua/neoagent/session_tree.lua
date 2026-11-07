@@ -802,14 +802,87 @@ function M.context_entries(path)
   return compacted_entries(path, true)
 end
 
+---@class Neoagent.TranscriptHistory
+---@field id? string Starting entry of the selected segment; absent for an empty journal.
+---@field position integer
+---@field total integer
+---@field previous? string
+---@field next? string
+---@field latest boolean
+
+-- Transcript ranges follow journal boundaries, independently of request
+-- retention. Borrowed path entries stay inside the projection module.
 ---@param path Neoagent.JournalEntry[]
----@return Neoagent.JournalEntry[]
-function M.transcript_entries(path)
-  local compaction_index = latest_compaction(path)
-  if compaction_index and assert(path[compaction_index]).native then
-    return util.copy(path)
+---@param segment_id? string Omit to follow the latest segment.
+---@param direction? 'first'|'previous'|'next' Select a segment before copying.
+---@return Neoagent.JournalEntry[]?, string?, Neoagent.TranscriptHistory?
+function M.transcript_entries(path, segment_id, direction)
+  assert(
+    direction == nil or direction == "first" or direction == "previous" or direction == "next",
+    "invalid transcript direction"
+  )
+  ---@type {index: integer, id: string}[]
+  local starts = {}
+  for index, entry in ipairs(path) do
+    if entry.type == "compaction" or (#starts == 0 and entry.type == "message") then
+      starts[#starts + 1] = { index = index, id = entry.id }
+    end
   end
-  return compacted_entries(path, false)
+  local selected = #starts
+  if segment_id ~= nil then
+    selected = 0
+    for position, boundary in ipairs(starts) do
+      if boundary.id == segment_id then
+        selected = position
+        break
+      end
+    end
+    if selected == 0 then
+      return nil, "transcript segment not found on active branch: " .. tostring(segment_id)
+    end
+  end
+  if selected > 0 then
+    if direction == "first" then
+      selected = 1
+    elseif direction == "previous" then
+      selected = math.max(1, selected - 1)
+    elseif direction == "next" then
+      selected = math.min(#starts, selected + 1)
+    end
+  end
+  local first = starts[selected]
+  local following = starts[selected + 1]
+  local previous = starts[selected - 1]
+  local result = {}
+  for index = first and first.index or (#path + 1), (following and following.index or (#path + 1)) - 1 do
+    local entry = assert(path[index])
+    if entry.type ~= "leaf" then
+      result[#result + 1] = util.copy(entry)
+    end
+  end
+  return result,
+    nil,
+    {
+      id = first and first.id or nil,
+      position = math.max(1, selected),
+      total = math.max(1, #starts),
+      previous = previous and previous.id or nil,
+      next = following and following.id or nil,
+      latest = selected == #starts,
+    }
+end
+
+---@param by_id Neoagent.JournalIndex
+---@param leaf_id? string|vim.NIL
+---@param segment_id? string
+---@param direction? 'first'|'previous'|'next'
+---@return Neoagent.JournalEntry[]?, string?, Neoagent.TranscriptHistory?
+function M.indexed_transcript_entries(by_id, leaf_id, segment_id, direction)
+  local path, err = indexed_path(by_id, leaf_id, true)
+  if not path then
+    return nil, err
+  end
+  return M.transcript_entries(path, segment_id, direction)
 end
 
 ---@param entries Neoagent.JournalEntry[]

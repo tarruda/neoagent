@@ -635,15 +635,15 @@ describe("neoagent default agent", function()
     assert.is_true(child_cancelled)
     assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
 
-    local original_path
+    local original_transcript
     agent = setup_model(fake_model.new({}), {
       _interaction = function(options)
         local child = controlled_run(options, function()
           child_cancelled = true
         end)
         local session = agent:get_session()
-        original_path = session.path
-        session.path = function() error("transcript installation failed") end
+        original_transcript = session.transcript_entries
+        session.transcript_entries = function() error("transcript installation failed") end
         return child
       end,
     })
@@ -653,7 +653,7 @@ describe("neoagent default agent", function()
     local installed = vim.wait(1000, function()
       return run:is_done() and not agent:is_running()
     end)
-    agent:get_session().path = original_path
+    agent:get_session().transcript_entries = original_transcript
     assert(installed)
     assert.is_true(child_cancelled)
     assert.matches("transcript installation failed", assert(assert(run:result()).error).message)
@@ -1543,12 +1543,16 @@ describe("neoagent default agent", function()
       (assert(view_handles.buffer(current_view(), "transcript"))), 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
     assert.matches("Continue the work", transcript)
-    local retained = assert((transcript:find("work work work", 1, true)))
-    local compaction_card = assert((transcript:find("Compacted from 900 tokens", 1, true)))
-    assert.is_true(compaction_card < retained)
+    assert.is_nil((transcript:find("work work work", 1, true)))
     assert.are.equal("perform the large task", assert(current_session():messages()[1]).content)
     assert.is_not.matches("perform the large task", transcript)
     assert.is_false(current_view().context.provider_status)
+    assert(assert(neoagent.default()):navigate_transcript("previous"))
+    assert(current_view().transcript.pane:flush())
+    local earlier = table.concat(vim.api.nvim_buf_get_lines(
+      assert(view_handles.buffer(current_view(), "transcript")), 0, -1, false), "\n")
+    assert.matches("perform the large task", earlier)
+    assert.matches("work work work", earlier)
   end)
 
   it("uses the configured prefix strategy for a directly constructed Agent", function()
@@ -2022,7 +2026,7 @@ describe("neoagent default agent", function()
     end, assert(model.requests[3]).messages))
   end)
 
-  it("keeps a completed answer visible through manual native compaction and reopening", function()
+  it("makes completed answers navigable after native compaction and reopening", function()
     local model = fake_model.new({ { result = fake_model.assistant({ {
       type = "text", text = "The completed answer stays visible",
     } }) } })
@@ -2052,10 +2056,18 @@ describe("neoagent default agent", function()
       return table.concat(vim.api.nvim_buf_get_lines(
         assert(view_handles.buffer(current_view(), "transcript")), 0, -1, false), "\n")
     end
+    assert.is_not.matches("The completed answer stays visible", transcript())
+    assert.matches("Encrypted context checkpoint", transcript())
+    assert(assert(neoagent.default()):navigate_transcript("previous"))
+    assert(current_view().transcript.pane:flush())
     assert.matches("The completed answer stays visible", transcript())
     assert(neoagent.close())
     assert(neoagent.open())
     assert.matches("The completed answer stays visible", transcript())
+    assert(assert(neoagent.default()):navigate_transcript("latest"))
+    assert(current_view().transcript.pane:flush())
+    assert.matches("Encrypted context checkpoint", transcript())
+    assert.is_not.matches("The completed answer stays visible", transcript())
   end)
 
   it("finishes an accepted answer without terminal compaction maintenance", function()
@@ -2660,7 +2672,8 @@ describe("neoagent default agent", function()
       return nil, require("neoagent.util").error("storage", "checkpoint projection unavailable")
     end
     local completed, err = pcall(function()
-      local run = assert(agent:compact())
+      local run = agent:compact()
+      assert(run)
       assert(vim.wait(1000, function()
         return run:is_done() and not agent:is_running()
       end))
