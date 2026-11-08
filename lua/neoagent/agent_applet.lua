@@ -1177,11 +1177,7 @@ function AgentApplet:_ensure_view()
         if not agent or not name then
           return
         end
-        for _, tool in ipairs(agent:get_toolset().tools) do
-          if tool.name == name then
-            return { name = name, render = tool.render }
-          end
-        end
+        return agent:_render_tool(name)
       end,
       on_dialog_action = function(id, action, input)
         return (self.dialog_source:choose(id, action, input))

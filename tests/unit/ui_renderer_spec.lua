@@ -2,6 +2,7 @@ local assert = require("luassert")
 local Applet = require("applet")
 local protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")
+local util = require("neoagent.util")
 local attachments = require("tests.helpers.attachments").new()
 local image_source, image_reader = require("neoagent.ui.image_source").new(attachments.files)
 
@@ -92,6 +93,33 @@ local function rendered(selected, block, opts)
 end
 
 describe("neoagent native Renderer protocol", function()
+  it("copies adjacent block data once while preserving renderer isolation", function()
+    local original_copy = util.copy
+    local copies = 0
+    local arguments = { value = "original", payload_marker = "neighbor" }
+    local selected = renderer({
+      render_block = function(_, _, opts)
+        assert(opts.previous).call.arguments.value = "changed"
+        return ui.text({ key = "adjacent-copy", text = "rendered" })
+      end,
+    })
+    util.copy = function(value, seen)
+      if type(value) == "table" and value.payload_marker == "neighbor" then
+        copies = copies + 1
+      end
+      return original_copy(value, seen)
+    end
+    local ok, node, err = pcall(protocol.render_block, selected, { kind = "assistant", text = "answer" }, {
+      previous = { kind = "tool", call = { id = "call", name = "inspect", arguments = arguments } },
+      following = { kind = "assistant", text = "following" },
+    })
+    util.copy = original_copy
+    assert(ok, node)
+    assert(node, vim.inspect(err))
+    assert.are.equal("original", arguments.value)
+    assert.are.equal(1, copies, "one renderer invocation copied the same neighboring payload twice")
+  end)
+
   it("validates explicit values and exposes bundled Renderers", function()
     assert.are.equal(renderers.pi, protocol.validate(renderers.pi))
     assert.are.equal(renderers.codex, renderers.get("codex"))

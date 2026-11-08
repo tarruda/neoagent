@@ -17,6 +17,7 @@ local original_file_lock_new = file_lock.new
 local original_entry_messages = tree.entry_messages
 local original_tree_messages = tree.messages
 local original_indexed_path = tree.indexed_path
+local original_indexed_projection = tree.indexed_projection
 local original_uv_open = vim.uv.fs_open
 local original_uv_write = vim.uv.fs_write
 local original_uv_read = vim.uv.fs_read
@@ -85,6 +86,7 @@ describe("neoagent.storage", function()
     tree.entry_messages = original_entry_messages
     tree.messages = original_tree_messages
     tree.indexed_path = original_indexed_path
+    tree.indexed_projection = original_indexed_projection
     vim.uv.fs_open = original_uv_open
     vim.uv.fs_write = original_uv_write
     vim.uv.fs_read = original_uv_read
@@ -144,6 +146,30 @@ describe("neoagent.storage", function()
     local reopened = assert(open_session(path))
     assert.are.same(store:state(), reopened:state())
     assert.are.equal("hello", assert(reopened:load()[1]).content)
+  end)
+
+  it("resumes complete records across bounded reads without materializing the whole document", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local content = string.rep("synthetic text crossing read boundaries\n", 6000)
+    assert(store:append({ role = "user", content = content }))
+    assert(store:append({ role = "user", content = "last complete record" }))
+    local path = store:metadata().path
+    assert(original_write_all(path, '{"unfinished":', "a", 384))
+    intercept_regular(function(file, target)
+      if target == path then
+        function file:read_all()
+          error("resume materialized the complete session document")
+        end
+      end
+    end)
+    local reopened, err = open_session(path)
+    assert(reopened, vim.inspect(err))
+    local messages = reopened:load()
+    assert.are.equal(content, assert(messages[1]).content)
+    assert.are.equal("last complete record", assert(messages[2]).content)
+    assert.are.equal("\n", assert(original_read(path)):sub(-1))
   end)
 
   it("persists execution policy outcomes without changing Tool-owned details", function()
@@ -990,7 +1016,7 @@ describe("neoagent.storage", function()
         return close(self)
       end
     end)
-    tree.indexed_path = function() error("projection failed") end
+    tree.indexed_projection = function() error("projection failed") end
 
     local reopened, err = open_session(path)
 
@@ -1146,11 +1172,11 @@ describe("neoagent.storage", function()
 
     assert.are.equal(100, append_projections)
     assert.are.equal(0, rebuilds)
-    assert.are.equal(1, loads)
+    assert.are.equal(0, loads)
     assert.are.equal(100, #session:messages())
     assert(session:move_to(assert(first).id))
     assert.are.equal(1, rebuilds)
-    assert.are.equal(1, loads)
+    assert.are.equal(0, loads)
     assert.are.equal(1, #session:messages())
   end)
 
@@ -1659,13 +1685,13 @@ describe("neoagent.storage", function()
     assert.matches("mkdir unavailable", tostring(assert(err).detail))
     fs.mkdirp = original_mkdirp
 
-    tree.indexed_path = function() return nil, "rebuild unavailable" end
+    tree.indexed_projection = function() return nil, "rebuild unavailable" end
     derived, err = storage.derive({ entries = {}, leaf_id = nil }, {
       directory = directory, cwd = directory,
     })
     assert.is_nil(derived)
     assert.matches("rebuild unavailable", tostring(assert(err).detail))
-    tree.indexed_path = original_indexed_path
+    tree.indexed_projection = original_indexed_projection
 
     local malformed = {
       metadata = function()
@@ -1893,16 +1919,16 @@ describe("neoagent.storage", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local store = storage.new({ directory = directory, cwd = directory })
-    tree.indexed_path = function() return nil, "pending projection failed" end
+    tree.indexed_projection = function() return nil, "pending projection failed" end
     local ok, err = store:set_leaf(nil)
-    tree.indexed_path = original_indexed_path
+    tree.indexed_projection = original_indexed_projection
     assert.is_nil(ok)
     assert.matches("pending projection failed", tostring(assert(err).detail))
 
     assert(store:append({ role = "user", content = "persisted" }))
-    tree.indexed_path = function() return nil, "persisted projection failed" end
+    tree.indexed_projection = function() return nil, "persisted projection failed" end
     ok, err = store:set_leaf(nil)
-    tree.indexed_path = original_indexed_path
+    tree.indexed_projection = original_indexed_projection
     assert.is_nil(ok)
     assert.matches("persisted projection failed", tostring(assert(err).detail))
   end)

@@ -23,6 +23,256 @@ local function valid_entry(entry_type, values)
 end
 
 describe("neoagent.session_tree", function()
+  it("indexes linear Tool conversations with bounded ancestor lookups", function()
+    local journal = tree.new_journal()
+    ---@type Neoagent.JournalIndex
+    local values = {}
+    local lookups = 0
+    journal.by_id = setmetatable({}, {
+      __index = function(_, id)
+        lookups = lookups + 1
+        return values[id]
+      end,
+      __newindex = function(_, id, value)
+        values[id] = value
+      end,
+    })
+    for index = 1, 80 do
+      local call_id = "call-" .. math.ceil(index / 2)
+      local message = index % 2 == 1
+          and { role = "assistant", content = { {
+            type = "toolCall", id = call_id, name = "inspect", arguments = {},
+          } } }
+        or { role = "toolResult", toolCallId = call_id, toolName = "inspect", content = {} }
+      assert(tree.index_entry(journal, base("message", {
+        id = tostring(index), parent_id = index > 1 and tostring(index - 1) or vim.NIL, message = message,
+      })))
+    end
+    assert.are.equal(80, #journal.entries)
+    assert.is_true(lookups <= 3 * #journal.entries,
+      "linear journal loading replayed ancestors for every Tool call")
+  end)
+
+  it("indexes ordinary conversation branches with bounded ancestor lookups", function()
+    local journal = tree.new_journal()
+    ---@type Neoagent.JournalIndex
+    local values = {}
+    local lookups = 0
+    journal.by_id = setmetatable({}, {
+      __index = function(_, id)
+        lookups = lookups + 1
+        return values[id]
+      end,
+      __newindex = function(_, id, value)
+        values[id] = value
+      end,
+    })
+    ---@type string|vim.NIL
+    local parent = vim.NIL
+    for index = 1, 120 do
+      local id = "trunk-" .. index
+      local message = index % 2 == 1 and { role = "user", content = "request" }
+        or { role = "assistant", content = { { type = "text", text = "answer" } } }
+      assert(tree.index_entry(journal, base("message", { id = id, parent_id = parent, message = message })))
+      parent = id
+    end
+    local target = parent
+    for index = 1, 60 do
+      local id = "branch-" .. index
+      assert(tree.index_entry(journal, base("leaf", {
+        id = "select-" .. index, parent_id = parent, target_id = target,
+      })))
+      assert(tree.index_entry(journal, base("message", {
+        id = id, parent_id = target, message = { role = "user", content = "revised request " .. index },
+      })))
+      parent = id .. "-answer"
+      assert(tree.index_entry(journal, base("message", {
+        id = parent, parent_id = id,
+        message = { role = "assistant", content = { { type = "text", text = "revised answer " .. index } } },
+      })))
+    end
+    assert.are.equal(300, #journal.entries)
+    assert.is_true(lookups <= 3 * #journal.entries,
+      "ordinary branch loading replayed the shared history: " .. lookups .. " ancestor lookups")
+    local projection = assert(tree.indexed_projection(journal.by_id, journal.leaf_id))
+    assert.are.equal(122, #projection.messages)
+    assert.are.equal("revised answer 60", require("neoagent.util").text_content(assert(projection.messages[122]).content))
+  end)
+
+  it("rebuilds branch linkage transactionally when indexing nonconsecutive parents", function()
+    local journal = tree.new_journal()
+    assert(tree.index_entry(journal, base("message", {
+      id = "root", message = { role = "user", content = "request" },
+    })))
+    for _, branch in ipairs({ "left", "right" }) do
+      assert(tree.index_entry(journal, base("message", {
+        id = branch .. "-call", parent_id = "root",
+        message = { role = "assistant", content = { {
+          type = "toolCall", id = "reused", name = branch, arguments = {},
+        } } },
+      })))
+      assert(tree.index_entry(journal, base("message", {
+        id = branch .. "-result", parent_id = branch .. "-call",
+        message = { role = "toolResult", toolCallId = "reused", toolName = branch, content = {} },
+      })))
+    end
+    assert(tree.index_entry(journal, base("leaf", {
+      id = "branch", parent_id = "right-result", target_id = "left-call",
+    })))
+    local rejected, err = tree.index_entry(journal, base("message", {
+      id = "rejected", parent_id = "left-call",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "right", content = {} },
+    }))
+    assert.is_nil(rejected)
+    assert.matches("toolName does not match", assert(err))
+    assert.is_nil(journal.by_id.rejected)
+    assert.are.equal("left-call", journal.leaf_id)
+    assert(tree.index_entry(journal, base("message", {
+      id = "accepted", parent_id = "left-call",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "left", content = {} },
+    })))
+    assert.are.equal("accepted", journal.leaf_id)
+    local projection = assert(tree.indexed_projection(journal.by_id, journal.leaf_id))
+    assert.are.equal(3, #projection.messages)
+    assert.are.equal("left", assert(projection.messages[3]).toolName)
+    assert(projection.messages[1]).content = "edited projection"
+    local root = journal.by_id.root
+    assert(root)
+    local message = root.message
+    assert(message)
+    assert.are.equal("request", message.content)
+    local unavailable, lookup_err = tree.indexed_projection(journal.by_id, "missing")
+    assert.is_nil(unavailable)
+    assert.matches("entry not found", assert(lookup_err))
+  end)
+
+  it("validates deferred branch linkage without accepting calls from another path", function()
+    local journal = tree.new_journal()
+    for _, entry in ipairs({
+      base("message", { id = "root", message = { role = "user", content = "request" } }),
+      base("message", {
+        id = "left-call", parent_id = "root", message = { role = "assistant", content = { {
+          type = "toolCall", id = "reused", name = "left", arguments = {},
+        } } },
+      }),
+      base("message", {
+        id = "left-text", parent_id = "left-call",
+        message = { role = "assistant", content = { { type = "text", text = "left answer" } } },
+      }),
+      base("message", {
+        id = "right-user", parent_id = "root", message = { role = "user", content = "revised request" },
+      }),
+      base("message", {
+        id = "right-text", parent_id = "right-user",
+        message = { role = "assistant", content = { { type = "text", text = "right answer" } } },
+      }),
+    }) do
+      assert(tree.index_entry(journal, entry))
+    end
+    local accepted, err = tree.index_entry(journal, base("message", {
+      id = "foreign-result", parent_id = "right-text",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "left", content = {} },
+    }))
+    assert.is_nil(accepted)
+    assert.matches("unknown toolCall", assert(err))
+    assert.is_nil(journal.by_id["foreign-result"])
+    assert.are.equal("right-text", journal.leaf_id)
+    assert(tree.index_entry(journal, base("message", {
+      id = "right-call", parent_id = "right-text", message = { role = "assistant", content = {
+        { type = "text", text = "inspect the revised request" },
+        { type = "toolCall", id = "reused", name = "right", arguments = {} },
+      } },
+    })))
+    accepted, err = tree.index_entry(journal, base("message", {
+      id = "wrong-result", parent_id = "right-call",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "left", content = {} },
+    }))
+    assert.is_nil(accepted)
+    assert.matches("toolName does not match", assert(err))
+    assert(tree.index_entry(journal, base("message", {
+      id = "right-result", parent_id = "right-call",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "right", content = {} },
+    })))
+    accepted, err = tree.index_entry(journal, base("message", {
+      id = "duplicate-call", parent_id = "right-result", message = { role = "assistant", content = {
+        { type = "toolCall", id = "fresh", name = "right", arguments = {} },
+        { type = "toolCall", id = "reused", name = "right", arguments = {} },
+      } },
+    }))
+    assert.is_nil(accepted)
+    assert.matches("duplicate conversation toolCall", assert(err))
+    assert.is_nil(journal.by_id["duplicate-call"])
+    assert.are.equal("right-result", journal.leaf_id)
+    assert(tree.index_entry(journal, base("message", {
+      id = "fresh-call", parent_id = "right-result", message = { role = "assistant", content = { {
+        type = "toolCall", id = "fresh", name = "right", arguments = {},
+      } } },
+    })))
+    assert(tree.index_entry(journal, base("message", {
+      id = "left-result", parent_id = "left-text",
+      message = { role = "toolResult", toolCallId = "reused", toolName = "left", content = {} },
+    })))
+    local projection = assert(tree.indexed_projection(journal.by_id, journal.leaf_id))
+    assert.are.equal(4, #projection.messages)
+    assert.are.equal("left", assert(projection.messages[4]).toolName)
+  end)
+
+  for _, native in ipairs({ false, true }) do
+    it("reconstructs deferred linkage within " .. (native and "native" or "local") .. " checkpoints", function()
+      local journal = tree.new_journal()
+      for _, entry in ipairs({
+        base("message", {
+          id = "before-call", message = { role = "assistant", content = { {
+            type = "toolCall", id = "reused", name = "inspect", arguments = {},
+          } } },
+        }),
+        base("message", {
+          id = "before-result", parent_id = "before-call",
+          message = { role = "toolResult", toolCallId = "reused", toolName = "inspect", content = {} },
+        }),
+        base("compaction", {
+          id = "checkpoint", parent_id = "before-result", tokens_before = 10,
+          summary = not native and "checkpoint" or nil,
+          native = native and {
+            role = "nativeCompaction", api = "openai-codex-responses", provider = "codex",
+            model = "synthetic", encrypted_content = "checkpoint",
+          } or nil,
+          retained_users = native and {} or nil,
+        }),
+        base("message", {
+          id = "outside-call", parent_id = "before-result", message = { role = "assistant", content = { {
+            type = "toolCall", id = "outside", name = "inspect", arguments = {},
+          } } },
+        }),
+        base("message", {
+          id = "after-text", parent_id = "checkpoint",
+          message = { role = "assistant", content = { { type = "text", text = "continue" } } },
+        }),
+      }) do
+        assert(tree.index_entry(journal, entry))
+      end
+      local accepted, err = tree.index_entry(journal, base("message", {
+        id = "foreign-result", parent_id = "after-text",
+        message = { role = "toolResult", toolCallId = "outside", toolName = "inspect", content = {} },
+      }))
+      assert.is_nil(accepted)
+      assert.matches("unknown toolCall", assert(err))
+      assert.are.equal("after-text", journal.leaf_id)
+      assert(tree.index_entry(journal, base("message", {
+        id = "after-call", parent_id = "after-text", message = { role = "assistant", content = { {
+          type = "toolCall", id = "reused", name = "inspect", arguments = {},
+        } } },
+      })))
+      assert(tree.index_entry(journal, base("message", {
+        id = "after-result", parent_id = "after-call",
+        message = { role = "toolResult", toolCallId = "reused", toolName = "inspect", content = {} },
+      })))
+      local projection = assert(tree.indexed_projection(journal.by_id, journal.leaf_id))
+      assert.are.equal(6, #projection.messages)
+      assert.are.equal("inspect", assert(projection.messages[6]).toolName)
+    end)
+  end
+
   it("projects independent checkpoint candidates from one unchanged source snapshot", function()
     local session = assert(require("neoagent.session").new())
     assert(session:append({ role = "user", content = "Earlier request" }))

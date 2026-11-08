@@ -89,6 +89,8 @@ local canvas = require("applet.pane.canvas")
 ---@field options Applet.Options
 
 ---@class Applet.PaneLayout: Applet.Fragment, Applet.InputLayout
+---@field cache_key? string
+---@field width_context Applet.TextWidthContext
 ---@field regions Applet.CompiledRegion[]
 ---@field binding_pairs Applet.MappingPair[]
 ---@field region_document? {shape: Applet.DocumentShape, changed_first?: integer}
@@ -145,13 +147,6 @@ local canvas = require("applet.pane.canvas")
 
 ---@alias Applet.ImageDependencyKeys table<string, {desired_identity: string}|'invalid'>
 
----@class Applet.TextWidthContext
----@field ambiwidth string
----@field emoji boolean
----@field display string
----@field isprint string
----@field overrides integer[][]
-
 ---@class Applet.TextCacheEntry
 ---@field node Applet.TextNode
 ---@field width integer
@@ -184,6 +179,14 @@ local canvas = require("applet.pane.canvas")
 ---@field fragment Applet.Fragment
 
 ---@class Applet.PaneCompileCache
+---@field width_context? Applet.TextWidthContext
+---@field regions? table<string, Applet.RegionCacheEntry>
+---@field layers? table<string, Applet.LayerCacheEntry>
+---@field document_key? string
+---@field documents? Applet.DocumentCompileCache[]
+
+---@class Applet.DocumentCompileCache
+---@field key string
 ---@field regions? table<string, Applet.RegionCacheEntry>
 ---@field layers? table<string, Applet.LayerCacheEntry>
 
@@ -199,6 +202,7 @@ local canvas = require("applet.pane.canvas")
 ---@field reusable? boolean
 
 ---@class Applet.PaneCompileOptions
+---@field width_context? Applet.TextWidthContext
 ---@field width integer
 ---@field height? integer
 ---@field extent? Applet.PaneExtent
@@ -3528,6 +3532,39 @@ function M.reuse(opts)
   return value
 end
 
+---@param cache Applet.PaneCompileCache
+---@param key? string
+local function select_document(cache, key)
+  if cache.document_key == key then
+    return
+  end
+  local documents = cache.documents or {}
+  ---@type Applet.DocumentCompileCache?
+  local selected
+  if key then
+    for index, document in ipairs(documents) do
+      if document.key == key then
+        selected = table.remove(documents, index)
+        break
+      end
+    end
+    if cache.document_key then
+      documents[#documents + 1] = {
+        key = cache.document_key,
+        regions = cache.regions,
+        layers = cache.layers,
+      }
+    end
+    while #documents > 2 do
+      table.remove(documents, 1)
+    end
+  end
+  cache.document_key = key
+  cache.documents = key and documents or nil
+  cache.regions = selected and selected.regions or {}
+  cache.layers = selected and selected.layers or {}
+end
+
 ---@param opts Applet.PaneCompileOptions
 ---@return Applet.PaneLayout
 function M.compile(opts)
@@ -3551,6 +3588,11 @@ function M.compile(opts)
   ---@cast tree Applet.Tree
   validate_plain(tree, "tree", {}, true)
   applet_expect(type(tree.root) == "table", "tree.root", "must be a node")
+  applet_expect(
+    tree.cache_key == nil or util.nonempty_string(tree.cache_key),
+    "tree.cache_key",
+    "must be a non-empty string"
+  )
   local theme = opts.theme or require("applet.theme").new()
   local supplied_images = opts.images or {
     status = "unavailable",
@@ -3584,8 +3626,16 @@ function M.compile(opts)
     "must be a boolean"
   )
   local cache = opts.cache
+  local width_context = opts.width_context or util.text_width_context()
   if cache then
     applet_expect(type(cache) == "table", "compile.cache", "must be a table")
+    -- Native character widths apply to every retained document and layer.
+    if not util.equal(cache.width_context, width_context) then
+      cache.regions, cache.layers = {}, {}
+      cache.document_key, cache.documents = nil, nil
+      cache.width_context = width_context
+    end
+    select_document(cache, tree.cache_key)
     cache.regions = cache.regions or {}
     cache.layers = cache.layers or {}
   end
@@ -3611,14 +3661,6 @@ function M.compile(opts)
     stats = stats,
   }
   local explicit, wrappers, gap, document_shape = normalize_regions(tree.root)
-  ---@type Applet.TextWidthContext
-  local width_context = {
-    ambiwidth = vim.o.ambiwidth,
-    emoji = vim.o.emoji,
-    display = vim.o.display,
-    isprint = vim.o.isprint,
-    overrides = vim.fn.getcellwidths(),
-  }
   local value = fragment()
   value.regions = {}
   if explicit then
@@ -3651,6 +3693,7 @@ function M.compile(opts)
       and extent == "document"
       and cache
       and type(previous) == "table"
+      and previous.cache_key == tree.cache_key
       and type(previous.region_document) == "table"
       and util.equal(previous.region_document.shape, document_shape)
     local stable_prefix = 0
@@ -3719,6 +3762,7 @@ function M.compile(opts)
       value.view = compile_view(tree, value.targets)
       value.edit = compile_edit(tree)
       value.width, value.height, value.extent = width, height, extent
+      value.width_context = width_context
       value.theme_generation = theme.generation or 0
       value.image_generation = images.generation or 0
       value.image_cell_width = images.cell_width
@@ -3865,6 +3909,8 @@ function M.compile(opts)
   local edit = compile_edit(tree)
   ---@type Applet.PaneLayout
   local layout = {
+    cache_key = tree.cache_key,
+    width_context = width_context,
     lines = value.lines,
     coverage = value.coverage,
     decorations = value.decorations,

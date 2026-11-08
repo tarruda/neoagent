@@ -454,7 +454,14 @@ describe("neoagent.session", function()
     tree.normalize_projection = function()
       return nil, "projection dependency failed"
     end
-    session, err = Session.new({ entries = { entry } })
+    session, err = Session.new({ store = {
+      load = function()
+        return { entry.message }
+      end,
+      append = function()
+        return true
+      end,
+    } })
     tree.normalize_projection = normalize_projection
     assert.is_nil(session)
     assert.matches("projection dependency failed", tostring(assert(err).detail))

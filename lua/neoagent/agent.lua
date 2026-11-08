@@ -850,10 +850,11 @@ function M.from_config(options, runtime)
     })
   end
 
-  local function publish_messages()
+  ---@param reset? boolean
+  local function publish_messages(reset)
     local messages, history = transcript_messages(state.session)
     sync_tools()
-    publish_transcript(messages, history)
+    publish_transcript(messages, history, reset)
   end
 
   ---@return boolean
@@ -1623,6 +1624,16 @@ function M.from_config(options, runtime)
     return copy_toolset(state.toolset)
   end
 
+  ---@param name string
+  ---@return Neoagent.RenderTool?
+  function agent:_render_tool(name)
+    for _, tool in ipairs(state.toolset.tools) do
+      if tool.name == name then
+        return { name = tool.name, render = tool.render }
+      end
+    end
+  end
+
   ---@param value Neoagent.AgentToolset
   ---@return Neoagent.AgentToolset?, Neoagent.Error?
   function agent:set_toolset(value)
@@ -1639,7 +1650,8 @@ function M.from_config(options, runtime)
         selected.sandbox and selected.sandbox:status() or { enabled = false, active = false }
       )
     end
-    publish_messages()
+    -- Accepted Tool changes invalidate presentation in every transcript segment.
+    publish_messages(true)
     return previous
   end
 

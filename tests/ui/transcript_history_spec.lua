@@ -3,14 +3,17 @@ local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local view_handles = require("tests.helpers.view_handles")
 local util = require("neoagent.util")
+local agent_loop = require("neoagent.agent_loop")
 
 describe("transcript history", function()
   ---@type Neoagent.Agent[]
   local agents = {}
   local copy = util.copy
+  local validate_toolset = agent_loop.validate_toolset
 
   after_each(function()
     util.copy = copy
+    agent_loop.validate_toolset = validate_toolset
     for _, agent in ipairs(agents) do
       agent:destroy()
     end
@@ -145,6 +148,168 @@ describe("transcript history", function()
     return table.concat(vim.api.nvim_buf_get_lines(assert(view_handles.buffer(view, "transcript")), 0, -1, false), "\n")
   end
 
+  it("renders tool cards from accepted presentation capabilities without validating execution schemas", function()
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "assistant", content = { {
+      type = "toolCall", id = "inspect", name = "inspect", arguments = {},
+    } } }))
+    assert(session:append({
+      role = "toolResult", toolCallId = "inspect", toolName = "inspect",
+      content = { { type = "text", text = "tool output" } },
+    }))
+    local agent = agent_for(session)
+    assert(agent:set_toolset({ tools = { {
+      name = "inspect", description = "Inspect synthetic data",
+      input_schema = { type = "object", properties = {} },
+      execute = function()
+        return { content = {} }
+      end,
+      render = function()
+        return { kind = "text", title = "accepted tool renderer", lines = { "accepted presentation" } }
+      end,
+    } } }))
+    local validations = 0
+    agent_loop.validate_toolset = function(...)
+      validations = validations + 1
+      return validate_toolset(...)
+    end
+    local applet, view = open(agent)
+    assert.matches("accepted presentation", text(view))
+    assert.are.equal(0, validations, "rendering rebuilt the accepted execution Toolset")
+    agent_loop.validate_toolset = validate_toolset
+    applet:destroy()
+  end)
+
+  it("reuses recently visited transcript cards and their compiled regions", function()
+    local session = conversation()
+    local agent = agent_for(session)
+    local applet = open(agent)
+    local base = require("neoagent.ui.renderers").codex
+    local renderer = util.shallow_copy(base)
+    local renders = 0
+    function renderer:render_block(...)
+      renders = renders + 1
+      return base.render_block(self, ...)
+    end
+    assert(applet:set_renderer(renderer))
+    local view = applet:view()
+    assert(view)
+    assert(agent:navigate_transcript("previous"))
+    assert.matches("middle request", text(view))
+    assert(agent:navigate_transcript("latest"))
+    assert.matches("latest request", text(view))
+    local before = view.transcript.pane:_stats()
+    renders = 0
+    assert(agent:navigate_transcript("previous"))
+    assert.matches("middle request", text(view))
+    local after = view.transcript.pane:_stats()
+    assert.are.equal(0, renders, "returning to a committed segment rebuilt its cards")
+    assert.is_true(after.region_compilations - before.region_compilations <= 1,
+      "returning to a committed segment recompiled its content regions")
+    applet:destroy()
+  end)
+
+  it("retains committed cards after a streamed Tool call completes", function()
+    local session, ids = conversation()
+    local model = fake_model.new({
+      {
+        events = {
+          { type = "tool_call_delta", index = 0, id = "inspect", name = "inspect", arguments_delta = "{}" },
+        },
+        result = fake_model.assistant({
+          { type = "toolCall", id = "inspect", name = "inspect", arguments = {} },
+        }, "toolUse"),
+      },
+      { result = fake_model.assistant({ { type = "text", text = "completed response" } }) },
+    })
+    local agent = agent_for(session, model)
+    assert(agent:set_toolset({
+      tools = {
+        {
+          name = "inspect",
+          description = "Inspect synthetic data",
+          input_schema = { type = "object", properties = {} },
+          execute = function()
+            return { content = { { type = "text", text = "completed Tool result" } } }
+          end,
+        },
+      },
+    }))
+    local applet = open(agent)
+    local base = require("neoagent.ui.renderers").codex
+    local renderer = util.shallow_copy(base)
+    ---@type table<string, integer>
+    local renders = {}
+    function renderer:render_block(block, ...)
+      local key = assert(block.key)
+      renders[key] = (renders[key] or 0) + 1
+      return base.render_block(self, block, ...)
+    end
+    assert(applet:set_renderer(renderer))
+    local view = applet:view()
+    assert(view)
+    local run = agent:send("inspect the project")
+    assert(run)
+    assert(type(run) == "table")
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.is_true(assert(run:result()).ok)
+    assert.matches("completed Tool result", text(view))
+    assert.matches("completed response", text(view))
+    assert(agent:navigate_transcript("previous"))
+    text(view)
+    renders = {}
+    local before = view.transcript.pane:_stats()
+    assert(agent:navigate_transcript("latest"))
+    local displayed = text(view)
+    local after = view.transcript.pane:_stats()
+    applet:destroy()
+    assert.matches("completed Tool result", displayed)
+    assert.matches("completed response", displayed)
+    assert.is_nil(
+      renders["message:" .. ids.latest .. ":compaction"],
+      "completed Tool argument streams prevented committed cards from being retained"
+    )
+    assert.is_true(
+      after.region_reuses > before.region_reuses,
+      "returning after a streamed Tool call recompiled every content region"
+    )
+  end)
+
+  it("replays the current failure after revisiting an unchanged journal segment", function()
+    local session = conversation()
+    local model = fake_model.new({
+      { result = { ok = false, error = { kind = "model", message = "first compaction failure" } } },
+      { result = { ok = false, error = { kind = "model", message = "second compaction failure" } } },
+    })
+    local agent = agent_for(session, model)
+    local applet, view = open(agent)
+    local leaf = session:leaf_id()
+    local ok, err = pcall(function()
+      text(view)
+      for _, message in ipairs({ "first compaction failure", "second compaction failure" }) do
+        assert(agent:navigate_transcript("previous"))
+        text(view)
+        local run = agent:compact()
+        assert(run)
+        assert(vim.wait(1000, function()
+          return run:is_done() and not agent:is_running()
+        end))
+        assert.is_false(assert(run:result()).ok)
+        assert.are.equal(leaf, session:leaf_id())
+        assert(agent:navigate_transcript("latest"))
+        local displayed = text(view)
+        assert.matches(message, displayed, 1, true)
+        if message == "second compaction failure" then
+          assert.is_nil((displayed:find("first compaction failure", 1, true)))
+        end
+      end
+    end)
+    applet:destroy()
+    assert(ok, err)
+  end)
+
   for _, action in ipairs({ "navigate", "attach" }) do
     for _, cancel in ipairs({ false, true }) do
       local label = action .. " and cancel=" .. tostring(cancel)
@@ -229,6 +394,117 @@ describe("transcript history", function()
       end)
     end
   end
+
+  it("redraws retained Markdown tables after native character widths change", function()
+    local previous = vim.fn.getcellwidths()
+    local session = conversation()
+    assert(session:append({
+      role = "assistant",
+      content = { {
+        type = "text",
+        text = "| Name | Value |\n| --- | --- |\n| ···· | entry |",
+      } },
+    }))
+    local agent = agent_for(session)
+    local applet, view = open(agent)
+    local renderer = require("neoagent.ui.renderers").codex
+    local ok, err = pcall(function()
+      vim.fn.setcellwidths({ { 0xB7, 0xB7, 1 } })
+      assert(applet:set_renderer(renderer))
+      text(view)
+      assert(agent:navigate_transcript("previous"))
+      text(view)
+      vim.fn.setcellwidths({ { 0xB7, 0xB7, 2 } })
+      assert(agent:navigate_transcript("latest"))
+      local restored = text(view)
+      assert(applet:set_renderer(renderer))
+      assert.are.equal(text(view), restored)
+    end)
+    vim.fn.setcellwidths(previous)
+    applet:destroy()
+    assert(ok, vim.inspect(err))
+  end)
+
+  it("evicts older rendered segments after two more recent inactive segments", function()
+    local session = assert(require("neoagent.session").new())
+    for index = 1, 5 do
+      if index > 1 then
+        assert(session:append_compaction({ summary = "checkpoint " .. index, tokens_before = 10 }))
+      end
+      assert(session:append({ role = "user", content = "segment " .. index }))
+    end
+    local agent = agent_for(session)
+    local applet = open(agent)
+    local base = require("neoagent.ui.renderers").codex
+    local renderer = util.shallow_copy(base)
+    local renders = 0
+    function renderer:render_block(...)
+      renders = renders + 1
+      return base.render_block(self, ...)
+    end
+    assert(applet:set_renderer(renderer))
+    local view = applet:view()
+    assert(view)
+    for _, direction in ipairs({ "first", "next", "next" }) do
+      assert(agent:navigate_transcript(direction))
+      text(view)
+    end
+    renders = 0
+    assert(agent:navigate_transcript("previous"))
+    assert.matches("segment 2", text(view))
+    assert.are.equal(0, renders)
+    for _, direction in ipairs({ "next", "latest" }) do
+      assert(agent:navigate_transcript(direction))
+      text(view)
+    end
+    renders = 0
+    assert(agent:navigate_transcript("first"))
+    assert.matches("segment 1", text(view))
+    assert.is_true(renders > 0, "a segment outside the retention bound remained cached")
+    applet:destroy()
+  end)
+
+  it("invalidates current and inactive tool presentations after accepting a replacement Toolset", function()
+    local session = assert(require("neoagent.session").new())
+    local function tool_messages(id)
+      assert(session:append({ role = "assistant", content = { {
+        type = "toolCall", id = id, name = "inspect", arguments = {},
+      } } }))
+      assert(session:append({
+        role = "toolResult", toolCallId = id, toolName = "inspect", content = {},
+      }))
+    end
+    tool_messages("first")
+    assert(session:append_compaction({ summary = "checkpoint", tokens_before = 10 }))
+    tool_messages("latest")
+    local agent = agent_for(session)
+    local function toolset(label)
+      return { tools = { {
+        name = "inspect", description = "Inspect synthetic data",
+        input_schema = { type = "object", properties = {} },
+        execute = function()
+          return { content = {} }
+        end,
+        render = function()
+          return { kind = "text", lines = { label } }
+        end,
+      } } }
+    end
+    assert(agent:set_toolset(toolset("initial renderer")))
+    local applet, view = open(agent)
+    assert.matches("initial renderer", text(view))
+    assert(agent:navigate_transcript("previous"))
+    assert.matches("initial renderer", text(view))
+    assert(agent:navigate_transcript("latest"))
+    assert.matches("initial renderer", text(view))
+    assert(agent:set_toolset(toolset("replacement renderer")))
+    assert.matches("replacement renderer", text(view))
+    assert.is_nil((text(view):find("initial renderer", 1, true)))
+    assert(agent:navigate_transcript("previous"))
+    assert.matches("replacement renderer", text(view))
+    assert.is_nil((text(view):find("initial renderer", 1, true)))
+    applet:destroy()
+  end)
 
   it("navigates local and native segments without moving the branch or changing context", function()
     for _, native in ipairs({ false, true }) do

@@ -87,9 +87,10 @@ bodies stay out of diagnostics. Credential storage is private and atomic.
 
 ## Sessions and persistence
 
-A Session owns messages and the active path through a conversation tree. It is
-tool-free and can use memory or an injected store. Model context and transcript
-segments are independent projections of the journal.
+A Session exposes messages and the active path through a conversation tree.
+It is tool-free and can use memory or an injected store. Model context and
+transcript segments are independent projections of the journal. The bundled
+Store publishes one validated message projection shared by its Session facades.
 
 Workspace storage owns Session documents, immutable attachment blobs, provider
 mappings, and a rebuildable index. Attachments use content identity rather than
