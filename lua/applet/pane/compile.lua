@@ -186,6 +186,13 @@ local canvas = require("applet.pane.canvas")
 ---@class Applet.PaneCompileCache
 ---@field regions? table<string, Applet.RegionCacheEntry>
 ---@field layers? table<string, Applet.LayerCacheEntry>
+---@field document_key? string
+---@field documents? Applet.DocumentCompileCache[]
+
+---@class Applet.DocumentCompileCache
+---@field key string
+---@field regions? table<string, Applet.RegionCacheEntry>
+---@field layers? table<string, Applet.LayerCacheEntry>
 
 ---@class Applet.PreparedCompileCache: Applet.PaneCompileCache
 ---@field regions table<string, Applet.RegionCacheEntry>
@@ -3528,6 +3535,39 @@ function M.reuse(opts)
   return value
 end
 
+---@param cache Applet.PaneCompileCache
+---@param key? string
+local function select_document(cache, key)
+  if cache.document_key == key then
+    return
+  end
+  local documents = cache.documents or {}
+  ---@type Applet.DocumentCompileCache?
+  local selected
+  if key then
+    for index, document in ipairs(documents) do
+      if document.key == key then
+        selected = table.remove(documents, index)
+        break
+      end
+    end
+    if cache.document_key then
+      documents[#documents + 1] = {
+        key = cache.document_key,
+        regions = cache.regions,
+        layers = cache.layers,
+      }
+    end
+    while #documents > 2 do
+      table.remove(documents, 1)
+    end
+  end
+  cache.document_key = key
+  cache.documents = key and documents or nil
+  cache.regions = selected and selected.regions or {}
+  cache.layers = selected and selected.layers or {}
+end
+
 ---@param opts Applet.PaneCompileOptions
 ---@return Applet.PaneLayout
 function M.compile(opts)
@@ -3551,6 +3591,11 @@ function M.compile(opts)
   ---@cast tree Applet.Tree
   validate_plain(tree, "tree", {}, true)
   applet_expect(type(tree.root) == "table", "tree.root", "must be a node")
+  applet_expect(
+    tree.cache_key == nil or util.nonempty_string(tree.cache_key),
+    "tree.cache_key",
+    "must be a non-empty string"
+  )
   local theme = opts.theme or require("applet.theme").new()
   local supplied_images = opts.images or {
     status = "unavailable",
@@ -3586,6 +3631,7 @@ function M.compile(opts)
   local cache = opts.cache
   if cache then
     applet_expect(type(cache) == "table", "compile.cache", "must be a table")
+    select_document(cache, tree.cache_key)
     cache.regions = cache.regions or {}
     cache.layers = cache.layers or {}
   end

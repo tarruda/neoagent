@@ -1789,6 +1789,9 @@ The bundled append-only store is: >lua
   local session = require("neoagent.session").new({ store = store })
 <
 
+Sessions created from the same bundled Store observe its accepted message and
+branch changes.
+
 No Session file is created until the first message is accepted. Open an
 existing store with
 `require("neoagent.storage").open(path, workspace_storage)`. Obtain that

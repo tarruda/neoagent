@@ -139,12 +139,14 @@ end
 ---@return_overload nil, Neoagent.Error?
 local function invoke(renderer, method, block, env, optional, continuation)
   local copied = M.copy_block(block)
-  local options = util.copy(env or {})
-  if options.previous then
-    options.previous = M.copy_block(options.previous)
+  local options = util.shallow_copy(env or {})
+  options.previous, options.following = nil, nil
+  options = util.copy(options)
+  if env and env.previous then
+    options.previous = M.copy_block(env.previous)
   end
-  if options.following then
-    options.following = M.copy_block(options.following)
+  if env and env.following then
+    options.following = M.copy_block(env.following)
   end
   local ok, value, next_continuation = pcall(renderer[method], renderer, copied, options, continuation)
   if not ok then

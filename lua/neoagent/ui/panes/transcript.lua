@@ -77,6 +77,13 @@ local widgets = Applet.Pane.widgets
 ---@field blocks table<string, Neoagent.TranscriptBlockCache>
 ---@field document? Neoagent.TranscriptDocumentCache
 
+---@class Neoagent.TranscriptSegmentCache
+---@field id string
+---@field tip string
+---@field count integer
+---@field image_scope string
+---@field render_cache Neoagent.TranscriptRenderCache
+
 ---@class Neoagent.TranscriptPane
 ---@field image_reader? Applet.ImageResourceReader
 ---@field image_source? Neoagent.ImageSourceFactory
@@ -105,6 +112,7 @@ local widgets = Applet.Pane.widgets
 ---@field dialog_revision integer
 ---@field dialog? Neoagent.ActiveDialogSnapshot
 ---@field render_cache Neoagent.TranscriptRenderCache
+---@field retained_segments Neoagent.TranscriptSegmentCache[]
 ---@field block_snapshots table<Neoagent.TranscriptBlock, Neoagent.TranscriptBlock>
 ---@field snapshot_blocks Neoagent.TranscriptBlock[]
 ---@field dirty_blocks table<Neoagent.TranscriptBlock, boolean>
@@ -564,6 +572,18 @@ local function cached_block_node(state, env, blocks, block, index, width, cache)
       and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"),
   }
   local cached = cache[block.key]
+  if cached then
+    local matches = true
+    for key, value in pairs(signature) do
+      if cached[key] ~= value then
+        matches = false
+        break
+      end
+    end
+    if matches then
+      return cached.node, cached.region_revision
+    end
+  end
   local tool
   if block.kind == "tool" and state.resolve_tool then
     local name = block.name or block.call and block.call.name
@@ -708,6 +728,7 @@ render = function(state, env, cache)
     cache.document = document
   end
   return {
+    cache_key = state.history and state.history.id,
     root = document.root,
     chrome = {
       title = title(state),
@@ -761,6 +782,7 @@ function Transcript.new(opts)
     dialog_revision = 0,
     dialog = nil,
     render_cache = { blocks = {} },
+    retained_segments = {},
     block_snapshots = {},
     snapshot_blocks = {},
     dirty_blocks = {},
@@ -814,6 +836,7 @@ function Transcript:set_image_source(source, reader)
   self.image_source = source
   self.image_reader = reader
   self.render_cache = { blocks = {} }
+  self.retained_segments = {}
   self.document_revision = self.document_revision + 1
   self:_publish()
 end
@@ -826,6 +849,7 @@ function Transcript:set_image_system(images)
   self.pane:set_image_system(images)
   self.image_system = images
   self.render_cache = { blocks = {} }
+  self.retained_segments = {}
   self.document_revision = self.document_revision + 1
   self:_publish()
 end
@@ -841,6 +865,7 @@ end
 ---@param config Neoagent.UIConfigInput?
 function Transcript:set_config(config)
   self.config = config or {}
+  self.retained_segments = {}
   self.document_revision = self.document_revision + 1
   self:_publish()
 end
@@ -849,6 +874,7 @@ end
 function Transcript:set_renderer(renderer)
   self.renderer = renderer
   self.render_cache = { blocks = {} }
+  self.retained_segments = {}
   self.document_revision = self.document_revision + 1
   self.pane:set_theme(renderer.theme)
   self:_publish()
@@ -871,6 +897,51 @@ end
 local function entry_id(message)
   local value = type(message) == "table" and message._neoagent_entry_id
   return type(value) == "string" and value ~= "" and value or nil
+end
+
+---@param messages Neoagent.TranscriptMessage[]
+---@param history? Neoagent.TranscriptHistory
+---@return Neoagent.TranscriptSegmentCache?
+function Transcript:_take_segment(messages, history)
+  if not history or not history.id then
+    return nil
+  end
+  for index, segment in ipairs(self.retained_segments) do
+    if segment.id == history.id then
+      table.remove(self.retained_segments, index)
+      if segment.count == #messages and segment.tip == entry_id(messages[#messages]) then
+        return segment
+      end
+      return nil
+    end
+  end
+end
+
+function Transcript:_retire_segment()
+  local id = self.history and self.history.id
+  local tip = entry_id(self.messages[#self.messages])
+  if
+    not id
+    or not tip
+    or not entry_id(self.messages[1])
+    or next(self.live_texts)
+    or next(self.live_thinkings)
+    or next(self.pending_calls)
+    or next(self.animated_blocks)
+  then
+    return
+  end
+  self.render_cache.document = nil
+  self.retained_segments[#self.retained_segments + 1] = {
+    id = id,
+    tip = tip,
+    count = #self.messages,
+    image_scope = self.image_scope,
+    render_cache = self.render_cache,
+  }
+  while #self.retained_segments > 2 do
+    table.remove(self.retained_segments, 1)
+  end
 end
 
 ---@param messages Neoagent.TranscriptMessage[]
@@ -998,6 +1069,13 @@ function Transcript:set_messages(messages, history, reset)
   messages = messages or {}
   local changed_segment = history and self.history and history.id ~= self.history.id
   local changed_history = not vim.deep_equal(history, self.history)
+  local retained
+  if changed_segment then
+    retained = self:_take_segment(messages, history)
+    self:_retire_segment()
+  elseif reset then
+    self.retained_segments = {}
+  end
   self.history = util.copy(history)
   if changed_history then
     self.document_revision = self.document_revision + 1
@@ -1015,9 +1093,9 @@ function Transcript:set_messages(messages, history, reset)
     return
   end
   self.messages = util.copy(messages)
-  self.image_scope = next_image_scope()
+  self.image_scope = retained and retained.image_scope or next_image_scope()
   self.blocks, self.calls, self.pending_calls = {}, {}, {}
-  self.render_cache = { blocks = {} }
+  self.render_cache = retained and retained.render_cache or { blocks = {} }
   self.block_snapshots = {}
   self.snapshot_blocks = {}
   self.dirty_blocks = {}
@@ -1299,6 +1377,7 @@ end
 
 function Transcript:destroy()
   self.pane:destroy()
+  self.retained_segments = {}
 end
 
 return Transcript

@@ -2,7 +2,7 @@ local util = require("neoagent.util")
 local tree = require("neoagent.session_tree")
 local semantic_message = require("neoagent.semantic_message")
 local files = require("neoagent.files")
-local linkage = require("neoagent.message_linkage")
+local projections = require("neoagent.session_projection")
 
 local M = {}
 ---@class Neoagent.SessionMetadata
@@ -29,6 +29,7 @@ local M = {}
 ---@field load fun(self: Neoagent.SessionStorage): unknown, unknown?
 ---@field append fun(self: Neoagent.SessionStorage, message: Neoagent.Message, state?: Neoagent.RequestStateInput): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
 ---@field context_messages? fun(self: Neoagent.SessionStorage): unknown, unknown?
+---@field checkpoint_identity? fun(self: Neoagent.SessionStorage): Neoagent.NativeContextIdentity?, Neoagent.Error?
 ---@field entries? fun(self: Neoagent.SessionStorage): Neoagent.JournalEntry[]
 ---@field entry? fun(self: Neoagent.SessionStorage, id: string): Neoagent.JournalEntry?
 ---@field leaf_id? fun(self: Neoagent.SessionStorage): string?
@@ -71,8 +72,7 @@ local M = {}
 ---@field _id string
 ---@field _identity table
 ---@field _header? Neoagent.SessionHeader
----@field _messages Neoagent.ProjectionMessage[]
----@field _linkage Neoagent.MessageLinkage
+---@field _projection Neoagent.SessionProjectionState
 ---@field _store? Neoagent.SessionStorage
 ---@field _entries Neoagent.JournalEntry[]
 ---@field _by_id Neoagent.JournalIndex
@@ -99,25 +99,6 @@ local function random_id(bytes)
   )
 end
 
----@param messages Neoagent.ProjectionMessage[]
----@param base? Neoagent.MessageLinkage
----@param offset? integer
----@return Neoagent.MessageLinkageUpdate?, string?
-local function stage_projection(messages, base, offset)
-  local update = linkage.stage(base)
-  for index, message in ipairs(messages) do
-    if message.role == "compactionSummary" or message.role == "compactionCheckpoint" then
-      linkage.reset(update)
-    else
-      local accepted, err = linkage.check(update, message, (offset or 0) + index)
-      if not accepted then
-        return nil, err
-      end
-    end
-  end
-  return update
-end
-
 ---@param self Neoagent.Session
 ---@param entry_type "message"|"compaction"|"leaf"
 ---@param values? table<string, unknown>
@@ -141,14 +122,10 @@ local function memory_append(self, entry_type, values)
   if entry.type == "leaf" then
     self._leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
     local path = assert(tree.indexed_path(self._by_id, self._leaf_id == nil and vim.NIL or self._leaf_id))
-    self._messages = tree.messages(path, false)
-    self._linkage = linkage.commit(assert(stage_projection(self._messages)))
+    self._projection:replace(tree.messages(path, false))
   else
     self._leaf_id = entry.id
-    vim.list_extend(self._messages, tree.entry_messages(entry))
-    if entry.type == "compaction" then
-      self._linkage = {}
-    end
+    assert(self._projection:append(tree.entry_messages(entry)))
   end
   return true, nil, util.copy(entry)
 end
@@ -157,38 +134,10 @@ end
 ---@param projection unknown
 ---@return true?, Neoagent.Error?
 local function apply_store_projection(self, projection)
-  if type(projection) ~= "table" or type(projection.messages) ~= "table" or not util.is_list(projection.messages) then
-    return nil, util.error("storage", "Store returned an invalid projection")
-  end
-  if projection.type == "append" then
-    ---@type Neoagent.ProjectionMessage[]
-    local normalized = {}
-    for index, message in ipairs(projection.messages) do
-      local value, err = tree.normalize_projection_message(message)
-      if not value then
-        return nil,
-          util.error("storage", "Store returned invalid messages", "message " .. tostring(index) .. ": " .. err)
-      end
-      normalized[index] = value
-    end
-    local update, err = stage_projection(normalized, self._linkage, #self._messages)
-    if not update then
-      return nil, util.error("storage", "Store returned invalid messages", err)
-    end
-    vim.list_extend(self._messages, normalized)
-    self._linkage = linkage.commit(update)
+  if self._store and projections.for_store(self._store) == self._projection then
     return true
   end
-  if projection.type == "replace" then
-    local normalized, err = tree.normalize_projection(projection.messages)
-    if not normalized then
-      return nil, util.error("storage", "Store returned invalid messages", err)
-    end
-    self._messages = normalized
-    self._linkage = linkage.commit(assert(stage_projection(normalized)))
-    return true
-  end
-  return nil, util.error("storage", "Store returned an unknown projection")
+  return self._projection:accept(projection)
 end
 
 ---@param self Neoagent.Session
@@ -226,8 +175,8 @@ function Session:append(message, state)
   if not published then
     return nil, file_err
   end
-  local update, linkage_err = stage_projection({ copy }, self._linkage, #self._messages)
-  if not update then
+  local linked, linkage_err = self._projection:check(copy)
+  if not linked then
     return nil, util.error("session", "Invalid Session message", linkage_err)
   end
   state = util.copy(state or {})
@@ -246,13 +195,12 @@ function Session:append(message, state)
   if not accepted then
     return nil, err
   end
-  self._linkage = linkage.commit(update)
   return true, nil, entry
 end
 
 ---@return Neoagent.ProjectionMessage[]
 function Session:messages()
-  return util.copy(self._messages)
+  return util.copy(self._projection.messages)
 end
 
 -- Replay counts durable messages independently of optional journal receipts.
@@ -260,7 +208,7 @@ end
 ---@return integer
 function Session:_message_count()
   local count = 0
-  for _, message in ipairs(self._messages) do
+  for _, message in ipairs(self._projection.messages) do
     if message.role ~= "compactionSummary" and message.role ~= "compactionCheckpoint" then
       count = count + 1
     end
@@ -273,19 +221,20 @@ end
 ---@param cursor? Neoagent.MessageCursor
 ---@return Neoagent.MessageUpdate?
 function Session:_message_update(cursor)
-  local reset = not cursor or cursor.source ~= self._messages
+  local source = self._projection.messages
+  local reset = not cursor or cursor.source ~= source
   local first = not reset and assert(cursor).count + 1 or 1
-  if not reset and first > #self._messages then
+  if not reset and first > #source then
     return nil
   end
   local messages = {}
-  for index = first, #self._messages do
-    messages[#messages + 1] = util.copy(self._messages[index])
+  for index = first, #source do
+    messages[#messages + 1] = util.copy(source[index])
   end
   return {
     messages = messages,
     reset = reset,
-    cursor = { source = self._messages, count = #self._messages },
+    cursor = { source = source, count = #source },
   }
 end
 
@@ -309,11 +258,21 @@ function Session:context_messages()
     end
     return messages
   end
-  return tree.to_llm(self._messages)
+  return tree.to_llm(self._projection.messages)
 end
 
 ---@return Neoagent.NativeContextIdentity?, Neoagent.Error?
 function Session:checkpoint_identity()
+  if self._store and type(self._store.checkpoint_identity) == "function" then
+    return self._store:checkpoint_identity()
+  end
+  if not self._store then
+    local identity, err = tree.indexed_checkpoint_identity(self._by_id, self._leaf_id or vim.NIL)
+    if err then
+      return nil, util.error("session", "Failed to read checkpoint identity", err)
+    end
+    return identity
+  end
   local path, err = self:path()
   if not path then
     return nil, err
@@ -573,8 +532,7 @@ function M.new(opts)
   if sources > 1 then
     return nil, util.error("session", "messages, entries, and store are mutually exclusive")
   end
-  ---@type Neoagent.ProjectionMessage[]?
-  local messages = {}
+  local projection = assert(projections.new())
   ---@type Neoagent.JournalEntry[]
   local entries = {}
   ---@type Neoagent.JournalIndex
@@ -584,14 +542,19 @@ function M.new(opts)
   ---@type Neoagent.SessionMetadata?
   local store_metadata
   if opts.store ~= nil then
-    local loaded, err = opts.store:load()
-    if not loaded then
-      return nil, util.normalize_error(err, "storage")
-    end
-    local message_err
-    messages, message_err = tree.normalize_projection(loaded)
-    if not messages then
-      return nil, util.error("storage", "Store returned invalid messages", message_err)
+    local shared = projections.for_store(opts.store)
+    if shared then
+      projection = shared
+    else
+      local loaded, err = opts.store:load()
+      if not loaded then
+        return nil, util.normalize_error(err, "storage")
+      end
+      local normalized, message_err = projections.new(loaded)
+      if not normalized then
+        return nil, util.error("storage", "Store returned invalid messages", message_err)
+      end
+      projection = normalized
     end
     if type(opts.store.metadata) == "function" then
       store_metadata = opts.store:metadata()
@@ -607,26 +570,19 @@ function M.new(opts)
     if opts.leaf_id ~= nil and opts.leaf_id ~= validated.leaf_id then
       return nil, util.error("session", "Invalid Session entries", "active leaf does not match the entry journal")
     end
-    entries = util.copy(opts.entries)
-    validated = assert(tree.validate_entries(entries))
+    entries = validated.entries
     by_id = validated.by_id
     leaf_id = validated.leaf_id
     local path, path_err = tree.indexed_path(by_id, leaf_id == nil and vim.NIL or leaf_id)
     if not path then
       return nil, util.error("session", "Invalid Session entries", path_err)
     end
-    messages = tree.messages(path, false)
-    local normalized, message_err = tree.normalize_projection(messages)
-    if not normalized then
-      return nil, util.error("session", "Invalid Session entries", message_err)
-    end
-    messages = normalized
+    projection:replace(tree.messages(path, false))
   elseif opts.messages ~= nil then
     if type(opts.messages) ~= "table" or not util.is_list(opts.messages) then
       return nil, util.error("session", "messages must be an array")
     end
-    local message_err
-    messages, message_err = semantic_message.normalize_list(opts.messages)
+    local messages, message_err = semantic_message.normalize_list(opts.messages)
     if not messages then
       return nil, util.error("session", "Invalid Session messages", message_err)
     end
@@ -647,6 +603,7 @@ function M.new(opts)
       by_id[entry.id] = entry
       leaf_id = entry.id
     end
+    projection:replace(messages)
   end
   local id = opts.id
   if id == nil then
@@ -670,13 +627,11 @@ function M.new(opts)
       data = util.copy(opts.metadata),
     }
   end
-  local initial_messages = assert(messages)
   return setmetatable({
     _id = id,
     _identity = {},
     _header = header,
-    _messages = initial_messages,
-    _linkage = linkage.commit(assert(stage_projection(initial_messages))),
+    _projection = projection,
     _store = opts.store,
     _files = attachment_store,
     _file_cache = cache,

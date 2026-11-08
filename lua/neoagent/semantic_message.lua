@@ -428,11 +428,15 @@ local function check_string(value, label, maximum, allow_empty)
   if #value > maximum then
     return failure(label .. " exceeds " .. tostring(maximum) .. " bytes")
   end
-  if not util.is_valid_utf8(value) then
-    return failure(label .. " must contain valid UTF-8")
-  end
-  if value:find("[%z\1-\31\127]") then
-    return failure(label .. " must not contain control characters")
+  -- Printable ASCII establishes both properties in one pass. Unicode and
+  -- control bytes retain the full validation and its error precedence.
+  if value:find("[^ -~]") then
+    if not util.is_valid_utf8(value) then
+      return failure(label .. " must contain valid UTF-8")
+    end
+    if value:find("[%z\1-\31\127]") then
+      return failure(label .. " must not contain control characters")
+    end
   end
   return true
 end

@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local semantic_message = require("neoagent.semantic_message")
+local linkage = require("neoagent.message_linkage")
 
 local M = {}
 
@@ -302,14 +303,15 @@ function M.normalize_projection(messages)
   return result
 end
 
----@type table<string, fun(entry: Neoagent.JournalEntryInput): boolean, string?>
+---@type table<string, fun(entry: Neoagent.JournalEntryInput): boolean, string?, Neoagent.Message?>
 local validators = {
   message = function(entry)
-    local _, err = semantic_message.normalize(entry.message)
-    if err then
+    local message, err = semantic_message.normalize(entry.message)
+    if not message then
       return false, err
     end
-    return validate_request(entry.request)
+    local valid, request_err = validate_request(entry.request)
+    return valid, request_err, message
   end,
   compaction = function(entry)
     if not finite_nonnegative_integer(entry.tokens_before) then
@@ -394,6 +396,7 @@ local entry_fields = {
 ---@param entry unknown
 ---@return TypeGuard<Neoagent.JournalEntry>
 ---@return string? error
+---@return Neoagent.Message? normalized
 function M.validate_entry(entry)
   if type(entry) ~= "table" then
     return false, "entry must be an object"
@@ -560,9 +563,12 @@ function M.prepare_entry(opts)
   for key, value in pairs(payload) do
     entry[key] = util.copy(value)
   end
-  local valid, validation_err = M.validate_entry(entry)
+  local valid, validation_err, normalized = M.validate_entry(entry)
   if not valid then
     return nil, validation_err
+  end
+  if normalized then
+    entry.message = normalized
   end
   ---@cast entry Neoagent.JournalEntry
   local by_id = opts.by_id
@@ -582,41 +588,117 @@ function M.prepare_entry(opts)
   return util.copy(entry)
 end
 
+---@class Neoagent.ValidatedJournal
+---@field entries Neoagent.JournalEntry[]
+---@field by_id Neoagent.JournalIndex
+---@field leaf_id? string
+---@field _linkage Neoagent.MessageLinkage
+---@field _linkage_leaf? string
+
+---@return Neoagent.ValidatedJournal
+function M.new_journal()
+  return { entries = {}, by_id = {}, _linkage = {} }
+end
+
+---@param journal Neoagent.ValidatedJournal
+---@param parent_id? string
+---@return Neoagent.MessageLinkage
+local function branch_linkage(journal, parent_id)
+  ---@type Neoagent.MessageEntry[]
+  local reversed = {}
+  local current = parent_id and journal.by_id[parent_id] or nil
+  while current and current.type ~= "compaction" do
+    if current.type == "message" then
+      reversed[#reversed + 1] = current
+    end
+    current = is_null(current.parent_id) and nil or journal.by_id[current.parent_id]
+  end
+  local update = linkage.stage()
+  for index = #reversed, 1, -1 do
+    assert(linkage.check(update, assert(reversed[index]).message))
+  end
+  return linkage.commit(update)
+end
+
+-- Decode and normalize each record into the journal's ownership before reading
+-- more input. Array construction and streamed storage use this same boundary.
+---@param journal Neoagent.ValidatedJournal
+---@param entry unknown
+---@return true?, string?
+function M.index_entry(journal, entry)
+  local valid, err, normalized = M.validate_entry(entry)
+  if not valid then
+    return nil, err
+  end
+  if journal.by_id[entry.id] then
+    return nil, "duplicate entry id"
+  end
+  if not is_null(entry.parent_id) and not journal.by_id[entry.parent_id] then
+    return nil, "parent entry does not precede child"
+  end
+  ---@type Neoagent.MessageLinkageUpdate?
+  local update
+  if entry.type == "message" then
+    local parent_id = not is_null(entry.parent_id) and entry.parent_id or nil
+    local base = journal._linkage_leaf == parent_id and journal._linkage or branch_linkage(journal, parent_id)
+    update = linkage.stage(base)
+    local linked, linkage_err = linkage.check(update, assert(normalized))
+    if not linked then
+      return nil, linkage_err
+    end
+  else
+    local references, reference_err = M.validate_references(entry, journal.by_id)
+    if not references then
+      return nil, reference_err
+    end
+  end
+  ---@type Neoagent.JournalEntry
+  local owned
+  if entry.type == "message" then
+    owned = {
+      type = "message",
+      id = entry.id,
+      parent_id = entry.parent_id,
+      created_at = entry.created_at,
+      message = assert(normalized),
+      request = util.copy(entry.request),
+    }
+  else
+    owned = util.copy(entry)
+  end
+  journal.entries[#journal.entries + 1] = owned
+  journal.by_id[entry.id] = owned
+  if update then
+    journal._linkage = linkage.commit(update)
+    journal._linkage_leaf = entry.id
+  elseif entry.type == "compaction" then
+    journal._linkage = {}
+    journal._linkage_leaf = entry.id
+  end
+  if entry.type == "leaf" then
+    journal.leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
+  else
+    journal.leaf_id = entry.id
+  end
+  return true
+end
+
 ---@param entries unknown
----@return {by_id: Neoagent.JournalIndex, leaf_id?: string}?, string?, integer?
----@return_overload {by_id: Neoagent.JournalIndex, leaf_id?: string}
+---@return Neoagent.ValidatedJournal?, string?, integer?
+---@return_overload Neoagent.ValidatedJournal
 ---@return_overload nil, string, integer?
 function M.validate_entries(entries)
   if type(entries) ~= "table" or not util.is_list(entries) then
     return nil, "entries must be an array"
   end
-  ---@type Neoagent.JournalIndex
-  local by_id = {}
-  ---@type string?
-  local leaf_id
+  local journal = M.new_journal()
   for index, entry in ipairs(entries) do
-    local valid, err = M.validate_entry(entry)
-    if not valid then
+    local accepted, err = M.index_entry(journal, entry)
+    if not accepted then
       return nil, err, index
     end
-    if by_id[entry.id] then
-      return nil, "duplicate entry id", index
-    end
-    if not is_null(entry.parent_id) and not by_id[entry.parent_id] then
-      return nil, "parent entry does not precede child", index
-    end
-    local references, reference_err = M.validate_references(entry, by_id)
-    if not references then
-      return nil, reference_err, index
-    end
-    if entry.type == "leaf" then
-      leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
-    else
-      leaf_id = entry.id
-    end
-    by_id[entry.id] = entry
   end
-  return { by_id = by_id, leaf_id = leaf_id }
+  return journal
 end
 
 ---@param by_id Neoagent.JournalIndex
@@ -706,6 +788,25 @@ function M.checkpoint_identity(path)
   local checkpoint = index and path[index] or nil
   if checkpoint and checkpoint.type == "compaction" and checkpoint.native then
     return { api = checkpoint.native.api, provider = checkpoint.native.provider, model = checkpoint.native.model }
+  end
+end
+
+---@param by_id Neoagent.JournalIndex
+---@param leaf_id? string|vim.NIL
+---@return Neoagent.NativeContextIdentity?, string?
+function M.indexed_checkpoint_identity(by_id, leaf_id)
+  if leaf_id == nil or leaf_id == vim.NIL then
+    return nil
+  end
+  local current = by_id[leaf_id]
+  if not current then
+    return nil, "entry not found: " .. tostring(leaf_id)
+  end
+  while current do
+    if current.type == "compaction" then
+      return M.checkpoint_identity({ current })
+    end
+    current = is_null(current.parent_id) and nil or by_id[current.parent_id]
   end
 end
 
@@ -895,6 +996,18 @@ function M.messages(entries, context_only)
     vim.list_extend(result, M.entry_messages(entry))
   end
   return result
+end
+
+-- Keep the indexed path borrowed while constructing owned projection values.
+---@param by_id Neoagent.JournalIndex
+---@param leaf_id? string|vim.NIL
+---@return {messages: Neoagent.ProjectionMessage[], state: Neoagent.SelectionState}?, string?
+function M.indexed_projection(by_id, leaf_id)
+  local path, err = indexed_path(by_id, leaf_id, true)
+  if not path then
+    return nil, err
+  end
+  return { messages = M.messages(path, false), state = M.state(path) }
 end
 
 ---@param prefix string
