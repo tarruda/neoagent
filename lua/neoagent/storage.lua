@@ -4,6 +4,7 @@ local tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 local files = require("neoagent.files")
 local workspace_storage = require("neoagent.workspace_storage")
+local projections = require("neoagent.session_projection")
 
 local M = {}
 ---@class Neoagent.StoredSessionMetadata: Neoagent.SessionMetadata
@@ -78,7 +79,7 @@ local M = {}
 ---@field _path string
 ---@field _index_path string
 ---@field _persisted boolean
----@field _messages Neoagent.ProjectionMessage[]
+---@field _projection Neoagent.SessionProjectionState
 ---@field _context_messages? Neoagent.RequestMessage[]
 ---@field _entries Neoagent.JournalEntry[]
 ---@field _by_id Neoagent.JournalIndex
@@ -284,12 +285,12 @@ end
 ---@return true?, string?
 local function rebuild(store)
   store._context_messages = nil
-  local path, err = tree.indexed_path(store._by_id, store._leaf_id == nil and vim.NIL or store._leaf_id)
-  if not path then
+  local projection, err = tree.indexed_projection(store._by_id, store._leaf_id or vim.NIL)
+  if not projection then
     return nil, err
   end
-  store._messages = tree.messages(path, false)
-  store._state = tree.state(path)
+  store._projection:replace(projection.messages)
+  store._state = projection.state
   return true
 end
 
@@ -298,7 +299,7 @@ end
 ---@return Neoagent.ProjectionMessage[]
 local function project_append(store, entry)
   local messages = tree.entry_messages(entry)
-  vim.list_extend(store._messages, messages)
+  assert(store._projection:append(messages))
   if store._context_messages then
     if entry.type == "message" then
       vim.list_extend(store._context_messages, tree.to_llm(messages))
@@ -325,7 +326,7 @@ local function commit_entry(store, entry)
     if not rebuilt then
       return nil, err
     end
-    return true, { type = "replace", messages = util.copy(store._messages) }
+    return true, { type = "replace", messages = util.copy(store._projection.messages) }
   end
   store._leaf_id = stored.id
   local messages = project_append(store, stored)
@@ -334,7 +335,7 @@ end
 
 ---@return Neoagent.ProjectionMessage[]
 function Store:load()
-  return util.copy(self._messages)
+  return util.copy(self._projection.messages)
 end
 
 ---@return Neoagent.Files
@@ -362,6 +363,15 @@ function Store:context_messages()
     self._context_messages = messages
   end
   return util.copy(self._context_messages)
+end
+
+---@return Neoagent.NativeContextIdentity?, Neoagent.Error?
+function Store:checkpoint_identity()
+  local identity, err = tree.indexed_checkpoint_identity(self._by_id, self._leaf_id or vim.NIL)
+  if err then
+    return nil, storage_error("Failed to read checkpoint identity", err)
+  end
+  return identity
 end
 
 ---@return Neoagent.JournalEntry[]
@@ -397,6 +407,18 @@ function Store:path(...)
     return nil, storage_error("Failed to build session path", err)
   end
   return path
+end
+
+---@param segment_id? string
+---@param direction? 'first'|'previous'|'next'
+---@return Neoagent.JournalEntry[]?, Neoagent.Error?, Neoagent.TranscriptHistory?
+function Store:transcript_entries(segment_id, direction)
+  local entries, err, history =
+    tree.indexed_transcript_entries(self._by_id, self._leaf_id or vim.NIL, segment_id, direction)
+  if not entries then
+    return nil, storage_error("Failed to build session transcript", err)
+  end
+  return entries, nil, history
 end
 
 ---@return Neoagent.StoredSessionInfo
@@ -886,7 +908,7 @@ function M.new(opts)
   local created_at = now
   local filename = id .. ".jsonl"
   local workspace = workspace_storage.resolve(opts.directory, cwd)
-  return setmetatable({
+  local store = setmetatable({
     _workspace = workspace,
     _cwd = cwd,
     _id = id,
@@ -894,7 +916,7 @@ function M.new(opts)
     _path = fs.join(workspace.sessions_directory, filename),
     _index_path = workspace_index_path(workspace),
     _persisted = false,
-    _messages = {},
+    _projection = assert(projections.new()),
     _entries = {},
     _by_id = {},
     _pending = {},
@@ -905,28 +927,15 @@ function M.new(opts)
     _metadata = copy_metadata(opts.metadata),
     _index_attributes = copy_metadata(opts.index_attributes),
   }, Store)
+  store._projection:bind(store)
+  return store
 end
 
----@param path string
----@param data string
----@param workspace Neoagent.WorkspaceStorage
----@return Neoagent.SessionStore?, Neoagent.Error?
-local function decode_session_file(path, data, workspace)
-  local lines = vim.tbl_filter(function(line)
-    return line:find("%S") ~= nil
-  end, vim.split(data, "\n", { plain = true }))
-  ---@type Neoagent.StoredSessionRecord[]
-  local decoded = {}
-  for line_number, line in ipairs(lines) do
-    local ok, value = pcall(vim.json.decode, line)
-    if not ok or type(value) ~= "table" then
-      return nil, storage_error("Invalid session at line " .. line_number, ok and "expected object" or value)
-    end
-    decoded[#decoded + 1] = value
-  end
-  local header = decoded[1]
+---@param header unknown
+---@return true?, Neoagent.Error?
+local function validate_header(header)
   if
-    not header
+    type(header) ~= "table"
     or header.type ~= "session"
     or header.format ~= "neoagent-session"
     or type(header.id) ~= "string"
@@ -965,17 +974,82 @@ local function decode_session_file(path, data, workspace)
     return nil, storage_error("Invalid session at line 1", "metadata must be an object")
   end
 
-  ---@cast header Neoagent.StoredSessionHeader
-  ---@type Neoagent.JournalEntryInput[]
-  local entries = {}
-  for index = 2, #decoded do
-    entries[#entries + 1] = decoded[index]
+  return true
+end
+
+---@param path string
+---@param file Neoagent.RegularFile
+---@param workspace Neoagent.WorkspaceStorage
+---@return Neoagent.SessionStore?, string|Neoagent.Error|nil, integer?
+local function decode_session_file(path, file, workspace)
+  local journal = tree.new_journal()
+  ---@type Neoagent.StoredSessionHeader?
+  local header
+  ---@type Neoagent.Error?
+  local parse_error
+  local record_number = 0
+  local offset, boundary = 0, 0
+  local pending = {}
+  ---@param line string
+  local function record(line)
+    if not line:find("%S") then
+      return
+    end
+    record_number = record_number + 1
+    local decoded, value = pcall(vim.json.decode, line)
+    if not decoded or type(value) ~= "table" then
+      parse_error = storage_error("Invalid session at line " .. record_number, decoded and "expected object" or value)
+    elseif record_number == 1 then
+      local valid, err = validate_header(value)
+      if valid then
+        header = value
+      else
+        parse_error = err
+      end
+    else
+      local accepted, err = tree.index_entry(journal, value)
+      if not accepted then
+        parse_error = storage_error("Invalid session at line " .. record_number, err)
+      end
+    end
+    if parse_error then
+      error("invalid session record", 0)
+    end
   end
-  local validated, validation_err, invalid_index = tree.validate_entries(entries)
-  if not validated then
-    return nil, storage_error("Invalid session at line " .. ((invalid_index or 1) + 1), validation_err)
+  local read, read_err = file:read_chunks(function(chunk)
+    local first = 1
+    while true do
+      local ending = chunk:find("\n", first, true)
+      if not ending then
+        if first <= #chunk then
+          pending[#pending + 1] = chunk:sub(first)
+        end
+        break
+      end
+      local line = chunk:sub(first, ending - 1)
+      if #pending > 0 then
+        pending[#pending + 1] = line
+        line = table.concat(pending)
+        pending = {}
+      end
+      record(line)
+      boundary = offset + ending
+      first = ending + 1
+    end
+    offset = offset + #chunk
+  end)
+  if parse_error then
+    return nil, parse_error
   end
-  ---@cast entries Neoagent.JournalEntry[]
+  if not read then
+    return nil, read_err
+  end
+  if boundary == 0 then
+    return nil, "session contains no complete JSONL record"
+  end
+  if not header then
+    return nil, storage_error("Invalid session at line 1", "expected neoagent-session header")
+  end
   ---@type Neoagent.SessionStore
   local store = setmetatable({
     _workspace = workspace,
@@ -985,11 +1059,11 @@ local function decode_session_file(path, data, workspace)
     _path = path,
     _index_path = workspace_index_path(workspace),
     _persisted = true,
-    _messages = {},
-    _entries = entries,
-    _by_id = validated.by_id,
+    _projection = assert(projections.new()),
+    _entries = journal.entries,
+    _by_id = journal.by_id,
     _pending = {},
-    _leaf_id = validated.leaf_id,
+    _leaf_id = journal.leaf_id,
     _state = {},
     _file_identity = nil,
     _parent_session = header.parent_session ~= vim.NIL and header.parent_session or nil,
@@ -997,7 +1071,8 @@ local function decode_session_file(path, data, workspace)
     _index_attributes = nil,
   }, Store)
   assert(rebuild(store))
-  return store
+  store._projection:bind(store)
+  return store, nil, boundary < offset and boundary or nil
 end
 
 ---@param path string
@@ -1014,24 +1089,7 @@ local function read_session_file(path, workspace)
     local closed, close_err = file:close()
     return nil, closed and err or close_err
   end
-  local data, read_err = file:read_all()
-  if not data then
-    return failure(read_err)
-  end
-  local boundary
-  if data:sub(-1) ~= "\n" then
-    for index = #data, 1, -1 do
-      if data:byte(index) == 10 then
-        boundary = index
-        break
-      end
-    end
-    if not boundary then
-      return failure("session contains no complete JSONL record")
-    end
-    data = data:sub(1, boundary)
-  end
-  local decoded, store, decode_err = pcall(decode_session_file, path, data, workspace)
+  local decoded, store, decode_err, boundary = pcall(decode_session_file, path, file, workspace)
   if not decoded then
     return failure(storage_error("Failed to decode session", store))
   end
@@ -1108,14 +1166,14 @@ function M.derive(snapshot, opts)
   end
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
-  local entries = util.copy(snapshot.entries)
-  local validated, validation_err = tree.validate_entries(entries)
+  local validated, validation_err = tree.validate_entries(snapshot.entries)
   if not validated then
     return nil, storage_error("Failed to derive session", validation_err)
   end
   if snapshot.leaf_id ~= validated.leaf_id then
     return nil, storage_error("Failed to derive session", "active leaf does not match the entry journal")
   end
+  local entries = validated.entries
   local store = M.new({
     directory = opts.directory,
     cwd = opts.cwd,

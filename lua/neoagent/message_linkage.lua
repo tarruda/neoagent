@@ -34,10 +34,10 @@ end
 -- its entire message batch and durable acceptance have succeeded.
 ---@param update Neoagent.MessageLinkageUpdate
 ---@param message Neoagent.Message
----@param index integer
+---@param index? integer
 ---@return true?, string?
 function M.check(update, message, index)
-  local prefix = "message " .. tostring(index) .. ": "
+  local prefix = index and "message " .. tostring(index) .. ": " or ""
   if message.role == "assistant" then
     ---@cast message Neoagent.AssistantMessage
     for _, block in ipairs(message.content) do

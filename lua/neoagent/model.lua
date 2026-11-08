@@ -127,6 +127,7 @@ end
 
 ---@class Neoagent.RequestOverrides
 ---@field _preparation? Neoagent.RequestPreparation Internal request-scoped preparation.
+---@field _turn? Neoagent.Run<unknown, unknown> Borrowed lifetime shared by requests in one turn.
 ---@field thinking_level? Neoagent.ThinkingLevel Selected semantic level, resolved by the Model.
 ---@field files? Neoagent.FileSource
 ---@field file_cache? Neoagent.FileCache Workspace-owned upload mappings.

@@ -224,6 +224,7 @@ describe("Agent Applet boundaries", function()
     assert.is_true((value:focus_input()))
     local callbacks = assert(record.view).callbacks
     assert.are.same({}, assert(callbacks.on_input_history)())
+    assert.is_false((assert(callbacks.on_transcript_navigate)("previous")))
     assert.is_nil((assert(callbacks.on_select_history)()))
     assert.are.same({}, assert(callbacks.on_dequeue_steering)())
     assert.is_nil((assert(callbacks.resolve_tool)("missing")))
@@ -269,6 +270,26 @@ describe("Agent Applet boundaries", function()
     assert.is_nil((value:open()))
   end)
 
+  it("reports transcript navigation errors without replacing accepted presentation", function()
+    ---@type Neoagent.TestBoundaryViewRecord
+    local record = {}
+    local owned = agent()
+    local value = applet({ presenter = owned:presenter(), dialogs = owned:dialogs(), view = view_factory(record, {
+      notify = function(_, message, level)
+        record.notification = { message, level }
+        return true
+      end,
+    }) })
+    value:bind(owned)
+    assert(value:open())
+    local session = owned:get_session()
+    session._leaf_id = "unavailable"
+    assert.is_nil((assert(assert(record.view).callbacks.on_transcript_navigate)("previous")))
+    assert.matches("Failed to build session transcript", assert(record.notification)[1])
+    assert.are.equal(vim.log.levels.ERROR, assert(record.notification)[2])
+    session._leaf_id = nil
+  end)
+
   it("bounds volatile input history within its Workspace", function()
     local value = applet({ context = { workspace = "root" } })
     for index = 1, 101 do
@@ -292,6 +313,7 @@ describe("Agent Applet boundaries", function()
       return {
         revision = 0,
         messages = {},
+        history = { position = 1, total = 1, latest = true },
         context = { workspace = "root" },
         events = {},
         result = nil,
@@ -604,6 +626,7 @@ describe("Agent Applet boundaries", function()
           return {
             revision = 1,
             messages = { { role = "user", content = "message" } },
+            history = { position = 1, total = 1, latest = true },
             context = {
               workspace = assert(owned_agent:get_workspace()).root,
               model = "fake/test",
@@ -1017,6 +1040,7 @@ describe("Agent Applet boundaries", function()
       return {
         revision = 0,
         messages = {},
+        history = { position = 1, total = 1, latest = true },
         context = { workspace = "root" },
         events = {},
         result = nil,

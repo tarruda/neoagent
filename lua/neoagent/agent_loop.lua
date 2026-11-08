@@ -293,7 +293,7 @@ function M.prepare(opts)
     tool_lookup = toolset.lookup,
     execute_tool = toolset.execute_tool,
     context = opts.context,
-    model_options = util.copy(opts.model_options or {}),
+    model_options = request_preparation.copy(opts.model_options or {}),
     get_steering_messages = steering,
     prepare_request_messages = opts.prepare_request_messages,
     prepare_request = opts.prepare_request,
@@ -393,6 +393,7 @@ function M.run(opts)
     ---@param run Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
     ---@return Neoagent.AgentLoopResult
     function(run)
+      prepared.model_options._turn = prepared.model_options._turn or run
       local working = util.copy(prepared.messages)
       ---@type Neoagent.Message[]
       local generated = {}

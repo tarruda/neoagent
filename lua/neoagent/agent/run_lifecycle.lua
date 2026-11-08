@@ -10,6 +10,7 @@
 ---@field submission_id? integer
 ---@field base? Neoagent.AgentInteractionOptions
 ---@field observed_leaf? string
+---@field transcript_count integer Durable messages represented by transcript publications.
 ---@field observed_files? table<string, table<string, boolean>> Completed file observations by Tool call.
 ---@field compaction_epoch? integer
 ---@field last_length_epoch? integer
@@ -73,10 +74,10 @@ local util = require("neoagent.util")
 ---@field config Neoagent.Config<Neoagent.AgentToolEnvironment>
 ---@field notify fun(message: string, level?: integer)
 ---@field publish fun(publication: Neoagent.AgentRunPublication)
----@field publish_messages fun(messages: Neoagent.TranscriptMessage[])
+---@field publish_messages fun()
 ---@field update_context fun()
 ---@field sync_tools fun()
----@field transcript_messages fun(session: Neoagent.Session): Neoagent.TranscriptMessage[]
+---@field follow_latest fun(): boolean
 ---@field require_workspace_trust fun()
 ---@field ensure_session fun()
 ---@field ensure_model fun(): unknown
@@ -605,6 +606,7 @@ function M.new(opts)
   ---@return Neoagent.CompactionRequest
   local function compaction_request(environment, tools, model_options)
     local call = request_preparation.copy(model_options or {})
+    call._turn = call._turn or state.activity and state.activity.run
     call._preparation = request_preparation.new()
     call.files = state.session:files()
     call.file_cache = state.session:file_cache()
@@ -862,9 +864,7 @@ function M.new(opts)
       on_commit = function()
         activity.compaction_epoch = (activity.compaction_epoch or 0) + 1
       end,
-      publish_messages = function()
-        opts.publish_messages(opts.transcript_messages(state.session))
-      end,
+      publish_messages = opts.publish_messages,
     })
     if not started then
       return nil, err, false
@@ -962,7 +962,7 @@ function M.new(opts)
       end
       state.pending_events = {}
       if continuing or not activity.accepted then
-        opts.publish_messages(opts.transcript_messages(state.session))
+        opts.publish_messages()
         activity.observed_leaf = state.session:leaf_id()
       end
       opts.update_context()
@@ -973,8 +973,9 @@ function M.new(opts)
     return result
   end
 
+  ---@param activity Neoagent.AgentActivity
   ---@return true?, Neoagent.Error?
-  local function abandon_failed_message()
+  local function abandon_failed_message(activity)
     local path, path_err = state.session:path()
     if not path then
       return nil, path_err
@@ -994,8 +995,10 @@ function M.new(opts)
       if not moved then
         return nil, move_err
       end
+      -- Roll back the replay cursor even while an older segment is displayed.
+      activity.transcript_count = state.session:_message_count()
       if not state.destroyed then
-        opts.publish_messages(opts.transcript_messages(state.session))
+        opts.publish_messages()
       end
     end
     return true
@@ -1015,7 +1018,10 @@ function M.new(opts)
       activity.steering_claim:commit()
       activity.steering_claim = nil
     end
-    opts.publish_messages(opts.transcript_messages(state.session))
+    activity.transcript_count = state.session:_message_count()
+    if not opts.follow_latest() then
+      opts.publish_messages()
+    end
     activity.observed_leaf = state.session:leaf_id()
     opts.update_context()
     publish_submission(activity, activity.submission_id, prompt, type(entry) == "table" and entry.id or nil)
@@ -1047,7 +1053,7 @@ function M.new(opts)
       end
       if not overflow_retried and not (done.error and done.error.retry_exhausted) and is_context_overflow(done) then
         overflow_retried = true
-        local abandoned, abandon_err = abandon_failed_message()
+        local abandoned, abandon_err = abandon_failed_message(activity)
         if not abandoned then
           return completion_failure(abandon_err)
         end
@@ -1089,7 +1095,7 @@ function M.new(opts)
         end
         if done.error and is_retryable_error(done.error) and stream_retries < retry_limit then
           stream_retries = stream_retries + 1
-          local abandoned, abandon_err = abandon_failed_message()
+          local abandoned, abandon_err = abandon_failed_message(activity)
           if not abandoned then
             return completion_failure(abandon_err)
           end
@@ -1160,7 +1166,7 @@ function M.new(opts)
       end
     end
     state.pending_events = {}
-    opts.publish_messages(opts.transcript_messages(state.session))
+    opts.publish_messages()
   end
 
   ---@param activity Neoagent.AgentActivity
@@ -1233,6 +1239,7 @@ function M.new(opts)
       provider_lease = release,
       finalized = false,
       observed_leaf = state.session:leaf_id(),
+      transcript_count = state.session:_message_count(),
     }
     for key, value in pairs(activity_values or {}) do
       activity[key] = value
@@ -1420,6 +1427,7 @@ function M.new(opts)
       return nil, err
     end
     local outer = install_activity("interaction", release, function(run, activity)
+      base.model_options._turn = run
       base.on_accept = function(entry)
         accepted(activity, prompt, entry)
       end
@@ -1463,6 +1471,14 @@ function M.new(opts)
       return nil, err
     end
     state.next_submission_id = submission_id
+    -- Presentation failure cannot reject steering that is already queued.
+    local followed, follow_err = pcall(opts.follow_latest)
+    if not followed then
+      opts.notify(
+        "could not show the latest transcript: " .. util.normalize_error(follow_err, "session").message,
+        vim.log.levels.ERROR
+      )
+    end
     opts.update_context()
     return true, nil, submission_id, "steering"
   end

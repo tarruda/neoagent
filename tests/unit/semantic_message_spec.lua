@@ -1,7 +1,47 @@
 local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
+local util = require("neoagent.util")
 
 describe("neoagent semantic messages", function()
+  it("validates printable ASCII opaque fields without a second UTF-8 scan", function()
+    local signature = string.rep("synthetic_opaque_signature-", 1000)
+    local message = { role = "assistant", content = {
+      { type = "thinking", thinking = "Inspect synthetic data", thinkingSignature = signature },
+    } }
+    local validate_utf8 = util.is_valid_utf8
+    local scans = 0
+    util.is_valid_utf8 = function(value)
+      if value == signature then
+        scans = scans + 1
+      end
+      return validate_utf8(value)
+    end
+    local ok, normalized, err = pcall(semantic_message.normalize, message)
+    util.is_valid_utf8 = validate_utf8
+    assert(ok, normalized)
+    assert(normalized, err)
+    assert.are.same(message, normalized)
+    assert.are.equal(0, scans, "normalization sent a printable ASCII field through a second UTF-8 scan")
+  end)
+
+  it("preserves UTF-8 error precedence and control validation for opaque fields", function()
+    for _, value in ipairs({ "\1\255", "\255\1", "✓\255\n" }) do
+      local message, err = semantic_message.normalize({
+        role = "assistant", content = { { type = "thinking", thinking = "", thinkingSignature = value } },
+      })
+      assert.is_nil(message)
+      assert.matches("valid UTF%-8", assert(err))
+    end
+    local message, err = semantic_message.normalize({
+      role = "assistant", content = { { type = "thinking", thinking = "", thinkingSignature = "✓\n" } },
+    })
+    assert.is_nil(message)
+    assert.matches("control characters", assert(err))
+    assert(semantic_message.normalize({
+      role = "assistant", content = { { type = "thinking", thinking = "", thinkingSignature = "✓" } },
+    }))
+  end)
+
   it("rejects malformed request instructions and freeform argument declarations", function()
     for _, instruction in ipairs({
       { role = "developer", content = "instructions", extra = true },

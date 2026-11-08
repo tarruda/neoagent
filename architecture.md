@@ -38,10 +38,10 @@ cancels; completing a coroutine does not end native ownership.
 ## Agents and composition
 
 An Agent binds one Profile, Workspace, and Session. It owns Tools, Model and
-thinking selection, steering, dialogs, retained processes, and one activity at
-a time. Closing its UI preserves the Agent; stopping an activity preserves
-committed retained processes. Destroying the Agent disposes its resources.
-Headless Agents do not load UI modules.
+thinking selection, steering, dialogs, retained processes, transient transcript
+segment selection, and one activity at a time. Closing its UI preserves the
+Agent; stopping an activity preserves committed retained processes. Destroying
+the Agent disposes its resources. Headless Agents do not load UI modules.
 
 A Profile supplies eligible Model APIs, prompt/context composition, Tools,
 compaction, and execution and presentation defaults. Shared composition resolves
@@ -87,9 +87,10 @@ bodies stay out of diagnostics. Credential storage is private and atomic.
 
 ## Sessions and persistence
 
-A Session owns messages and the active path through a conversation tree. It is
-tool-free and can use memory or an injected store. Model context is a projection
-of that journal, not a replacement for it.
+A Session exposes messages and the active path through a conversation tree.
+It is tool-free and can use memory or an injected store. Model context and
+transcript segments are independent projections of the journal. The bundled
+Store publishes one validated message projection shared by its Session facades.
 
 Workspace storage owns Session documents, immutable attachment blobs, provider
 mappings, and a rebuildable index. Attachments use content identity rather than
@@ -112,6 +113,12 @@ The Agent discovers trusted resources once per turn. Its Profile composes
 instructions and ephemeral request context from copied facts. Estimation,
 inference, and compaction share that context; request-only messages never
 enter the Session journal or accumulate in the Loop's history.
+
+Request owners lend their current Run as the turn lifetime across Tool calls,
+retries, continuations, and automatic compaction. Adapters own transient
+protocol state associated with that lifetime and release it on completion or
+cancellation. Provider routing tokens stay out of semantic messages, copied
+request identity, and Session storage.
 
 Profiles may supply compaction; otherwise composition selects the configured
 local strategy. Components propose checkpoints; the Session validates their

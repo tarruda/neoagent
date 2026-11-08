@@ -2377,6 +2377,7 @@ function Pane:destroy()
     end
   end
   self.owned_buffers = {}
+  self.compile_cache = {}
 end
 
 ---@class Applet.PaneModule

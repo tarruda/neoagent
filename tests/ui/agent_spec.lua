@@ -635,15 +635,15 @@ describe("neoagent default agent", function()
     assert.is_true(child_cancelled)
     assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
 
-    local original_path
+    local original_transcript
     agent = setup_model(fake_model.new({}), {
       _interaction = function(options)
         local child = controlled_run(options, function()
           child_cancelled = true
         end)
         local session = agent:get_session()
-        original_path = session.path
-        session.path = function() error("transcript installation failed") end
+        original_transcript = session.transcript_entries
+        session.transcript_entries = function() error("transcript installation failed") end
         return child
       end,
     })
@@ -653,7 +653,7 @@ describe("neoagent default agent", function()
     local installed = vim.wait(1000, function()
       return run:is_done() and not agent:is_running()
     end)
-    agent:get_session().path = original_path
+    agent:get_session().transcript_entries = original_transcript
     assert(installed)
     assert.is_true(child_cancelled)
     assert.matches("transcript installation failed", assert(assert(run:result()).error).message)
@@ -1288,7 +1288,7 @@ describe("neoagent default agent", function()
     ---@param opts Neoagent.StreamOptions
     ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function model:stream(opts)
-      self.requests[#self.requests + 1] = vim.deepcopy(opts)
+      self.requests[#self.requests + 1] = require("neoagent.api.request_preparation").copy(opts)
       if #self.requests == 1 then
         return async.run(function()
           return async.await(function(done) pending = done end)
@@ -1543,12 +1543,16 @@ describe("neoagent default agent", function()
       (assert(view_handles.buffer(current_view(), "transcript"))), 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
     assert.matches("Continue the work", transcript)
-    local retained = assert((transcript:find("work work work", 1, true)))
-    local compaction_card = assert((transcript:find("Compacted from 900 tokens", 1, true)))
-    assert.is_true(compaction_card < retained)
+    assert.is_nil((transcript:find("work work work", 1, true)))
     assert.are.equal("perform the large task", assert(current_session():messages()[1]).content)
     assert.is_not.matches("perform the large task", transcript)
     assert.is_false(current_view().context.provider_status)
+    assert(assert(neoagent.default()):navigate_transcript("previous"))
+    assert(current_view().transcript.pane:flush())
+    local earlier = table.concat(vim.api.nvim_buf_get_lines(
+      assert(view_handles.buffer(current_view(), "transcript")), 0, -1, false), "\n")
+    assert.matches("perform the large task", earlier)
+    assert.matches("work work work", earlier)
   end)
 
   it("uses the configured prefix strategy for a directly constructed Agent", function()
@@ -1973,6 +1977,60 @@ describe("neoagent default agent", function()
     assert.are.equal("Arrived during preparation", latest.message.content)
   end)
 
+  it("keeps Codex routing through length recovery and resets it for manual compaction", function()
+    local function reply(token, incomplete)
+      return {
+        headers = { ["x-codex-turn-state"] = token },
+        chunks = { "data: " .. vim.json.encode({ type = incomplete and "response.incomplete" or "response.completed",
+          response = { id = "synthetic-response", status = incomplete and "incomplete" or "completed",
+            incomplete_details = incomplete and { reason = "max_output_tokens" } or nil,
+            usage = { input_tokens = incomplete and 9900 or 20, output_tokens = 4,
+              total_tokens = incomplete and 9904 or 24 },
+            output = { { type = "message", id = "msg_reply", role = "assistant", status = "completed",
+              content = { { type = "output_text", text = "Synthetic answer", annotations = {} } } } },
+          } }) .. "\n\n" },
+      }
+    end
+    local function compacted(token)
+      local value = reply(token)
+      table.insert(value.chunks, 1, "data: " .. vim.json.encode({ type = "response.output_item.done",
+        item = { type = "compaction", encrypted_content = "synthetic-checkpoint" } }) .. "\n\n")
+      return value
+    end
+    local transport = require("tests.helpers.fake_transport").new({
+      reply("turn-one", true), compacted("ignored-compaction"), reply("ignored-continuation"),
+      compacted("manual-compaction"), reply("turn-two"),
+    })
+    local model = require("neoagent.api.openai_codex_responses").new({
+      provider = "fake", model = "test", base_url = "https://example.test", context_window = 10000,
+      transport = transport,
+    })
+    setup_model(model, {
+      _compaction_component = require("neoagent.compaction.codex").component,
+      compaction = { auto = true, reserve_tokens = 200, keep_recent_tokens = 10 },
+    })
+    local first = assert(neoagent.send("Continue the long answer"))
+    assert(type(first) == "table")
+    assert(vim.wait(3000, function() return first:is_done() and is_idle() end))
+    assert.is_true(assert(first:result()).ok)
+    assert.are.equal(3, #transport.requests)
+    for _, index in ipairs({ 2, 3 }) do
+      assert.are.equal("turn-one", rawget(assert(assert(transport.requests[index]).headers), "x-codex-turn-state"))
+    end
+    local manual = assert(neoagent.compact())
+    assert(vim.wait(3000, function() return manual:is_done() and is_idle() end))
+    assert.is_true(assert(manual:result()).ok)
+    local next_turn = assert(neoagent.send("Start the next turn"))
+    assert(type(next_turn) == "table")
+    assert(vim.wait(3000, function() return next_turn:is_done() and is_idle() end))
+    assert.is_true(assert(next_turn:result()).ok)
+    for _, index in ipairs({ 1, 4, 5 }) do
+      assert.is_nil(rawget(assert(assert(transport.requests[index]).headers), "x-codex-turn-state"))
+    end
+    assert.are.equal(5, #transport.requests)
+    assert.is_nil(vim.inspect(current_session():entries()):find("x%-codex%-turn%-state"))
+  end)
+
   it("recovers an overflow immediately after a native checkpoint", function()
     local first = fake_model.assistant({ {
       type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
@@ -2022,7 +2080,7 @@ describe("neoagent default agent", function()
     end, assert(model.requests[3]).messages))
   end)
 
-  it("keeps a completed answer visible through manual native compaction and reopening", function()
+  it("makes completed answers navigable after native compaction and reopening", function()
     local model = fake_model.new({ { result = fake_model.assistant({ {
       type = "text", text = "The completed answer stays visible",
     } }) } })
@@ -2052,10 +2110,18 @@ describe("neoagent default agent", function()
       return table.concat(vim.api.nvim_buf_get_lines(
         assert(view_handles.buffer(current_view(), "transcript")), 0, -1, false), "\n")
     end
+    assert.is_not.matches("The completed answer stays visible", transcript())
+    assert.matches("Encrypted context checkpoint", transcript())
+    assert(assert(neoagent.default()):navigate_transcript("previous"))
+    assert(current_view().transcript.pane:flush())
     assert.matches("The completed answer stays visible", transcript())
     assert(neoagent.close())
     assert(neoagent.open())
     assert.matches("The completed answer stays visible", transcript())
+    assert(assert(neoagent.default()):navigate_transcript("latest"))
+    assert(current_view().transcript.pane:flush())
+    assert.matches("Encrypted context checkpoint", transcript())
+    assert.is_not.matches("The completed answer stays visible", transcript())
   end)
 
   it("finishes an accepted answer without terminal compaction maintenance", function()
@@ -2660,7 +2726,8 @@ describe("neoagent default agent", function()
       return nil, require("neoagent.util").error("storage", "checkpoint projection unavailable")
     end
     local completed, err = pcall(function()
-      local run = assert(agent:compact())
+      local run = agent:compact()
+      assert(run)
       assert(vim.wait(1000, function()
         return run:is_done() and not agent:is_running()
       end))

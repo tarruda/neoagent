@@ -12,6 +12,98 @@ local function stored_entry(id)
 end
 
 describe("neoagent.session", function()
+  it("counts durable messages separately from local and native checkpoint cards", function()
+    for _, native in ipairs({ false, true }) do
+      local stored = assert(Session.new())
+      assert(stored:append({ role = "user", content = "original request" }))
+      assert(stored:append_compaction({
+        summary = not native and "summary" or nil,
+        native = native and {
+          role = "nativeCompaction",
+          api = "openai-codex-responses",
+          provider = "fake",
+          model = "test",
+          encrypted_content = "synthetic-checkpoint",
+        } or nil,
+        retained_users = native and {} or nil,
+        tokens_before = 20,
+      }))
+      assert.are.equal(1, stored:_message_count())
+      local session = assert(Session.new({
+        store = {
+          load = function()
+            return stored:messages()
+          end,
+          append = function(_, message, state)
+            local accepted, err = stored:append(message, state)
+            return accepted, err, nil, { type = "append", messages = { message } }
+          end,
+        },
+      }))
+      assert.are.equal(1, session:_message_count())
+      assert(session:append({ role = "user", content = "latest request" }))
+      assert.are.equal(2, session:_message_count())
+    end
+  end)
+
+  it("projects copied transcript segments without changing context or the active leaf", function()
+    local session = assert(Session.new())
+    assert.are.same({}, assert(session:transcript_entries()))
+    local _, _, first = session:append({ role = "user", content = "original request" })
+    assert(first)
+    local _, _, checkpoint = session:append_compaction({
+      summary = "summary", tokens_before = 20, first_kept_entry_id = first.id,
+    })
+    assert(checkpoint)
+    assert(session:append({ role = "user", content = "latest request" }))
+    local context = assert(session:context_messages())
+    local leaf = session:leaf_id()
+    local latest, _, history = session:transcript_entries()
+    assert.are.equal(checkpoint.id, assert(assert(latest)[1]).id)
+    assert.are.equal(2, #assert(latest))
+    assert.is_true(assert(history).latest)
+    local older, _, previous = session:transcript_entries(nil, "first")
+    assert.are.equal(1, #assert(older))
+    assert.are.equal(checkpoint.id, assert(previous).next)
+    assert(assert(assert(older)[1]).message).content = "edited copy"
+    local original = assert(assert(session:transcript_entries(first.id))[1])
+    assert.are.equal("original request", assert(original.message).content)
+    assert.are.equal(leaf, session:leaf_id())
+    assert.are.same(context, assert(session:context_messages()))
+    assert(session:move_to(first.id))
+    local before, _, before_history = session:transcript_entries()
+    assert.are.equal(1, #assert(before))
+    assert.are.equal(1, assert(before_history).total)
+    local invalid, err = session:transcript_entries(checkpoint.id)
+    assert.is_nil(invalid)
+    assert.matches("not found on active branch", tostring(assert(err).detail))
+    session._leaf_id = "missing"
+    invalid, err = session:transcript_entries()
+    assert.is_nil(invalid)
+    assert.matches("entry not found", tostring(assert(err).detail))
+  end)
+
+  it("preserves injected Store transcript paths and their errors", function()
+    local source = stored_entry("first")
+    local path_error = { kind = "storage", message = "path failed" }
+    local failed = false
+    local session = assert(Session.new({ store = {
+      load = function() return {} end,
+      append = function() return true end,
+      path = function()
+        if failed then return nil, path_error end
+        return { source }
+      end,
+    } }))
+    local entries = assert(session:transcript_entries())
+    assert(assert(entries[1]).message).content = "changed"
+    assert.are.equal("stored", source.message.content)
+    failed = true
+    local unavailable, err = session:transcript_entries()
+    assert.is_nil(unavailable)
+    assert.are.equal(path_error, err)
+  end)
+
   it("propagates unavailable journal paths without inventing context or checkpoints", function()
     local session = assert(Session.new())
     assert(session:append({ role = "user", content = "History" }))
@@ -362,7 +454,14 @@ describe("neoagent.session", function()
     tree.normalize_projection = function()
       return nil, "projection dependency failed"
     end
-    session, err = Session.new({ entries = { entry } })
+    session, err = Session.new({ store = {
+      load = function()
+        return { entry.message }
+      end,
+      append = function()
+        return true
+      end,
+    } })
     tree.normalize_projection = normalize_projection
     assert.is_nil(session)
     assert.matches("projection dependency failed", tostring(assert(err).detail))

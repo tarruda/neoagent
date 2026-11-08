@@ -12,6 +12,7 @@ local M = {}
 ---@field identity? Neoagent.RequestIdentity
 
 ---@class Neoagent.PreparedRequestLayer
+---@field turn? Neoagent.Run<unknown, unknown>
 ---@field options table
 ---@field dependency? table
 ---@field value table
@@ -35,14 +36,20 @@ function M.new()
   return { layers = {} }
 end
 
--- Request options are copied semantic input; preparation is an explicit,
--- shared dependency belonging to the current request owner.
+-- Semantic options are copied; preparation and turn lifetime are borrowed
+-- dependencies. Neither participates in the prompt's structural snapshot.
 ---@generic T: Neoagent.RequestOverrides
 ---@param call T
 ---@return T
 function M.copy(call)
-  local preparation = call._preparation
-  return util.copy(call, preparation and { [preparation] = preparation } or nil)
+  local dependencies = {}
+  if call._preparation then
+    dependencies[call._preparation] = call._preparation
+  end
+  if call._turn then
+    dependencies[call._turn] = call._turn
+  end
+  return util.copy(call, dependencies)
 end
 
 ---@param call Neoagent.RequestOptions
@@ -50,7 +57,7 @@ end
 local function inputs(call)
   local result = {}
   for key, value in pairs(call) do
-    if key ~= "_preparation" and key ~= "on_event" and key ~= "on_done" then
+    if key ~= "_preparation" and key ~= "_turn" and key ~= "on_event" and key ~= "on_done" then
       result[key] = value
     end
   end
@@ -70,11 +77,17 @@ function M.reuse(owner, call, prepare, dependency)
   end
   local options = inputs(call)
   local previous = scope.layers[owner]
-  if previous and vim.deep_equal(previous.options, options) and vim.deep_equal(previous.dependency, dependency) then
+  if
+    previous
+    and previous.turn == call._turn
+    and vim.deep_equal(previous.options, options)
+    and vim.deep_equal(previous.dependency, dependency)
+  then
     return M.copy(previous.value) --[[@as T]]
   end
   local value = prepare()
-  scope.layers[owner] = { options = options, dependency = util.copy(dependency), value = M.copy(value) }
+  scope.layers[owner] =
+    { turn = call._turn, options = options, dependency = util.copy(dependency), value = M.copy(value) }
   return value
 end
 
