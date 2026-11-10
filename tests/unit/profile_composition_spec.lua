@@ -254,6 +254,46 @@ describe("Profile coding environments", function()
     assert(ok, err)
   end)
 
+  it("retains more than 20000 tokens of user history with the Codex Profile default", function()
+    local options, model = configuration({ profile = "codex", compaction = { auto = false } })
+    model.context_window = 262144
+    model.compact = function(self)
+      return require("neoagent.async").run(function()
+        return {
+          ok = true,
+          item = {
+            role = "nativeCompaction",
+            api = self.api,
+            provider = self.provider,
+            model = self.id,
+            encrypted_content = "synthetic-ciphertext",
+          },
+        }
+      end)
+    end
+    local older, newer = string.rep("a", 120000), string.rep("b", 80000)
+    local agent = require("neoagent").new(options)
+    local ok, err = pcall(function()
+      assert(agent:prepare())
+      local session = agent:get_session()
+      assert(session:append({ role = "user", content = older }))
+      assert(session:append({ role = "user", content = newer }))
+      local run = agent:compact()
+      assert(run)
+      assert(vim.wait(2000, function()
+        return run:is_done()
+      end))
+      assert.is_true(assert(run:result()).ok)
+      local messages = assert(session:context_messages())
+      assert.are.equal(3, #messages)
+      assert.are.equal(older, assert(messages[1]).content)
+      assert.are.equal(newer, assert(messages[2]).content)
+      assert.are.equal("nativeCompaction", assert(messages[3]).role)
+    end)
+    agent:destroy()
+    assert(ok, err)
+  end)
+
   it("preserves the Profile environment across native compaction overflow retries", function()
     local options, model = configuration({
       profile = "codex",

@@ -78,7 +78,8 @@ Common defaults are: >lua
     retry = { enabled = true, max_retries = 3, base_delay_ms = 2000 },
     compaction = {
       strategy = "prefix", auto = true,
-      reserve_tokens = 16384, keep_recent_tokens = 20000,
+      reserve_tokens = 16384,
+      -- keep_recent_tokens defaults depend on the Profile.
     },
     -- sandbox.enabled defaults to true for Pi and Codex.
     persistence = {
@@ -1914,11 +1915,13 @@ to resume. Local summaries cannot replace encrypted context. Compaction
 changes request context; the complete Session tree remains available.
 
 Request budgets include shaping, the system prompt, Tool schemas, images, and
-reserved output. `keep_recent_tokens` is an upper target, not guaranteed
-retention. Summarizing Models must support the consumed images. Checkpoints
-are validated and budgeted before publication; failures leave the prior
-context and committed messages intact. A later continuation need not resubmit
-the prompt.
+reserved output. `keep_recent_tokens` defaults to 64000 for Codex and 20000
+for Pi and Chat, with explicit settings overriding Profile defaults. It is an
+upper target, not guaranteed retention, and is reduced for smaller context
+windows. Summarizing Models must support the consumed images. Checkpoints are
+validated and budgeted before publication; failures leave the prior context
+and committed messages intact. A later continuation need not resubmit the
+prompt.
 
 Local summary requests lower thinking to `low` or the lowest enabled level,
 preserving `off` and lower selections. Without a selection, configured
