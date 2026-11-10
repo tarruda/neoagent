@@ -30,8 +30,8 @@ end
 function M.discover(opts)
   opts = opts or {}
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
-  ---@type Neoagent.InstructionFile[], Neoagent.ResourceDiagnostic[], table<string, boolean>
-  local files, diagnostics, seen = {}, {}, {}
+  ---@type Neoagent.InstructionFile[], Neoagent.ResourceDiagnostic[]
+  local files, diagnostics = {}, {}
 
   ---@param path string
   ---@param project_root? string
@@ -64,10 +64,12 @@ function M.discover(opts)
       end
     end
     ---@cast canonical string
-    if seen[canonical] then
-      return
+    for index, file in ipairs(files) do
+      if file.path == canonical then
+        table.remove(files, index)
+        break
+      end
     end
-    seen[canonical] = true
     files[#files + 1] = { path = canonical, content = content }
   end
 

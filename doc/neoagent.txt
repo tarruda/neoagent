@@ -624,14 +624,15 @@ AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
 Instruction discovery loads `stdpath("config") .. "/AGENTS.md"` and each project
 `AGENTS.md` from the Git root to the Workspace. Outside Git, discovery starts
-at the Workspace. Linked project resources are ignored. Files enter the prompt
-from broadest to most specific. Explicitly configured global resources are not
-subject to the project boundary.
+at the Workspace. Project files may be symbolic links when their resolved
+targets stay inside that root. Files enter the prompt from broadest to most
+specific. Explicitly configured global resources are not subject to the project
+boundary.
 
 Skills contain a `SKILL.md` with YAML `name` and `description`. Only metadata
 and paths enter the prompt; the Model reads instructions as needed. Discovery
 requires a file-reading Tool. Nearer project skills override same-name
-entries.
+entries. Linked project skill directories are ignored.
 
 Resource configuration defaults are: >lua
 
