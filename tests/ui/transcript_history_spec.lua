@@ -277,6 +277,33 @@ describe("transcript history", function()
     )
   end)
 
+  it("clears populated transcript cards when branching to a path without messages", function()
+    local session = assert(require("neoagent.session").new())
+    assert(session:move_to(nil))
+    local empty = assert(session:entries()[1])
+    local _, _, first = session:append({ role = "user", content = "original request" })
+    local agent = agent_for(session)
+    local applet, view = open(agent)
+    view:set_input("unsent draft")
+    assert.matches("original request", text(view))
+
+    assert(agent:branch(empty.id))
+
+    assert.are.same({}, view.messages)
+    assert.are.same({}, view.blocks)
+    assert.is_nil((text(view):find("original request", 1, true)))
+    assert.is_nil(agent:snapshot().history.id)
+    assert.is_true(agent:snapshot().history.latest)
+    assert.are.same({}, assert(session:context_messages()))
+    assert.are.equal("unsent draft", view:get_input())
+
+    assert(agent:branch(assert(first).id))
+    assert.matches("original request", text(view))
+    assert.are.equal(1, #view.messages)
+    assert.are.equal("unsent draft", view:get_input())
+    applet:destroy()
+  end)
+
   it("replays the current failure after revisiting an unchanged journal segment", function()
     local session = conversation()
     local model = fake_model.new({

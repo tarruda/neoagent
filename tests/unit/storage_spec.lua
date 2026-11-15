@@ -464,6 +464,55 @@ describe("neoagent.storage", function()
     assert.are.same({}, storage.list_sessions(directory, directory))
   end)
 
+  it("rejects invalid Tool linkage before changing the durable journal", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "Inspect the synthetic project." }))
+    assert(store:append({ role = "assistant", content = { {
+      type = "toolCall", id = "pending", name = "inspect", arguments = {},
+    } } }))
+    local path = store:metadata().path
+    local contents = assert(fs.read(path))
+    local entries, messages, leaf = store:entries(), store:load(), store:leaf_id()
+    ---@type { message: Neoagent.Message, detail: string }[]
+    local cases = {
+      {
+        message = { role = "assistant", content = { {
+          type = "toolCall", id = "pending", name = "inspect", arguments = {},
+        } } },
+        detail = "duplicate conversation toolCall id: pending",
+      },
+      {
+        message = { role = "toolResult", toolCallId = "pending", toolName = "different", content = {} },
+        detail = "toolResult toolName does not match its toolCall",
+      },
+      {
+        message = { role = "toolResult", toolCallId = "unknown", toolName = "inspect", content = {} },
+        detail = "toolResult references an unknown toolCall: unknown",
+      },
+    }
+
+    for _, case in ipairs(cases) do
+      local accepted, err = store:append(case.message)
+      assert.is_nil(accepted)
+      assert.are.equal("storage", assert(err).kind)
+      assert.are.equal(case.detail, assert(err).detail)
+      assert.are.equal(contents, assert(fs.read(path)))
+      assert.are.same(entries, store:entries())
+      assert.are.same(messages, store:load())
+      assert.are.equal(leaf, store:leaf_id())
+    end
+
+    assert(store:append({
+      role = "toolResult", toolCallId = "pending", toolName = "inspect", content = {},
+    }))
+    local reopened = assert(open_session(path))
+    assert.are.same(store:entries(), reopened:entries())
+    assert.are.same(store:load(), reopened:load())
+    assert.are.equal(store:leaf_id(), reopened:leaf_id())
+  end)
+
   it("reports malformed headers, entries, and messages precisely", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
@@ -475,6 +524,7 @@ describe("neoagent.storage", function()
     local path = document_path(directory, "bad.jsonl")
     local header = { type = "session", format = "neoagent-session", id = "session", created_at = 1767225600000, cwd = directory }
     local cases = {
+      { lines = { "", "  ", "\t" }, detail = "expected neoagent%-session header" },
       { lines = { "42" }, detail = "expected object" },
       { lines = { "{" }, detail = ".+" },
       { lines = { vim.json.encode({ type = "session", version = 2 }) },
@@ -983,6 +1033,7 @@ describe("neoagent.storage", function()
     assert(store:append({ role = "user", content = "complete" }))
     local complete = assert(original_read(store:metadata().path))
     for index, prefix in ipairs({
+      " \n\t\n",
       '{"type":"foreign-document"}\n',
       complete .. '{broken-json}\n',
       complete .. vim.json.encode({ type = "message", id = "invalid-entry" }) .. "\n",

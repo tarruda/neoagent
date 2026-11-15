@@ -83,7 +83,7 @@ describe("neoagent.session", function()
     assert.matches("entry not found", tostring(assert(err).detail))
   end)
 
-  it("preserves injected Store transcript paths and their errors", function()
+  it("preserves injected Store paths and their errors across transcript and checkpoint reads", function()
     local source = stored_entry("first")
     local path_error = { kind = "storage", message = "path failed" }
     local failed = false
@@ -98,10 +98,16 @@ describe("neoagent.session", function()
     local entries = assert(session:transcript_entries())
     assert(assert(entries[1]).message).content = "changed"
     assert.are.equal("stored", source.message.content)
+    local identity, identity_err = session:checkpoint_identity()
+    assert.is_nil(identity)
+    assert.is_nil(identity_err)
     failed = true
     local unavailable, err = session:transcript_entries()
     assert.is_nil(unavailable)
     assert.are.equal(path_error, err)
+    identity, identity_err = session:checkpoint_identity()
+    assert.is_nil(identity)
+    assert.are.equal(path_error, identity_err)
   end)
 
   it("propagates unavailable journal paths without inventing context or checkpoints", function()

@@ -256,6 +256,25 @@ describe("neoagent contextual resources", function()
       vim.tbl_map(function(file) return file.content end, global.files))
   end)
 
+  it("rejects project skill directories that traverse outside the trusted repository", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    paths[1] = base
+    directory(repo .. "/.git")
+    skill(base .. "/repo-other/skills", "external",
+      "---\nname: external\ndescription: external skill\n---\nBody\n")
+
+    local result = skills.discover({
+      cwd = repo,
+      global_dirs = {},
+      project_dirs = { "../repo-other/skills" },
+    })
+
+    assert.are.same({}, result.skills)
+    assert.are.equal(1, #result.diagnostics)
+    assert.are.equal("project resource path is outside the trusted root", assert(result.diagnostics[1]).message)
+  end)
+
   it("uses the Workspace as the project resource root outside Git", function()
     local base = vim.fn.tempname()
     local workspace = base .. "/workspace"
