@@ -54,13 +54,16 @@ describe("Codex subscription file uploads", function()
   ---@return string
   ---@return Neoagent.AuthManager
   local function conversation(exchanges, lite, record, wrap)
+    directory = vim.fn.tempname()
+    local store = storage.new({ directory = directory .. "/sessions", cwd = vim.fn.getcwd() })
+    workspace = store:workspace_storage()
+    local session = assert(Session.new({ store = store }))
     local entries = {}
     for _, entry in ipairs(exchanges) do
       entries[#entries + 1] = type(entry) == "string"
         and { path = "tests/recordings/openai-codex/files/" .. entry .. ".yaml" } or entry
     end
-    scenario = replay.new({ exchanges = entries })
-    directory = vim.fn.tempname()
+    scenario = require("tests.helpers.codex_replay")(entries, session:id())
     local transport = wrap and wrap(scenario) or scenario
     if record then
       recorder = assert(require("neoagent.http_recording").new({
@@ -80,11 +83,9 @@ describe("Codex subscription file uploads", function()
       if runtimes then runtimes_module.destroy(runtimes) end
       runtimes = assert(runtimes_module.compose(configured, { auth = auth, transport = transport, startup = false,
       }))
-      return models.resolve("openai-codex", "gpt-5.6-sol", configured, auth, runtimes)
+      return models.resolve("openai-codex", "gpt-5.6-sol", configured, auth, runtimes,
+        { session_id = session:id() })
     end
-    local store = storage.new({ directory = directory .. "/sessions", cwd = vim.fn.getcwd() })
-    workspace = store:workspace_storage()
-    local session = assert(Session.new({ store = store }))
     local image = require("tests.helpers.attachments").new(session:files()).image(vim.base64.decode(PNG))
     assert(session:append({ role = "user", content = "Inspect the sample tile." }))
     assert(session:append({ role = "assistant", content = {

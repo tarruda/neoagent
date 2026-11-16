@@ -101,6 +101,24 @@ function M.display_width(text)
   return vim.fn.strdisplaywidth(text)
 end
 
+---@class Applet.TextWidthContext
+---@field ambiwidth string
+---@field emoji boolean
+---@field display string
+---@field isprint string
+---@field overrides integer[][]
+
+---@return Applet.TextWidthContext
+function M.text_width_context()
+  return {
+    ambiwidth = vim.o.ambiwidth,
+    emoji = vim.o.emoji,
+    display = vim.o.display,
+    isprint = vim.o.isprint,
+    overrides = vim.fn.getcellwidths(),
+  }
+end
+
 ---@param text string
 ---@param index integer
 ---@return integer?

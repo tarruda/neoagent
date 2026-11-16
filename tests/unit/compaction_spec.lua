@@ -357,13 +357,13 @@ describe("neoagent.compaction", function()
       { role = "assistant", content = {}, usage = { totalTokens = 40 }, stopReason = "stop" },
     }
     local unavailable = {
-      path = function() return nil, { kind = "session", message = "unavailable" } end,
+      transcript_entries = function() return nil, { kind = "session", message = "unavailable" } end,
     }
     assert.are.equal(2,
       context.tokens(unavailable --[[@as Neoagent.Session]], messages))
 
     local current = {
-      path = function()
+      transcript_entries = function()
         return {
           { type = "compaction", id = "c", parent_id = vim.NIL,
             created_at = 1, summary = "old", first_kept_entry_id = "u",
@@ -948,7 +948,7 @@ describe("neoagent.compaction", function()
     }
     assert.are.same({ { type = "text", text = "first" }, image, { type = "text", text = "sec" } },
       assert(tree.context_messages(path)[1]).content)
-    local transcript = assert(tree.transcript_entries(path)[2]) --[[@as Neoagent.MessageEntry]]
+    local transcript = assert(assert(tree.transcript_entries(path, assert(path[1]).id))[2]) --[[@as Neoagent.MessageEntry]]
     assert.are.same(assert(path[2]).message, transcript.message)
   end)
 

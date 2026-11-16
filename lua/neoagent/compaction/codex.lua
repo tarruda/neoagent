@@ -101,6 +101,7 @@ local function run(options)
     end
     ---@cast preparation Neoagent.NativeCompactionPreparation
     local model_options = request_preparation.copy(preparation.request)
+    model_options._turn = model_options._turn or run
     local source = request_preparation.copy(preparation.request)
     source.messages = preparation.source_messages
     model_options.on_event = function(event)
@@ -236,6 +237,7 @@ M.component = {
       system_prompt = projection.system_prompt,
       tools = util.copy(options.tools or {}),
       _preparation = request_preparation.new(),
+      _turn = inherited._turn,
       files = inherited.files,
       file_cache = inherited.file_cache,
       request_context = inherited.request_context,

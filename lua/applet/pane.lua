@@ -20,6 +20,7 @@ local Mode = require("applet.mode")
 ---@field extent Applet.PaneExtent
 ---@field width integer
 ---@field height? integer
+---@field width_context Applet.TextWidthContext
 ---@field focused boolean
 ---@field theme_generation integer
 ---@field layout_generation integer
@@ -70,6 +71,7 @@ local Mode = require("applet.mode")
 ---@field value Applet.ImageSource
 
 ---@class Applet.PaneImageRegion
+---@field document_key? string
 ---@field revision? string|number
 ---@field sources Applet.PaneImageSource[]
 
@@ -1335,8 +1337,9 @@ end
 ---@param height integer?
 ---@param focused boolean
 ---@param generation integer
+---@param width_context Applet.TextWidthContext
 ---@return Applet.Tree|Applet.Node
-function Pane:_render_tree(width, height, focused, generation)
+function Pane:_render_tree(width, height, focused, generation, width_context)
   if self.direct_tree then
     return ambient_tree(self, assert(self.pending_tree))
   end
@@ -1348,6 +1351,7 @@ function Pane:_render_tree(width, height, focused, generation)
     extent = self.extent,
     width = width,
     height = height,
+    width_context = width_context,
     focused = focused,
     theme_generation = self.theme_generation,
     layout_generation = generation,
@@ -1427,8 +1431,8 @@ function Pane:_prepare_images(tree, images)
     for _, region in ipairs(regions) do
       active[region.key] = true
       local cached = self.image_region_cache[region.key]
-      if not cached or cached.revision ~= region.revision then
-        cached = { revision = region.revision, sources = {} }
+      if not cached or cached.document_key ~= tree.cache_key or cached.revision ~= region.revision then
+        cached = { document_key = tree.cache_key, revision = region.revision, sources = {} }
         walk_images(region.child, function(value)
           local identity_ok, identity = pcall(ImageSource.identity, value)
           if identity_ok then
@@ -1535,6 +1539,7 @@ function Pane:_flush_requested()
   end
   local generation = self.generation
   local width, height, focused, window = dimensions(self)
+  local width_context = util.text_width_context()
   local window_changed = self.last_window ~= window or self.force_chrome == true
   if self.image_system then
     local position = window and vim.fn.win_screenpos(window) or { 0, 0 }
@@ -1557,6 +1562,7 @@ function Pane:_flush_requested()
       self.layout
       and width == self.layout.width
       and height == self.layout.height
+      and util.equal(self.layout.width_context, width_context)
       and (not self.image_system or self.layout.image_generation == self.image_system:snapshot(self).generation)
     then
       local current_scene = self.pending_scene
@@ -1630,7 +1636,7 @@ function Pane:_flush_requested()
   end
   self.pending_scene = nil
   self.counters.renders = self.counters.renders + 1
-  local ok, tree = pcall(self._render_tree, self, width, height, focused, generation)
+  local ok, tree = pcall(self._render_tree, self, width, height, focused, generation, width_context)
   if not ok then
     return self:_report("render", tree, generation)
   end
@@ -1643,9 +1649,11 @@ function Pane:_flush_requested()
   local root = tree.type and tree or tree.root
   local prepare_deferred_images = self.deferred_images == true and surface_visible(self.surface)
   local retained = previous ~= nil
+    and previous.cache_key == tree.cache_key
     and previous_root == root
     and previous.width == width
     and previous.height == height
+    and util.equal(previous.width_context, width_context)
     and previous.extent == self.extent
     and previous.theme_generation == self.theme_generation
     and previous.image_generation == images.generation
@@ -1665,6 +1673,7 @@ function Pane:_flush_requested()
         previous = previous,
         width = width,
         height = height,
+        width_context = width_context,
         extent = self.extent,
         theme = self.compile_theme,
         images = images,
@@ -2377,6 +2386,7 @@ function Pane:destroy()
     end
   end
   self.owned_buffers = {}
+  self.compile_cache = {}
 end
 
 ---@class Applet.PaneModule

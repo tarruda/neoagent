@@ -100,6 +100,11 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@class Neoagent.AgentMessagesPublication
 ---@field type 'messages'
 ---@field messages Neoagent.TranscriptMessage[]
+---@field history Neoagent.TranscriptHistory
+---@field reset? boolean Rebuild and replay current pending events after navigation.
+---@field events? Neoagent.AgentEvent[]
+---@field pending_message_ends? integer Discard transcript events through this many queued message_end publications.
+---@field result? Neoagent.AgentCompletion
 
 ---@class Neoagent.AgentContextPublication
 ---@field type 'context'
@@ -126,8 +131,10 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@class Neoagent.AgentSnapshot
 ---@field revision integer
 ---@field messages Neoagent.TranscriptMessage[]
+---@field history Neoagent.TranscriptHistory
 ---@field context Neoagent.AgentContext
 ---@field events Neoagent.AgentEvent[]
+---@field pending_message_ends? integer Discard transcript events through this many queued message_end publications.
 ---@field result? Neoagent.AgentCompletion
 
 ---@class Neoagent.AgentRuntime
@@ -318,12 +325,14 @@ function M.from_config(options, runtime)
     "preview_compaction",
     "messages",
     "_message_update",
+    "_message_count",
     "context_messages",
     "checkpoint_identity",
     "entries",
     "entry",
     "leaf_id",
     "path",
+    "transcript_entries",
     "state",
     "move_to",
     "snapshot",
@@ -674,6 +683,15 @@ function M.from_config(options, runtime)
     state.publication_revision = state.publication_revision + 1
     local publication = util.copy(update) --[[@as Neoagent.AgentPublication]]
     publication.revision = state.publication_revision
+    local activity = state.activity
+    if activity then
+      local event = publication.type == "event" and publication.event or nil
+      if event and event.type == "message_end" then
+        activity.transcript_count = activity.transcript_count + 1
+      elseif publication.type == "messages" and publication.history.latest and not publication.pending_message_ends then
+        activity.transcript_count = state.session:_message_count()
+      end
+    end
     for _, listener in pairs(state.listeners) do
       local copied = util.copy(publication)
       local ok, err = pcall(listener, copied)
@@ -752,9 +770,9 @@ function M.from_config(options, runtime)
   end
 
   ---@param session Neoagent.Session
-  ---@return Neoagent.TranscriptMessage[]
+  ---@return Neoagent.TranscriptMessage[], Neoagent.TranscriptHistory
   local function transcript_messages(session)
-    return session_lifecycle.transcript_messages(session)
+    return session_lifecycle.transcript_messages(session, state.transcript_segment_id)
   end
 
   ---@type table<Neoagent.Tool<Neoagent.AgentToolEnvironment>, Neoagent.MessageCursor>
@@ -794,9 +812,61 @@ function M.from_config(options, runtime)
   end
 
   ---@param messages Neoagent.TranscriptMessage[]
-  local function publish_messages(messages)
+  ---@param history Neoagent.TranscriptHistory
+  ---@return Neoagent.AgentEvent[], integer?
+  local function transcript_replay(messages, history)
+    if not history.latest then
+      return {}
+    end
+    local activity = state.activity
+    local last = messages[#messages]
+    -- Commits precede queued event delivery. A projection that includes an
+    -- unobserved message replaces its deltas and all events through its end.
+    if activity and last and (last.role == "user" or last.role == "assistant" or last.role == "toolResult") then
+      local pending = math.floor(state.session:_message_count() - activity.transcript_count)
+      if pending > 0 then
+        return {}, pending
+      end
+    end
+    return util.copy(state.pending_events)
+  end
+
+  ---@param messages Neoagent.TranscriptMessage[]
+  ---@param history Neoagent.TranscriptHistory
+  ---@param reset? boolean
+  local function publish_transcript(messages, history, reset)
+    local events, pending_message_ends
+    if reset and history.latest then
+      events, pending_message_ends = transcript_replay(messages, history)
+    end
+    publish({
+      type = "messages",
+      messages = messages,
+      history = history,
+      reset = reset,
+      events = events,
+      pending_message_ends = pending_message_ends,
+      result = reset and history.latest and util.copy(state.last_result) or nil,
+    })
+  end
+
+  ---@param reset? boolean
+  local function publish_messages(reset)
+    local messages, history = transcript_messages(state.session)
     sync_tools()
-    publish({ type = "messages", messages = messages })
+    publish_transcript(messages, history, reset)
+  end
+
+  ---@return boolean
+  local function follow_latest()
+    if state.transcript_segment_id then
+      local messages, history = session_lifecycle.transcript_messages(state.session)
+      state.transcript_segment_id = nil
+      sync_tools()
+      publish_transcript(messages, history, true)
+      return true
+    end
+    return false
   end
 
   ---@return true?, Neoagent.Error?
@@ -1105,7 +1175,7 @@ function M.from_config(options, runtime)
     publish_messages = publish_messages,
     update_context = update_context,
     sync_tools = sync_tools,
-    transcript_messages = transcript_messages,
+    follow_latest = follow_latest,
     require_workspace_trust = require_workspace_trust,
     ensure_session = ensure_session,
     ensure_model = ensure_model,
@@ -1200,6 +1270,42 @@ function M.from_config(options, runtime)
   ---@return true?, Neoagent.Error?
   function agent:branch(entry_id)
     return sessions.branch(entry_id)
+  end
+
+  ---@param direction 'first'|'previous'|'next'|'latest'
+  ---@return boolean?, Neoagent.Error?
+  function agent:navigate_transcript(direction)
+    assert(
+      direction == "first" or direction == "previous" or direction == "next" or direction == "latest",
+      "invalid transcript direction"
+    )
+    if state.destroyed then
+      return nil, util.error("agent", "Agent is destroyed")
+    end
+    local segment_id = state.transcript_segment_id
+    local projection_direction
+    if direction == "latest" then
+      if not segment_id then
+        return false
+      end
+      segment_id = nil
+    else
+      projection_direction = direction
+    end
+    local ok, messages, history =
+      pcall(session_lifecycle.transcript_messages, state.session, segment_id, projection_direction)
+    if not ok then
+      return nil, util.normalize_error(messages, "session")
+    end
+    if
+      direction ~= "latest"
+      and (history.id == state.transcript_segment_id or (not state.transcript_segment_id and history.latest))
+    then
+      return false
+    end
+    state.transcript_segment_id = not history.latest and history.id or nil
+    publish_transcript(messages, history, true)
+    return true
   end
   ---@param on_selected? fun(id: string)
   ---@return true?
@@ -1473,14 +1579,17 @@ function M.from_config(options, runtime)
 
   ---@return Neoagent.AgentSnapshot
   function agent:snapshot()
-    local messages = transcript_messages(state.session)
+    local messages, history = transcript_messages(state.session)
     sync_tools()
+    local events, pending_message_ends = transcript_replay(messages, history)
     return {
       revision = state.publication_revision,
       messages = messages,
+      history = history,
       context = context(),
-      events = util.copy(state.pending_events),
-      result = util.copy(state.last_result),
+      events = events,
+      pending_message_ends = pending_message_ends,
+      result = history.latest and util.copy(state.last_result) or nil,
     }
   end
 
@@ -1515,6 +1624,16 @@ function M.from_config(options, runtime)
     return copy_toolset(state.toolset)
   end
 
+  ---@param name string
+  ---@return Neoagent.RenderTool?
+  function agent:_render_tool(name)
+    for _, tool in ipairs(state.toolset.tools) do
+      if tool.name == name then
+        return { name = tool.name, render = tool.render }
+      end
+    end
+  end
+
   ---@param value Neoagent.AgentToolset
   ---@return Neoagent.AgentToolset?, Neoagent.Error?
   function agent:set_toolset(value)
@@ -1531,7 +1650,8 @@ function M.from_config(options, runtime)
         selected.sandbox and selected.sandbox:status() or { enabled = false, active = false }
       )
     end
-    publish_messages(transcript_messages(state.session))
+    -- Accepted Tool changes invalidate presentation in every transcript segment.
+    publish_messages(true)
     return previous
   end
 
@@ -1612,7 +1732,7 @@ function M.from_config(options, runtime)
         toolset.sandbox and toolset.sandbox:status() or { enabled = false, active = false }
       )
     end
-    publish_messages(transcript_messages(state.session))
+    publish_messages()
     state.release_exit = host_effects.on_exit(function()
       agent:destroy()
     end)

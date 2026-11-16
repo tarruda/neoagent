@@ -410,7 +410,11 @@ local function create_profiles()
     {
       id = "codex",
       label = "Codex",
-      defaults = { ui = { style = "codex" }, sandbox = { enabled = true } },
+      defaults = {
+        ui = { style = "codex" },
+        sandbox = { enabled = true },
+        compaction = { keep_recent_tokens = 64000 },
+      },
       sandbox_controls = true,
       supported_apis = { "openai-responses", "openai-codex-responses" },
       supports_native_context = true,

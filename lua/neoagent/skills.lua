@@ -217,14 +217,10 @@ end
 function M.discover(opts)
   opts = opts or {}
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
-  ---@type table<string, Neoagent.Skill>, Neoagent.ResourceDiagnostic[], table<string, boolean>, table<string, boolean>
-  local by_name, diagnostics, visited, paths = {}, {}, {}, {}
+  ---@type table<string, Neoagent.Skill>, Neoagent.ResourceDiagnostic[], table<string, boolean>
+  local by_name, diagnostics, visited = {}, {}, {}
   ---@param skill Neoagent.Skill
   local function add(skill)
-    if paths[skill.path] then
-      return
-    end
-    paths[skill.path] = true
     by_name[skill.name] = skill
   end
   for _, directory in ipairs(opts.global_dirs or {}) do

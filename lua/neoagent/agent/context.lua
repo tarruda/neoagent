@@ -27,7 +27,7 @@ end
 ---@param session Neoagent.Session
 ---@return boolean
 local function historical_usage_is_current(session)
-  local path = session:path()
+  local path = session:transcript_entries()
   if not path then
     return false
   end

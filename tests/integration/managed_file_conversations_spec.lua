@@ -127,12 +127,12 @@ describe("captured managed-file conversations", function()
   it("commits an Agent's Codex tool attachment before uploading it and reuses it after restart", function()
     local entries = {}
     for index = 1, 7 do entries[index] = ("tests/recordings/openai-codex/tool-loop/%02d.yaml"):format(index) end
-    scenario = replay.new({exchanges = entries})
     directory = vim.fn.tempname()
     local workspace = directory .. "/workspace"
     vim.fn.mkdir(workspace, "p")
     local store = storage.new({directory = directory, cwd = workspace})
     local session = assert(Session.new({store = store}))
+    scenario = require("tests.helpers.codex_replay")(entries, session:id())
     local reads = 0
     ---@type string?
     local file_id
@@ -293,8 +293,11 @@ describe("captured managed-file conversations", function()
         exchange.body, exchange.chunks, exchange.response, exchange.terminal =
           rejected.body, rejected.chunks, rejected.response, rejected.terminal
       end
-      scenario = replay.new({ exchanges = { { exchange = exchange } } })
       directory = vim.fn.tempname()
+      local store = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+      local session = assert(Session.new({ store = store }))
+      scenario = case.codex and require("tests.helpers.codex_replay")({ { exchange = exchange } }, session:id())
+        or replay.new({ exchanges = { { exchange = exchange } } })
       -- Header-routing cases supply credentials through request options;
       -- configured Authentication otherwise takes precedence over them.
       local configured = config.setup({ default_registry = false, providers = { [case.provider] = {
@@ -311,8 +314,6 @@ describe("captured managed-file conversations", function()
       end
       runtimes = assert(runtimes_module.compose(configured, { auth = auth, transport = scenario, startup = false }))
       local model = models.resolve(case.provider, model_id, configured, auth, runtimes)
-      local store = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
-      local session = assert(Session.new({ store = store }))
       local image = require("tests.helpers.attachments").new(session:files()).image(vim.base64.decode(PNG))
       assert(session:append({ role = "user", content = "Inspect a generated two-color tile." }))
       assert(session:append({ role = "assistant", content = {
@@ -363,8 +364,11 @@ describe("captured managed-file conversations", function()
       for index = 1, case.exchanges do
         entries[#entries + 1] = ("tests/recordings/%s/%s/%02d.yaml"):format(case.provider, case.folder or "managed-files", index)
       end
-      scenario = replay.new({ exchanges = entries })
       directory = vim.fn.tempname()
+      local store = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+      local session = assert(Session.new({ store = store }))
+      scenario = case.api == "openai-codex-responses"
+        and require("tests.helpers.codex_replay")(entries, session:id()) or replay.new({ exchanges = entries })
       managers.new = function(options)
         options.now = function() return 1700000000000 end
         return original_new(options)
@@ -388,8 +392,6 @@ describe("captured managed-file conversations", function()
         runtimes = assert(runtimes_module.compose(configured, { auth = auth, transport = scenario, startup = false }))
         return models.resolve(case.provider, case.model, configured, auth, runtimes)
       end
-      local store = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
-      local session = assert(Session.new({ store = store }))
       local image = require("tests.helpers.attachments").new(session:files()).image(vim.base64.decode(PNG),
         "image/png", { filename = "synthetic-tile.png" })
       assert(session:append({ role = "user", content = "Inspect a generated two-color tile." }))

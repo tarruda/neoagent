@@ -885,6 +885,181 @@ describe("Pane buffer surfaces", function()
       ui.action("absent.action"), nil, 1, "n", 0, 0))
   end)
 
+  it("restores document content and actions when revisiting matching Region keys and revisions", function()
+    local selected
+    local value = pane({
+      key = "document-cache",
+      handlers = {
+        open = function(event)
+          selected = (event.payload --[[@as {document: string}]]).document
+        end,
+      },
+    })
+    local host = surface("applet-document-cache")
+    value:_connect(host)
+    for _, key in ipairs({ "a", "b", "a", "a" }) do
+      value:update({
+        cache_key = key,
+        root = ui.scope({
+          key = "document",
+          bindings = { { mode = "n", lhs = "<CR>", action = ui.action("applet.target.activate") } },
+          child = ui.region({
+            key = "body",
+            revision = 1,
+            child = ui.target({
+              key = "open",
+              action = ui.action("open", { document = key }),
+              child = ui.text({ key = "text", text = "document " .. key }),
+            }),
+          }),
+        }),
+      })
+      assert(value:flush())
+      assert.are.same({ "document " .. key }, lines(host.buffer))
+      assert.is_true(require("applet.pane.input").dispatch(value, "n", "<CR>"))
+      assert.are.equal(key, selected)
+    end
+    assert.are.equal(2, value:_stats().region_compilations)
+    assert.are.equal(1, value:_stats().region_reuses)
+  end)
+
+  it("loads document images independently when Region keys and revisions match", function()
+    local source = require("applet.image.source")
+    local images = new_image_system({})
+    local reads = {}
+    local value = pane({
+      key = "document-images",
+      image_system = images,
+      read_image_resource = function(resource, _, done)
+        reads[resource.id] = true
+        done("\137PNG\r\n\26\n\0\0\0\rIHDR\0\0\0\4\0\0\0\2")
+        return function() end
+      end,
+    })
+    local host = surface("applet-document-images", true)
+    value:_connect(host)
+    for _, key in ipairs({ "a", "b", "a" }) do
+      local image = { kind = "png_resource", id = key, revision = 1 }
+      value:update({
+        cache_key = key,
+        root = ui.region({
+          key = "body",
+          revision = 1,
+          child = ui.image({ key = "image", source = image, alt = "document " .. key, width = 4, height = 2 }),
+        }),
+      })
+      assert(value:flush())
+      assert.is_true(reads[key], "the selected document's image was not requested")
+      local identity = source.identity(image)
+      assert(
+        vim.wait(1000, function()
+          return images:snapshot(value).resources[identity] ~= nil
+        end),
+        "the selected document's image did not load"
+      )
+      assert(value:flush())
+      assert.are.equal(identity, assert(assert(value.layout).images.image).source_identity)
+    end
+  end)
+
+  for _, kind in ipairs({ "root", "region", "layer" }) do
+    it("refreshes active and inactive " .. kind .. " layouts after native character widths change", function()
+      local previous = vim.o.ambiwidth
+      local value = pane({ key = "document-widths-" .. kind })
+      local host, window = surface("applet-document-widths-" .. kind, true)
+      vim.api.nvim_win_set_width(window(), 4)
+      value:_connect(host)
+      ---@param key string
+      ---@return Applet.Tree
+      local function document(key)
+        local content = ui.target({
+          key = key .. ":target",
+          child = ui.text({ key = key .. ":text", text = "····", wrap = "word" }),
+        })
+        ---@type Applet.Node
+        local root = content
+        if kind == "region" then
+          root = ui.region({ key = key .. ":body", revision = 1, child = content })
+        elseif kind == "layer" then
+          root = ui.container({
+            key = key .. ":stage",
+            width = 4,
+            height = 2,
+            layers = {
+              ui.container({
+                key = key .. ":layer",
+                width = 4,
+                height = 2,
+                position = { mode = "absolute", row = 0, col = 0 },
+                child = content,
+              }),
+            },
+          })
+        end
+        return { cache_key = key, root = root }
+      end
+      local first, second = document("first"), document("second")
+      ---@param tree Applet.Tree
+      local function show(tree)
+        value:update(tree)
+        assert(value:flush())
+      end
+      local ok, err = pcall(function()
+        vim.o.ambiwidth = "single"
+        show(first)
+        if kind ~= "layer" then
+          assert.are.equal("····", lines(host.buffer)[1])
+        end
+        assert.are.equal(1, #assert(assert(value.layout).targets["first:target"]).rectangles)
+        show(second)
+        vim.o.ambiwidth = "double"
+        show(first)
+        if kind ~= "layer" then
+          assert.are.same({ "··", "··" }, lines(host.buffer))
+        end
+        local expected = kind == "layer" and { { row = 0, col = 0, width = 4, height = 2 } }
+          or {
+            { row = 0, col = 0, width = 4, height = 1 },
+            { row = 1, col = 0, width = 4, height = 1 },
+          }
+        assert.are.same(expected, assert(assert(value.layout).targets["first:target"]).rectangles)
+        vim.o.ambiwidth = "single"
+        if kind == "layer" then
+          assert(value:set_position("first:layer", { zindex = 1 }))
+          assert(value:flush())
+        else
+          show(first)
+        end
+        if kind ~= "layer" then
+          assert.are.equal("····", lines(host.buffer)[1])
+        end
+        assert.are.same(
+          { { row = 0, col = 0, width = 4, height = 1 } },
+          assert(assert(value.layout).targets["first:target"]).rectangles
+        )
+      end)
+      vim.o.ambiwidth = previous
+      assert(ok, err)
+    end)
+  end
+
+  it("validates document keys when reusing the same content root", function()
+    local value = pane({ key = "document-key" })
+    local host = surface("applet-document-key")
+    value:_connect(host)
+    local root = ui.text({ key = "body", text = "accepted" })
+    value:update({ cache_key = "a", root = root })
+    assert(value:flush())
+    value:update({ cache_key = "", root = root })
+    local committed, err = value:flush()
+    assert.is_nil(committed)
+    assert.are.equal("compile", assert(err).phase)
+    assert.matches("tree.cache_key", assert(err).message, 1, true)
+    assert.are.same({ "accepted" }, lines(host.buffer))
+    value:update({ cache_key = "b", root = root })
+    assert(value:flush())
+  end)
+
   it("coalesces state and reconciles stable regions incrementally", function()
     local renders = 0
     local value = pane({

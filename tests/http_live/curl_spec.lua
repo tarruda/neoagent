@@ -71,6 +71,20 @@ describe("real curl HTTP backend", function()
     end
   end)
 
+  it("retries Codex with the exact routing token after the server drops the body", function()
+    local model = require("neoagent.api.openai_codex_responses").new({
+      provider = "codex",
+      model = "synthetic",
+      base_url = server.url,
+      request_max_retries = 1,
+      sleep = function() end,
+    })
+    local result = wait(model:stream({ messages = {}, request_context = { session_id = "local-session" } }))
+    assert.is_true(result.ok)
+    assert.are.equal(string.rep("synthetic-routing-state-", 100), result.text)
+    assert.are.equal(2, #paths)
+  end)
+
   it("delivers SSE before EOF and cancels the process and temporary files", function()
     ---@type Neoagent.JsonValue[]
     local received = {}

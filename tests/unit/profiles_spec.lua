@@ -59,6 +59,57 @@ describe("bundled Profile resources", function()
     resources:destroy()
   end)
 
+  it("defaults Codex retention to 64000 tokens and other Profiles to 20000", function()
+    local snapshot = config()
+    local selected, _, resources = profiles.bundled(snapshot, { startup = false })
+    local ok, err = pcall(function()
+      for _, profile in ipairs(selected) do
+        local configured = selection.configuration(snapshot, profile)
+        local settings = configured.compaction
+        assert(settings ~= false)
+        assert.are.equal(profile.id == "codex" and 64000 or 20000, settings.keep_recent_tokens)
+        assert.are.equal(16384, settings.reserve_tokens)
+        assert.is_true(settings.auto)
+        local bounded = require("neoagent.compaction").settings(settings, 32768)
+        assert.are.equal(12288, bounded.keep_recent_tokens)
+      end
+    end)
+    resources:destroy()
+    assert(ok, err)
+  end)
+
+  it("honors shared and draft compaction overrides before Profile defaults", function()
+    local selected, _, resources = profiles.bundled(config(), { startup = false })
+    ---@type {options: Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>, draft: Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>, expected: integer|false}[]
+    local cases = {
+      { options = { compaction = { keep_recent_tokens = 12000 } }, draft = {}, expected = 12000 },
+      {
+        options = { compaction = { keep_recent_tokens = 12000 } },
+        draft = { compaction = { keep_recent_tokens = 8000 } },
+        expected = 8000,
+      },
+      { options = { compaction = false }, draft = {}, expected = false },
+      { options = {}, draft = { compaction = false }, expected = false },
+    }
+    local ok, err = pcall(function()
+      for _, case in ipairs(cases) do
+        local snapshot = config(case.options)
+        for _, profile in ipairs(selected) do
+          local configured = selection.configuration(snapshot, profile, case.draft)
+          if case.expected == false then
+            assert.is_false(configured.compaction)
+          else
+            local settings = configured.compaction
+            assert(settings ~= false)
+            assert.are.equal(case.expected, settings.keep_recent_tokens)
+          end
+        end
+      end
+    end)
+    resources:destroy()
+    assert(ok, err)
+  end)
+
   it("selects summary compaction for Pi and Chat while Codex keeps native compaction", function()
     local snapshot = config({ compaction = { strategy = "summary" } })
     local selected, _, resources = profiles.bundled(snapshot, { startup = false })

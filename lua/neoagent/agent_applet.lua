@@ -202,12 +202,22 @@ local function valid_snapshot(snapshot)
     and snapshot.revision % 1 == 0
     and type(snapshot.messages) == "table"
     and util.is_list(snapshot.messages)
+    and type(snapshot.history) == "table"
+    and type(snapshot.history.latest) == "boolean"
+    and type(snapshot.history.position) == "number"
+    and type(snapshot.history.total) == "number"
     and type(snapshot.context) == "table"
     and (next(snapshot.context) == nil or not util.is_list(snapshot.context))
     and type(snapshot.context.workspace) == "string"
     and snapshot.context.workspace ~= ""
     and type(snapshot.events) == "table"
     and util.is_list(snapshot.events)
+    and (
+      snapshot.pending_message_ends == nil
+      or type(snapshot.pending_message_ends) == "number"
+        and snapshot.pending_message_ends > 0
+        and snapshot.pending_message_ends % 1 == 0
+    )
 end
 
 ---@param opts Neoagent.AgentAppletOptions
@@ -559,7 +569,7 @@ function AgentApplet:_hydrate_view(view, snapshot, label, files)
   if not applied then
     return nil, err
   end
-  applied, err = call_view(view, "set_messages", util.copy(snapshot.messages))
+  applied, err = call_view(view, "set_messages", util.copy(snapshot.messages), util.copy(snapshot.history), true)
   if not applied then
     return nil, err
   end
@@ -704,6 +714,7 @@ function AgentApplet:_apply(update)
     or {
       revision = 0,
       messages = {},
+      history = { position = 1, total = 1, latest = true },
       context = {},
       events = {},
       result = nil,
@@ -717,15 +728,23 @@ function AgentApplet:_apply(update)
   end
   self.agent_snapshot = snapshot
   snapshot.revision = update.revision
+  local apply_event = snapshot.pending_message_ends == nil
   if update.type == "context" then
     assert(update.context.workspace == self.workspace_root, "Agent publication changed the Applet Workspace")
     snapshot.context = util.copy(update.context)
   elseif update.type == "messages" then
     snapshot.messages = util.copy(update.messages)
-    snapshot.events = {}
-    snapshot.result = nil
+    snapshot.history = util.copy(update.history)
+    snapshot.events = util.copy(update.events or {})
+    snapshot.pending_message_ends = update.pending_message_ends
+    snapshot.result = util.copy(update.result)
   elseif update.type == "event" then
-    if update.event.type == "message_end" then
+    if snapshot.pending_message_ends then
+      if update.event.type == "message_end" then
+        local pending = snapshot.pending_message_ends - 1
+        snapshot.pending_message_ends = pending > 0 and pending or nil
+      end
+    elseif update.event.type == "message_end" or not snapshot.history.latest then
       snapshot.events = {}
     elseif
       update.event.type ~= "usage"
@@ -735,7 +754,8 @@ function AgentApplet:_apply(update)
       snapshot.events[#snapshot.events + 1] = util.copy(update.event)
     end
   elseif update.type == "finish" then
-    snapshot.result = util.copy(update.result)
+    snapshot.pending_message_ends = nil
+    snapshot.result = snapshot.history.latest and util.copy(update.result) or nil
   elseif update.type == "submission_accepted" then
     self:_submission_accepted(update)
   end
@@ -750,13 +770,21 @@ function AgentApplet:_apply(update)
     self:_sync_position(update.context, view)
     view:set_context(self:_context(update.context))
   elseif update.type == "messages" then
-    view:set_messages(update.messages)
+    view:set_messages(update.messages, update.history, update.reset)
+    for _, event in ipairs(snapshot.events) do
+      view:apply(event)
+    end
+    if snapshot.result then
+      view:finish(snapshot.result)
+    end
   elseif update.type == "event" then
-    if update.event.type ~= "inference_stats" then
+    if apply_event and snapshot.history.latest and update.event.type ~= "inference_stats" then
       view:apply(update.event)
     end
   elseif update.type == "finish" then
-    view:finish(update.result)
+    if snapshot.history.latest then
+      view:finish(update.result)
+    end
     self:_finish_submissions(update.result)
   end
 end
@@ -1113,6 +1141,17 @@ function AgentApplet:_ensure_view()
       on_select_history = function()
         return self:select_input_history()
       end,
+      on_transcript_navigate = function(direction)
+        local agent = self:_agent_or_nil()
+        if not agent then
+          return false
+        end
+        local changed, err = agent:navigate_transcript(direction)
+        if err then
+          self:_notify(err.message, vim.log.levels.ERROR)
+        end
+        return changed
+      end,
       on_cycle_thinking = function()
         local agent = self:_agent_or_nil()
         if agent then
@@ -1138,11 +1177,7 @@ function AgentApplet:_ensure_view()
         if not agent or not name then
           return
         end
-        for _, tool in ipairs(agent:get_toolset().tools) do
-          if tool.name == name then
-            return { name = name, render = tool.render }
-          end
-        end
+        return agent:_render_tool(name)
       end,
       on_dialog_action = function(id, action, input)
         return (self.dialog_source:choose(id, action, input))

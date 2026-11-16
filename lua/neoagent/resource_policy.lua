@@ -77,36 +77,42 @@ end
 ---@return string? content
 ---@return string? canonical_or_error
 function M.read(path, root)
-  local stat, trusted_root = inspect(path, root)
-  if not stat then
-    return nil, trusted_root
+  local trusted = fs.canonical(root)
+  path = paths.normalize(path)
+  if not contains(trusted, path) then
+    return nil, "project resource path is outside the trusted root"
   end
-  local trusted = assert(trusted_root)
   local canonical = fs.canonical(path)
   if not contains(trusted, canonical) then
     return nil, "project resource resolves outside the trusted root"
   end
-  local file, open_err = fs.open_regular(path, { read_only = true })
+  local stat, inspect_err = inspect(canonical, trusted)
+  if not stat then
+    return nil, inspect_err
+  end
+  local file, open_err = fs.open_regular(canonical, { read_only = true })
   if not file then
     return nil, open_err
   end
-  local failure
-  local confirmed = fs.canonical(path)
-  if not contains(trusted, confirmed) or paths.key(canonical) ~= paths.key(confirmed) then
-    failure = "project resource changed its resolved path during open"
-  end
-  if not failure then
-    local verified, verify_err = file:verify_path()
-    if not verified then
-      failure = verify_err
+
+  ---@return uv.fs_stat.result? stat
+  ---@return string? error
+  local function verify()
+    local confirmed = fs.canonical(path)
+    if not contains(trusted, confirmed) or paths.key(canonical) ~= paths.key(confirmed) then
+      return nil, "project resource changed its resolved path during read"
     end
+    local verified, verify_err = file:verify_path()
+    return verified, verify_err
   end
+
+  local _, failure = verify()
   local content
   if not failure then
     content, failure = file:read_all()
   end
   if not failure then
-    local verified, verify_err = file:verify_path()
+    local verified, verify_err = verify()
     if not verified then
       content, failure = nil, verify_err
     end

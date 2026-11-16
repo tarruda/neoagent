@@ -366,6 +366,7 @@ end
 ---@return_overload Neoagent.GeneratedSummary
 ---@return_overload nil, Neoagent.Error
 function M.generate(run, model, model_options, phase)
+  model_options._turn = model_options._turn or run
   model_options._preparation = model_options._preparation or request_preparation.new()
   local tokens = require("neoagent.api.request_estimate").request(model, model_options) + 32
   for _, message in ipairs(model_options.messages) do

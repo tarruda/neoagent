@@ -368,6 +368,10 @@ stable, non-empty key. A complete Pane content Tree has this form: >lua
     },
   }
 <
+Trees may set `cache_key` to a nonempty string when switching among documents.
+Compilation retains the active document and two recently visited documents,
+checking Region revisions and layout dependencies before reuse.
+
 Chrome also accepts `footer` and `footer_pos`. `view.initial_target` chooses
 the initial cursor target; `target_intent` changes it on later submissions.
 The content primitives are:

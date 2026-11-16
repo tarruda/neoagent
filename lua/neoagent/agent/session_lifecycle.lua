@@ -19,6 +19,7 @@ local util = require("neoagent.util")
 ---@field last_result? Neoagent.AgentCompletion
 ---@field steering Neoagent.Steering
 ---@field session_selection_pending? boolean
+---@field transcript_segment_id? string Absent while following the latest segment.
 
 ---@class Neoagent.SessionLifecycleOptions
 ---@field state Neoagent.SessionLifecycleState
@@ -27,7 +28,7 @@ local util = require("neoagent.util")
 ---@field preferences fun(): Neoagent.WorkspacePreferences
 ---@field notify fun(message: string, level: integer)
 ---@field bind_provider fun(provider: string): unknown
----@field publish_messages fun(messages: Neoagent.TranscriptMessage[])
+---@field publish_messages fun()
 ---@field update_context fun()
 
 ---@class Neoagent.SessionLifecycle
@@ -37,21 +38,23 @@ local util = require("neoagent.util")
 local M = {}
 
 ---@param session Neoagent.Session
----@return Neoagent.TranscriptMessage[]
-function M.transcript_messages(session)
-  local path, err = session:path()
-  if not path then
+---@param segment_id? string
+---@param direction? 'first'|'previous'|'next'
+---@return Neoagent.TranscriptMessage[], Neoagent.TranscriptHistory
+function M.transcript_messages(session, segment_id, direction)
+  local entries, err, history = session:transcript_entries(segment_id, direction)
+  if not entries then
     error(err, 0)
   end
   local messages = {}
-  for _, entry in ipairs(session_tree.transcript_entries(path)) do
+  for _, entry in ipairs(entries) do
     for _, message in ipairs(session_tree.entry_messages(entry)) do
       local observed = message --[[@as Neoagent.TranscriptMessage]]
       observed._neoagent_entry_id = entry.id
       messages[#messages + 1] = observed
     end
   end
-  return messages
+  return messages, assert(history)
 end
 
 ---@param entry Neoagent.JournalEntry
@@ -119,7 +122,7 @@ function M.new(opts)
   end
 
   local function publish_active()
-    opts.publish_messages(M.transcript_messages(state.session))
+    opts.publish_messages()
     opts.update_context()
   end
 
@@ -149,6 +152,7 @@ function M.new(opts)
     end
     state.live_usage, state.provider_status, state.inference_stats = nil, nil, nil
     state.pending_events, state.last_result = {}, nil
+    state.transcript_segment_id = nil
     state.steering:clear()
     local stored
     stored, err = state.session:state()

@@ -17,6 +17,7 @@ local layout = Applet.layout
 ---@field on_dequeue_steering fun(): string[]
 ---@field on_input_history fun(): string[]
 ---@field on_select_history fun(): unknown
+---@field on_transcript_navigate fun(direction: 'first'|'previous'|'next'|'latest'): unknown
 ---@field on_cycle_thinking fun(): unknown
 ---@field on_agents fun(): unknown
 ---@field on_select_model fun(): unknown
@@ -47,6 +48,7 @@ local layout = Applet.layout
 ---@field on_dequeue_steering? fun(): string[]
 ---@field on_input_history? fun(): string[]
 ---@field on_select_history? fun(): unknown
+---@field on_transcript_navigate? fun(direction: 'first'|'previous'|'next'|'latest'): unknown
 ---@field on_cycle_thinking? fun(): unknown
 ---@field on_agents? fun(): unknown
 ---@field on_select_model? fun(): unknown
@@ -354,6 +356,7 @@ function View.new(opts)
         return {}
       end,
       on_select_history = opts.on_select_history or function() end,
+      on_transcript_navigate = opts.on_transcript_navigate or function() end,
       on_cycle_thinking = opts.on_cycle_thinking or function() end,
       on_agents = opts.on_agents or function() end,
       on_select_model = opts.on_select_model or function() end,
@@ -399,6 +402,7 @@ function View.new(opts)
       card_move = function(direction, count)
         return self:_navigate_transcript(direction, count)
       end,
+      history = self.callbacks.on_transcript_navigate,
       dialog = function(id, action)
         self:_choose_dialog(id, action)
       end,
@@ -945,11 +949,19 @@ function View:set_files(files)
 end
 
 ---@param messages Neoagent.TranscriptMessage[]?
-function View:set_messages(messages)
-  self.transcript:set_messages(messages)
+---@param history? Neoagent.TranscriptHistory
+---@param reset? boolean
+function View:set_messages(messages, history, reset)
+  if reset or (history and self.transcript.history and history.id ~= self.transcript.history.id) then
+    self:_close_details(false)
+  end
+  self.transcript:set_messages(messages, history, reset)
   self.blocks = self.transcript.blocks
   self.messages = self.transcript.messages
   self:_refresh_details()
+  if reset and history and history.latest then
+    self:_scroll_transcript_to_bottom()
+  end
 end
 
 ---@param event Neoagent.AgentEvent

@@ -18,6 +18,35 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        token = self.headers.get("x-codex-turn-state")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("X-Codex-Turn-State", "synthetic-routing-state-" * 100)
+        if token is None:
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.close_connection = True
+            return
+        body = b"data: " + json.dumps({
+            "type": "response.completed",
+            "response": {
+                "id": "synthetic-response",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_reply",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": token, "annotations": []}],
+                }],
+            },
+        }).encode() + b"\n\n"
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path == "/disconnect":
             self.close_connection = True

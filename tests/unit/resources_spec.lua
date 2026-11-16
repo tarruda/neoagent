@@ -112,7 +112,104 @@ describe("neoagent contextual resources", function()
     assert.are.same({ vim.uv.fs_realpath(nested) }, ancestors)
   end)
 
-  it("keeps project resources inside the trusted repository without following links", function()
+  it("loads linked project instructions with targets inside the repository", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    local nested = repo .. "/src"
+    paths[1] = base
+    directory(repo .. "/.git")
+    directory(nested)
+    local root_target = write(repo .. "/instructions/root.md", "repository instructions")
+    local nested_target = write(repo .. "/instructions/nested.md", "source instructions")
+    assert(vim.uv.fs_symlink("instructions/root.md", repo .. "/AGENTS.md"))
+    assert(vim.uv.fs_symlink("nested.md", repo .. "/instructions/current.md"))
+    assert(vim.uv.fs_symlink(repo .. "/instructions/current.md", nested .. "/AGENTS.md"))
+
+    local result = agent_instructions.discover({
+      cwd = nested,
+      global_files = {},
+      project_filenames = { "AGENTS.md" },
+    })
+    assert.are.same({}, result.diagnostics)
+    assert.are.same({
+      { path = fs.canonical(root_target), content = "repository instructions" },
+      { path = fs.canonical(nested_target), content = "source instructions" },
+    }, result.files)
+
+    local deduplicated = agent_instructions.discover({
+      cwd = nested,
+      global_files = { root_target, nested_target },
+      project_filenames = { "AGENTS.md" },
+    })
+    assert.are.same(result, deduplicated)
+  end)
+
+  it("keeps the most specific occurrence of linked project instructions", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    local nested = repo .. "/src/module"
+    paths[1] = base
+    directory(repo .. "/.git")
+    directory(nested)
+    local root_target = write(repo .. "/AGENTS.md", "repository instructions")
+    local intermediate = write(repo .. "/src/AGENTS.md", "source instructions")
+    assert(vim.uv.fs_symlink(root_target, nested .. "/AGENTS.md"))
+
+    local result = agent_instructions.discover({
+      cwd = nested,
+      global_files = {},
+      project_filenames = { "AGENTS.md" },
+    })
+    assert.are.same({}, result.diagnostics)
+    assert.are.same({
+      { path = fs.canonical(intermediate), content = "source instructions" },
+      { path = fs.canonical(root_target), content = "repository instructions" },
+    }, result.files)
+  end)
+
+  it("loads linked project instructions inside a Workspace outside Git", function()
+    local root = vim.fn.tempname()
+    paths[1] = root
+    local target = write(root .. "/instructions/guide.md", "workspace instructions")
+    assert(vim.uv.fs_symlink(root .. "/instructions", root .. "/linked", { dir = true, junction = false }))
+    assert(vim.uv.fs_symlink("linked/guide.md", root .. "/AGENTS.md"))
+
+    local result = agent_instructions.discover({
+      cwd = root,
+      global_files = {},
+      project_filenames = { "AGENTS.md" },
+    })
+    assert.are.same({}, result.diagnostics)
+    assert.are.same({
+      { path = fs.canonical(target), content = "workspace instructions" },
+    }, result.files)
+  end)
+
+  it("rejects linked project instructions with external, missing, cyclic or directory targets", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    paths[1] = base
+    directory(repo .. "/.git")
+    local external = write(base .. "/repo-other/guide.md", "external instructions")
+    assert(vim.uv.fs_symlink(external, repo .. "/external.md"))
+    assert(vim.uv.fs_symlink("external.md", repo .. "/chained.md"))
+    assert(vim.uv.fs_symlink("missing.md", repo .. "/dangling.md"))
+    assert(vim.uv.fs_symlink("cyclic.md", repo .. "/cyclic.md"))
+    assert(vim.uv.fs_symlink(repo .. "/.git", repo .. "/directory.md", { dir = true, junction = false }))
+
+    local result = agent_instructions.discover({
+      cwd = repo,
+      global_files = {},
+      project_filenames = { "external.md", "chained.md", "dangling.md", "cyclic.md", "directory.md" },
+    })
+    assert.are.same({}, result.files)
+    assert.are.equal(5, #result.diagnostics)
+    for _, diagnostic in ipairs(result.diagnostics) do
+      assert.matches("refused project AGENTS.md", diagnostic.message)
+    end
+  end)
+
+  it("keeps project resources inside the trusted repository", function()
     local base = vim.fn.tempname()
     local repo = base .. "/repo"
     local external = base .. "/external"
@@ -157,6 +254,25 @@ describe("neoagent contextual resources", function()
     })
     assert.are.same({ "external instructions", "traversed instructions" },
       vim.tbl_map(function(file) return file.content end, global.files))
+  end)
+
+  it("rejects project skill directories that traverse outside the trusted repository", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    paths[1] = base
+    directory(repo .. "/.git")
+    skill(base .. "/repo-other/skills", "external",
+      "---\nname: external\ndescription: external skill\n---\nBody\n")
+
+    local result = skills.discover({
+      cwd = repo,
+      global_dirs = {},
+      project_dirs = { "../repo-other/skills" },
+    })
+
+    assert.are.same({}, result.skills)
+    assert.are.equal(1, #result.diagnostics)
+    assert.are.equal("project resource path is outside the trusted root", assert(result.diagnostics[1]).message)
   end)
 
   it("uses the Workspace as the project resource root outside Git", function()
@@ -218,6 +334,59 @@ describe("neoagent contextual resources", function()
     assert.are.same({}, result.files)
     assert.matches("changed its resolved path", assert(result.diagnostics[1]).message)
   end)
+
+  for _, phase in ipairs({ "open", "read" }) do
+    for _, destination in ipairs({ "inside", "outside" }) do
+      it("rejects a project instruction link retargeted " .. destination .. " during " .. phase, function()
+        local base = vim.fn.tempname()
+        local repo = base .. "/repo"
+        paths[1] = base
+        directory(repo .. "/.git")
+        local target = write(repo .. "/instructions.md", "original instructions")
+        local replacement = write(
+          (destination == "inside" and repo or base) .. "/replacement.md",
+          "replacement instructions"
+        )
+        local path = repo .. "/AGENTS.md"
+        assert(vim.uv.fs_symlink(target, path))
+        ---@type Neoagent.RegularFile?
+        local opened
+        fs.open_regular = function(candidate, options)
+          local file, err, stage = original_open_regular(candidate, options)
+          if file then
+            opened = file
+            local function retarget()
+              assert(vim.uv.fs_unlink(path))
+              assert(vim.uv.fs_symlink(replacement, path))
+            end
+            if phase == "open" then
+              retarget()
+            else
+              local read_all = file.read_all
+              file.read_all = function()
+                file.read_all = read_all
+                local content, read_err, read_stage = file:read_all()
+                retarget()
+                return content, read_err, read_stage
+              end
+            end
+          end
+          return file, err, stage
+        end
+
+        local result = agent_instructions.discover({
+          cwd = repo,
+          global_files = {},
+          project_filenames = { "AGENTS.md" },
+        })
+        assert.are.same({}, result.files)
+        assert.matches("changed its resolved path", assert(result.diagnostics[1]).message)
+        local held, err = assert(opened):stat()
+        assert.is_nil(held)
+        assert.are.equal("regular file handle is closed", err)
+      end)
+    end
+  end
 
   it("fails closed across project resource inspection stages", function()
     local base = vim.fn.tempname()
@@ -378,6 +547,35 @@ describe("neoagent contextual resources", function()
     assert.has_error(function()
       skills.discover(missing_cwd --[[@as Neoagent.SkillDiscoveryOptions]])
     end)
+  end)
+
+  it("lets a nearer linked skill override an intermediate same-name skill", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    local nested = repo .. "/src/module"
+    paths[1] = base
+    directory(repo .. "/.git")
+    local root_target = skill(repo .. "/.agents/skills", "alpha",
+      "---\nname: alpha\ndescription: repository alpha\n---\nBody\n")
+    skill(repo .. "/src/.agents/skills", "alpha",
+      "---\nname: alpha\ndescription: source alpha\n---\nBody\n")
+    directory(nested .. "/.agents/skills/alpha")
+    assert(vim.uv.fs_symlink(root_target, nested .. "/.agents/skills/alpha/SKILL.md"))
+
+    local result = skills.discover({
+      cwd = nested,
+      global_dirs = {},
+      project_dirs = { ".agents/skills" },
+    })
+    assert.are.same({}, result.diagnostics)
+    local canonical = fs.canonical(root_target)
+    assert.are.same({ {
+      name = "alpha",
+      description = "repository alpha",
+      path = canonical,
+      directory = assert(vim.fs.dirname(canonical)),
+      source = "project",
+    } }, result.skills)
   end)
 
   it("reports malformed and unreadable skills without hiding valid ones", function()

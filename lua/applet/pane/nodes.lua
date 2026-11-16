@@ -188,6 +188,7 @@ local applet_expect = util.expect
 ---@field options? Applet.Options
 
 ---@class Applet.TreeOptions
+---@field cache_key? string
 ---@field chrome? Applet.ChromeOptions
 ---@field view? Applet.ViewOptions
 ---@field edit? Applet.EditOptions
