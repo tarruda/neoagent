@@ -5,7 +5,7 @@ type: exchange
 operation: request
 request:
   method: POST
-  url: https://api.test/v1/chat/completions
+  url: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1/chat/completions
   headers:
     Authorization: Bearer sk-sp-replay-key
     User-Agent: neoagent
@@ -17,7 +17,9 @@ request:
     stream: true
     stream_options:
       include_usage: true
+    max_completion_tokens: 393216
     enable_thinking: true
+    reasoning_effort: high
   body_format: json
 ---
 type: response_chunk

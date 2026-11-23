@@ -11,7 +11,7 @@ local M = {}
 ---@class Neoagent.ProviderRuntimeOptions
 ---@field auth? Neoagent.AuthManager
 ---@field transport? Neoagent.ByteBackend
----@field report? fun(message: string, level: integer)
+---@field report? fun(message: string, level: integer, provider_id: string)
 ---@field store? Neoagent.CatalogStorage
 ---@field startup? boolean
 ---@field now? fun(): number
@@ -140,6 +140,10 @@ function M.compose(configured, opts)
 
   for _, provider_id in ipairs(provider_ids) do
     local provider = configured.providers[provider_id]
+    local sink = opts.report
+    local report = sink and function(message, level)
+      sink(message, level, provider_id)
+    end or nil
     ---@type Neoagent.ProviderService?
     local bound_service
     local model_transport = bind_transport(opts.transport, {
@@ -164,13 +168,11 @@ function M.compose(configured, opts)
         provider = provider_id,
         origin = "catalog",
       }),
-      report = opts.report,
+      report = report,
       now = opts.now,
       new_timer = opts.new_timer,
       acquire_use = function()
-        return provider_service.acquire_use(
-          assert(bound_service, "Provider Service is not bound")
-        )
+        return provider_service.acquire_use(assert(bound_service, "Provider Service is not bound"))
       end,
     })
     if not ok then
@@ -183,7 +185,7 @@ function M.compose(configured, opts)
       catalog = catalog,
       credentials = credentials,
       transport = model_transport,
-      report = opts.report,
+      report = report,
       auth_services = {},
     }
     binders[provider_id] = function(service)
@@ -204,7 +206,7 @@ function M.compose(configured, opts)
           origin = "provider-shell",
         }),
         provider_id = provider_id,
-        report = opts.report,
+        report = runtime.report,
         ambient_api_key = function()
           return runtime.credentials:ambient_api_key()
         end,
@@ -231,7 +233,7 @@ function M.compose(configured, opts)
     local files_ok, files = pcall(require("neoagent.providers.file_uploads").new, provider_id, provider, validated, {
       transport = opts.transport,
       auth_type = method and method.type,
-      report = opts.report,
+      report = runtime.report,
     })
     if not files_ok then
       destroy_values(runtimes)

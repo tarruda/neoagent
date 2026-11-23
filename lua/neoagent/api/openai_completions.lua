@@ -18,6 +18,7 @@ local M = {}
 
 ---@class Neoagent.CompletionsOptions: Neoagent.ApiModelOptions
 ---@field requires_reasoning_content? boolean
+---@field _completion_non_thinking_ceiling? integer
 
 ---@class Neoagent.CompletionsCall
 ---@field block Neoagent.ToolCallBlock
@@ -400,6 +401,7 @@ end
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
 ---@field _requires_reasoning_content boolean
+---@field _completion_non_thinking_ceiling? integer
 ---@field _request_opts Neoagent.RequestLayer[]
 ---@field _request_context? Neoagent.RequestIdentity
 ---@field _timeout_ms? integer
@@ -454,6 +456,12 @@ local function build_request(self, call_opts, api_key)
   request = request_opts.apply(request, call_opts.request_opts, ctx)
   if call_opts.max_output_tokens ~= nil or call_opts.max_thinking_tokens ~= nil then
     request = output_budget.apply(request, ctx, call_opts.max_output_tokens, call_opts.max_thinking_tokens)
+  end
+  local ceiling = self._completion_non_thinking_ceiling
+  local shaped = assert(request.body)
+  if ceiling and shaped.enable_thinking == false then
+    local limit = shaped.max_completion_tokens
+    shaped.max_completion_tokens = type(limit) == "number" and math.min(limit, ceiling) or ceiling
   end
   local selected = messages.for_model(assert(request.messages), self)
   return {
@@ -725,6 +733,7 @@ function M.new(opts)
       _base_url = opts.base_url:gsub("/+$", ""),
       _api_key = opts.api_key,
       _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
+      _completion_non_thinking_ceiling = opts._completion_non_thinking_ceiling,
       thinking = util.copy(opts.thinking),
       _request_opts = layers,
       _request_context = request_context.copy(opts.request_context),

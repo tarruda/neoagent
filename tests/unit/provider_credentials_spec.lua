@@ -7,12 +7,12 @@ describe("neoagent provider credential ownership", function()
   ---@return Neoagent.AuthManager
   local function authentication(value)
     local manager = test_auth.new()
-    function manager:has_credentials()
+    function manager:credential_status()
       if type(value) == "table" and value.error then
         return nil, { kind = "auth", message = value.error }
       end
       if type(value) == "table" and value.throw then error(value.throw) end
-      return value == true
+      return value == true and "stored" or "missing"
     end
     return manager
   end
@@ -112,9 +112,9 @@ describe("neoagent provider credential ownership", function()
       api_key = "ambient-inference",
     }
     local manager = test_auth.new()
-    function manager:has_credentials(method)
+    function manager:credential_status(method)
       inspected = method
-      return method == "dashboard"
+      return method == "dashboard" and "stored" or "missing"
     end
     local value = ProviderCredentials.new({
       provider_id = "example",
@@ -135,7 +135,7 @@ describe("neoagent provider credential ownership", function()
     assert.is_true(value:uses_method("inference"))
     assert.is_true(value:uses_method("dashboard"))
 
-    function manager:has_credentials() return false end
+    function manager:credential_status() return "missing" end
     local state = value:state()
     assert.is_false(state.usable)
     assert.are.equal("logged_out", state.source)
@@ -183,7 +183,7 @@ describe("neoagent provider credential ownership", function()
     assert.is_nil(identity)
     assert.matches("credential store failed", assert(err).message)
 
-    local stored = { has_credentials = function() return true end }
+    local stored = { credential_status = function() return "stored" end }
     identity, err = value({ auth = "key" }, stored):cache_identity()
     assert.is_nil(identity)
     assert.matches("identity is unavailable", assert(err).message)
@@ -202,7 +202,7 @@ describe("neoagent provider credential ownership", function()
     assert.are.equal("explicit identity failure", assert(err).message)
 
     local ambient = {
-      has_credentials = function() return false end,
+      credential_status = function() return "missing" end,
       derive_cache_identity = function(_, method_id, credential)
         assert.are.equal("key", method_id)
         assert.are.equal("ambient", credential.key)

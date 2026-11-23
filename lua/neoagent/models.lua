@@ -209,6 +209,7 @@ local function api_factory(resolved)
     _images = resolved.images,
   }
   if resolved.api == "openai-completions" then
+    options._completion_non_thinking_ceiling = resolved.model._completion_non_thinking_ceiling
     return require("neoagent.api.openai_completions").new(options)
   elseif resolved.api == "openai-responses" then
     return require("neoagent.api.openai_responses").new(options)

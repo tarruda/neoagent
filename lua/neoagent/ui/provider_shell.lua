@@ -206,6 +206,10 @@ function View.new(opts)
     on_pane_buffer_change = function(event, default)
       self:_pane_detached(event.pane and event.pane:key(), default)
     end,
+    on_host_close = function(_, default)
+      default()
+      self.callbacks.close()
+    end,
     on_error = opts.on_error,
     notify = opts.notify,
     open_uri = opts.open_uri,

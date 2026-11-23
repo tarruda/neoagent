@@ -443,7 +443,7 @@ describe("bundled model catalog sources", function()
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
     })
     function authentication:resolve() return resolved_auth("oauth")() end
-    function authentication:has_credentials() return true end
+    function authentication:credential_status() return "stored" end
     function authentication:cache_identity() return "safe-account-digest" end
     local definition = {
       source_id = "openai-codex-models",

@@ -19,7 +19,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        payload = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path.startswith("/echo?"):
+            body = json.dumps({
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "body": payload.decode("utf-8"),
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         token = self.headers.get("x-codex-turn-state")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

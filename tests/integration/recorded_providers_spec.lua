@@ -3,13 +3,6 @@ local replay = require("neoagent.http_replay")
 local registry = require("neoagent.registry")
 local providers = {
   {
-    provider = "alibaba-token-plan",
-    model = "deepseek-v4-flash-0731",
-    expected_text = "Recorded reply.",
-    path = "alibaba-token-plan.yaml",
-    expected_usage = { input = 8, output = 261, totalTokens = 269, cacheRead = 0, cacheWrite = 0 },
-  },
-  {
     provider = "deepseek",
     model = "deepseek-v4-flash",
     expected_text = "Recorded reply.",
@@ -74,8 +67,7 @@ describe("minimized real provider recordings", function()
           methods = { provider = require("neoagent.config").get().auth.methods[method_id] },
           store = require("neoagent.auth.store").new(directory .. "/credentials.json"),
         })
-        local key = capture.provider == "alibaba-token-plan" and "sk-sp-replay-key" or "replay-key"
-        wait(manager:login("provider", { prompt = function(_, done) done.resolve(key) end }))
+        wait(manager:login("provider", { prompt = function(_, done) done.resolve("replay-key") end }))
         model = manager:wrap(model, "provider")
       end
       local result = wait(model:stream({ messages = { { role = "user", content = "Hello" } } }))
@@ -89,6 +81,65 @@ describe("minimized real provider recordings", function()
       end
     end)
   end
+end)
+
+describe("QwenCloud Token Plan compatibility replay", function()
+  ---@type Neoagent.HttpReplay?
+  local scenario
+  ---@type Neoagent.ProviderRuntimes?
+  local runtimes
+  ---@type string?
+  local directory
+  local provider_runtimes = require("neoagent.provider_runtimes")
+
+  after_each(function()
+    provider_runtimes.destroy(runtimes)
+    if directory then
+      vim.fn.delete(directory, "rf")
+    end
+    if scenario then
+      scenario.close()
+      scenario.assert_consumed()
+    end
+  end)
+
+  it("shapes and decodes a compatible Token Plan inference exchange", function()
+    local id = "qwencloud-token-plan"
+    local model_id = "deepseek-v4-flash-0731"
+    scenario = replay.new({
+      exchanges = {
+        { path = "tests/recordings/real/qwencloud-token-plan-compat.yaml", headers_subset = true },
+      },
+    })
+    directory = vim.fn.tempname()
+    local configured = require("neoagent.config").resolve({
+      default_registry = false,
+      providers = { [id] = assert(registry.defaults()[id]) },
+      auth = { path = directory .. "/credentials.json" },
+    })
+    local manager = require("neoagent.auth").configured({ auth = configured.auth })
+    wait(manager:login(id, {
+      prompt = function(_, done)
+        done.resolve("sk-sp-replay-key")
+      end,
+    }))
+    runtimes = assert(provider_runtimes.compose(configured, { auth = manager, transport = scenario, startup = false }))
+    local models = require("neoagent.models")
+    assert.is_true(vim.tbl_contains(assert(models.available(configured, manager, runtimes)), id .. "/" .. model_id))
+
+    local model = models.resolve(id, model_id, configured, manager, runtimes)
+    local result = wait(model:stream({
+      messages = { { role = "user", content = "Hello" } },
+      thinking_level = "high",
+    }))
+    assert.are.equal("Recorded reply.", result.text)
+    local message = assert(result.message)
+    local usage = assert(message.usage)
+    assert.are.equal("stop", message.stopReason)
+    assert.are.equal(8, usage.input)
+    assert.are.equal(261, usage.output)
+    assert.are.equal(269, usage.totalTokens)
+  end)
 end)
 
 describe("OpenCode Go API routing and authentication", function()

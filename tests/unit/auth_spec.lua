@@ -476,6 +476,119 @@ describe("neoagent provider authentication", function()
     assert.is_false(unsubscribe())
   end)
 
+  it("tracks renewed OAuth expiry until the last subscriber leaves", function()
+    local store = memory_store()
+    local read = store.read
+    local reads = 0
+    store.read = function(self, id)
+      reads = reads + 1
+      return read(self, id)
+    end
+    local now, expires = 0, 40
+    local selected = method({
+      type = "oauth",
+      login = function()
+        return async.run(function()
+          return { ok = true, credential = { type = "oauth", access = "synthetic", expires = expires } }
+        end)
+      end,
+    })
+    selected.refresh = nil
+    local manager = auth.new({
+      methods = { usage = selected },
+      store = store,
+      now = function()
+        return now
+      end,
+    })
+    local events = {}
+    local first = manager:subscribe("usage", function() end)
+    local second = manager:subscribe("usage", function(event)
+      events[#events + 1] = event
+    end)
+    local ok, err = pcall(function()
+      local function login()
+        assert.is_true(wait(manager:login("usage", { prompt = function() end })).ok)
+      end
+      login()
+      assert.is_true(first())
+      local previous = reads
+      assert(vim.wait(2000, function()
+        return reads > previous
+      end, 5), "Expected expiry to be rechecked while wall time stands still")
+      assert.are.equal(1, #events)
+      assert.are.equal("login", events[1].kind)
+
+      expires = 80
+      login()
+      now = 40
+      previous = reads
+      assert(vim.wait(2000, function()
+        return reads > previous
+      end, 5))
+      assert.are.equal(2, #events)
+      assert.are.equal("stored", (manager:credential_status("usage")))
+      now = expires
+      assert(vim.wait(2000, function()
+        return #events == 3
+      end, 5), "Expected expiry of the renewed credential")
+      assert.are.same({ method = "usage", kind = "expired", revision = 3 }, events[3])
+      assert.are.equal("expired", (manager:credential_status("usage")))
+
+      expires = now + 40
+      login()
+      assert.is_true(second())
+      now = expires
+      previous = reads
+      wait(async.run(function()
+        delay(100)
+        return { ok = true }
+      end))
+      assert.are.equal(previous, reads)
+      assert.are.equal(4, #events)
+    end)
+    first()
+    second()
+    assert(ok, err)
+  end)
+
+  it("reports an unavailable expiry timer without rejecting a saved login", function()
+    local selected = method({ type = "oauth" })
+    selected.refresh = nil
+    local manager = auth.new({
+      methods = { usage = selected },
+      store = memory_store(),
+      now = function()
+        return 100
+      end,
+    })
+    local unsubscribe = manager:subscribe("usage", function() end)
+    local sleep, notify = async.sleep, vim.notify
+    ---@type string?
+    local message
+    local ok, err = pcall(function()
+      async.sleep = function()
+        error("synthetic timer failure", 0)
+      end
+      vim.notify = function(value)
+        message = value
+      end
+      assert.is_true(wait(manager:login("usage", {
+        prompt = function(_, done)
+          done.resolve("synthetic")
+        end,
+      })).ok)
+      assert(vim.wait(2000, function()
+        return message ~= nil
+      end, 5))
+      assert.matches("Could not observe OAuth authorization expiry for usage", assert(message), 1, true)
+      assert.are.equal("stored", (manager:credential_status("usage")))
+    end)
+    async.sleep, vim.notify = sleep, notify
+    unsubscribe()
+    assert(ok, err)
+  end)
+
   it("derives the same hashed identity for stored and ambient API keys", function()
     local api_key = require("neoagent.auth.api_key").new({
       name = "Example API key",
@@ -578,12 +691,21 @@ describe("neoagent provider authentication", function()
 
   it("protects OAuth refresh against missing support and credential races", function()
     local expired = { access = "old", refresh = "refresh", expires = 10 }
+    local access_only = method({ type = "oauth" })
+    access_only.refresh = nil
     local without_refresh = auth.new({
-      methods = { plan = method({ refresh = false --[[@as fun(credential: Neoagent.OAuthCredential): Neoagent.Run<Neoagent.CredentialResult<Neoagent.OAuthCredential>, nil>]] }) },
-      store = memory_store({ plan = expired }),
+      methods = { plan = access_only },
+      store = memory_store({ plan = { type = "oauth", access = "old", expires = 10 } }),
       now = function() return 10 end,
     })
-    assert.matches("cannot refresh", assert(wait(without_refresh:resolve("plan")).error).message)
+    assert.matches("OAuth authorization expired", assert(wait(without_refresh:resolve("plan")).error).message)
+
+    local requires_refresh = auth.new({
+      methods = { plan = method({ type = "oauth" }) },
+      store = memory_store({ plan = { type = "oauth", access = "old", expires = 20 } }),
+      now = function() return 10 end,
+    })
+    assert.matches("Stored credential is invalid", assert(wait(requires_refresh:resolve("plan")).error).message)
 
     local reads = 0
     local refreshed = { access = "concurrent", refresh = "new", expires = 500 }

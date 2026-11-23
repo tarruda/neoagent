@@ -99,6 +99,7 @@ local applet_expect = util.expect
 ---@field on_resize? fun(event: Applet.ExternalEvent, default: fun(): boolean)
 ---@field on_pane_buffer_change? fun(event: Applet.ExternalEvent, default: fun(): boolean)
 ---@field on_pane_close? fun(event: Applet.ExternalEvent, default: fun(): boolean)
+---@field on_host_close? fun(event: Applet.ExternalEvent, default: fun(): boolean)
 ---@field on_error? fun(error: Applet.Error)
 
 ---@class Applet.AppletActionEvent<S = unknown>: Applet.ActionEvent<Applet.Pane>
@@ -209,6 +210,7 @@ local callback_names = {
   "on_resize",
   "on_pane_buffer_change",
   "on_pane_close",
+  "on_host_close",
   "on_error",
 }
 

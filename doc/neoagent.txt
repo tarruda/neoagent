@@ -236,10 +236,9 @@ The default provider IDs are:
                      `ANTHROPIC_API_KEY`.
   deepseek           DeepSeek Responses API; login `deepseek` or
                      `DEEPSEEK_API_KEY`.
-  alibaba-token-plan Alibaba Cloud Token Plan Personal; login
-                     `alibaba-token-plan` or use
-                     `BAILIAN_TOKEN_PLAN_API_KEY` for inference; optional
-                     dashboard login provides quota reporting.
+  qwencloud-token-plan
+                     QwenCloud Token Plan; login `qwencloud-token-plan`
+                     or use `QWENCLOUD_TOKEN_PLAN_API_KEY`.
   zai                Z.AI API; login `zai` or `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Plan; login `zai-coding-plan`, `zai`, or
                      `ZAI_API_KEY`. Both login names use the `zai` credential.
@@ -257,10 +256,21 @@ Dismissing OAuth or device-code instructions leaves authorization running; use
 Credentials use `stdpath("state") .. "/neoagent/auth.json"` unless `auth.path`
 is set. Credential listings contain IDs and types only.
 
-Alibaba Cloud Token Plan Personal requires its dedicated `sk-sp-...` key from
-Token Plan My Subscriptions and uses the Singapore plan endpoint. Supply the
-key through login or `BAILIAN_TOKEN_PLAN_API_KEY`. The optional dashboard
-login enables quota reporting and stores a separate credential.
+QwenCloud Token Plan requires its dedicated `sk-sp-...` key from the QwenCloud
+subscription dashboard. Supply the key through login or
+`QWENCLOUD_TOKEN_PLAN_API_KEY`. The built-in catalog includes chat Models shared
+by Individual and Team Edition. Add other Models for your plan under
+`providers["qwencloud-token-plan"].models`.
+
+Choose "Log in for usage" in the QwenCloud Token Plan Provider Shell to
+authorize quota reporting in your browser. "Refresh quotas" shows the Team
+balance when available, or checks for an Individual plan. It shows the weekly
+or monthly Credits window, the reset time when QwenCloud reports one, and any
+remaining add-on Credits. When QwenCloud reports only a percentage for a
+window, the shell shows the percentage remaining. The plan's Credits remain
+visible when add-on reporting is unavailable. The browser login and inference
+key are independent. The Shell hides cached quotas if browser authorization
+has expired. Choose "Log in for usage" again.
 
 Codex diagnostics default to `stdpath("state") .. "/neoagent/codex.log"`. They
 contain bounded transport metadata and exclude credentials, HTTP bodies, and
@@ -308,8 +318,13 @@ leaves the Agent running.
 
 A draft selects its Model from Workspace preferences, configured
 `default_model`, or the first eligible Model. Explicit drafts prefer
-Profile-specific settings; see |neoagent-workspace-settings|. Unavailable saved
-Models are skipped with a diagnostic; API construction failures are reported.
+Profile-specific settings; see |neoagent-workspace-settings|. Unavailable
+saved Models are skipped with a diagnostic; API construction failures are
+reported.
+
+A resumed Session keeps its saved Model while the provider needs a login or
+its catalog is loading. If the saved Model is still missing after discovery,
+select another Model before sending a new message.
 
 The top-level Applet supports: >lua
 
@@ -736,9 +751,10 @@ Snapshots may contain `status`, `field`, `progress`, `limit`, `list`, and
 `activity` blocks. A `field.level` may be `info`, `success`, `warn`, `error`,
 or `muted`.
 
-The Provider Shell invokes the Service's non-mutating `refresh` operation on
-focus, with no background polling. Changing provider cancels a pending
-automatic refresh; explicit operations continue when the Shell loses focus.
+The Provider Shell invokes the Service's non-mutating `refresh` operation
+when opened or when the selected provider changes. Selecting another provider
+or closing the Shell cancels that automatic refresh. Explicit operations
+continue while the Shell is closed.
 
 The Provider Shell API is: >lua
 
@@ -1097,9 +1113,10 @@ Other constructors are `neoagent.api.anthropic_messages`,
 Optional settings include `api_key`, `context_window`, `max_output_tokens`,
 `timeout_ms`, and `request_opts`; `stream()` also accepts `system_prompt`,
 `tools`, and `request_opts`. A per-request `max_output_tokens` overrides
-output settings in `request_opts` after shaping; Responses requires at least
-16 tokens. `max_thinking_tokens` caps explicit thinking budgets (currently
-Anthropic manual thinking), while `thinking_level` selects reasoning effort.
+output settings in `request_opts` after shaping, subject to provider limits.
+Responses requires at least 16 tokens. `max_thinking_tokens` caps explicit
+thinking budgets (currently Anthropic manual thinking), while
+`thinking_level` selects reasoning effort.
 Manual thinking must fit below the output limit and is disabled when the
 remaining budget is too small. Image-bearing calls supply `files`, a reader
 for their local file references. Configured provider Models may also receive
@@ -1257,10 +1274,12 @@ Authentication is independently composable: >lua
   local authenticated = manager:wrap(model, "example")
 <
 
-Credentials are tagged `api_key` or `oauth` values. A login method may provide
-`login`, `refresh`, `request_opts(credential[, scope])`, `public_metadata`,
-and `cache_identity(credential)`. `validate_credential(credential)` may
-enforce a method-specific credential shape. Set `login_with_ambient = true`
+Credentials are tagged `api_key` or `oauth` values. A login method defines
+`login` and `request_opts(credential[, scope])`. An explicitly typed `oauth`
+method may omit `refresh` if the provider requires another login after expiry.
+Its credential still includes `access` and `expires` (Unix milliseconds).
+Methods may also define `public_metadata`, `cache_identity(credential)`, and
+`validate_credential(credential)`. Set `login_with_ambient = true`
 when stored login remains available alongside an active environment or
 configured credential. Stores implement `read`, `write`, `modify`, `list`, and
 `delete`. Metadata and cache-identity APIs return values that do not contain

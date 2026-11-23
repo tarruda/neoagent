@@ -139,7 +139,7 @@ describe("neoagent provider model catalogs", function()
       store = store,
     }))
     local manager = test_auth.new()
-    function manager:has_credentials() return true end
+    function manager:credential_status() return "stored" end
     local available = assert(models.available(value, manager, runtimes))
     assert.is_true(vim.tbl_contains(available,
       "opencode-go/ox-alpha-free"))

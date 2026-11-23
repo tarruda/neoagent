@@ -48,6 +48,24 @@ describe("real curl HTTP backend", function()
     assert.is_nil(result.headers["x-transient"])
   end)
 
+  it("sends private request inputs intact through curl", function()
+    local path = "/echo?token=synthetic%2Bvalue"
+    local bearer = "Bearer synthetic-access"
+    local body = '@literal "text"\\path\r\nsecond line\tend'
+    local result = wait(curl.fetch({
+      request = {
+        url = server.url .. path,
+        private_input = true,
+        body = body,
+        headers = { Authorization = bearer, ["Content-Type"] = "text/plain" },
+      },
+    }))
+    if not result.ok then
+      error(assert(result.error).message, 0)
+    end
+    assert.are.same({ path = path, authorization = bearer, body = body }, vim.json.decode(result.body))
+  end)
+
   it("retains non-2xx bodies and distinguishes a connection failure", function()
     local result = wait(http.new().stream({
       request = { url = server.url .. "/error", method = "GET" },

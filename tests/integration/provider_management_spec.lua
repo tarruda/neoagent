@@ -1,9 +1,8 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
-local alibaba = require("neoagent.providers.alibaba_token_plan")
-local alibaba_client = require("neoagent.providers.alibaba_token_plan.client")
 local anthropic = require("neoagent.providers.anthropic")
 local deepseek = require("neoagent.providers.deepseek")
+local fake_transport = require("tests.helpers.fake_transport")
 local model_catalog = require("neoagent.model_catalog")
 local http_replay = require("tests.helpers.http_replay")
 local openai = require("neoagent.providers.openai")
@@ -77,19 +76,6 @@ local function field_value(service, label)
   end
 end
 
----@param service Neoagent.ProviderService
----@param label string
----@return Neoagent.ProviderLimitBlock?
-local function limit_block(service, label)
-  local state = service:state()
-  assert(state)
-  for _, candidate in ipairs(state.blocks) do
-    if candidate.type == "limit" and candidate.label == label then
-      return candidate
-    end
-  end
-end
-
 describe("provider management HTTP integration", function()
   ---@type Neoagent.TestHttpReplay?
   local scenario
@@ -97,9 +83,15 @@ describe("provider management HTTP integration", function()
   local services
   ---@type Neoagent.ModelCatalog[]?
   local catalogs
+  ---@type Neoagent.ProfileResources?
+  local resources
   local directories = {}
 
   after_each(function()
+    if resources then
+      resources:destroy()
+      resources = nil
+    end
     for _, service in ipairs(services or {}) do assert(service.destroy)(service) end
     for _, catalog in ipairs(catalogs or {}) do catalog:destroy() end
     services = nil
@@ -112,6 +104,82 @@ describe("provider management HTTP integration", function()
     require("neoagent.config")._reset()
     if completed then completed.assert_consumed() end
   end)
+
+  for _, case in ipairs({
+    { status = 401, kind = "auth", warning = "OpenAI model catalog requires a valid API key" },
+    { status = 503, kind = "provider", warning = "OpenAI model catalog request failed (HTTP 503)" },
+  }) do
+    it("keeps a catalog HTTP " .. case.status .. " on the owning provider", function()
+      local directory = vim.fn.tempname()
+      directories[#directories + 1] = directory
+      local selected = "qwencloud-token-plan"
+      local definition = vim.tbl_extend("force", require("neoagent.registry.openai").openai, {
+        api_key = "sk-synthetic-key",
+      })
+      definition.service = nil
+      local snapshot = require("neoagent.config").snapshot({
+        default_registry = false,
+        auth = { path = directory .. "/auth.json" },
+        providers = {
+          openai = definition,
+          [selected] = require("neoagent.registry.qwencloud_token_plan"),
+        },
+      })
+      local transport = fake_transport.new()
+      transport.fetches = {
+        { status = case.status, body = [[{"error":{"message":"private response"}}]] },
+      }
+      ---@type (fun(): boolean)?
+      local release
+      local fetch = assert(transport.fetch)
+      transport.fetch = function(opts)
+        return async.run(function()
+          local reply = fetch(opts):await()
+          async.await(function(done)
+            release = function()
+              return done.resolve(true)
+            end
+          end)
+          return reply
+        end)
+      end
+      local _, _, owned = require("neoagent.profiles").bundled(snapshot, {
+        startup = false,
+        transport = transport,
+      })
+      resources = owned
+      local shell = owned.provider_shell
+      assert(shell:select("openai"))
+      assert(shell:open())
+      local catalog = assert(owned.runtimes.openai).catalog
+      assert.is_true(catalog:start())
+      assert(vim.wait(3000, function()
+        return release ~= nil
+      end))
+      assert(shell:select(selected))
+      shell:close()
+      assert.is_true(assert(release)())
+      assert(vim.wait(3000, function()
+        return catalog:snapshot().refresh.state == "failed"
+      end))
+      assert.are.equal(1, #transport.fetch_requests)
+      assert.are.equal("https://api.openai.com/v1/models", assert(transport.fetch_requests[1]).url)
+
+      assert(shell:open())
+      local qwen = shell:info()
+      assert(qwen)
+      assert.are.equal(selected, qwen.id)
+      assert.is_nil((vim.inspect(qwen.state):find(case.warning, 1, true)))
+
+      shell:close()
+      assert(shell:select("openai"))
+      local openai_state = assert(assert(shell:info()).state)
+      assert.matches(case.warning, vim.inspect(openai_state), 1, true)
+      local failure = assert(catalog:snapshot().refresh.error)
+      assert.are.equal(case.kind, failure.kind)
+      assert.is_nil((vim.inspect(openai_state):find("private response", 1, true)))
+    end)
+  end
 
   for _, case in ipairs({
     { id = "deepseek", module = deepseek, suffix = "/deepseek", captures = { 1, 2 } },
@@ -182,7 +250,6 @@ describe("provider management HTTP integration", function()
       { path = "tests/recordings/providers/management-09.yaml", body_subset = true, headers_subset = true },
       { path = "tests/recordings/providers/management-10.yaml", body_subset = true, headers_subset = true },
       { path = "tests/recordings/providers/management-11.yaml", body_subset = true, headers_subset = true },
-      { path = "tests/recordings/providers/management-12.yaml", body_subset = true, headers_subset = true },
     })
     local root = scenario.url
     ---@param id string
@@ -242,12 +309,6 @@ describe("provider management HTTP integration", function()
         base_url = root .. "/api/coding/paas/v4", models = {},
         service_opts = { management_url = root },
       }, { provider_id = "zai-coding-plan", transport = scenario }),
-      alibaba.new(nil, {
-        client = alibaba_client.new({
-          gateway_url = root,
-          transport = scenario,
-        }),
-      }),
     }
 
     assert.is_true(wait(assert(catalogs[1]):refresh({ force = true })).ok)
@@ -285,10 +346,6 @@ describe("provider management HTTP integration", function()
     assert.are.equal("max", field_value(assert(services[5]), "Plan"))
     assert.is_nil(status_text(assert(services[5])))
 
-    assert.is_true(wait(operation(assert(services[6]), "refresh", bearer_auth)).ok)
-    assert.are.equal(0.4,
-      assert(limit_block(assert(services[6]), "7-day quota")).remaining)
-
-    assert.are.equal(12, #scenario.requests)
+    assert.are.equal(11, #scenario.requests)
   end)
 end)

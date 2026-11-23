@@ -12,6 +12,7 @@ local M = {}
 ---@field input? unknown
 ---@field context_window? unknown
 ---@field max_output_tokens? unknown
+---@field _completion_non_thinking_ceiling? unknown
 ---@field request_timeout_ms? unknown
 ---@field thinking? unknown
 ---@field request_opts? unknown
@@ -35,6 +36,7 @@ local M = {}
 ---@field input? ('text'|'image')[]
 ---@field context_window? integer
 ---@field max_output_tokens? integer
+---@field _completion_non_thinking_ceiling? integer Internal provider limit when enable_thinking is false.
 ---@field request_timeout_ms? integer
 ---@field thinking? Neoagent.ThinkingOptions
 ---@field request_opts? Neoagent.RequestLayer
@@ -131,6 +133,7 @@ function M.validate(provider_id, model_id, value)
   for _, field in ipairs({
     "context_window",
     "max_output_tokens",
+    "_completion_non_thinking_ceiling",
     "request_timeout_ms",
   }) do
     if model[field] ~= nil and not positive_integer(model[field]) then

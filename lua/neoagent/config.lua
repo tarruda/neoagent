@@ -1,7 +1,6 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
-local alibaba_dashboard_auth = require("neoagent.auth.alibaba_dashboard")
-local alibaba_token_plan_auth = require("neoagent.auth.alibaba_token_plan")
+local qwencloud_token_plan_auth = require("neoagent.auth.qwencloud_token_plan")
 local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 local provider_auth = require("neoagent.provider_auth")
@@ -209,8 +208,8 @@ local defaults = {
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
-      ["alibaba-token-plan"] = alibaba_token_plan_auth.new(),
-      ["alibaba-token-plan-dashboard"] = alibaba_dashboard_auth.new(),
+      ["qwencloud-token-plan"] = qwencloud_token_plan_auth.new(),
+      ["qwencloud-token-plan-usage"] = require("neoagent.auth.qwencloud_usage").new(),
       zai = api_key.new({ name = "Z.AI API and Plan key" }),
       anthropic = api_key.new({
         name = "Anthropic API key",
@@ -799,13 +798,13 @@ local function validate(opts)
       method._with_transport == nil or type(method._with_transport) == "function",
       "auth method _with_transport must be a function"
     )
-    if method.type == "api_key" then
+    if method.type == nil then
+      assert(type(method.refresh) == "function", "auth methods with an implicit credential type require refresh")
+    else
       assert(
         method.refresh == nil or type(method.refresh) == "function",
-        "API key auth method refresh must be a function"
+        "auth method refresh must be a function"
       )
-    else
-      assert(type(method.refresh) == "function", "OAuth auth methods require refresh")
     end
   end
   for id, provider in pairs(opts.providers) do

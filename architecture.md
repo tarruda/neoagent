@@ -75,10 +75,16 @@ runtime sharing. Shared operations receive provider state; copied Agent,
 Workspace, and Session identity enters only at request shaping.
 
 ModelCatalog owns selectable inventory. Authentication owns credentials and
-login, refresh, logout, and Model wrapping. Services own provider management.
-Their leases coordinate concurrent use and exclusive mutations, including
-credential changes. Resolved Model operations hold Service use before entering
-Authentication; request-scoped file preparation owns independent use.
+login, refresh, expiry, logout, and Model wrapping. Services own provider
+management. Their leases coordinate concurrent use and exclusive mutations,
+including credential changes. Resolved Model operations hold Service use
+before entering Authentication; request-scoped file preparation owns
+independent use.
+
+The Provider Shell owns automatic refresh for the open provider panel and
+cancels it on selection change or close. Shared runtimes own catalog
+validation. Runtime diagnostics carry their provider identity so the Shell
+can show them on the corresponding panel.
 
 Sessions retain image bytes. Provider runtimes prepare remote files, and a
 Workspace cache retains remote references separately from conversation state.
@@ -100,7 +106,8 @@ blocks further Store mutations.
 
 The top-level composition owns Session derivation until it can publish an Agent.
 Profile compatibility is checked there; Session and storage modules remain
-independent of Profiles and UI.
+independent of Profiles and UI. Model restoration commits against the active
+Session path and current Agent selection.
 
 ## Request preparation and compaction
 
