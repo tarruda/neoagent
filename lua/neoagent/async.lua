@@ -700,6 +700,12 @@ function M.notification()
   }
 end
 
+---@async
+---@param milliseconds integer
+function M.sleep(milliseconds)
+  M.notification().wait(milliseconds)
+end
+
 -- Give the editor an event-loop turn, rather than adding more work to the
 -- current scheduled-callback drain. Cancellation owns the pending timer.
 ---@async

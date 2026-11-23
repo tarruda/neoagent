@@ -5,6 +5,7 @@ local request_opts = require("neoagent.api.request_opts")
 local util = require("neoagent.util")
 
 local M = {}
+local MAX_EXPIRY_WAIT_MS = 2 ^ 31 - 1
 ---@class Neoagent.ApiKeyCredential: Neoagent.JsonObject
 ---@field type "api_key"
 ---@field key string
@@ -13,7 +14,7 @@ local M = {}
 ---@class Neoagent.OAuthCredential: Neoagent.JsonObject
 ---@field type? "oauth"
 ---@field access string
----@field refresh string
+---@field refresh? string
 ---@field expires number
 
 ---@alias Neoagent.Credential Neoagent.ApiKeyCredential|Neoagent.OAuthCredential
@@ -106,9 +107,11 @@ local M = {}
 
 ---@alias Neoagent.AuthResolution Neoagent.AuthConfigured|Neoagent.AuthUnconfigured|Neoagent.AsyncFailure
 
+---@alias Neoagent.AuthRevisionKind "login"|"logout"|"refresh"|"expired"
+
 ---@class Neoagent.AuthRevision
 ---@field method string
----@field kind "login"|"logout"|"refresh"
+---@field kind Neoagent.AuthRevisionKind
 ---@field revision integer
 
 ---@class Neoagent.AuthChangeSuccess
@@ -154,12 +157,16 @@ local M = {}
 ---@field path string
 ---@field methods table<string, Neoagent.AuthMethod<Neoagent.Credential>>
 
+---@class Neoagent.CredentialExpiryWatch
+---@field run? Neoagent.Run<{ok: true}, nil>
+
 ---@class Neoagent.AuthManager
 ---@field methods table<string, Neoagent.AuthMethod<Neoagent.Credential>>
 ---@field store Neoagent.AuthStorage
 ---@field now fun(): number
 ---@field revisions table<string, integer>
 ---@field listeners table<string, table<integer, fun(event: Neoagent.AuthRevision)>>
+---@field expiry_watches table<string, Neoagent.CredentialExpiryWatch>
 ---@field next_listener_id integer
 local Manager = {}
 Manager.__index = Manager
@@ -277,8 +284,7 @@ local function valid_credential(credential)
   if kind == "oauth" then
     return type(credential.access) == "string"
       and credential.access ~= ""
-      and type(credential.refresh) == "string"
-      and credential.refresh ~= ""
+      and (credential.refresh == nil or type(credential.refresh) == "string" and credential.refresh ~= "")
       and type(credential.expires) == "number"
   end
   return false
@@ -289,6 +295,9 @@ end
 ---@return TypeGuard<Neoagent.Credential>
 local function valid_for(credential, method)
   if not valid_credential(credential) or method.type ~= nil and method.type ~= credential_type(credential) then
+    return false
+  end
+  if credential_type(credential) == "oauth" and type(method.refresh) == "function" and credential.refresh == nil then
     return false
   end
   if type(method.validate_credential) ~= "function" then
@@ -331,7 +340,7 @@ end
 
 ---@param self Neoagent.AuthManager
 ---@param id string
----@param kind "login"|"logout"|"refresh"
+---@param kind Neoagent.AuthRevisionKind
 ---@return integer
 local function publish(self, id, kind)
   self.revisions[id] = (self.revisions[id] or 0) + 1
@@ -340,6 +349,11 @@ local function publish(self, id, kind)
     kind = kind,
     revision = self.revisions[id],
   }
+  if kind == "login" then
+    self:_watch_expiry(id)
+  elseif kind == "logout" then
+    self:_cancel_expiry(id)
+  end
   for _, subscription in pairs(self.listeners[id] or {}) do
     pcall(subscription, util.copy(event))
   end
@@ -462,7 +476,7 @@ function Manager:resolve(id, opts)
       end
       if credential_type(credential) == "oauth" and self.now() >= credential.expires then
         if type(method.refresh) ~= "function" then
-          error(util.error("auth", "Login method cannot refresh OAuth credentials"), 0)
+          error(util.error("auth", "OAuth authorization expired. Log in again."), 0)
         end
         local previous_identity = credential_identity(self, id, method, credential)
         credential = modify_store(self, id, function(current)
@@ -552,6 +566,89 @@ function Manager:revision(id)
   return self.revisions[id] or 0
 end
 
+---@alias Neoagent.StoredCredentialStatus "missing"|"stored"|"expired"
+
+---@param self Neoagent.AuthManager
+---@param id string
+---@param method Neoagent.AuthMethod<Neoagent.Credential>
+---@return Neoagent.StoredCredentialStatus?, Neoagent.Error?, number? Remaining time for a non-refreshable credential.
+local function stored_credential_status(self, id, method)
+  local credential, err = self.store:read(id)
+  if err then
+    return nil, err
+  end
+  if credential == nil then
+    return "missing"
+  end
+  if not valid_for(credential, method) then
+    return nil, util.error("auth", "Stored credential is invalid for " .. id)
+  end
+  if credential_type(credential) == "oauth" and type(method.refresh) ~= "function" then
+    local now = self.now()
+    if now >= credential.expires then
+      return "expired"
+    end
+    local remaining = credential.expires - now
+    if remaining > 0 and remaining < math.huge then
+      return "stored", nil, remaining
+    end
+  end
+  return "stored"
+end
+
+---@param id string
+function Manager:_cancel_expiry(id)
+  local watch = self.expiry_watches[id]
+  self.expiry_watches[id] = nil
+  if watch and watch.run then
+    watch.run:cancel()
+  end
+end
+
+---@param id string
+function Manager:_watch_expiry(id)
+  self:_cancel_expiry(id)
+  if not self.listeners[id] then
+    return
+  end
+  local method = method_for(self, id)
+  if method.type ~= "oauth" or type(method.refresh) == "function" then
+    return
+  end
+  ---@type Neoagent.CredentialExpiryWatch
+  local watch = {}
+  self.expiry_watches[id] = watch
+
+  local function report()
+    vim.notify("neoagent: Could not observe OAuth authorization expiry for " .. id, vim.log.levels.WARN)
+  end
+
+  watch.run = async.run(function()
+    local _, _, delay = stored_credential_status(self, id, method)
+    -- Recheck wall time and the stored credential when the timer wakes.
+    while delay and self.expiry_watches[id] == watch do
+      async.sleep(math.ceil(math.min(delay, MAX_EXPIRY_WAIT_MS)))
+      local status, _, remaining = stored_credential_status(self, id, method)
+      if status == "expired" and self.expiry_watches[id] == watch then
+        publish(self, id, "expired")
+      end
+      delay = remaining
+    end
+    return { ok = true }
+  end, {
+    error_kind = "auth",
+    report = report,
+    on_done = function(result)
+      if self.expiry_watches[id] == watch then
+        self.expiry_watches[id] = nil
+        if not result.ok then
+          report()
+        end
+      end
+    end,
+  })
+end
+
 ---@param id string
 ---@param listener fun(event: Neoagent.AuthRevision)
 ---@return fun(): boolean
@@ -560,36 +657,43 @@ function Manager:subscribe(id, listener)
   assert(type(listener) == "function", "authentication revision listener must be a function")
   self.next_listener_id = self.next_listener_id + 1
   local listener_id = self.next_listener_id
-  self.listeners[id] = self.listeners[id] or {}
-  self.listeners[id][listener_id] = listener
+  local listeners = self.listeners[id] or {}
+  local first = next(listeners) == nil
+  self.listeners[id] = listeners
+  listeners[listener_id] = listener
+  if first then
+    self:_watch_expiry(id)
+  end
   local active = true
   return function()
     if not active then
       return false
     end
     active = false
-    if self.listeners[id] then
-      self.listeners[id][listener_id] = nil
+    listeners[listener_id] = nil
+    if not next(listeners) then
+      self.listeners[id] = nil
+      self:_cancel_expiry(id)
     end
     return true
   end
 end
 
 ---@param id string
+---@return Neoagent.StoredCredentialStatus?, Neoagent.Error?
+function Manager:credential_status(id)
+  local status, err = stored_credential_status(self, id, method_for(self, id))
+  return status, err
+end
+
+---@param id string
 ---@return boolean?, Neoagent.Error?
 function Manager:has_credentials(id)
-  local method = method_for(self, id)
-  local credential, err = self.store:read(id)
-  if err then
+  local status, err = self:credential_status(id)
+  if not status then
     return nil, err
   end
-  if credential == nil then
-    return false
-  end
-  if not valid_for(credential, method) then
-    return nil, util.error("auth", "Stored credential is invalid for " .. id)
-  end
-  return true
+  return status ~= "missing"
 end
 
 ---@return Neoagent.AuthCredentialEntry[]?, Neoagent.Error?
@@ -770,6 +874,7 @@ function M.new(opts)
     now = opts.now or util.now_ms,
     revisions = {},
     listeners = {},
+    expiry_watches = {},
     next_listener_id = 0,
   }, Manager)
 end

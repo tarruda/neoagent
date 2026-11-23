@@ -40,6 +40,8 @@ local M = {}
 ---@field selected? Neoagent.ModelSelection
 ---@field model_value? Neoagent.Model
 ---@field thinking_value? Neoagent.ThinkingLevel
+---@field pending_session_model? boolean
+---@field revision integer
 local RequestSelection = {}
 RequestSelection.__index = RequestSelection
 
@@ -94,6 +96,68 @@ function M.api_compatible(runtimes, selected, supported_apis)
   return vim.tbl_contains(supported_apis, model.api or runtime.definition.api)
 end
 
+---@param runtimes Neoagent.ProviderRuntimes
+---@param selected Neoagent.ModelSelection
+---@param supported_apis? string[]
+---@param wait_for_catalog? boolean
+---@return Neoagent.Error?
+function M.catalog_model_error(runtimes, selected, supported_apis, wait_for_catalog)
+  local runtime = runtimes[selected.provider]
+  if not runtime then
+    return util.error("model", "Unknown provider")
+  end
+  local snapshot = runtime.catalog:snapshot()
+  local model = snapshot.models[selected.model]
+  if not model then
+    if
+      wait_for_catalog
+      and snapshot.validated_at == nil
+      and runtime.definition.models[selected.model] ~= false
+      and type(runtime.definition.catalog.discover) == "function"
+    then
+      return { kind = "model", message = "Waiting for the Model catalog to load", pending = true }
+    end
+    return util.error("model", "Unknown model")
+  end
+  if supported_apis and not vim.tbl_contains(supported_apis, model.api or runtime.definition.api) then
+    return util.error("model", "API is incompatible with the selected Profile")
+  end
+end
+
+---@param runtime Neoagent.ProviderRuntime
+---@return Neoagent.Error?
+local function credential_error(runtime)
+  local credentials = runtime.credentials:state()
+  if not credentials.usable then
+    return credentials.error or util.error("auth", "Not logged in for inference")
+  end
+end
+
+---@param runtimes Neoagent.ProviderRuntimes
+---@param selected Neoagent.ModelSelection
+---@param supported_apis? string[]
+---@return Neoagent.Error?
+function M.saved_model_error(runtimes, selected, supported_apis)
+  return M.catalog_model_error(runtimes, selected, supported_apis)
+    or credential_error(assert(runtimes[selected.provider]))
+end
+
+---@param runtimes Neoagent.ProviderRuntimes
+---@param selected Neoagent.ModelSelection
+---@param supported_apis? string[]
+---@return Neoagent.Error?
+local function session_model_error(runtimes, selected, supported_apis)
+  local err = M.catalog_model_error(runtimes, selected, supported_apis, true)
+  if err and rawget(err, "pending") ~= true then
+    return err
+  end
+  local auth_err = credential_error(assert(runtimes[selected.provider]))
+  if auth_err then
+    return { kind = "auth", message = auth_err.message, pending = true }
+  end
+  return err
+end
+
 ---@param opts Neoagent.RequestSelectionOptions
 ---@return Neoagent.RequestSelection
 function RequestSelection.new(opts)
@@ -140,6 +204,7 @@ function RequestSelection.new(opts)
     selected = nil,
     model_value = nil,
     thinking_value = nil,
+    revision = 0,
   }, RequestSelection)
   return self
 end
@@ -169,9 +234,11 @@ end
 
 ---@param discard_initial? boolean
 function RequestSelection:clear(discard_initial)
+  self.revision = self.revision + 1
   self.selected = nil
   self.model_value = nil
   self.thinking_value = nil
+  self.pending_session_model = nil
   if discard_initial then
     self.initial = nil
   end
@@ -180,6 +247,67 @@ end
 ---@return Neoagent.ModelSelection?
 function RequestSelection:candidate()
   return util.copy(self.selected or self.initial and self.initial.model or self:preferences().default_model)
+end
+
+---@param stored Neoagent.SelectionState
+---@param current? fun(): boolean
+---@return Neoagent.Model?, Neoagent.Error?
+function RequestSelection:restore(stored, current)
+  local revision = self.revision
+  local proposed = setmetatable(util.shallow_copy(self), RequestSelection)
+  proposed:clear(true)
+  local function owns_selection()
+    return (not current or current()) and self.revision == revision
+  end
+  local seen = {}
+  local failure
+  ---@param selected? Neoagent.ModelSelection
+  ---@param recorded? boolean
+  ---@return boolean
+  local function try(selected, recorded)
+    if not selected or not owns_selection() then
+      return false
+    end
+    local key = selected.provider .. "/" .. selected.model
+    if seen[key] then
+      return false
+    end
+    seen[key] = true
+    local err
+    if recorded then
+      err = session_model_error(self.runtimes, selected, self.supported_apis)
+    else
+      err = M.saved_model_error(self.runtimes, selected, self.supported_apis)
+    end
+    if not owns_selection() then
+      return false
+    end
+    if not err then
+      local _, resolve_err = proposed:resolve(selected, stored.thinking_level)
+      err = resolve_err
+    elseif recorded and rawget(err, "pending") == true then
+      -- Wait for authentication and discovery before resolving the saved Model.
+      local preferred = stored.thinking_level
+      if proposed:stage(selected, thinking.is_level(preferred) and preferred or nil) then
+        proposed.pending_session_model = true
+      end
+    end
+    if err and not failure and (err.kind ~= "model" or rawget(err, "pending") ~= true) then
+      failure = util.error(err.kind, key .. ": " .. err.message)
+    end
+    return proposed.selected ~= nil
+  end
+  if not try(stored.model, true) and not try(self.workspace.default_model) then
+    try(self.defaults.default_model)
+  end
+  if not owns_selection() then
+    return nil, util.error("cancelled", "Session Model restoration was superseded")
+  end
+  self.revision = revision + 1
+  self.selected, self.model_value = proposed.selected, proposed.model_value
+  self.thinking_value, self.pending_session_model = proposed.thinking_value, proposed.pending_session_model
+  self.initial = nil
+  return self.model_value, failure
 end
 
 ---@return Neoagent.Model?
@@ -206,8 +334,10 @@ end
 ---@param selected Neoagent.ModelSelection
 ---@param model Neoagent.Model
 ---@param preferred? string
+---@param revision? integer
 ---@return Neoagent.Model
-function RequestSelection:bind(selected, model, preferred)
+function RequestSelection:bind(selected, model, preferred, revision)
+  revision = revision or self.revision
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
   model = model_contract.assert(model, "RequestSelection resolved Model")
   if self.supported_apis and not vim.tbl_contains(self.supported_apis, model.api) then
@@ -226,8 +356,13 @@ function RequestSelection:bind(selected, model, preferred)
   local selected_value = util.copy(selected)
   local thinking_value =
     thinking.clamp(model, preferred or self.thinking_value or self:preferences().default_thinking_level)
+  if self.revision ~= revision then
+    error(util.error("cancelled", "Model selection changed while resolving"), 0)
+  end
+  self.revision = revision + 1
   self.selected = selected_value
   self.model_value = model
+  self.pending_session_model = nil
   self.initial = nil
   self.thinking_value = thinking_value
   return model
@@ -239,7 +374,7 @@ end
 function RequestSelection:stage(selected, preferred)
   assert(valid_model(selected), "RequestSelection model must identify a provider and model")
   if M.api_compatible(self.runtimes, selected, self.supported_apis) == false then
-    if self.model_value == nil and same_model(self.selected, selected) then
+    if self.model_value == nil and not self.pending_session_model and same_model(self.selected, selected) then
       self:clear(true)
     end
     return nil,
@@ -251,6 +386,8 @@ function RequestSelection:stage(selected, preferred)
   if preferred == nil then
     preferred = self.thinking_value or self:preferences().default_thinking_level
   end
+  self.pending_session_model = self.pending_session_model and same_model(self.selected, selected) or nil
+  self.revision = self.revision + 1
   self.selected = util.copy(selected)
   self.model_value = nil
   self.initial = nil
@@ -270,7 +407,8 @@ function RequestSelection:resolve(selected, preferred)
   if not selected then
     return nil, util.error("model", "No default_model is configured")
   end
-  if M.api_compatible(self.runtimes, selected, self.supported_apis) == false then
+  local pending_session_model = self.pending_session_model and same_model(self.selected, selected)
+  if not pending_session_model and M.api_compatible(self.runtimes, selected, self.supported_apis) == false then
     if self.model_value == nil and same_model(self.selected, selected) then
       self:clear(true)
     end
@@ -280,7 +418,25 @@ function RequestSelection:resolve(selected, preferred)
   if preferred == nil then
     preferred = initial_thinking(self, selected)
   end
+  local revision = self.revision
   local ok, model = pcall(function()
+    if pending_session_model then
+      local err = session_model_error(self.runtimes, selected, self.supported_apis)
+      if err then
+        if rawget(err, "pending") ~= true then
+          err = {
+            kind = err.kind,
+            message = ("%s: %s/%s. Choose another Model to continue."):format(
+              err.message,
+              selected.provider,
+              selected.model
+            ),
+            pending = true,
+          }
+        end
+        error(err, 0)
+      end
+    end
     ---@type Neoagent.SelectionIdentity?
     local request_context = self.request_context
     if type(request_context) == "function" then
@@ -294,7 +450,7 @@ function RequestSelection:resolve(selected, preferred)
       self.runtimes,
       request_context
     )
-    return self:bind(selected, resolved, preferred)
+    return self:bind(selected, resolved, preferred, revision)
   end)
   if not ok then
     return nil, util.normalize_error(model, "model")
@@ -337,6 +493,7 @@ function RequestSelection:set_thinking_level(level)
   if not vim.tbl_contains(levels, level) then
     return nil, util.error("model", "thinking level " .. level .. " is not supported by " .. self:label())
   end
+  self.revision = self.revision + 1
   self.thinking_value = level
   return level
 end

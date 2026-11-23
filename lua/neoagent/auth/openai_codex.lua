@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local http_client = require("neoagent.transport.http")
 local local_callback = require("neoagent.auth.local_callback")
+local pkce = require("neoagent.auth.pkce")
 local util = require("neoagent.util")
 
 local M = {}
@@ -15,6 +16,7 @@ function M._files_http(transport)
 end
 
 ---@class Neoagent.CodexCredential: Neoagent.OAuthCredential
+---@field refresh string
 ---@field accountId string
 ---@field email? string
 ---@field plan? string
@@ -105,26 +107,6 @@ local function decode_fields(value)
     end
   end
   return result
-end
-
----@param value string
----@return string
-local function base64url(value)
-  return (vim.base64.encode(value):gsub("+", "-"):gsub("/", "_"):gsub("=+$", ""))
-end
-
----@param bytes integer
----@return string
-local function random_urlsafe(bytes)
-  return base64url(assert(vim.uv.random(bytes)))
-end
-
----@param value string
----@return string
-local function hex_bytes(value)
-  return (value:gsub("..", function(pair)
-    return string.char((assert(tonumber(pair, 16))))
-  end))
 end
 
 ---@param token unknown
@@ -239,28 +221,6 @@ local function await_prompt(interaction, prompt)
   end)
 end
 
----@async
----@param milliseconds number
----@return true
-local function delay(milliseconds)
-  return async.await(function(done)
-    local timer = assert(vim.uv.new_timer())
-    timer:start(math.max(1, math.floor(milliseconds)), 0, function()
-      timer:stop()
-      if not timer:is_closing() then
-        timer:close()
-      end
-      done.resolve(true)
-    end)
-    return function()
-      timer:stop()
-      if not timer:is_closing() then
-        timer:close()
-      end
-    end
-  end)
-end
-
 ---@param opts? Neoagent.CodexAuthOptions
 ---@return Neoagent.AuthMethod<Neoagent.CodexCredential>
 function M.new(opts)
@@ -280,6 +240,11 @@ function M.new(opts)
   local token_url = auth_base .. "/oauth/token"
   local callback_host = opts.callback_host or "127.0.0.1"
   local start_server = opts.start_callback_server or start_callback_server
+  ---@async
+  ---@param milliseconds number
+  local function delay(milliseconds)
+    async.sleep(math.max(1, math.floor(milliseconds)))
+  end
   local sleep = opts.sleep or delay
 
   ---@async
@@ -363,9 +328,9 @@ function M.new(opts)
   ---@param interaction Neoagent.LoginInteraction
   ---@return Neoagent.CodexCredential
   local function browser_login(interaction)
-    local verifier = random_urlsafe(32)
-    local state = random_urlsafe(16)
-    local challenge = base64url(hex_bytes(vim.fn.sha256(verifier)))
+    local verifier = pkce.random_urlsafe(32)
+    local state = pkce.random_urlsafe(16)
+    local challenge = pkce.challenge(verifier)
     local url = auth_base
       .. "/oauth/authorize?"
       .. encode_fields({

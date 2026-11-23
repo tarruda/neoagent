@@ -265,7 +265,19 @@ local function information_block(block, key, width, limit_label_width)
     return progress(key, block --[[@as Neoagent.ProviderProgressBlock]], width)
   end
   if block.type == "limit" then
-    return limit(key, block --[[@as Neoagent.ProviderLimitBlock]], width, limit_label_width)
+    local detail = block.detail
+    local meter =
+      limit(detail and key .. ":value" or key, block --[[@as Neoagent.ProviderLimitBlock]], width, limit_label_width)
+    if not detail then
+      return meter
+    end
+    return ui.column({
+      key = key,
+      children = {
+        meter,
+        text(key .. ":detail", { { text = "  " .. detail, style = "muted" } }),
+      },
+    })
   end
   if block.type == "list" then
     local children = {

@@ -91,8 +91,8 @@ describe("neoagent Provider Shell", function()
     ---@field credentials table<string, "api_key"|"oauth"|"invalid">
     local value = require("tests.helpers.auth_manager").new()
     value.credentials = credentials
-    value.has_credentials = function(self, id)
-      return self.credentials[id] ~= nil
+    value.credential_status = function(self, id)
+      return self.credentials[id] ~= nil and "stored" or "missing"
     end
     function value:list_credentials()
       local result = {}
@@ -130,7 +130,8 @@ describe("neoagent Provider Shell", function()
     return value
   end
 
-  local function view()
+  ---@param on_set? fun(snapshot: Neoagent.ProviderPanelSnapshot)
+  local function view(on_set)
     ---@class Neoagent.TestShellView: Neoagent.ProviderShellView
     ---@field opened boolean
     ---@field origin? integer
@@ -148,6 +149,9 @@ describe("neoagent Provider Shell", function()
       self.snapshot = util.copy(snapshot)
       self.entries = util.copy(providers)
       self.snapshots[#self.snapshots + 1] = self.snapshot
+      if on_set and snapshot then
+        on_set(snapshot)
+      end
       return true
     end
     value.open = function(self, origin)
@@ -430,6 +434,8 @@ describe("neoagent Provider Shell", function()
   it("cycles providers by cancelling passive refreshes only", function()
     local refresh_cancelled = false
     local mutation_cancelled = false
+    ---@type Neoagent.ProviderInteraction?
+    local stale
     local function pending(cancelled)
       return function()
         return async.run(function()
@@ -448,11 +454,17 @@ describe("neoagent Provider Shell", function()
       mutate = operation("Mutate", pending(function()
         mutation_cancelled = true
       end), true),
-      refresh = operation("Refresh", pending(function()
-        refresh_cancelled = true
-      end)),
+      refresh = operation("Refresh", function(ctx)
+        stale = ctx.interact
+        return pending(function()
+          refresh_cancelled = true
+          ctx.interact.notify("Stale refresh notice")
+          error("refresh cleanup failed", 0)
+        end)()
+      end),
     })
     local surface = view()
+    local presented = presenter()
     local value = shell({
       config = config({
         alpha = { api = "fake", models = {} },
@@ -460,7 +472,7 @@ describe("neoagent Provider Shell", function()
       }, "beta"),
       auth = authentication(),
       runtimes = { alpha = alpha, beta = beta },
-      presenter = presenter(),
+      presenter = presented,
       view = function() return surface end,
     })
 
@@ -473,8 +485,21 @@ describe("neoagent Provider Shell", function()
       return assert(value:info()).id == "alpha" and not value:is_active()
     end, 5))
     assert.is_true(refresh_cancelled)
+    assert(stale).notify("Stale refresh notice")
+    assert.are.same({}, presented.notifications)
+    local prompt = wait(async.run(function()
+      return async.await(function(done)
+        return assert(stale).input({ prompt = "Stale refresh prompt" }, done)
+      end)
+    end))
+    assert.are.equal("cancelled", assert(prompt.error).kind)
+    assert.are.same({}, presented.requests)
+    assert.is_nil((vim.inspect(assert(value:info()).state):find("refresh cleanup failed", 1, true)))
 
+    assert.is_true(value:close())
     assert.are.equal("beta", value:cycle(1))
+    assert.matches("refresh cleanup failed", vim.inspect(assert(value:info()).state), 1, true)
+    assert(value:open())
     assert.is_true(value:is_active())
     assert.is_true(value:cancel())
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
@@ -487,6 +512,67 @@ describe("neoagent Provider Shell", function()
     assert(value:cancel())
     assert.is_false(wait(mutation).ok)
     assert.is_true(mutation_cancelled)
+  end)
+
+  it("cancels the focus refresh on close and starts fresh on immediate reopen", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>[]
+    local requests = {}
+    local cancellations = 0
+    local managed = service("fake", "Fake", {
+      refresh = operation("Refresh", function()
+        return async.run(function()
+          return async.await(function(done)
+            requests[#requests + 1] = done
+            return function()
+              cancellations = cancellations + 1
+            end
+          end)
+        end)
+      end),
+    })
+    ---@type fun()?
+    local close_on_start
+    local surface = view(function(snapshot)
+      local state = snapshot.state
+      if close_on_start and state and state.operation and state.operation.state == "running" then
+        close_on_start()
+      end
+    end)
+    local value = shell({
+      config = config({ fake = { api = "fake", models = {} } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = managed },
+      presenter = presenter(),
+      view = function() return surface end,
+    })
+
+    assert(value:open())
+    assert.are.equal(1, #requests)
+    assert.is_true(value:close())
+    assert(value:open())
+    assert.are.equal(1, cancellations)
+    assert(vim.wait(1000, function()
+      return #requests == 2
+    end, 5))
+    assert.is_false(assert(requests[1]).resolve({ ok = true }))
+    assert.is_true(assert(requests[2]).resolve({ ok = true }))
+    assert(vim.wait(1000, function() return not value:is_active() end, 5))
+
+    local explicit = value:run("refresh")
+    assert(type(explicit) == "table")
+    assert.is_true(value:close())
+    assert.is_false(explicit:is_cancelled())
+    assert.is_true(assert(requests[3]).resolve({ ok = true }))
+    assert.is_true(wait(explicit).ok)
+    assert.are.equal(1, cancellations)
+    assert(vim.wait(1000, function() return not value:is_active() end, 5))
+
+    close_on_start = function()
+      value:close()
+    end
+    assert(value:open())
+    assert.is_false(value:is_open())
+    assert.are.equal(3, #requests)
   end)
 
   it("orders provider selection before deferred authentication actions", function()
@@ -676,7 +762,7 @@ describe("neoagent Provider Shell", function()
 
   it("projects authentication failures as disconnected errors", function()
     local auth = authentication()
-    auth.has_credentials = function(self)
+    auth.credential_status = function(self)
       return nil, util.error("auth", "credential store failed")
     end
     local surface = view()
@@ -1644,7 +1730,7 @@ describe("neoagent Provider Shell", function()
       view = function() return surface end,
     })
 
-    assert.matches("subscription failed", assert(surface.notifications[1])[1])
+    assert.matches("subscription failed", vim.inspect(assert(value:info()).state), 1, true)
     value:presenter():notify({ message = "notice" })
     assert.are.equal("notice", assert(surface.notifications[#surface.notifications])[1])
     value:presenter():open_uri({ uri = "https://example.test" })
@@ -1718,6 +1804,9 @@ describe("neoagent Provider Shell", function()
     assert.is_nil((value:open()))
     assert.is_nil((value:select("broken")))
     assert.is_nil((value:run("bad")))
+    local notifications = #presented.notifications
+    assert.is_false(value:report("late diagnostic", vim.log.levels.ERROR))
+    assert.are.equal(notifications, #presented.notifications)
 
     local empty_presenter = presenter()
     local empty = shell({
@@ -2026,13 +2115,12 @@ describe("neoagent Provider Shell", function()
     token = assert(provider_service.begin_operation(managed, {
       mutating = false,
     }))
-    assert(vim.wait(1000, function()
-      return any(presented.notifications, function(notification)
-        return notification.message:match("runtime subscriber failed") ~= nil
-      end)
-    end, 5))
-    assert.is_true(token:finish())
+    local reported = vim.wait(1000, function()
+      return vim.inspect(assert(value:info()).state):find("runtime subscriber failed", 1, true) ~= nil
+    end, 5)
     value._schedule_refresh = schedule_refresh
+    assert.is_true(token:finish())
+    assert(reported)
 
     selected_catalog.snapshot = function() error("snapshot failed") end
     assert.is_nil(value:_refresh())

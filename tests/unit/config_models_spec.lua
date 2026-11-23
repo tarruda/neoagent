@@ -158,7 +158,7 @@ describe("neoagent configuration and model resolution", function()
   ---@type string?
   local original_opencode_key
   ---@type string?
-  local original_alibaba_token_plan_key
+  local original_qwencloud_key
 
   before_each(function()
     config._reset()
@@ -167,13 +167,13 @@ describe("neoagent configuration and model resolution", function()
     original_zai_key = vim.env.ZAI_API_KEY
     original_anthropic_key = vim.env.ANTHROPIC_API_KEY
     original_opencode_key = vim.env.OPENCODE_API_KEY
-    original_alibaba_token_plan_key = vim.env.BAILIAN_TOKEN_PLAN_API_KEY
+    original_qwencloud_key = vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
     vim.env.ANTHROPIC_API_KEY = nil
     vim.env.OPENCODE_API_KEY = nil
-    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = nil
+    vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY = nil
   end)
 
   after_each(function()
@@ -187,7 +187,7 @@ describe("neoagent configuration and model resolution", function()
     vim.env.ZAI_API_KEY = original_zai_key
     vim.env.ANTHROPIC_API_KEY = original_anthropic_key
     vim.env.OPENCODE_API_KEY = original_opencode_key
-    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = original_alibaba_token_plan_key
+    vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY = original_qwencloud_key
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -205,7 +205,7 @@ describe("neoagent configuration and model resolution", function()
     local configured = config.get()
     for _, id in ipairs({
       "openai", "openai-codex", "deepseek", "zai", "zai-coding-plan",
-      "alibaba-token-plan", "anthropic", "opencode-go", "llama.cpp",
+      "qwencloud-token-plan", "anthropic", "opencode-go", "llama.cpp",
     }) do
       assert.is_function(configured.providers[id].service, id)
     end
@@ -709,147 +709,113 @@ describe("neoagent configuration and model resolution", function()
     assert.is_true(assert(request.body).tool_stream)
   end)
 
-  it("resolves the Alibaba Token Plan Personal profile", function()
-    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = "sk-sp-token-plan-key"
-    config.setup({})
+  it("offers documented QwenCloud models as soon as the plan key is available", function()
+    vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY = "sk-sp-synthetic"
+    local provider = "qwencloud-token-plan"
+    local configured = config.setup({
+      providers = { [provider] = { models = {
+        ["qwen3.8-max"] = { max_output_tokens = 8192 },
+        ["glm-5.2"] = false,
+        ["team-model"] = { input = { "text" } },
+      } } },
+    })
+    local choices = assert(models.available(configured))
+    assert.is_true(vim.tbl_contains(choices, provider .. "/qwen3.8-max"))
+    assert.is_false(vim.tbl_contains(choices, provider .. "/glm-5.2"))
+    assert.is_true(vim.tbl_contains(choices, provider .. "/team-model"))
+    assert.is_false(vim.tbl_contains(choices, provider .. "/qwen4-max-preview"))
+    assert.is_false(vim.tbl_contains(choices, provider .. "/qwen4.0-max-preview"))
 
-    local configured = config.get()
-    local plan = assert(configured.providers["alibaba-token-plan"])
-    assert.are.equal("openai-completions", plan.api)
-    assert.are.equal(
-      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-      plan.base_url)
-    assert.are.equal("alibaba-token-plan", plan.auth)
-    assert.are.same({
-      dashboard = "alibaba-token-plan-dashboard",
-    }, plan.auth_scopes)
-    assert.are.equal("Alibaba Cloud Token Plan API key",
-      configured.auth.methods["alibaba-token-plan"].name)
-    local dashboard =
-      configured.auth.methods["alibaba-token-plan-dashboard"]
-    assert.are.equal("Alibaba Cloud dashboard", dashboard.name)
-    assert.are.equal("Login", configured.auth.methods["alibaba-token-plan"]
-      .login_label)
-    assert.are.equal("Logout", configured.auth.methods["alibaba-token-plan"]
-      .logout_label)
-    assert.are.equal("Login to dashboard (optional to see quotas)",
-      dashboard.login_label)
-    assert.are.equal("Logout from dashboard", dashboard.logout_label)
-    assert.is_nil(configured.providers.alibaba)
-    assert.is_nil(configured.providers["alibaba-coding-plan"])
-    assert.is_nil(configured.auth.methods.alibaba)
-    assert.is_nil(configured.auth.methods["alibaba-coding-plan"])
-    assert.is_nil(plan.catalog.discover)
-
-    local plan_models = vim.tbl_keys(
-      runtimes_for(configured)["alibaba-token-plan"]
-        .catalog:snapshot().models)
-    table.sort(plan_models)
-    assert.are.same({
-      "deepseek-v4-flash-0731", "deepseek-v4-pro",
-      "deepseek-v4-pro-0813", "glm-5.2", "qwen3.6-flash",
-      "qwen3.7-max", "qwen3.7-plus", "qwen3.8-flash",
-      "qwen3.8-max",
-    }, plan_models)
-
-    local tools = { {
-      name = "inspect",
-      description = "Inspect a path",
-      input_schema = {
-        type = "object", properties = { path = { type = "string" } },
-      },
-    } }
-    local qwen = models.resolve("alibaba-token-plan", "qwen3.8-max")
-    assert.are.same({ "off", "low", "medium", "xhigh" },
-      require("neoagent.thinking").levels(qwen))
+    local qwen = models.resolve(provider, "qwen3.8-max", configured)
     local request = request_for(qwen, {
-      messages = { { role = "assistant", content = { {
-        type = "thinking", thinking = "prior reasoning",
-        thinkingSignature = "reasoning_content",
-      }, { type = "text", text = "prior answer" } } } },
-      tools = tools,
+      messages = {},
+      tools = { { name = "inspect", description = "Inspect a path", input_schema = { type = "object" } } },
       request_opts = assert(qwen.thinking).xhigh,
     })
-    assert.are.equal(
-      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-      request.url)
-    assert.are.equal("Bearer sk-sp-token-plan-key",
-      rawget(assert(request.headers), "Authorization"))
-    assert.are.equal("neoagent", rawget(assert(request.headers), "User-Agent"))
-    assert.are.same({ "text", "image" }, qwen.input)
-    assert.are.equal(1000000, qwen.context_window)
-    assert.are.equal(131072, assert(request.body).max_completion_tokens)
-    assert.is_true(assert(request.body).enable_thinking)
-    assert.are.equal("xhigh", assert(request.body).reasoning_effort)
-    assert.is_true(assert(request.body).tool_stream)
-    assert.is_true(assert(request.body).stream_options.include_usage)
-    assert.are.equal("prior reasoning",
-      assert(request.body).messages[1].reasoning_content)
-    request = request_for(qwen, {
-      messages = {}, tools = {}, request_opts = assert(qwen.thinking).off,
-    })
-    assert.is_false(assert(request.body).enable_thinking)
-    assert.is_nil(assert(request.body).reasoning_effort)
+    assert.are.equal("Bearer sk-sp-synthetic", rawget(request.headers, "Authorization"))
+    assert.are.equal(8192, request.body.max_completion_tokens)
+    assert.are.equal("xhigh", request.body.reasoning_effort)
+    assert.is_true(request.body.tool_stream)
 
-    local qwen37 = models.resolve("alibaba-token-plan", "qwen3.7-plus")
-    assert.are.same({ "off", "high" },
-      require("neoagent.thinking").levels(qwen37))
-    request = request_for(qwen37, {
-      messages = {}, tools = {}, request_opts = assert(qwen37.thinking).high,
-    })
-    assert.is_true(assert(request.body).enable_thinking)
-    assert.is_nil(assert(request.body).reasoning_effort)
-    assert.is_nil(assert(request.body).tool_stream)
-    request = request_for(qwen37, {
-      messages = {}, tools = {}, request_opts = assert(qwen37.thinking).off,
-    })
-    assert.is_false(assert(request.body).enable_thinking)
+    local qwen4 = models.resolve(provider, "qwen4-max", configured)
+    request = request_for(qwen4, { messages = {}, tools = {}, request_opts = assert(qwen4.thinking).off })
+    assert.is_false(request.body.enable_thinking)
+    assert.are.equal(131072, request.body.max_completion_tokens)
+    assert.is_nil(request.body.tool_stream)
+  end)
 
-    assert.are.same({ "text" },
-      models.resolve("alibaba-token-plan", "qwen3.7-max").input)
-    local qwen36 = models.resolve("alibaba-token-plan", "qwen3.6-flash")
-    request = request_for(qwen36, { messages = {}, tools = {} })
-    assert.are.equal(65536, assert(request.body).max_completion_tokens)
-
-    local deepseek = models.resolve(
-      "alibaba-token-plan", "deepseek-v4-pro-0813")
-    assert.are.same({ "off", "low", "high", "max" },
-      require("neoagent.thinking").levels(deepseek))
-    request = request_for(deepseek, {
-      messages = {}, tools = tools, request_opts = assert(deepseek.thinking).max,
+  it("keeps a smaller configured Qwen4 output limit with thinking off", function()
+    vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY = "sk-sp-synthetic"
+    local provider = "qwencloud-token-plan"
+    local configured = config.setup({
+      providers = { [provider] = { models = { ["qwen4-max"] = { max_output_tokens = 4096 } } } },
     })
-    assert.are.equal(393216, assert(request.body).max_completion_tokens)
-    assert.are.equal("max", assert(request.body).reasoning_effort)
-    assert.is_nil(assert(request.body).tool_stream)
+    local qwen4 = models.resolve(provider, "qwen4-max", configured)
+    local request = request_for(qwen4, { messages = {}, thinking_level = "off" })
+    assert.is_false(request.body.enable_thinking)
+    assert.are.equal(4096, request.body.max_completion_tokens)
+  end)
 
-    local current_deepseek = models.resolve(
-      "alibaba-token-plan", "deepseek-v4-pro")
-    assert.are.same({ "off", "high", "max" },
-      require("neoagent.thinking").levels(current_deepseek))
+  it("enforces the Qwen4 output ceiling when the final request disables thinking", function()
+    vim.env.QWENCLOUD_TOKEN_PLAN_API_KEY = "sk-sp-synthetic"
+    local provider = "qwencloud-token-plan"
+    local configured = config.setup({
+      default_registry = false,
+      providers = { [provider] = require("neoagent.registry.qwencloud_token_plan") },
+    })
+    local manager = require("neoagent.auth").configured({ auth = configured.auth })
+    local transport = require("tests.helpers.fake_transport").new()
+    local runtimes = assert(provider_runtimes.compose(configured, {
+      auth = manager,
+      transport = transport,
+      startup = false,
+    }))
+    runtime_sets[configured] = runtimes
+    local model = models.resolve(provider, "qwen4-max", configured, manager, runtimes)
 
-    local flash = models.resolve(
-      "alibaba-token-plan", "deepseek-v4-flash-0731")
-    assert.are.same({ "off", "low", "high", "max" },
-      require("neoagent.thinking").levels(flash))
-    request = request_for(flash, {
-      messages = {}, tools = {}, request_opts = assert(flash.thinking).low,
-    })
-    assert.is_true(assert(request.body).enable_thinking)
-    assert.are.equal("low", assert(request.body).reasoning_effort)
-
-    local glm = models.resolve("alibaba-token-plan", "glm-5.2")
-    assert.are.equal(1048576, glm.context_window)
-    request = request_for(glm, {
-      messages = {}, tools = tools, request_opts = assert(glm.thinking).high,
-    })
-    assert.are.equal(131072, assert(request.body).max_completion_tokens)
-    assert.is_true(assert(request.body).tool_stream)
-    assert.are.equal("high", assert(request.body).reasoning_effort)
-    request = request_for(glm, {
-      messages = {}, tools = {}, request_opts = assert(glm.thinking).off,
-    })
-    assert.is_false(assert(request.body).enable_thinking)
-    assert.is_nil(assert(request.body).reasoning_effort)
+    ---@type {level: Neoagent.ThinkingLevel, limit: integer?, override: Neoagent.RequestOverride?, enabled: boolean, expected: integer}[]
+    local cases = {
+      { level = "off", limit = 200000, enabled = false, expected = 131072 },
+      { level = "off", limit = 4096, enabled = false, expected = 4096 },
+      { level = "high", limit = 200000, enabled = true, expected = 200000 },
+      {
+        level = "off",
+        limit = 200000,
+        override = { body = { enable_thinking = true } },
+        enabled = true,
+        expected = 200000,
+      },
+      {
+        level = "high",
+        override = { body = { enable_thinking = false, max_completion_tokens = 200000 } },
+        enabled = false,
+        expected = 131072,
+      },
+      {
+        level = "off",
+        override = { body = { max_completion_tokens = vim.NIL } },
+        enabled = false,
+        expected = 131072,
+      },
+    }
+    for index, case in ipairs(cases) do
+      transport.responses = { {
+        chunks = {
+          'data: {"choices":[{"index":0,"delta":{"content":"Synthetic reply."},"finish_reason":"stop"}]}\n\n',
+          "data: [DONE]\n\n",
+        },
+      } }
+      local result = wait(model:stream({
+        messages = { { role = "user", content = "Synthetic request." } },
+        thinking_level = case.level,
+        max_output_tokens = case.limit,
+        request_opts = case.override,
+      }))
+      assert.is_true(result.ok, result.error and result.error.message)
+      local body = vim.json.decode((assert(assert(transport.requests[index]).body)))
+      assert.are.equal(case.enabled, body.enable_thinking)
+      assert.are.equal(case.expected, body.max_completion_tokens)
+    end
   end)
 
   it("applies discovered Anthropic capabilities to requests", function()
@@ -1187,7 +1153,8 @@ describe("neoagent configuration and model resolution", function()
     end)
     assert.has_error(function()
       invalid_config({ auth = { methods = { invalid = {
-        type = "oauth", name = "Invalid", login = function() end, request_opts = function() return {} end,
+        type = "oauth", name = "Invalid", login = function() end,
+        refresh = true, request_opts = function() return {} end,
       } } } })
     end)
     assert.has_error(function()

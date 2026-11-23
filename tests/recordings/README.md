@@ -102,7 +102,7 @@ Tests under `tests/integration/` define the assertions.
 | Anthropic | Sonnet 5 inference and signed thinking; image lifecycle, stale-file repair, lookup, upload denial. | Catalog and organization reports. |
 | DeepSeek | Completions/Responses/Messages with images, replacement and opt-out; metadata DNS failure; upload denial; balance. | Catalog. |
 | Z.AI | Coding Plan inference. | Metered inference and management. |
-| Alibaba Token Plan | Inference. | Login and quota reporting. |
+| QwenCloud Token Plan | Compatibility replay with an adapted Chat Completions exchange. | Live QwenCloud inference and usage. |
 | OpenCode Go | Completions and catalog. | Responses, Messages, usage. |
 | llama.cpp | Inference. | Router load/unload/download/cancel and reasoning-only continuation. |
 | Hugging Face | None. | Public and authenticated search and repository inspection. |
@@ -114,7 +114,7 @@ Source hashes identify adapted fixture provenance:
 
 | Fixture | Original recording SHA-256 |
 | --- | --- |
-| [`real/alibaba-token-plan.yaml`](real/alibaba-token-plan.yaml) | `268c78d92092132ef44ef1cb2cdabb61d61f64f2d65c39cde2f7fd12f85874db` |
+| [`real/qwencloud-token-plan-compat.yaml`](real/qwencloud-token-plan-compat.yaml) | `268c78d92092132ef44ef1cb2cdabb61d61f64f2d65c39cde2f7fd12f85874db` |
 | [`real/deepseek.yaml`](real/deepseek.yaml) | `b51f504bd3a29335050e5f5df024e34e86b65c8c3f5598a088bea1e4c671940d` |
 | [`deepseek/files/upload.yaml`](deepseek/files/upload.yaml) | `072ddf44c08f5056c19b86cffba8d352f8841c491f5a0db31e4f0b61626271b5` |
 | [`deepseek/files/conversation.yaml`](deepseek/files/conversation.yaml) | `53e254aa4a3ee1955c93cb3cbe21c4b9cb1da69d70865bb6c5b090cc1c057032` |

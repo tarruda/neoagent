@@ -9,6 +9,8 @@ local M = {}
 ---@field transport? Neoagent.ByteBackend
 ---@field max_response_bytes? integer
 ---@field timeout_ms? number
+---@field private_input? boolean
+---@field credential_response_body? boolean
 ---@field status_message? fun(status: number, resource: string): string?
 
 ---@class Neoagent.ProviderHttpSuccess
@@ -55,6 +57,9 @@ function M.new(opts)
   assert(type(opts.name) == "string" and opts.name ~= "", "provider HTTP client name is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "provider HTTP client base_url is required")
   local transport = http_client.new(opts.transport)
+  if opts.credential_response_body then
+    transport = transport.with_context({ credential_response_body = true })
+  end
   assert(
     opts.transport == nil or type(opts.transport) == "table" and type(opts.transport.fetch) == "function",
     "provider HTTP client transport requires fetch"
@@ -77,7 +82,7 @@ function M.new(opts)
   ---@param path string
   ---@param resource string
   ---@param headers? table<string, unknown>
-  ---@param body? Neoagent.JsonObject
+  ---@param body? Neoagent.JsonObject|string
   ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
   local function send(method, path, resource, headers, body)
     assert(type(path) == "string" and path:sub(1, 1) == "/", "provider HTTP path must be absolute")
@@ -90,8 +95,9 @@ function M.new(opts)
             request = {
               url = base_url .. path,
               method = method,
+              private_input = opts.private_input,
               headers = util.copy(headers or {}),
-              body = body and vim.json.encode(body) or nil,
+              body = type(body) == "string" and body or body and vim.json.encode(body) or nil,
               timeout_ms = timeout_ms,
               max_response_bytes = maximum,
             },
@@ -114,7 +120,7 @@ function M.new(opts)
           end
           ---@type Neoagent.ProviderHttpError
           local err = util.error(
-            "provider",
+            (status == 401 or status == 403) and "auth" or "provider",
             message or (opts.name .. " " .. resource .. " request failed (HTTP " .. tostring(status) .. ")")
           )
           err.status = status
@@ -153,6 +159,24 @@ function M.new(opts)
         ["Content-Type"] = "application/json",
       }),
       util.copy(body)
+    )
+  end
+
+  ---@param path string
+  ---@param resource string
+  ---@param body string
+  ---@param headers? table<string, unknown>
+  ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
+  function client:post_form(path, resource, body, headers)
+    return send(
+      "POST",
+      path,
+      resource,
+      util.deep_merge(headers or {}, {
+        Accept = "application/json",
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+      }),
+      body
     )
   end
 

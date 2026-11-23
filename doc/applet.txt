@@ -154,8 +154,10 @@ A resolver is `function(state) return host end` and requires state-driven
   on_resize
   on_pane_buffer_change
   on_pane_close
+  on_host_close
                 Receive a copied event and an idempotent `default` callback
-                after an observed external change.
+                after an observed external change. `on_host_close` runs
+                once the Applet is closed by Neovim.
   on_error      Receive `{ applet, phase, generation, pane, message }`.
 
 Choose a Host: >lua

@@ -12,6 +12,7 @@ local M = {}
 ---@field body? string
 ---@field timeout_ms? number|false
 ---@field max_response_bytes? integer
+---@field private_input? boolean Send the URL, headers, and optional text body through stdin.
 
 ---@class Neoagent.HttpMetadata
 ---@field status? number
@@ -60,14 +61,11 @@ local function append_bounded(current, chunk)
   return current
 end
 
----@param command string[]
 ---@param headers? table<string, unknown>
-local function append_headers(command, headers)
+---@return string[]
+local function header_lines(headers)
   headers = headers or {}
-  local names = {}
-  for name in pairs(headers) do
-    names[#names + 1] = name
-  end
+  local names = vim.tbl_keys(headers)
   table.sort(names, function(a, b)
     local left, right = a:lower(), b:lower()
     if left == right then
@@ -75,10 +73,58 @@ local function append_headers(command, headers)
     end
     return left < right
   end)
-  for _, name in ipairs(names) do
-    command[#command + 1] = "-H"
-    command[#command + 1] = name .. ": " .. tostring(headers[name])
+  return vim.tbl_map(function(name)
+    return name .. ": " .. tostring(headers[name])
+  end, names)
+end
+
+local config_escape = {
+  ["\\"] = "\\\\",
+  ['"'] = '\\"',
+  ["\t"] = "\\t",
+  ["\r"] = "\\r",
+  ["\n"] = "\\n",
+  ["\v"] = "\\v",
+}
+
+---@param name string
+---@param value string
+---@return string
+local function config_line(name, value)
+  if value:find("%z") then
+    error(util.error("transport", "Private curl requests require text without NUL bytes"), 0)
   end
+  return name .. ' = "' .. value:gsub('[\\"\t\r\n\v]', config_escape) .. '"\n'
+end
+
+---@param command string[]
+---@param request Neoagent.HttpRequest
+---@return string
+local function request_input(command, request)
+  local headers = header_lines(request.headers)
+  if request.private_input then
+    -- curl accepts the small text payload as a literal in the same config
+    -- stream. Disable the user's curlrc before curl processes any options.
+    table.insert(command, 2, "--disable")
+    vim.list_extend(command, { "--config", "-" })
+    local config = { config_line("url", request.url) }
+    for _, header in ipairs(headers) do
+      config[#config + 1] = config_line("header", header)
+    end
+    if request.body ~= nil then
+      config[#config + 1] = config_line("data-raw", request.body)
+    end
+    return table.concat(config)
+  end
+  for _, header in ipairs(headers) do
+    command[#command + 1] = "-H"
+    command[#command + 1] = header
+  end
+  if request.body ~= nil then
+    command[#command + 1] = "--data-binary"
+    command[#command + 1] = "@-"
+  end
+  return request.body or ""
 end
 
 ---@param path string
@@ -142,63 +188,41 @@ local function header_file()
 end
 
 ---@param request Neoagent.HttpRequest
----@param header_path string
----@return string[]
-local function fetch_command(request, header_path)
-  local command = {
-    "curl",
-    "--silent",
-    "--show-error",
-    "-X",
-    request.method or "POST",
-    "--dump-header",
-    header_path,
-  }
-  append_headers(command, request.headers)
-  if request.body ~= nil then
-    command[#command + 1] = "--data-binary"
-    command[#command + 1] = "@-"
-  end
-  if type(request.timeout_ms) == "number" then
-    command[#command + 1] = "--max-time"
-    command[#command + 1] = string.format("%.3f", math.max(0.001, request.timeout_ms / 1000))
-  end
-  command[#command + 1] = "--write-out"
-  command[#command + 1] = "\n%{http_code}"
-  command[#command + 1] = request.url
-  return command
-end
-
----@param request Neoagent.HttpRequest
 ---@param header_path? string
----@return string[]
-function M.command(request, header_path)
+---@param stream boolean
+---@return string[], string
+local function build_command(request, header_path, stream)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
-  local method = request.method or "POST"
-  local command = {
-    "curl",
-    "--no-buffer",
-    "--silent",
-    "--show-error",
-    "-X",
-    method,
-  }
+  local command = { "curl" }
+  if stream then
+    command[#command + 1] = "--no-buffer"
+  end
+  vim.list_extend(command, { "--silent", "--show-error", "-X", request.method or "POST" })
   if header_path then
     command[#command + 1] = "--dump-header"
     command[#command + 1] = header_path
   end
-  append_headers(command, request.headers)
-  if request.body ~= nil then
-    command[#command + 1] = "--data-binary"
-    command[#command + 1] = "@-"
-  end
+  local stdin = request_input(command, request)
   if type(request.timeout_ms) == "number" then
     command[#command + 1] = "--max-time"
     command[#command + 1] = string.format("%.3f", math.max(0.001, request.timeout_ms / 1000))
   end
-  command[#command + 1] = request.url
-  return command
+  if not stream then
+    command[#command + 1] = "--write-out"
+    command[#command + 1] = "\n%{http_code}"
+  end
+  if not request.private_input then
+    command[#command + 1] = request.url
+  end
+  return command, stdin
+end
+
+---@param request Neoagent.HttpRequest
+---@param header_path? string
+---@return string[], string
+function M.command(request, header_path)
+  return build_command(request, header_path, true)
 end
 
 ---@param opts Neoagent.ByteFetchOptions
@@ -219,7 +243,7 @@ function M.fetch(opts)
       end
       local header_path = header_file()
       local completed_ok, completed = pcall(function()
-        local command = fetch_command(request, header_path)
+        local command, stdin = build_command(request, header_path, false)
         return async.await(
           ---@param done Neoagent.AwaitCallbacks<vim.SystemCompleted>
           function(done)
@@ -229,7 +253,7 @@ function M.fetch(opts)
             local ok, err = pcall(function()
               ---@type vim.SystemOpts
               local system_opts = {
-                stdin = request.body or "",
+                stdin = stdin,
                 text = false,
               }
               if maximum then
@@ -257,12 +281,12 @@ function M.fetch(opts)
                 if result.code == 0 then
                   done.resolve(result)
                 else
-                  done.reject(curl_error(result.code, result.stderr))
+                  done.reject(curl_error(result.code, not request.private_input and result.stderr or nil))
                 end
               end)
             end)
             if not ok then
-              done.reject(util.error("transport", "Failed to start curl", err))
+              done.reject(util.error("transport", "Failed to start curl", not request.private_input and err or nil))
             end
             return function()
               if process then
@@ -316,14 +340,15 @@ function M.request(opts)
       local stderr = ""
       local stdout = ""
       local completed, result = pcall(function()
+        local command, stdin = M.command(request, header_path)
         return async.await(
           ---@param done Neoagent.AwaitCallbacks<{ code: integer, stdout: string, stderr: string, headers?: table<string, string>, status?: number }>
           function(done)
             ---@type vim.SystemObj?
             local process
             local ok, err = pcall(function()
-              process = vim.system(M.command(request, header_path), {
-                stdin = request.body or "",
+              process = vim.system(command, {
+                stdin = stdin,
                 text = false,
                 stdout = function(read_err, data)
                   if read_err then
@@ -344,6 +369,9 @@ function M.request(opts)
                   end
                 end,
                 stderr = function(read_err, data)
+                  if request.private_input then
+                    return
+                  end
                   if read_err then
                     stderr = append_bounded(stderr, tostring(read_err))
                   elseif data then
@@ -359,7 +387,7 @@ function M.request(opts)
               end)
             end)
             if not ok then
-              done.reject(util.error("transport", "Failed to start curl", err))
+              done.reject(util.error("transport", "Failed to start curl", not request.private_input and err or nil))
             end
             return function()
               if process then

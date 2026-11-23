@@ -7,7 +7,7 @@ local M = {}
 ---@field transport? Neoagent.ByteBackend
 ---@field store? Neoagent.CatalogStorage
 ---@field startup? boolean
----@field report fun(message: string, level?: integer): unknown
+---@field report fun(message: string, level?: integer, provider_id?: string): unknown
 
 ---@class Neoagent.ProviderResources
 ---@field auth Neoagent.AuthManager

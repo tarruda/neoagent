@@ -41,15 +41,16 @@ describe("neoagent Agent session lifecycle", function()
     local opts = {
       state = state,
       workspace = "/bound-workspace",
-      preferences = function() return {} end,
       notify = function(message, level)
         notifications[#notifications + 1] = { message = message, level = level }
       end,
-      request_selection = selection,
-      bind_provider = function() end,
+      restore_selection = function(stored)
+        local _, err = selection:restore(stored)
+        return err
+      end,
       publish_messages = function() published = published + 1 end,
       update_context = function() updated = updated + 1 end,
-      restore_selection = restore_selection,
+      restore_on_open = restore_selection,
     }
     return lifecycle_module.new(opts), state, notifications, session,
       function() return published, updated end
@@ -140,9 +141,11 @@ describe("neoagent Agent session lifecycle", function()
     local warnings = {}
     local lifecycle = lifecycle_module.new({
       state = { session = session, steering = require("neoagent.agent.steering").new(), pending_events = {} },
-      workspace = "/bound-workspace", restore_selection = true, request_selection = selection,
-      preferences = function() return { default_model = { provider = "fake", model = "one" } } end,
-      bind_provider = function() end, publish_messages = function() end, update_context = function() end,
+      restore_on_open = true, publish_messages = function() end, update_context = function() end,
+      restore_selection = function(stored)
+        local _, err = selection:restore(stored)
+        return err
+      end,
       notify = function(message) warnings[#warnings + 1] = message end,
     })
     assert(lifecycle.initialize())
@@ -191,6 +194,17 @@ describe("neoagent Agent session lifecycle", function()
     local moved, move_err = lifecycle.branch("entry-id")
     assert.is_nil(moved)
     assert.matches("branch state unavailable", assert(move_err).message)
+
+    session.state = function()
+      error("state reader raised", 0)
+    end
+    moved, move_err = lifecycle.branch("entry-id")
+    assert.is_nil(moved)
+    assert.matches("state reader raised", assert(move_err).message, 1, true)
+    session.state = function()
+      return {}
+    end
+    assert(lifecycle.branch("entry-id"))
   end)
 
   it("orders equally recent Session choices by their stable paths", function()
@@ -200,5 +214,49 @@ describe("neoagent Agent session lifecycle", function()
     })
     assert.are.same({ "/workspace/b", "/workspace/a" },
       vim.tbl_map(function(choice) return choice.path end, choices))
+  end)
+
+  it("restores the Workspace Model when the Session Model cannot be constructed", function()
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Synthetic saved request." }, {
+      model = { provider = "fake", model = "one" },
+    }))
+    local configured = require("neoagent.config").resolve({
+      default_registry = false,
+      providers = { fake = {
+        api = "openai-codex-responses", base_url = "https://example.test",
+        models = { one = {}, fallback = {} },
+      } },
+      _apis = { ["openai-codex-responses"] = function(resolved)
+        if resolved.model_id == "one" then
+          error("synthetic restore factory failure", 0)
+        end
+        local model = require("tests.helpers.fake_model").new()
+        model.api, model.provider, model.id = resolved.api, resolved.provider_id, resolved.model_id
+        return model
+      end },
+    })
+    local runtimes = assert(require("neoagent.provider_runtimes").compose(configured, { startup = false }))
+    owned_runtimes[#owned_runtimes + 1] = runtimes
+    local selection = require("neoagent.request_selection").new({
+      config = configured, runtimes = runtimes, supported_apis = { "openai-codex-responses" },
+      workspace = { default_model = { provider = "fake", model = "fallback" } },
+    })
+    ---@type string[]
+    local warnings = {}
+    local lifecycle = lifecycle_module.new({
+      state = { session = session, steering = require("neoagent.agent.steering").new(), pending_events = {} },
+      restore_on_open = true, publish_messages = function() end, update_context = function() end,
+      restore_selection = function(stored)
+        local _, err = selection:restore(stored)
+        return err
+      end,
+      notify = function(message) warnings[#warnings + 1] = message end,
+    })
+    assert(lifecycle.initialize())
+    assert.are.equal(1, #warnings)
+    assert.matches("could not restore Model", assert(warnings[1]), 1, true)
+    assert.matches("synthetic restore factory failure", assert(warnings[1]), 1, true)
+    assert.are.equal("fallback", assert(selection:model()).id)
   end)
 end)

@@ -524,19 +524,20 @@ function M.bundled(snapshot, runtime)
     "Profile runtime must be an object"
   )
   local profiles = definitions(runtime.profiles)
-  ---@type [string, integer?][]
+  ---@type {message: string, level?: integer, provider_id?: string}[]
   local pending_reports = {}
-  ---@type (fun(message: string, level?: integer): unknown)?
+  ---@type (fun(message: string, level?: integer, provider_id?: string): unknown)?
   local report_target
   ---@param message string
   ---@param level integer?
+  ---@param provider_id string?
   ---@return unknown
-  local function provider_report(message, level)
+  local function provider_report(message, level, provider_id)
     if report_target then
-      return report_target(message, level)
+      return report_target(message, level, provider_id)
     end
     if #pending_reports < 64 then
-      pending_reports[#pending_reports + 1] = { message, level }
+      pending_reports[#pending_reports + 1] = { message = message, level = level, provider_id = provider_id }
     end
     return true
   end
@@ -558,11 +559,14 @@ function M.bundled(snapshot, runtime)
     owned:destroy()
     error(shell, 0)
   end
-  report_target = function(message, level)
-    return shell:report(message, level)
+  report_target = function(message, level, provider_id)
+    if shell.destroyed then
+      return require("applet").Presenter.notify(message, level)
+    end
+    return shell:report(message, level, provider_id)
   end
   for _, entry in ipairs(pending_reports) do
-    report_target(entry[1], entry[2])
+    report_target(entry.message, entry.level, entry.provider_id)
   end
   pending_reports = {}
   ---@class Neoagent.ProfileResources

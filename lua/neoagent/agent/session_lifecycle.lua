@@ -18,16 +18,16 @@ local util = require("neoagent.util")
 ---@field pending_events Neoagent.AgentEvent[]
 ---@field last_result? Neoagent.AgentCompletion
 ---@field steering Neoagent.Steering
+---@field destroyed? boolean
 ---@field session_selection_pending? boolean
+---@field session_restore? table
 ---@field transcript_segment_id? string Absent while following the latest segment.
 
 ---@class Neoagent.SessionLifecycleOptions
 ---@field state Neoagent.SessionLifecycleState
----@field restore_selection? boolean
----@field request_selection Neoagent.RequestSelection
----@field preferences fun(): Neoagent.WorkspacePreferences
+---@field restore_on_open? boolean
+---@field restore_selection fun(stored: Neoagent.SelectionState, current: fun(): boolean): Neoagent.Error?
 ---@field notify fun(message: string, level: integer)
----@field bind_provider fun(provider: string): unknown
 ---@field publish_messages fun()
 ---@field update_context fun()
 
@@ -81,44 +81,38 @@ function M.new(opts)
   local state = opts.state
   local lifecycle = {}
 
-  ---@param stored Neoagent.SelectionState
-  local function restore_preferences(stored)
-    local selection = opts.request_selection
-    selection:clear(true)
-    local workspace_default = opts.preferences().default_model
-    local candidates = {}
-    if stored.model then
-      candidates[#candidates + 1] = stored.model
+  ---@return boolean?, Neoagent.Error?
+  local function restore_preferences()
+    local token = {}
+    local leaf = state.session:leaf_id()
+    state.session_restore = token
+    local function current()
+      return state.session_restore == token and not state.destroyed and state.session:leaf_id() == leaf
     end
-    if
-      workspace_default
-      and (
-        not stored.model
-        or workspace_default.provider ~= stored.model.provider
-        or workspace_default.model ~= stored.model.model
-      )
-    then
-      candidates[#candidates + 1] = workspace_default
-    end
-    for _, selected in ipairs(candidates) do
-      local model, err = selection:resolve(selected, stored.thinking_level)
-      if model then
-        break
+    local read, stored, read_err = pcall(state.session.state, state.session)
+    if read and stored and current() then
+      local called, failure = pcall(opts.restore_selection, stored, current)
+      if current() and (not called or failure) then
+        local err = util.normalize_error(failure, "model")
+        if err.kind ~= "cancelled" then
+          pcall(opts.notify, "could not restore Model: " .. err.message, vim.log.levels.WARN)
+        end
       end
-      opts.notify(
-        "could not restore model "
-          .. tostring(selected.provider)
-          .. "/"
-          .. tostring(selected.model)
-          .. ": "
-          .. err.message,
-        vim.log.levels.WARN
-      )
     end
-    local selected = selection:model_selection()
-    if selected then
-      opts.bind_provider(selected.provider)
+    local owned = current()
+    if state.session_restore == token then
+      state.session_restore = nil
     end
+    if not owned then
+      return false
+    end
+    if not read then
+      return nil, util.normalize_error(stored, "session")
+    end
+    if not stored then
+      return nil, read_err
+    end
+    return true
   end
 
   local function publish_active()
@@ -128,12 +122,11 @@ function M.new(opts)
 
   ---@return true?, Neoagent.Error?
   function lifecycle.initialize()
-    if opts.restore_selection then
-      local stored, err = state.session:state()
-      if not stored then
+    if opts.restore_on_open then
+      local restored, err = restore_preferences()
+      if restored == nil then
         return nil, err
       end
-      restore_preferences(stored)
     end
     return true
   end
@@ -154,13 +147,11 @@ function M.new(opts)
     state.pending_events, state.last_result = {}, nil
     state.transcript_segment_id = nil
     state.steering:clear()
-    local stored
-    stored, err = state.session:state()
-    if not stored then
-      return nil, err
-    end
     if not state.session_selection_pending then
-      restore_preferences(stored)
+      local restored, restore_err = restore_preferences()
+      if restored ~= true then
+        return restored == false and true or nil, restore_err
+      end
     end
     publish_active()
     return true

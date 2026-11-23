@@ -6,9 +6,11 @@ local M = {}
 ---@field api_key? string|fun(): string?
 ---@field auth_optional? boolean
 
+---@alias Neoagent.ProviderCredentialSource "error"|"stored"|"expired"|"configured"|"environment"|"none"|"optional"|"logged_out"
+
 ---@class Neoagent.ProviderCredentialState
 ---@field usable boolean
----@field source "error"|"stored"|"configured"|"environment"|"none"|"optional"|"logged_out"
+---@field source Neoagent.ProviderCredentialSource
 ---@field method_id? string
 ---@field method_name? string
 ---@field error? Neoagent.Error
@@ -68,24 +70,24 @@ function ProviderCredentials:_method_id()
   return provider_auth.for_scope(self.provider, self.scope)
 end
 
----@return boolean?, Neoagent.Error?
+---@return Neoagent.StoredCredentialStatus?, Neoagent.Error?
 function ProviderCredentials:_stored()
   local method_id = self:_method_id()
   if method_id == nil then
-    return false
+    return "missing"
   end
   local authentication = self.authentication
-  if type(authentication) ~= "table" or type(authentication.has_credentials) ~= "function" then
+  if type(authentication) ~= "table" or type(authentication.credential_status) ~= "function" then
     return nil, auth_error("Authentication is unavailable for " .. self.provider_id)
   end
-  local ok, stored, err = pcall(authentication.has_credentials, authentication, method_id)
+  local ok, stored, err = pcall(authentication.credential_status, authentication, method_id)
   if not ok then
     return nil, auth_error("Failed to inspect stored credentials for " .. self.provider_id)
   end
   if stored == nil then
     return nil, util.normalize_error(err, "auth")
   end
-  return stored == true
+  return stored
 end
 
 ---@return string?, "configured"|"environment"?, Neoagent.Error?
@@ -123,12 +125,13 @@ function ProviderCredentials:state()
       error = util.copy(stored_err),
     }
   end
-  if stored then
+  if stored ~= "missing" then
     return {
-      usable = true,
-      source = "stored",
+      usable = stored == "stored",
+      source = stored,
       method_id = method_id,
       method_name = method_name,
+      error = stored == "expired" and auth_error("OAuth authorization expired. Log in again.") or nil,
     }
   end
   local _, source, ambient_err = self:_ambient()
@@ -174,7 +177,7 @@ function ProviderCredentials:ambient_api_key()
   if stored == nil then
     error(stored_err, 0)
   end
-  if stored then
+  if stored ~= "missing" then
     return nil
   end
   local key, _, ambient_err = self:_ambient()
@@ -198,7 +201,7 @@ function ProviderCredentials:cache_identity()
   if stored == nil then
     return nil, stored_err
   end
-  if stored then
+  if stored ~= "missing" then
     if type(authentication.cache_identity) ~= "function" then
       return nil, auth_error("Model catalog account identity is unavailable")
     end

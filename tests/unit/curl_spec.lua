@@ -279,6 +279,65 @@ describe("curl process boundary", function()
     assert.matches("missing an HTTP status", assert(result.error).message)
   end)
 
+  it("keeps private fetch inputs out of process arguments and diagnostics", function()
+    local url = "https://example.test/poll?token=synthetic-device&code_verifier=synthetic-verifier"
+    local authorization = "Bearer synthetic-access"
+    local body = [[{"name":"quote\" and backslash\\"}]]
+    ---@type {args: string[], input: string?}?
+    local invocation
+    vim.system = function(command, opts, done)
+      local input = assert(opts).stdin
+      invocation = { args = command, input = type(input) == "string" and input or nil }
+      local flag = vim.fn.index(command, "--dump-header")
+      assert(flag >= 0)
+      files[#files + 1] = assert(command[flag + 2])
+      assert(done)({ code = 3, signal = 0, stderr = "curl could not parse " .. url })
+      return { kill = function() end } --[[@as vim.SystemObj]]
+    end
+    local result = wait(curl.fetch({ request = {
+      url = url, headers = { Authorization = authorization }, body = body, private_input = true,
+    } }))
+    assert.is_false(result.ok)
+    local called = assert(invocation)
+    local argv = table.concat(called.args, "\n")
+    assert.is_nil((argv:find("synthetic", 1, true)))
+    assert.matches("--config\n-", argv, 1, true)
+    local input = assert(called.input)
+    assert.matches(url, input, 1, true)
+    assert.matches(authorization, input, 1, true)
+    assert.matches([[data-raw = "{\"name\":\"quote\\\" and backslash\\\\\"}"]], input, 1, true)
+    assert.are.equal(3, rawget(assert(result.error), "exit_code"))
+    assert.is_nil((vim.inspect(result.error):find("synthetic", 1, true)))
+  end)
+
+  it("keeps private streaming curl diagnostics from including request inputs", function()
+    local state = process({})
+    local run = curl.request({
+      request = { url = "https://example.test/poll?token=synthetic-device", private_input = true },
+    })
+    local callbacks, finish = state()
+    reader(callbacks, "stderr")(nil, "internal curl error: synthetic-device")
+    assert(finish)({ code = 3, signal = 0 })
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal(3, rawget(assert(result.error), "exit_code"))
+    assert.is_nil((vim.inspect(result.error):find("synthetic-device", 1, true)))
+  end)
+
+  it("rejects private payloads that curl cannot encode as text", function()
+    local launched = false
+    vim.system = function()
+      launched = true
+      error("unexpected process")
+    end
+    local result = wait(curl.fetch({
+      request = { url = "https://example.test", body = "binary\000example", private_input = true },
+    }))
+    assert.is_false(result.ok)
+    assert.matches("require text without NUL bytes", assert(result.error).message, 1, true)
+    assert.is_false(launched)
+  end)
+
   it("reports private header file allocation failures before starting a process", function()
     require("neoagent.fs").create_temp = function() return nil, "disk full" end
     vim.system = function() error("process started without private header storage") end

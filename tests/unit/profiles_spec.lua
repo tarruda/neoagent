@@ -171,7 +171,9 @@ describe("bundled Profile resources", function()
         } --[[@as Neoagent.Recorder]]
       end
       runtimes.compose = function(_, opts)
-        for index = 1, 65 do assert(assert(opts).report)("early report " .. index, index) end
+        for index = 1, 65 do
+          assert(assert(opts).report)("early report " .. index, index, "early")
+        end
         return {}
       end
       runtimes.destroy = function()
@@ -180,8 +182,8 @@ describe("bundled Profile resources", function()
       end
       provider_shell.new = function()
         return {
-          report = function(_, message, level)
-            reports[#reports + 1] = { message, level }
+          report = function(_, message, level, provider_id)
+            reports[#reports + 1] = { message, level, provider_id }
             return true
           end,
           destroy = function() end,
@@ -196,8 +198,8 @@ describe("bundled Profile resources", function()
         },
       }))
       assert.are.equal(64, #reports)
-      assert.are.same({ "early report 1", 1 }, reports[1])
-      assert.are.same({ "early report 64", 64 }, reports[64])
+      assert.are.same({ "early report 1", 1, "early" }, reports[1])
+      assert.are.same({ "early report 64", 64, "early" }, reports[64])
       resources:destroy()
       resources:destroy()
       assert.are.equal(1, recorder_destroys)

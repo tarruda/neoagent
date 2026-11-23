@@ -7,6 +7,8 @@ local ProviderShellView = require("neoagent.ui.provider_shell")
 describe("neoagent Provider Shell UI", function()
   ---@type Neoagent.ProviderShellView[]
   local views
+  ---@type Neoagent.ProfileResources?
+  local resources
   ---@type integer
   local original_columns
 
@@ -16,6 +18,10 @@ describe("neoagent Provider Shell UI", function()
   end)
 
   after_each(function()
+    if resources then
+      resources:destroy()
+      resources = nil
+    end
     for _, view in ipairs(views) do view:destroy() end
     vim.o.columns = original_columns
   end)
@@ -137,6 +143,78 @@ describe("neoagent Provider Shell UI", function()
       operations = operations or {},
     }
   end
+
+  it("cancels a panel refresh when its native window is closed", function()
+    local async = require("neoagent.async")
+    local requests, cancellations = 0, 0
+    local configured = config.snapshot({
+      default_registry = false,
+      providers = {
+        local_provider = {
+          api = "openai-completions",
+          base_url = "https://example.invalid",
+          models = {},
+          service = function(_, opts)
+            return {
+              id = assert(opts.provider_id),
+              name = "Local provider",
+              state = function() return { blocks = {} } end,
+              operations = {
+                refresh = {
+                  label = "Refresh",
+                  mutating = false,
+                  run = function()
+                    requests = requests + 1
+                    local request = requests
+                    return async.run(function()
+                      return async.await(function()
+                        return function()
+                          cancellations = cancellations + 1
+                          if request == 1 then
+                            error("refresh cleanup after shell close", 0)
+                          end
+                          if request == 2 then
+                            error("refresh cleanup after shell destruction", 0)
+                          end
+                        end
+                      end)
+                    end)
+                  end,
+                },
+              },
+            }
+          end,
+        },
+      },
+    })
+    local _, _, owned = require("neoagent.profiles").bundled(configured, { startup = false })
+    resources = owned
+    local shell = owned.provider_shell
+    assert(shell:open())
+    assert.are.equal(1, requests)
+    vim.api.nvim_win_close((assert(native(shell:view(), "provider").window)), true)
+    assert(vim.wait(1000, function() return not shell:is_open() end, 5))
+    assert.are.equal(1, cancellations)
+    assert(vim.wait(1000, function() return not shell:is_active() end, 5))
+    assert(shell:open())
+    assert.are.equal(2, requests)
+    local reopened = text(shell:view(), "provider"):gsub("%s+", " ")
+    assert.matches("refresh cleanup after shell close", reopened, 1, true)
+
+    ---@type string[]
+    local diagnostics = {}
+    local notify = vim.notify
+    vim.notify = function(message)
+      if type(message) == "string" then
+        diagnostics[#diagnostics + 1] = message
+      end
+    end
+    local destroyed, err = pcall(owned.destroy, owned)
+    vim.notify = notify
+    assert(destroyed, err)
+    assert.are.equal(2, cancellations)
+    assert.matches("refresh cleanup after shell destruction", assert(diagnostics[1]), 1, true)
+  end)
 
   it("renders and dispatches provider actions in one retained shell", function()
     local selected
@@ -788,7 +866,7 @@ describe("neoagent Provider Shell UI", function()
         { type = "limit", level = "info", label = "Weekly limit", remaining = 0.36,
           resets_at = os.time() + 3 * 86400 },
         { type = "limit", level = "info", label = "Monthly limit", remaining = 0.68,
-          resets_at = os.time() + 30 * 86400 },
+          resets_at = os.time() + 30 * 86400, detail = "68 of 100 Credits remaining" },
         { type = "progress", label = "Catalog", detail = "Waiting" },
         { type = "progress", label = "Download", value = 0.42 },
         { type = "list", title = "Request estimate", items = {
@@ -854,6 +932,7 @@ describe("neoagent Provider Shell UI", function()
     assert.are.equal(weekly_bar, monthly_bar)
     assert.is_truthy((assert(five_hour):find(
       "resets " .. os.date("%H:%M", same_day_reset), 1, true)))
+    assert.matches("68 of 100 Credits remaining", text(value, "provider"), 1, true)
     assert.matches("Waiting", text(value, "provider"))
     assert.matches("42%%", text(value, "provider"))
     assert.matches("Activity", text(value, "provider"))
@@ -893,7 +972,7 @@ describe("neoagent Provider Shell UI", function()
     assert(value:set(snapshot("OpenCode Go", { blocks = {
       { type = "limit", level = "info", label = "Hourly", remaining = 0.5 },
       { type = "limit", level = "info", label = "Daily", remaining = 0.25,
-        resets_at = os.time() + 3600 },
+        resets_at = os.time() + 3600, detail = "25 of 100 Credits remaining" },
     } }), {
       { id = "opencode-go", name = "OpenCode Go",
         selected = true, enabled = true },
@@ -905,6 +984,7 @@ describe("neoagent Provider Shell UI", function()
         and contents:find("Hourly  50%% left")
         and contents:find("Daily  25%% left")
         and contents:find("resets", 1, true)
+        and contents:find("25 of 100 Credits remaining", 1, true)
     end, 5))
   end)
 

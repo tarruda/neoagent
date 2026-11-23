@@ -67,7 +67,7 @@ describe("local browser authentication callback", function()
     assert.is_true(closed)
   end)
 
-  it("accepts LF-framed requests and writes deterministic safe responses", function()
+  it("accepts fragmented LF-framed requests and writes safe responses", function()
     local server = listen({
       handler = function(received)
         assert.are.equal("POST", received.method)
@@ -88,13 +88,10 @@ describe("local browser authentication callback", function()
       end,
     })
 
-    local response = network.request(server.port, table.concat({
-      "POST /complete HTTP/1.1",
-      "Host: 127.0.0.1",
-      "Content-Length: 4",
-      "",
-      "body",
-    }, "\n"))
+    local response = network.request(server.port, {
+      "POST /complete HTTP/1.1\nHost: 127.0.0.1\nContent-Length: 4\n\nbo",
+      "dy",
+    })
 
     assert.matches("^HTTP/1%.1 200 OK\r\n", response)
     assert.is_truthy((response:find(

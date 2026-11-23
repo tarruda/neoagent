@@ -27,6 +27,25 @@ local function transport(response)
 end
 
 describe("provider management HTTP", function()
+  for _, case in ipairs({
+    { status = 401, kind = "auth" },
+    { status = 403, kind = "auth" },
+    { status = 429, kind = "provider" },
+  }) do
+    it("preserves the HTTP status and classifies HTTP " .. case.status, function()
+      local value = http.new({
+        name = "Test",
+        base_url = "https://example.test",
+        transport = transport({ ok = true, status = case.status, body = "private response" }),
+      })
+      local result = wait(value:get("/value", "value"))
+      local err = assert(result.error)
+      assert.are.equal(case.kind, err.kind)
+      assert.are.equal(case.status, rawget(err, "status"))
+      assert.is_nil((vim.inspect(err):find("private response", 1, true)))
+    end)
+  end
+
   it("does not expose malformed JSON response text in diagnostics", function()
     local value = http.new({
       name = "Test",

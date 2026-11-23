@@ -33,59 +33,45 @@ end
 ---@return Neoagent.ModelSelection?
 ---@return Neoagent.Error?
 local function seed(configured, auth, runtimes, settings, restored, profile_id, supported_apis, warnings)
+  local contract = require("neoagent.model_config")
   ---@param value unknown
-  ---@param origin? string A saved hint must still exist in the catalog.
+  ---@param origin? "Session"|"Workspace"
   ---@return Neoagent.ModelSelection?
   local function eligible(value, origin)
-    local contract = require("neoagent.model_config")
-    if type(value) == "table" and contract.safe_provider_id(value.provider) and contract.safe_id(value.model) then
-      local candidate = { provider = value.provider, model = value.model }
-      local runtime = runtimes[candidate.provider]
-      local reason
-      if origin then
-        if not runtime then
-          reason = "Unknown provider"
-        elseif not runtime.catalog:snapshot().models[candidate.model] then
-          reason = "Unknown model"
-        end
+    if type(value) ~= "table" or not contract.safe_provider_id(value.provider) or not contract.safe_id(value.model) then
+      return nil
+    end
+    local model = { provider = value.provider, model = value.model }
+    if origin then
+      local err
+      if origin == "Session" then
+        err = RequestSelection.catalog_model_error(runtimes, model, supported_apis, true)
+      else
+        err = RequestSelection.saved_model_error(runtimes, model, supported_apis)
       end
-      if not reason and RequestSelection.api_compatible(runtimes, candidate, supported_apis) == false then
-        reason = "API is incompatible with the selected Profile"
-      end
-      if reason then
-        if origin then
-          warnings[#warnings + 1] = "Ignoring unavailable "
-            .. origin
-            .. " Model "
-            .. candidate.provider
-            .. "/"
-            .. candidate.model
-            .. ": "
-            .. reason
+      if err and (origin ~= "Session" or rawget(err, "pending") ~= true) then
+        local warning = ("Ignoring unavailable %s Model %s/%s: %s"):format(
+          origin,
+          model.provider,
+          model.model,
+          err.message
+        )
+        if not vim.tbl_contains(warnings, warning) then
+          warnings[#warnings + 1] = warning
         end
         return nil
       end
-      return candidate
+    elseif RequestSelection.api_compatible(runtimes, model, supported_apis) == false then
+      return nil
     end
+    return model
   end
-  local restored_model = eligible(restored, "Session")
-  if restored_model then
-    return restored_model
-  end
-  do
-    local agents = settings and settings.agents
-    local scope = type(agents) == "table" and profile_id and agents[profile_id] or nil
-    -- Saved preferences are hints. Resolve their fallback before the Model
-    -- chooses an automatic Profile; an Agent cannot change that binding later.
-    -- Availability is a catalog fact. API factories and Service wrappers run
-    -- when a selection owner needs the Model; their failures are not fallback.
-    local selected = eligible(type(scope) == "table" and scope.default_model, "Workspace")
-      or eligible(settings and settings.default_model, "Workspace")
-    if selected then
-      return selected
-    end
-  end
-  local selected = eligible(configured.default_model)
+  local agents = settings and settings.agents
+  local scope = type(agents) == "table" and profile_id and agents[profile_id] or nil
+  local selected = eligible(restored, "Session")
+    or eligible(type(scope) == "table" and scope.default_model, "Workspace")
+    or eligible(settings and settings.default_model, "Workspace")
+    or eligible(configured.default_model)
   if selected then
     return selected
   end
@@ -274,9 +260,6 @@ end
 ---@param options Neoagent.ProfileSelectionOptions
 ---@return Neoagent.ProfileComposition
 function M.resolve(options)
-  local function find(id)
-    return assert(options.profiles[id], "Unknown Profile: " .. tostring(id))
-  end
   local explicit = options.profile_id or options.snapshot.config.profile
   local restored = options.restored_model
   if options.session then
@@ -312,11 +295,13 @@ function M.resolve(options)
       warnings
     )
   end
-  local profile = constrained or find(M.choose(options.policy, model))
+  local profile = constrained
+  if not profile then
+    local id = M.choose(options.policy, model)
+    profile = assert(options.profiles[id], "Unknown Profile: " .. id)
+  end
   assert(
-    not model
-      or require("neoagent.request_selection").api_compatible(options.runtimes, model, profile.supported_apis)
-        ~= false,
+    not model or RequestSelection.api_compatible(options.runtimes, model, profile.supported_apis) ~= false,
     "The selected Model is incompatible with Profile " .. profile.id
   )
   local resolved = candidate({

@@ -14,8 +14,7 @@
 ---@field workspace_model_pending boolean
 ---@field context_usage_cache? Neoagent.AgentContextCache
 ---@field provider_runtimes Neoagent.ProviderRuntimes
----@field provider_id? string
----@field provider_unsubscribes (fun())[]
+---@field provider_binding? {id: string, unsubscribes: (fun())[]}
 ---@field presentation_runs table<table, Neoagent.PresentationRun>
 ---@field publication_revision integer
 ---@field listeners table<integer, fun(publication: Neoagent.AgentPublication)>
@@ -461,8 +460,7 @@ function M.from_config(options, runtime)
     provider_status = nil,
     inference_stats = nil,
     provider_runtimes = runtimes,
-    provider_id = nil,
-    provider_unsubscribes = {},
+    provider_binding = nil,
     presentation_runs = {},
     destroy_runtimes = runtime.destroy_runtimes,
     pending_events = {},
@@ -602,7 +600,7 @@ function M.from_config(options, runtime)
     return options
   end
 
-  ---@type fun(provider_id: string)
+  ---@type fun(provider_id?: string)
   local bind_provider
   ---@type fun(event: Neoagent.AgentEvent)
   local provider_event
@@ -614,15 +612,20 @@ function M.from_config(options, runtime)
     return runtime and runtime.service or nil
   end
 
-  local function unbind_provider()
-    for _, unsubscribe in ipairs(state.provider_unsubscribes) do
-      local ok, err = pcall(unsubscribe)
-      if not ok then
-        notify("provider unsubscribe failed: " .. tostring(err), vim.log.levels.ERROR)
-      end
+  ---@param unsubscribe fun()
+  local function release_subscription(unsubscribe)
+    local ok, err = pcall(unsubscribe)
+    if not ok then
+      pcall(notify, "provider unsubscribe failed: " .. tostring(err), vim.log.levels.ERROR)
     end
-    state.provider_unsubscribes = {}
-    state.provider_id = nil
+  end
+
+  local function unbind_provider()
+    local binding = state.provider_binding
+    state.provider_binding = nil
+    for _, unsubscribe in ipairs(binding and binding.unsubscribes or {}) do
+      release_subscription(unsubscribe)
+    end
   end
 
   ---@return "idle"|"compacting"|"stopping"|"running"
@@ -913,27 +916,41 @@ function M.from_config(options, runtime)
       and runtime.catalog:snapshot().models[selected.model] == nil
   end
 
+  ---@return Neoagent.Error?
+  local function selection_restore_error()
+    if state.session_restore then
+      return util.error("session", "The Session Model is still being restored")
+    end
+  end
+
+  local function require_restored_selection()
+    local err = selection_restore_error()
+    if err then
+      error(err, 0)
+    end
+  end
+
+  ---@param selected? Neoagent.ModelSelection
   ---@return Neoagent.Model
-  local function ensure_model()
+  local function ensure_model(selected)
+    assert(not state.destroyed, "Agent is destroyed")
+    require_restored_selection()
     require_workspace_trust()
     local current = state.request_selection:model()
     if current then
       return current
     end
-    local selected = state.request_selection:candidate()
+    selected = selected or state.request_selection:candidate() or first_available_model()
     if not selected then
-      selected = first_available_model()
+      error(util.error("model", "No models are configured"), 0)
     end
-    if not selected then
-      error("No models are configured")
-    end
-    local model, resolve_err = state.request_selection:resolve(selected)
+    local model, err = state.request_selection:resolve(selected)
     if not model then
-      error(resolve_err, 0)
+      error(err, 0)
     end
     bind_provider(selected.provider)
-    assert(model, "Resolved Model is required")
-    return model
+    assert(not state.destroyed, "Agent is destroyed")
+    return (assert(state.request_selection:model(), "Model selection changed while preparing"))
   end
 
   ---@param value string
@@ -1099,53 +1116,72 @@ function M.from_config(options, runtime)
   end
 
   local function update_context()
-    publish({ type = "context", context = context() })
+    if not state.destroyed then
+      publish({ type = "context", context = context() })
+    end
   end
 
-  ---@param provider_id string
+  ---@param provider_id? string
   bind_provider = function(provider_id)
-    local runtime = assert(state.provider_runtimes[provider_id], "selected Model has no Provider runtime")
-    local service = runtime.service
-    local catalog = runtime.catalog
-    if state.provider_id == provider_id then
+    local previous = state.provider_binding
+    if state.destroyed or (previous and previous.id or nil) == provider_id then
       return
     end
     unbind_provider()
-    state.provider_id = provider_id
+    if state.destroyed or state.provider_binding or not provider_id then
+      return
+    end
+    local runtime = assert(state.provider_runtimes[provider_id], "selected Model has no Provider runtime")
+    local service = runtime.service
+    local catalog = runtime.catalog
+    local binding = { id = provider_id, unsubscribes = {} }
+    state.provider_binding = binding
+    ---@param unsubscribe fun()
+    local function keep(unsubscribe)
+      if state.provider_binding == binding then
+        binding.unsubscribes[#binding.unsubscribes + 1] = unsubscribe
+      else
+        release_subscription(unsubscribe)
+      end
+    end
     local function changed()
       util.schedule(function()
-        if state.destroyed or state.provider_id ~= provider_id then
+        if state.provider_binding ~= binding or state.session_restore then
           return
         end
         local selected = state.request_selection:model_selection()
-        assert(selected, "bound Provider has no Model selection")
         if
-          not state.request_selection:model()
-          and selected.provider == provider_id
+          selected and selected.provider == provider_id
+          and not state.request_selection:model()
           and catalog:snapshot().models[selected.model] ~= nil
         then
           local resolved, resolve_err = pcall(ensure_model)
-          if not resolved then
+          if not resolved and not state.destroyed and state.provider_binding == binding then
             local failure = util.normalize_error(resolve_err, "model")
-            notify(
-              "could not resolve " .. selected.provider .. "/" .. selected.model .. ": " .. failure.message,
-              vim.log.levels.ERROR
-            )
+            if rawget(failure, "pending") ~= true then
+              pcall(
+                notify,
+                ("could not resolve %s/%s: %s"):format(selected.provider, selected.model, failure.message),
+                vim.log.levels.ERROR
+              )
+            end
           end
         end
         update_context()
       end)
     end
-    state.provider_unsubscribes[#state.provider_unsubscribes + 1] = catalog:subscribe(changed)
-    if type(service.subscribe) == "function" then
+    keep(catalog:subscribe(changed))
+    if state.provider_binding == binding and type(service.subscribe) == "function" then
       local ok, unsubscribe = pcall(service.subscribe, service, changed)
       if not ok then
-        notify("provider subscription failed: " .. tostring(unsubscribe), vim.log.levels.ERROR)
+        pcall(notify, "provider subscription failed: " .. tostring(unsubscribe), vim.log.levels.ERROR)
       elseif type(unsubscribe) == "function" then
-        state.provider_unsubscribes[#state.provider_unsubscribes + 1] = unsubscribe
+        keep(unsubscribe)
       end
     end
-    update_context()
+    if not state.session_restore then
+      update_context()
+    end
   end
 
   ---@param event Neoagent.AgentEvent
@@ -1158,13 +1194,18 @@ function M.from_config(options, runtime)
 
   local sessions = session_lifecycle.new({
     state = state,
-    restore_selection = runtime.restore_session_selection == true,
+    restore_on_open = runtime.restore_session_selection == true,
     notify = notify,
     publish_messages = publish_messages,
     update_context = update_context,
-    preferences = preferences,
-    request_selection = state.request_selection,
-    bind_provider = bind_provider,
+    restore_selection = function(stored, current)
+      local _, err = state.request_selection:restore(stored, current)
+      if current() and (not err or err.kind ~= "cancelled") then
+        local selected = state.request_selection:model_selection()
+        bind_provider(selected and selected.provider or nil)
+      end
+      return err
+    end,
   })
 
   local runs = require("neoagent.agent.run_lifecycle").new({
@@ -1203,6 +1244,7 @@ function M.from_config(options, runtime)
   ---@return true?, Neoagent.Error?
   function agent:prepare()
     local ok, err = pcall(function()
+      require_restored_selection()
       if state.pending_warning then
         local warning = state.pending_warning
         state.pending_warning = nil
@@ -1217,14 +1259,20 @@ function M.from_config(options, runtime)
           state.request_selection:stage(selected)
           bind_provider(selected.provider)
         else
-          ensure_model()
+          local prepared, prepare_err = pcall(ensure_model, selected)
+          if not prepared then
+            local failure = util.normalize_error(prepare_err, "model")
+            if (failure.kind ~= "auth" and failure.kind ~= "model") or rawget(failure, "pending") ~= true then
+              error(failure, 0)
+            end
+          end
         end
       end
       update_context()
     end)
     if not ok then
       local failure = util.normalize_error(err, "agent")
-      if rawget(failure, "pending") ~= true then
+      if not state.destroyed and rawget(failure, "pending") ~= true then
         notify(failure.message, vim.log.levels.ERROR)
       end
       return nil, failure
@@ -1419,6 +1467,11 @@ function M.from_config(options, runtime)
     if state.activity then
       notify("cannot change thinking level while the agent is running", vim.log.levels.WARN)
       return nil
+    end
+    local restore_err = selection_restore_error()
+    if restore_err then
+      notify(restore_err.message, vim.log.levels.WARN)
+      return nil, restore_err
     end
     local selected, err = state.request_selection:set_thinking_level(level)
     if not selected then

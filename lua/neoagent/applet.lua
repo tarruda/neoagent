@@ -627,7 +627,16 @@ function NeoagentApplet:_bind_draft(profile, applet)
   end
   if not draft:model_selection() then
     -- A catalog may acquire its first Model after this draft was opened.
+    local revision = draft.composition_revision
     local choice, selection_err = self:_resolve(not draft:is_automatic() and profile.id or nil, draft.workspace)
+    if
+      self.destroyed
+      or not draft:is_active()
+      or self.drafts_by_applet[applet] ~= draft
+      or draft.composition_revision ~= revision
+    then
+      return nil, util.error("agent", "Profile draft changed while preparing submission")
+    end
     if not choice then
       return self:_construction_error(applet, selection_err)
     end
@@ -638,9 +647,9 @@ function NeoagentApplet:_bind_draft(profile, applet)
     if not published then
       return self:_construction_error(applet, publish_err)
     end
-    profile = choice.profile
   end
   local resolved = draft:snapshot()
+  profile = resolved.profile
   local called, session, err = pcall(require("neoagent.profile_sessions").new, {
     profile_id = profile.id,
     workspace = draft.workspace,
